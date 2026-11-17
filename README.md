@@ -10,6 +10,10 @@ HTTP Inspector는 로컬 HTTP 프록시를 통해 요청 기록을 보여주는 
 - HTTP/1.1 요청과 응답 스트리밍
 - HTTPS `CONNECT` TCP 터널
 - 메서드, 대상, 결과, 응답 헤더 도착 시간 표시
+- 요청과 응답 헤더 상세 보기
+- 방향별 최대 8KiB의 실시간 본문 미리보기
+- 문자열 검색과 응답, 실패, 터널 결과 필터
+- 선택한 요청의 Headers와 Body 상세 패널
 - 프록시 시작, 중지, 기록 삭제
 - 최대 2,000개의 메모리 기록
 - 기록 큐 초과 건수 표시
@@ -19,7 +23,7 @@ HTTP Inspector는 로컬 HTTP 프록시를 통해 요청 기록을 보여주는 
 현재 버전은 다음 기능을 제공하지 않는다.
 
 - HTTPS 복호화와 로컬 CA 설치
-- 요청과 응답 본문 저장
+- 전체 요청과 응답 본문 저장
 - 영구 기록과 SQLite 저장소
 - 시스템 프록시 자동 변경
 - HTTP/2와 HTTP/3
@@ -27,6 +31,8 @@ HTTP Inspector는 로컬 HTTP 프록시를 통해 요청 기록을 보여주는 
 - Wayland와 화면 읽기 프로그램 지원
 
 HTTPS 요청은 `CONNECT` 터널로 전달한다. 앱은 터널 안의 URL, 헤더, 본문을 읽지 않는다.
+
+본문 미리보기는 메모리에만 유지하며 기록을 삭제하거나 앱을 종료하면 사라진다. `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie` 헤더 값은 캡처 전에 가린다. 큰 본문은 전체를 계속 전달하지만 미리보기만 8KiB에서 자른다.
 
 ## Linux 요구사항
 
@@ -93,6 +99,7 @@ cargo build --release
 - [Rust 개발 도구 및 의존성](docs/rust-development-tooling.md)
 - [코드 품질 기준](docs/code-quality.md)
 - [Git 작업 흐름](docs/git-workflow.md)
+- [Network 상세 보기 설계](docs/f12-network-increment-design.md)
 
 ## 라이선스
 
