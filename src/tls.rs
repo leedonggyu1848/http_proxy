@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, Cursor, Write};
+use std::io::Write;
 use std::net::IpAddr;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -11,7 +11,8 @@ use rcgen::{
     BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa,
     Issuer, KeyPair, KeyUsagePurpose,
 };
-use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -411,23 +412,12 @@ fn parse_identity(
     bundle: &[u8],
     public: &[u8],
 ) -> Result<(Issuer<'static, KeyPair>, CertificateDer<'static>), HttpsSetupError> {
-    let mut bundle_cursor = Cursor::new(bundle);
-    let mut bundle_certificates = rustls_pemfile::certs(&mut bundle_cursor);
-    let certificate = bundle_certificates
-        .next()
-        .transpose()
-        .map_err(|error| HttpsSetupError::InvalidIdentity(error.to_string()))?
-        .ok_or_else(|| HttpsSetupError::InvalidIdentity("certificate is missing".to_owned()))?;
-    let private_key = rustls_pemfile::private_key(&mut Cursor::new(bundle))
-        .map_err(|error| HttpsSetupError::InvalidIdentity(error.to_string()))?
-        .ok_or_else(|| HttpsSetupError::InvalidIdentity("private key is missing".to_owned()))?;
-    let public_certificate = rustls_pemfile::certs(&mut Cursor::new(public))
-        .next()
-        .transpose()
-        .map_err(|error| HttpsSetupError::InvalidIdentity(error.to_string()))?
-        .ok_or_else(|| {
-            HttpsSetupError::InvalidIdentity("public certificate is missing".to_owned())
-        })?;
+    let certificate = CertificateDer::from_pem_slice(bundle)
+        .map_err(|error| HttpsSetupError::InvalidIdentity(error.to_string()))?;
+    let private_key = PrivateKeyDer::from_pem_slice(bundle)
+        .map_err(|error| HttpsSetupError::InvalidIdentity(error.to_string()))?;
+    let public_certificate = CertificateDer::from_pem_slice(public)
+        .map_err(|error| HttpsSetupError::InvalidIdentity(error.to_string()))?;
     if certificate != public_certificate {
         return Err(HttpsSetupError::InvalidIdentity(
             "public certificate does not match the CA identity".to_owned(),
@@ -465,12 +455,8 @@ fn build_upstream_connector(
     }
 
     if let Some(path) = additional_root {
-        let file = File::open(path).map_err(|source| HttpsSetupError::Io {
-            operation: "open",
-            path: path.to_owned(),
-            source,
-        })?;
-        let certificates = rustls_pemfile::certs(&mut BufReader::new(file))
+        let certificates = CertificateDer::pem_file_iter(path)
+            .map_err(|_| HttpsSetupError::InvalidAdditionalRoot(path.to_owned()))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| HttpsSetupError::InvalidAdditionalRoot(path.to_owned()))?;
         if certificates.is_empty() {

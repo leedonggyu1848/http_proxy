@@ -11,7 +11,8 @@ use rcgen::{
     BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa,
     Issuer, KeyPair, KeyUsagePurpose,
 };
-use rustls::pki_types::{PrivatePkcs8KeyDer, ServerName};
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -218,9 +219,7 @@ async fn decrypts_https_with_a_trusted_local_ca() -> Result<(), Box<dyn Error>> 
         .ok_or("inspection CA metadata missing")?
         .certificate_path();
     let mut roots = RootCertStore::empty();
-    let ca_file = fs::File::open(ca_path)?;
-    let certificates = rustls_pemfile::certs(&mut std::io::BufReader::new(ca_file))
-        .collect::<Result<Vec<_>, _>>()?;
+    let certificates = CertificateDer::pem_file_iter(ca_path)?.collect::<Result<Vec<_>, _>>()?;
     for certificate in certificates {
         roots.add(certificate)?;
     }
@@ -384,9 +383,7 @@ async fn connect_to_inspection(
         .ok_or("inspection CA metadata missing")?
         .certificate_path();
     let mut roots = RootCertStore::empty();
-    let ca_file = fs::File::open(ca_path)?;
-    let certificates = rustls_pemfile::certs(&mut std::io::BufReader::new(ca_file))
-        .collect::<Result<Vec<_>, _>>()?;
+    let certificates = CertificateDer::pem_file_iter(ca_path)?.collect::<Result<Vec<_>, _>>()?;
     for certificate in certificates {
         roots.add(certificate)?;
     }

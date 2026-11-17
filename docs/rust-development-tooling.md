@@ -276,7 +276,6 @@ rustls = "0.23"
 tokio-rustls = "0.26"
 rustls-native-certs = "0.8"
 rcgen = "0.14"
-rustls-pemfile = "2"
 fs2 = "0.4"
 sha2 = "0.10"
 time = "0.3"
@@ -290,7 +289,6 @@ time = "0.3"
 | `tokio-rustls` | Tokio 스트림의 비동기 TLS 연결 |
 | `rustls-native-certs` | 운영체제의 신뢰된 루트 인증서 로드 |
 | `rcgen` | 로컬 CA와 도메인별 인증서 생성 |
-| `rustls-pemfile` | CA와 추가 루트 PEM 파싱 |
 | `fs2` | 여러 프로세스의 CA 초기화 잠금 |
 | `sha2` | UI에 표시할 CA 지문 계산 |
 | `time` | 루트와 leaf 인증서 유효기간 계산 |
@@ -449,7 +447,7 @@ HTTPS 복호화를 시작할 때 다음 크레이트를 추가한다.
 
 ```text
 rustls, tokio-rustls, rustls-native-certs, rcgen
-rustls-pemfile, fs2, sha2, time
+fs2, sha2, time
 ```
 
 ## 참고 자료
