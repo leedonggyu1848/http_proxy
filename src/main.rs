@@ -231,6 +231,10 @@ impl InspectorApp {
                             "CONNECT tunnel established. Encrypted tunnel contents are not inspected.",
                         );
                     }
+                    CaptureOutcome::InspectionEstablished => {
+                        ui.separator();
+                        ui.label("HTTPS inspection session established.");
+                    }
                     CaptureOutcome::Failed { stage, message } => {
                         ui.separator();
                         ui.colored_label(Color32::LIGHT_RED, format!("{stage:?}: {message}"));
@@ -290,7 +294,10 @@ fn record_matches(record: &CaptureRecord, filter: RecordFilter, query: &str) -> 
             (filter, record.outcome()),
             (RecordFilter::Responses, CaptureOutcome::Response { .. })
                 | (RecordFilter::Failures, CaptureOutcome::Failed { .. })
-                | (RecordFilter::Tunnels, CaptureOutcome::TunnelEstablished)
+                | (
+                    RecordFilter::Tunnels,
+                    CaptureOutcome::TunnelEstablished | CaptureOutcome::InspectionEstablished
+                )
         );
     outcome_matches
         && (query.is_empty()
@@ -306,6 +313,7 @@ fn outcome_matches_query(outcome: &CaptureOutcome, query: &str) -> bool {
             status, headers, ..
         } => status.to_string().contains(query) || headers_match(headers, query),
         CaptureOutcome::TunnelEstablished => "tunnel".contains(query),
+        CaptureOutcome::InspectionEstablished => "https inspection".contains(query),
         CaptureOutcome::Failed { stage, message } => {
             text_matches(&format!("{stage:?}"), query) || text_matches(message, query)
         }
@@ -406,6 +414,7 @@ fn outcome_text(outcome: &CaptureOutcome) -> (String, Color32) {
             (status.to_string(), color)
         }
         CaptureOutcome::TunnelEstablished => ("Tunnel".to_owned(), Color32::LIGHT_BLUE),
+        CaptureOutcome::InspectionEstablished => ("HTTPS".to_owned(), Color32::LIGHT_BLUE),
         CaptureOutcome::Failed { stage, message } => {
             (format!("{stage:?}: {message}"), Color32::LIGHT_RED)
         }

@@ -335,6 +335,8 @@ pub enum CaptureOutcome {
     },
     /// The proxy established a TCP tunnel.
     TunnelEstablished,
+    /// The proxy established a TLS inspection session.
+    InspectionEstablished,
     /// The request failed before a response arrived.
     Failed {
         stage: FailureStage,
@@ -351,4 +353,10 @@ pub enum FailureStage {
     Connect,
     /// The upstream HTTP exchange failed.
     Response,
+    /// The CONNECT stream could not be upgraded.
+    Upgrade,
+    /// The client-side TLS handshake failed.
+    ClientTls,
+    /// The upstream TLS handshake or verification failed.
+    UpstreamTls,
 }
