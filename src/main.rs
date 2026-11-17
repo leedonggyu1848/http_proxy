@@ -1,10 +1,14 @@
 #![forbid(unsafe_code)]
 
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
-use http_proxy::{CaptureOutcome, CaptureRecord, ProxyConfig, ProxyHandle};
+use http_proxy::{
+    BodyLifecycle, BodyPreview, BodyRetention, CaptureOutcome, CaptureRecord, HeaderPreview,
+    HttpsInspection, ProxyConfig, ProxyHandle, RecordId,
+};
 use tracing_subscriber::EnvFilter;
 
 const PROXY_PORT: u16 = 8080;
@@ -34,6 +38,11 @@ fn init_tracing() {
 struct InspectorApp {
     proxy: Option<ProxyHandle>,
     records: VecDeque<CaptureRecord>,
+    selected: Option<RecordId>,
+    filter_text: String,
+    record_filter: RecordFilter,
+    https_inspection: bool,
+    ca_directory: Option<PathBuf>,
     error: Option<String>,
 }
 
@@ -42,6 +51,11 @@ impl InspectorApp {
         let mut app = Self {
             proxy: None,
             records: VecDeque::with_capacity(MAX_RECORDS),
+            selected: None,
+            filter_text: String::new(),
+            record_filter: RecordFilter::All,
+            https_inspection: false,
+            ca_directory: default_ca_directory(),
             error: None,
         };
         app.start_proxy();
@@ -49,7 +63,18 @@ impl InspectorApp {
     }
 
     fn start_proxy(&mut self) {
-        match ProxyHandle::start(ProxyConfig::loopback(PROXY_PORT)) {
+        let mut config = ProxyConfig::loopback(PROXY_PORT);
+        if self.https_inspection {
+            let Some(directory) = self.ca_directory.as_ref() else {
+                self.error = Some(
+                    "HTTPS inspection requires XDG_DATA_HOME or HOME to locate the CA directory"
+                        .to_owned(),
+                );
+                return;
+            };
+            config = config.with_https_inspection(HttpsInspection::new(directory.clone()));
+        }
+        match ProxyHandle::start(config) {
             Ok(proxy) => {
                 self.proxy = Some(proxy);
                 self.error = None;
@@ -73,8 +98,11 @@ impl InspectorApp {
             return;
         };
         while let Some(record) = proxy.try_receive() {
-            if self.records.len() == MAX_RECORDS {
-                self.records.pop_front();
+            if self.records.len() == MAX_RECORDS
+                && let Some(removed) = self.records.pop_front()
+                && self.selected == Some(removed.id())
+            {
+                self.selected = None;
             }
             self.records.push_back(record);
         }
@@ -103,15 +131,65 @@ impl InspectorApp {
             }
             if ui.button("Clear").clicked() {
                 self.records.clear();
+                self.selected = None;
             }
         });
 
         if let Some(error) = self.error.as_ref() {
             ui.colored_label(Color32::LIGHT_RED, error);
         }
+
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("HTTPS inspection");
+            ui.add_enabled(
+                self.proxy.is_none(),
+                egui::Checkbox::new(&mut self.https_inspection, "Decrypt HTTPS"),
+            );
+            if self.proxy.is_some() {
+                ui.weak("Stop the proxy to change this setting.");
+            }
+        });
+        if self.https_inspection {
+            if let Some(proxy) = self.proxy.as_ref()
+                && let Some(info) = proxy.ca_info()
+            {
+                ui.label("Trust this public CA certificate in the test browser:");
+                ui.monospace(info.certificate_path().display().to_string());
+                ui.label("SHA-256 fingerprint:");
+                ui.monospace(info.fingerprint_sha256());
+            } else if let Some(directory) = self.ca_directory.as_ref() {
+                ui.label("The CA will be created when the proxy starts:");
+                ui.monospace(directory.join("root-ca.pem").display().to_string());
+            }
+            ui.colored_label(
+                Color32::YELLOW,
+                "Only enable inspection for traffic that you are authorized to inspect.",
+            );
+        }
     }
 
-    fn request_table(&self, ui: &mut egui::Ui) {
+    fn filters(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Filter");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter_text)
+                    .hint_text("method, URL, status, or header"),
+            );
+            egui::ComboBox::from_id_salt("record-filter")
+                .selected_text(self.record_filter.label())
+                .show_ui(ui, |ui| {
+                    for filter in RecordFilter::ALL {
+                        ui.selectable_value(&mut self.record_filter, filter, filter.label());
+                    }
+                });
+        });
+    }
+
+    fn request_table(&mut self, ui: &mut egui::Ui) {
+        let query = self.filter_text.to_lowercase();
+        let selected = self.selected;
+        let mut new_selection = None;
         egui::ScrollArea::both()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -125,8 +203,21 @@ impl InspectorApp {
                         ui.strong("Time");
                         ui.end_row();
 
-                        for record in self.records.iter().rev() {
-                            ui.monospace(record.method().as_str());
+                        for record in self
+                            .records
+                            .iter()
+                            .rev()
+                            .filter(|record| record_matches(record, self.record_filter, &query))
+                        {
+                            if ui
+                                .selectable_label(
+                                    selected == Some(record.id()),
+                                    RichText::new(record.method().as_str()).monospace(),
+                                )
+                                .clicked()
+                            {
+                                new_selection = Some(record.id());
+                            }
                             ui.monospace(record.target());
                             let (result, color) = outcome_text(record.outcome());
                             ui.colored_label(color, result);
@@ -134,6 +225,66 @@ impl InspectorApp {
                             ui.end_row();
                         }
                     });
+            });
+        if new_selection.is_some() {
+            self.selected = new_selection;
+        }
+    }
+
+    fn detail_panel(&self, ui: &mut egui::Ui) {
+        let Some(selected) = self.selected else {
+            ui.centered_and_justified(|ui| {
+                ui.label("Select a request to inspect headers and body previews.");
+            });
+            return;
+        };
+        let Some(record) = self.records.iter().find(|record| record.id() == selected) else {
+            return;
+        };
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.heading(format!("{} {}", record.method(), record.target()));
+                ui.label(format!(
+                    "Response headers in {:.1} ms",
+                    elapsed_millis(record.elapsed())
+                ));
+                ui.separator();
+                ui.strong("Request headers");
+                render_headers(ui, "request-headers", record.request_headers());
+                ui.separator();
+                ui.strong("Request body");
+                render_optional_body(ui, record.request_body());
+
+                match record.outcome() {
+                    CaptureOutcome::Response {
+                        status,
+                        headers,
+                        body,
+                    } => {
+                        ui.separator();
+                        ui.strong(format!("Response headers · {status}"));
+                        render_headers(ui, "response-headers", headers);
+                        ui.separator();
+                        ui.strong("Response body");
+                        render_body(ui, body);
+                    }
+                    CaptureOutcome::TunnelEstablished => {
+                        ui.separator();
+                        ui.label(
+                            "CONNECT tunnel established. Encrypted tunnel contents are not inspected.",
+                        );
+                    }
+                    CaptureOutcome::InspectionEstablished => {
+                        ui.separator();
+                        ui.label("HTTPS inspection session established.");
+                    }
+                    CaptureOutcome::Failed { stage, message } => {
+                        ui.separator();
+                        ui.colored_label(Color32::LIGHT_RED, format!("{stage:?}: {message}"));
+                    }
+                }
             });
     }
 }
@@ -146,7 +297,14 @@ impl eframe::App for InspectorApp {
         ui.separator();
         self.toolbar(ui);
         ui.separator();
-        self.request_table(ui);
+        self.filters(ui);
+        ui.separator();
+        ui.columns(2, |columns| {
+            columns[0].heading("Requests");
+            self.request_table(&mut columns[0]);
+            columns[1].heading("Details");
+            self.detail_panel(&mut columns[1]);
+        });
 
         if self.proxy.is_some() {
             ui.ctx().request_repaint_after(Duration::from_millis(100));
@@ -154,9 +312,145 @@ impl eframe::App for InspectorApp {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RecordFilter {
+    All,
+    Responses,
+    Failures,
+    Tunnels,
+}
+
+impl RecordFilter {
+    const ALL: [Self; 4] = [Self::All, Self::Responses, Self::Failures, Self::Tunnels];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Responses => "Responses",
+            Self::Failures => "Failures",
+            Self::Tunnels => "Tunnels",
+        }
+    }
+}
+
+fn record_matches(record: &CaptureRecord, filter: RecordFilter, query: &str) -> bool {
+    let outcome_matches = matches!(filter, RecordFilter::All)
+        || matches!(
+            (filter, record.outcome()),
+            (RecordFilter::Responses, CaptureOutcome::Response { .. })
+                | (RecordFilter::Failures, CaptureOutcome::Failed { .. })
+                | (
+                    RecordFilter::Tunnels,
+                    CaptureOutcome::TunnelEstablished | CaptureOutcome::InspectionEstablished
+                )
+        );
+    outcome_matches
+        && (query.is_empty()
+            || text_matches(record.method().as_str(), query)
+            || text_matches(record.target(), query)
+            || headers_match(record.request_headers(), query)
+            || outcome_matches_query(record.outcome(), query))
+}
+
+fn outcome_matches_query(outcome: &CaptureOutcome, query: &str) -> bool {
+    match outcome {
+        CaptureOutcome::Response {
+            status, headers, ..
+        } => status.to_string().contains(query) || headers_match(headers, query),
+        CaptureOutcome::TunnelEstablished => "tunnel".contains(query),
+        CaptureOutcome::InspectionEstablished => "https inspection".contains(query),
+        CaptureOutcome::Failed { stage, message } => {
+            text_matches(&format!("{stage:?}"), query) || text_matches(message, query)
+        }
+    }
+}
+
+fn headers_match(headers: &HeaderPreview, query: &str) -> bool {
+    headers
+        .entries()
+        .iter()
+        .any(|header| text_matches(header.name(), query) || text_matches(header.value(), query))
+}
+
+fn text_matches(value: &str, lowercase_query: &str) -> bool {
+    value.to_lowercase().contains(lowercase_query)
+}
+
+fn render_headers(ui: &mut egui::Ui, id: &str, headers: &HeaderPreview) {
+    egui::Grid::new(id).striped(true).show(ui, |ui| {
+        for header in headers.entries() {
+            ui.monospace(header.name());
+            ui.monospace(header.value());
+            ui.end_row();
+        }
+    });
+    if headers.entries().is_empty() {
+        ui.weak("No headers captured.");
+    }
+    if headers.omitted() {
+        ui.colored_label(Color32::YELLOW, "Additional headers were omitted.");
+    }
+}
+
+fn render_optional_body(ui: &mut egui::Ui, body: Option<&BodyPreview>) {
+    match body {
+        Some(body) => render_body(ui, body),
+        None => {
+            ui.weak("Body was not observed.");
+        }
+    }
+}
+
+fn render_body(ui: &mut egui::Ui, body: &BodyPreview) {
+    let Some(snapshot) = body.snapshot() else {
+        ui.weak("Preview is updating.");
+        return;
+    };
+    ui.label(format!(
+        "{} bytes observed · {} · {}",
+        snapshot.observed_bytes(),
+        lifecycle_text(snapshot.lifecycle()),
+        retention_text(snapshot.retention())
+    ));
+    if snapshot.retention() == BodyRetention::Omitted {
+        ui.colored_label(
+            Color32::YELLOW,
+            "Preview was omitted to keep forwarding nonblocking.",
+        );
+        return;
+    }
+    if snapshot.bytes().is_empty() {
+        ui.weak("Empty body.");
+        return;
+    }
+    let mut preview = String::from_utf8_lossy(snapshot.bytes()).into_owned();
+    ui.add(
+        egui::TextEdit::multiline(&mut preview)
+            .font(egui::TextStyle::Monospace)
+            .desired_rows(8)
+            .interactive(false),
+    );
+}
+
+const fn lifecycle_text(lifecycle: BodyLifecycle) -> &'static str {
+    match lifecycle {
+        BodyLifecycle::Streaming => "streaming",
+        BodyLifecycle::Complete => "complete",
+        BodyLifecycle::Interrupted => "interrupted",
+    }
+}
+
+const fn retention_text(retention: BodyRetention) -> &'static str {
+    match retention {
+        BodyRetention::Prefix => "full preview",
+        BodyRetention::Truncated => "truncated preview",
+        BodyRetention::Omitted => "preview omitted",
+    }
+}
+
 fn outcome_text(outcome: &CaptureOutcome) -> (String, Color32) {
     match outcome {
-        CaptureOutcome::Response { status } => {
+        CaptureOutcome::Response { status, .. } => {
             let color = if *status < 400 {
                 Color32::LIGHT_GREEN
             } else {
@@ -165,6 +459,7 @@ fn outcome_text(outcome: &CaptureOutcome) -> (String, Color32) {
             (status.to_string(), color)
         }
         CaptureOutcome::TunnelEstablished => ("Tunnel".to_owned(), Color32::LIGHT_BLUE),
+        CaptureOutcome::InspectionEstablished => ("HTTPS".to_owned(), Color32::LIGHT_BLUE),
         CaptureOutcome::Failed { stage, message } => {
             (format!("{stage:?}: {message}"), Color32::LIGHT_RED)
         }
@@ -173,4 +468,11 @@ fn outcome_text(outcome: &CaptureOutcome) -> (String, Color32) {
 
 fn elapsed_millis(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1_000.0
+}
+
+fn default_ca_directory() -> Option<PathBuf> {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+        .map(|directory| directory.join("http-inspector/ca"))
 }
