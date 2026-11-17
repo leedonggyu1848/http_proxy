@@ -1,10 +1,10 @@
 # Git 작업 흐름
 
-이 문서는 저장소의 브랜치, 커밋, 검증, PR 규칙을 정의한다. 모든 변경은 `origin`의 PR을 통해 `master`에 병합한다.
+이 문서는 저장소의 브랜치, 커밋, 검증, PR 규칙을 정의한다. 모든 변경은 `origin`의 PR을 통해 `main`에 병합한다.
 
 ## 브랜치
 
-`master`에 직접 커밋하지 않는다. 최신 `master`에서 작업 브랜치를 만든다.
+`main`에 직접 커밋하지 않는다. 최신 `main`에서 작업 브랜치를 만든다.
 
 브랜치 이름은 변경 목적을 나타낸다.
 
@@ -92,7 +92,7 @@ cargo test --workspace --all-features
 git push -u origin <branch>
 
 gh pr create \
-	--base master \
+	--base main \
 	--head <branch> \
 	--title "<title>" \
 	--body-file <body-file>
