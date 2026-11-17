@@ -97,6 +97,10 @@ impl InspectorApp {
 
             ui.separator();
             ui.label(format!("{} requests", self.records.len()));
+            let dropped = self.proxy.as_ref().map_or(0, ProxyHandle::dropped_records);
+            if dropped > 0 {
+                ui.colored_label(Color32::LIGHT_RED, format!("{dropped} records dropped"));
+            }
             if ui.button("Clear").clicked() {
                 self.records.clear();
             }

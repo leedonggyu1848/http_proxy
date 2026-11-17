@@ -1,6 +1,8 @@
 use std::convert::Infallible;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener as StdTcpListener};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
@@ -26,6 +28,23 @@ use tokio::sync::{mpsc, watch};
 use crate::{CaptureOutcome, CaptureRecord, FailureStage};
 
 type ProxyBody = BoxBody<Bytes, hyper::Error>;
+
+#[derive(Clone)]
+struct EventSink {
+    sender: mpsc::Sender<CaptureRecord>,
+    dropped: Arc<AtomicU64>,
+}
+
+impl EventSink {
+    fn send(&self, record: CaptureRecord) {
+        match self.sender.try_send(record) {
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+            }
+            Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {}
+        }
+    }
+}
 
 /// Settings used to start the local proxy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -55,6 +74,7 @@ impl Default for ProxyConfig {
 pub struct ProxyHandle {
     local_addr: SocketAddr,
     events: mpsc::Receiver<CaptureRecord>,
+    dropped: Arc<AtomicU64>,
     shutdown: watch::Sender<bool>,
     thread: Option<JoinHandle<()>>,
 }
@@ -72,12 +92,17 @@ impl ProxyHandle {
             .build()
             .map_err(StartError::Runtime)?;
         let (event_sender, events) = mpsc::channel(config.event_capacity);
+        let dropped = Arc::new(AtomicU64::new(0));
+        let event_sink = EventSink {
+            sender: event_sender,
+            dropped: Arc::clone(&dropped),
+        };
         let (shutdown, shutdown_receiver) = watch::channel(false);
         let thread = thread::Builder::new()
             .name("http-inspector-proxy".to_owned())
             .spawn(move || {
                 runtime.block_on(async move {
-                    let result = run(listener, event_sender, shutdown_receiver).await;
+                    let result = run(listener, event_sink, shutdown_receiver).await;
                     if let Err(error) = result {
                         tracing::error!(%error, "proxy server stopped");
                     }
@@ -88,6 +113,7 @@ impl ProxyHandle {
         Ok(Self {
             local_addr,
             events,
+            dropped,
             shutdown,
             thread: Some(thread),
         })
@@ -107,6 +133,12 @@ impl ProxyHandle {
     /// Waits for the next captured request.
     pub async fn receive(&mut self) -> Option<CaptureRecord> {
         self.events.recv().await
+    }
+
+    /// Returns the number of records omitted because the event queue was full.
+    #[must_use]
+    pub fn dropped_records(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
     }
 
     /// Stops the listener and waits for its thread to finish.
@@ -155,7 +187,7 @@ pub enum StopError {
 
 async fn run(
     listener: StdTcpListener,
-    events: mpsc::Sender<CaptureRecord>,
+    events: EventSink,
     mut shutdown: watch::Receiver<bool>,
 ) -> io::Result<()> {
     let listener = TcpListener::from_std(listener)?;
@@ -177,7 +209,7 @@ async fn run(
     }
 }
 
-async fn serve_connection(stream: TcpStream, events: mpsc::Sender<CaptureRecord>) {
+async fn serve_connection(stream: TcpStream, events: EventSink) {
     let service = service_fn(move |request| proxy_request(request, events.clone()));
     let connection = server_http1::Builder::new()
         .serve_connection(TokioIo::new(stream), service)
@@ -189,7 +221,7 @@ async fn serve_connection(stream: TcpStream, events: mpsc::Sender<CaptureRecord>
 
 async fn proxy_request(
     mut request: Request<Incoming>,
-    events: mpsc::Sender<CaptureRecord>,
+    events: EventSink,
 ) -> Result<Response<ProxyBody>, Infallible> {
     let started = Instant::now();
     let method = request.method().clone();
@@ -206,7 +238,7 @@ async fn proxy_request(
 
 async fn connect_tunnel(
     request: &mut Request<Incoming>,
-    events: &mpsc::Sender<CaptureRecord>,
+    events: &EventSink,
     method: &Method,
     target: &str,
     started: Instant,
@@ -220,8 +252,7 @@ async fn connect_tunnel(
             FailureStage::Request,
             StatusCode::BAD_REQUEST,
             "CONNECT requires an authority",
-        )
-        .await;
+        );
     };
 
     let upstream = match TcpStream::connect(authority.as_str()).await {
@@ -235,8 +266,7 @@ async fn connect_tunnel(
                 FailureStage::Connect,
                 StatusCode::BAD_GATEWAY,
                 &error.to_string(),
-            )
-            .await;
+            );
         }
     };
 
@@ -251,23 +281,19 @@ async fn connect_tunnel(
         }
     });
 
-    send_record(
-        events,
-        CaptureRecord::new(
-            method.clone(),
-            target.to_owned(),
-            CaptureOutcome::TunnelEstablished,
-            started.elapsed(),
-        ),
-    )
-    .await;
+    events.send(CaptureRecord::new(
+        method.clone(),
+        target.to_owned(),
+        CaptureOutcome::TunnelEstablished,
+        started.elapsed(),
+    ));
 
     empty_response(StatusCode::OK)
 }
 
 async fn forward_http(
     mut request: Request<Incoming>,
-    events: &mpsc::Sender<CaptureRecord>,
+    events: &EventSink,
     method: &Method,
     target: &str,
     started: Instant,
@@ -283,8 +309,7 @@ async fn forward_http(
                 FailureStage::Request,
                 StatusCode::BAD_REQUEST,
                 message,
-            )
-            .await;
+            );
         }
     };
 
@@ -299,8 +324,7 @@ async fn forward_http(
                 FailureStage::Connect,
                 StatusCode::BAD_GATEWAY,
                 &error.to_string(),
-            )
-            .await;
+            );
         }
     };
 
@@ -316,8 +340,7 @@ async fn forward_http(
                 FailureStage::Connect,
                 StatusCode::BAD_GATEWAY,
                 &error.to_string(),
-            )
-            .await;
+            );
         }
     };
 
@@ -334,32 +357,25 @@ async fn forward_http(
         Ok(mut response) => {
             remove_hop_by_hop_headers(response.headers_mut());
             let status = response.status();
-            send_record(
-                events,
-                CaptureRecord::new(
-                    method.clone(),
-                    target.to_owned(),
-                    CaptureOutcome::Response {
-                        status: status.as_u16(),
-                    },
-                    started.elapsed(),
-                ),
-            )
-            .await;
+            events.send(CaptureRecord::new(
+                method.clone(),
+                target.to_owned(),
+                CaptureOutcome::Response {
+                    status: status.as_u16(),
+                },
+                started.elapsed(),
+            ));
             response.map(BodyExt::boxed)
         }
-        Err(error) => {
-            failed_response(
-                events,
-                method,
-                target,
-                started,
-                FailureStage::Response,
-                StatusCode::BAD_GATEWAY,
-                &error.to_string(),
-            )
-            .await
-        }
+        Err(error) => failed_response(
+            events,
+            method,
+            target,
+            started,
+            FailureStage::Response,
+            StatusCode::BAD_GATEWAY,
+            &error.to_string(),
+        ),
     }
 }
 
@@ -419,8 +435,8 @@ fn remove_hop_by_hop_headers(headers: &mut http::HeaderMap) {
     headers.remove(UPGRADE);
 }
 
-async fn failed_response(
-    events: &mpsc::Sender<CaptureRecord>,
+fn failed_response(
+    events: &EventSink,
     method: &Method,
     target: &str,
     started: Instant,
@@ -428,26 +444,16 @@ async fn failed_response(
     status: StatusCode,
     message: &str,
 ) -> Response<ProxyBody> {
-    send_record(
-        events,
-        CaptureRecord::new(
-            method.clone(),
-            target.to_owned(),
-            CaptureOutcome::Failed {
-                stage,
-                message: message.to_owned(),
-            },
-            started.elapsed(),
-        ),
-    )
-    .await;
+    events.send(CaptureRecord::new(
+        method.clone(),
+        target.to_owned(),
+        CaptureOutcome::Failed {
+            stage,
+            message: message.to_owned(),
+        },
+        started.elapsed(),
+    ));
     text_response(status, message)
-}
-
-async fn send_record(events: &mpsc::Sender<CaptureRecord>, record: CaptureRecord) {
-    if events.send(record).await.is_err() {
-        tracing::debug!("capture receiver closed");
-    }
 }
 
 fn empty_response(status: StatusCode) -> Response<ProxyBody> {
