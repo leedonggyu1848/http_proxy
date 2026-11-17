@@ -1,0 +1,43 @@
+[package]
+name = "http-proxy"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+description = "A Linux desktop HTTP network inspector"
+license = "MIT"
+repository = "https://github.com/leedonggyu1848/http_proxt"
+publish = false
+
+[dependencies]
+eframe = { version = "0.37", default-features = false, features = [
+	"default_fonts",
+	"glow",
+	"x11",
+] }
+
+[lints.rust]
+unsafe_code = "forbid"
+unreachable_pub = "deny"
+unused_must_use = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+dbg_macro = "deny"
+expect_used = "deny"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+panic = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+wildcard_imports = "deny"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "symbols"
