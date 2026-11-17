@@ -156,7 +156,7 @@ impl eframe::App for InspectorApp {
 
 fn outcome_text(outcome: &CaptureOutcome) -> (String, Color32) {
     match outcome {
-        CaptureOutcome::Response { status } => {
+        CaptureOutcome::Response { status, .. } => {
             let color = if *status < 400 {
                 Color32::LIGHT_GREEN
             } else {

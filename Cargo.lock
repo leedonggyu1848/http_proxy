@@ -864,6 +864,7 @@ dependencies = [
  "bytes",
  "eframe",
  "http",
+ "http-body",
  "http-body-util",
  "hyper",
  "hyper-util",

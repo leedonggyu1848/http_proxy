@@ -25,9 +25,15 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Builder as RuntimeBuilder;
 use tokio::sync::{mpsc, watch};
 
+use crate::{
+    BODY_PREVIEW_BYTES, ERROR_BYTES, ObservedBody, TARGET_BYTES, bounded_text, capture_headers,
+};
+use crate::{BodyPreview, HeaderPreview, RecordId};
 use crate::{CaptureOutcome, CaptureRecord, FailureStage};
 
 type ProxyBody = BoxBody<Bytes, hyper::Error>;
+
+static NEXT_RECORD_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
 struct EventSink {
@@ -43,6 +49,38 @@ impl EventSink {
             }
             Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {}
         }
+    }
+}
+
+struct CaptureContext {
+    id: RecordId,
+    method: Method,
+    target: String,
+    request_headers: HeaderPreview,
+    started: Instant,
+}
+
+impl CaptureContext {
+    fn new(request: &Request<Incoming>, started: Instant) -> Self {
+        Self {
+            id: RecordId::new(NEXT_RECORD_ID.fetch_add(1, Ordering::Relaxed)),
+            method: request.method().clone(),
+            target: bounded_text(&request.uri().to_string(), TARGET_BYTES),
+            request_headers: capture_headers(request.headers()),
+            started,
+        }
+    }
+
+    fn record(&self, request_body: Option<BodyPreview>, outcome: CaptureOutcome) -> CaptureRecord {
+        CaptureRecord::new(
+            self.id,
+            self.method.clone(),
+            self.target.clone(),
+            self.request_headers.clone(),
+            request_body,
+            outcome,
+            self.started.elapsed(),
+        )
     }
 }
 
@@ -224,13 +262,12 @@ async fn proxy_request(
     events: EventSink,
 ) -> Result<Response<ProxyBody>, Infallible> {
     let started = Instant::now();
-    let method = request.method().clone();
-    let target = request.uri().to_string();
+    let capture = CaptureContext::new(&request, started);
 
-    let response = if method == Method::CONNECT {
-        connect_tunnel(&mut request, &events, &method, &target, started).await
+    let response = if request.method() == Method::CONNECT {
+        connect_tunnel(&mut request, &events, &capture).await
     } else {
-        forward_http(request, &events, &method, &target, started).await
+        forward_http(request, &events, &capture).await
     };
 
     Ok(response)
@@ -239,16 +276,13 @@ async fn proxy_request(
 async fn connect_tunnel(
     request: &mut Request<Incoming>,
     events: &EventSink,
-    method: &Method,
-    target: &str,
-    started: Instant,
+    capture: &CaptureContext,
 ) -> Response<ProxyBody> {
     let Some(authority) = request.uri().authority().cloned() else {
         return failed_response(
             events,
-            method,
-            target,
-            started,
+            capture,
+            None,
             FailureStage::Request,
             StatusCode::BAD_REQUEST,
             "CONNECT requires an authority",
@@ -260,9 +294,8 @@ async fn connect_tunnel(
         Err(error) => {
             return failed_response(
                 events,
-                method,
-                target,
-                started,
+                capture,
+                None,
                 FailureStage::Connect,
                 StatusCode::BAD_GATEWAY,
                 &error.to_string(),
@@ -281,12 +314,7 @@ async fn connect_tunnel(
         }
     });
 
-    events.send(CaptureRecord::new(
-        method.clone(),
-        target.to_owned(),
-        CaptureOutcome::TunnelEstablished,
-        started.elapsed(),
-    ));
+    events.send(capture.record(None, CaptureOutcome::TunnelEstablished));
 
     empty_response(StatusCode::OK)
 }
@@ -294,18 +322,15 @@ async fn connect_tunnel(
 async fn forward_http(
     mut request: Request<Incoming>,
     events: &EventSink,
-    method: &Method,
-    target: &str,
-    started: Instant,
+    capture: &CaptureContext,
 ) -> Response<ProxyBody> {
     let target_parts = match upstream_target(&request) {
         Ok(parts) => parts,
         Err(message) => {
             return failed_response(
                 events,
-                method,
-                target,
-                started,
+                capture,
+                None,
                 FailureStage::Request,
                 StatusCode::BAD_REQUEST,
                 message,
@@ -318,9 +343,8 @@ async fn forward_http(
         Err(error) => {
             return failed_response(
                 events,
-                method,
-                target,
-                started,
+                capture,
+                None,
                 FailureStage::Connect,
                 StatusCode::BAD_GATEWAY,
                 &error.to_string(),
@@ -334,9 +358,8 @@ async fn forward_http(
         Err(error) => {
             return failed_response(
                 events,
-                method,
-                target,
-                started,
+                capture,
+                None,
                 FailureStage::Connect,
                 StatusCode::BAD_GATEWAY,
                 &error.to_string(),
@@ -352,26 +375,31 @@ async fn forward_http(
 
     *request.uri_mut() = target_parts.path;
     remove_hop_by_hop_headers(request.headers_mut());
+    let request_body = BodyPreview::new(BODY_PREVIEW_BYTES);
+    let request = request.map(|body| ObservedBody::new(body, request_body.clone()));
 
     match sender.send_request(request).await {
         Ok(mut response) => {
+            let response_headers = capture_headers(response.headers());
             remove_hop_by_hop_headers(response.headers_mut());
             let status = response.status();
-            events.send(CaptureRecord::new(
-                method.clone(),
-                target.to_owned(),
+            let response_body = BodyPreview::new(BODY_PREVIEW_BYTES);
+            events.send(capture.record(
+                Some(request_body),
                 CaptureOutcome::Response {
                     status: status.as_u16(),
+                    headers: response_headers,
+                    body: response_body.clone(),
                 },
-                started.elapsed(),
             ));
-            response.map(BodyExt::boxed)
+            response
+                .map(|body| ObservedBody::new(body, response_body))
+                .map(BodyExt::boxed)
         }
         Err(error) => failed_response(
             events,
-            method,
-            target,
-            started,
+            capture,
+            Some(request_body),
             FailureStage::Response,
             StatusCode::BAD_GATEWAY,
             &error.to_string(),
@@ -437,23 +465,21 @@ fn remove_hop_by_hop_headers(headers: &mut http::HeaderMap) {
 
 fn failed_response(
     events: &EventSink,
-    method: &Method,
-    target: &str,
-    started: Instant,
+    capture: &CaptureContext,
+    request_body: Option<BodyPreview>,
     stage: FailureStage,
     status: StatusCode,
     message: &str,
 ) -> Response<ProxyBody> {
-    events.send(CaptureRecord::new(
-        method.clone(),
-        target.to_owned(),
+    let message = bounded_text(message, ERROR_BYTES);
+    events.send(capture.record(
+        request_body,
         CaptureOutcome::Failed {
             stage,
-            message: message.to_owned(),
+            message: message.clone(),
         },
-        started.elapsed(),
     ));
-    text_response(status, message)
+    text_response(status, &message)
 }
 
 fn empty_response(status: StatusCode) -> Response<ProxyBody> {
