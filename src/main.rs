@@ -1,12 +1,13 @@
 #![forbid(unsafe_code)]
 
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
 use http_proxy::{
     BodyLifecycle, BodyPreview, BodyRetention, CaptureOutcome, CaptureRecord, HeaderPreview,
-    ProxyConfig, ProxyHandle, RecordId,
+    HttpsInspection, ProxyConfig, ProxyHandle, RecordId,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -40,6 +41,8 @@ struct InspectorApp {
     selected: Option<RecordId>,
     filter_text: String,
     record_filter: RecordFilter,
+    https_inspection: bool,
+    ca_directory: Option<PathBuf>,
     error: Option<String>,
 }
 
@@ -51,6 +54,8 @@ impl InspectorApp {
             selected: None,
             filter_text: String::new(),
             record_filter: RecordFilter::All,
+            https_inspection: false,
+            ca_directory: default_ca_directory(),
             error: None,
         };
         app.start_proxy();
@@ -58,7 +63,18 @@ impl InspectorApp {
     }
 
     fn start_proxy(&mut self) {
-        match ProxyHandle::start(ProxyConfig::loopback(PROXY_PORT)) {
+        let mut config = ProxyConfig::loopback(PROXY_PORT);
+        if self.https_inspection {
+            let Some(directory) = self.ca_directory.as_ref() else {
+                self.error = Some(
+                    "HTTPS inspection requires XDG_DATA_HOME or HOME to locate the CA directory"
+                        .to_owned(),
+                );
+                return;
+            };
+            config = config.with_https_inspection(HttpsInspection::new(directory.clone()));
+        }
+        match ProxyHandle::start(config) {
             Ok(proxy) => {
                 self.proxy = Some(proxy);
                 self.error = None;
@@ -121,6 +137,35 @@ impl InspectorApp {
 
         if let Some(error) = self.error.as_ref() {
             ui.colored_label(Color32::LIGHT_RED, error);
+        }
+
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("HTTPS inspection");
+            ui.add_enabled(
+                self.proxy.is_none(),
+                egui::Checkbox::new(&mut self.https_inspection, "Decrypt HTTPS"),
+            );
+            if self.proxy.is_some() {
+                ui.weak("Stop the proxy to change this setting.");
+            }
+        });
+        if self.https_inspection {
+            if let Some(proxy) = self.proxy.as_ref()
+                && let Some(info) = proxy.ca_info()
+            {
+                ui.label("Trust this public CA certificate in the test browser:");
+                ui.monospace(info.certificate_path().display().to_string());
+                ui.label("SHA-256 fingerprint:");
+                ui.monospace(info.fingerprint_sha256());
+            } else if let Some(directory) = self.ca_directory.as_ref() {
+                ui.label("The CA will be created when the proxy starts:");
+                ui.monospace(directory.join("root-ca.pem").display().to_string());
+            }
+            ui.colored_label(
+                Color32::YELLOW,
+                "Only enable inspection for traffic that you are authorized to inspect.",
+            );
         }
     }
 
@@ -423,4 +468,11 @@ fn outcome_text(outcome: &CaptureOutcome) -> (String, Color32) {
 
 fn elapsed_millis(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1_000.0
+}
+
+fn default_ca_directory() -> Option<PathBuf> {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+        .map(|directory| directory.join("http-inspector/ca"))
 }
