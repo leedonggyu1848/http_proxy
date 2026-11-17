@@ -9,11 +9,26 @@ repository = "https://github.com/leedonggyu1848/http_proxt"
 publish = false
 
 [dependencies]
+bytes = "1"
 eframe = { version = "0.37", default-features = false, features = [
 	"default_fonts",
 	"glow",
 	"x11",
 ] }
+http = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+thiserror = "2"
+tokio = { version = "1", features = [
+	"io-util",
+	"macros",
+	"net",
+	"rt-multi-thread",
+	"sync",
+	"time",
+] }
+tracing = "0.1"
 
 [lints.rust]
 unsafe_code = "forbid"
