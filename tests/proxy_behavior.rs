@@ -337,6 +337,44 @@ async fn rejects_an_untrusted_upstream_certificate() -> Result<(), Box<dyn Error
     Ok(())
 }
 
+#[tokio::test]
+async fn rejects_a_host_that_differs_from_connect() -> Result<(), Box<dyn Error>> {
+    let temporary = tempfile::tempdir()?;
+    let unused_listener = TcpListener::bind("127.0.0.1:0").await?;
+    let unused_port = unused_listener.local_addr()?.port();
+    drop(unused_listener);
+
+    let inspection = HttpsInspection::new(temporary.path().join("proxy-ca"));
+    let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0).with_https_inspection(inspection))?;
+    let mut tls = connect_to_inspection(&proxy, unused_port).await?;
+    tls.write_all(b"GET /blocked HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+        .await?;
+    let mut response = Vec::new();
+    timeout(TEST_TIMEOUT, tls.read_to_end(&mut response)).await??;
+    assert!(response.starts_with(b"HTTP/1.1 400 Bad Request"));
+
+    let setup = timeout(TEST_TIMEOUT, proxy.receive())
+        .await?
+        .ok_or("inspection setup capture missing")?;
+    assert!(matches!(
+        setup.outcome(),
+        CaptureOutcome::InspectionEstablished
+    ));
+    let rejected = timeout(TEST_TIMEOUT, proxy.receive())
+        .await?
+        .ok_or("rejected request capture missing")?;
+    assert!(matches!(
+        rejected.outcome(),
+        CaptureOutcome::Failed {
+            stage: http_proxy::FailureStage::Request,
+            ..
+        }
+    ));
+
+    proxy.stop()?;
+    Ok(())
+}
+
 async fn connect_to_inspection(
     proxy: &ProxyHandle,
     upstream_port: u16,
