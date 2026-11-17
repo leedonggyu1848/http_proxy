@@ -269,13 +269,17 @@ url = "2"
 
 ## HTTPS 단계의 크레이트
 
-HTTP와 불투명 `CONNECT` 터널을 완성한 후 다음 크레이트를 추가한다.
+HTTPS 복호화 구현은 다음 크레이트를 사용한다.
 
 ```toml
 rustls = "0.23"
 tokio-rustls = "0.26"
 rustls-native-certs = "0.8"
 rcgen = "0.14"
+rustls-pemfile = "2"
+fs2 = "0.4"
+sha2 = "0.10"
+time = "0.3"
 ```
 
 각 크레이트의 역할은 다음과 같다.
@@ -286,10 +290,14 @@ rcgen = "0.14"
 | `tokio-rustls` | Tokio 스트림의 비동기 TLS 연결 |
 | `rustls-native-certs` | 운영체제의 신뢰된 루트 인증서 로드 |
 | `rcgen` | 로컬 CA와 도메인별 인증서 생성 |
+| `rustls-pemfile` | CA와 추가 루트 PEM 파싱 |
+| `fs2` | 여러 프로세스의 CA 초기화 잠금 |
+| `sha2` | UI에 표시할 CA 지문 계산 |
+| `time` | 루트와 leaf 인증서 유효기간 계산 |
 
 TLS 구현은 rustls로 통일한다. `openssl`과 `native-tls`를 함께 추가하지 않는다.
 
-OS 신뢰 저장소에 CA를 설치하는 코드는 운영체제별 모듈에 둔다. 해당 기능은 HTTPS 복호화 단계에서 설계한다.
+OS 신뢰 저장소에 CA를 설치하는 코드는 운영체제별 모듈에 둔다. 현재 앱은 인증서 경로와 지문만 표시한다. 설치와 제거 자동화는 [HTTPS 후속 작업](https-future-work.md)에 정의한다.
 
 ## MVP에서 제외하는 크레이트
 
@@ -441,6 +449,7 @@ HTTPS 복호화를 시작할 때 다음 크레이트를 추가한다.
 
 ```text
 rustls, tokio-rustls, rustls-native-certs, rcgen
+rustls-pemfile, fs2, sha2, time
 ```
 
 ## 참고 자료
