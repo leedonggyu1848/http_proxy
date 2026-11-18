@@ -18,6 +18,12 @@ mod ca_panel;
 )]
 mod browser_panel;
 
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "Body preview formatting is private to the application module."
+)]
+mod body_view;
+
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -41,8 +47,36 @@ fn main() -> eframe::Result {
     eframe::run_native(
         http_proxy::APP_NAME,
         options,
-        Box::new(|_| Ok(Box::new(InspectorApp::new()))),
+        Box::new(|context| {
+            configure_fonts(&context.egui_ctx);
+            Ok(Box::new(InspectorApp::new()))
+        }),
     )
+}
+
+fn configure_fonts(context: &egui::Context) {
+    let candidates = [
+        "/usr/share/fonts/truetype/nanum/NanumGothicCoding.ttf",
+        "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+    ];
+    let Some(data) = candidates
+        .into_iter()
+        .find_map(|path| std::fs::read(path).ok())
+    else {
+        return;
+    };
+    let mut fonts = egui::FontDefinitions::default();
+    let name = "cjk-fallback".to_owned();
+    fonts
+        .font_data
+        .insert(name.clone(), egui::FontData::from_owned(data).into());
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts.families.entry(family).or_default().push(name.clone());
+    }
+    context.set_fonts(fonts);
 }
 
 fn init_tracing() {
@@ -315,7 +349,7 @@ impl InspectorApp {
                 render_headers(ui, "request-headers", record.request_headers());
                 ui.separator();
                 ui.strong("Request body");
-                render_optional_body(ui, record.request_body());
+                render_optional_body(ui, record.request_body(), record.request_headers());
 
                 match record.outcome() {
                     CaptureOutcome::Response {
@@ -328,7 +362,7 @@ impl InspectorApp {
                         render_headers(ui, "response-headers", headers);
                         ui.separator();
                         ui.strong("Response body");
-                        render_body(ui, body);
+                        render_body(ui, body, headers);
                     }
                     CaptureOutcome::TunnelEstablished => {
                         ui.separator();
@@ -455,16 +489,16 @@ fn render_headers(ui: &mut egui::Ui, id: &str, headers: &HeaderPreview) {
     }
 }
 
-fn render_optional_body(ui: &mut egui::Ui, body: Option<&BodyPreview>) {
+fn render_optional_body(ui: &mut egui::Ui, body: Option<&BodyPreview>, headers: &HeaderPreview) {
     match body {
-        Some(body) => render_body(ui, body),
+        Some(body) => render_body(ui, body, headers),
         None => {
             ui.weak("Body was not observed.");
         }
     }
 }
 
-fn render_body(ui: &mut egui::Ui, body: &BodyPreview) {
+fn render_body(ui: &mut egui::Ui, body: &BodyPreview, headers: &HeaderPreview) {
     let Some(snapshot) = body.snapshot() else {
         ui.weak("Preview is updating.");
         return;
@@ -486,7 +520,26 @@ fn render_body(ui: &mut egui::Ui, body: &BodyPreview) {
         ui.weak("Empty body.");
         return;
     }
-    let mut preview = String::from_utf8_lossy(snapshot.bytes()).into_owned();
+    let encodings: Vec<_> = headers
+        .entries()
+        .iter()
+        .filter(|header| header.name() == "content-encoding")
+        .map(http_proxy::CapturedHeader::value)
+        .collect();
+    let complete = snapshot.lifecycle() == BodyLifecycle::Complete
+        && snapshot.retention() == BodyRetention::Prefix;
+    let mut preview = match body_view::decode(snapshot.bytes(), &encodings, complete) {
+        body_view::BodyText::Ready { text, notice } => {
+            if let Some(notice) = notice {
+                ui.weak(notice);
+            }
+            text
+        }
+        body_view::BodyText::Unavailable(message) => {
+            ui.colored_label(Color32::YELLOW, message);
+            return;
+        }
+    };
     ui.add(
         egui::TextEdit::multiline(&mut preview)
             .font(egui::TextStyle::Monospace)
