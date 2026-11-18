@@ -46,6 +46,17 @@ impl PlatformStore {
         Self { database }
     }
 
+    pub(super) fn for_firefox_profile(profile: &Path) -> Result<Self, CaTrustError> {
+        if !profile.is_absolute() || !profile.is_dir() {
+            return Err(CaTrustError::Store(
+                "Firefox profile must be an existing absolute directory".to_owned(),
+            ));
+        }
+        Ok(Self {
+            database: profile.to_owned(),
+        })
+    }
+
     pub(super) fn location(&self) -> &Path {
         &self.database
     }
@@ -145,7 +156,7 @@ impl PlatformStore {
             || self.database.join("cert8.db").try_exists()?
         {
             return Err(CaTrustError::Store(
-                "The browser certificate database is incomplete or uses a legacy format; open Chrome's certificate settings to repair or import manually".to_owned(),
+                "The browser certificate database is incomplete or uses a legacy format; repair the browser's certificate database or import manually".to_owned(),
             ));
         }
         Ok(false)

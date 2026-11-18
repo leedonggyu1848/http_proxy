@@ -41,8 +41,8 @@ pub enum CaTrustError {
 
 /// Platform-specific client trust registration, separate from TLS interception.
 ///
-/// Linux currently targets the current user's Chrome/Chromium NSS shared DB.
-/// This does not register the CA in the system store or Firefox profiles.
+/// Linux supports the current user's Chrome/Chromium NSS shared DB and
+/// explicitly selected Firefox profiles. It does not change the system store.
 #[derive(Debug)]
 pub struct CaTrustStore {
     platform: PlatformStore,
@@ -56,6 +56,14 @@ impl CaTrustStore {
     pub fn for_current_user() -> Result<Self, CaTrustError> {
         Ok(Self {
             platform: PlatformStore::for_current_user()?,
+        })
+    }
+
+    /// Selects a dedicated Firefox profile's NSS database.
+    /// The caller must keep Firefox closed while changing this database.
+    pub fn for_firefox_profile(profile: &Path) -> Result<Self, CaTrustError> {
+        Ok(Self {
+            platform: PlatformStore::for_firefox_profile(profile)?,
         })
     }
 

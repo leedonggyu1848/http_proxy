@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod browser;
 #[allow(
     clippy::redundant_pub_crate,
     reason = "Items are re-exported at the crate root for sibling modules."
@@ -19,6 +20,7 @@ pub(crate) use capture::{
     BODY_PREVIEW_BYTES, ERROR_BYTES, ObservedBody, TARGET_BYTES, bounded_text, capture_headers,
 };
 
+pub use browser::{Browser, BrowserEvent, BrowserSession};
 pub use domain::{
     BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, CaptureOutcome, CaptureRecord,
     CapturedHeader, FailureStage, HeaderPreview, RecordId,
