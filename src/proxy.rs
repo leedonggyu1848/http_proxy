@@ -26,6 +26,8 @@ use tokio::runtime::Builder as RuntimeBuilder;
 use tokio::sync::{mpsc, watch};
 use tokio::time::timeout;
 
+use crate::FullLog;
+use crate::capture::{BodyLog, full_headers};
 use crate::{
     BODY_PREVIEW_BYTES, ERROR_BYTES, ObservedBody, TARGET_BYTES, bounded_text, capture_headers,
 };
@@ -45,6 +47,7 @@ const TLS_TIMEOUT: Duration = Duration::from_secs(10);
 struct EventSink {
     sender: mpsc::Sender<CaptureRecord>,
     dropped: Arc<AtomicU64>,
+    log: Option<FullLog>,
 }
 
 impl EventSink {
@@ -64,24 +67,70 @@ struct CaptureContext {
     target: String,
     request_headers: HeaderPreview,
     started: Instant,
+    log: Option<FullLog>,
 }
 
 impl CaptureContext {
-    fn new(request: &Request<Incoming>, started: Instant) -> Self {
-        Self::new_with_target(request, started, &request.uri().to_string())
+    fn new(request: &Request<Incoming>, started: Instant, log: Option<FullLog>) -> Self {
+        Self::new_with_target(request, started, &request.uri().to_string(), log)
     }
 
-    fn new_with_target(request: &Request<Incoming>, started: Instant, target: &str) -> Self {
+    fn new_with_target(
+        request: &Request<Incoming>,
+        started: Instant,
+        target: &str,
+        log: Option<FullLog>,
+    ) -> Self {
+        let id = NEXT_RECORD_ID.fetch_add(1, Ordering::Relaxed);
+        if let Some(log) = log.as_ref() {
+            log.text(format!(
+                "[{id}] Request {} {target}\n{}",
+                request.method(),
+                full_headers(request.headers())
+            ));
+        }
         Self {
-            id: RecordId::new(NEXT_RECORD_ID.fetch_add(1, Ordering::Relaxed)),
+            id: RecordId::new(id),
             method: request.method().clone(),
             target: bounded_text(target, TARGET_BYTES),
             request_headers: capture_headers(request.headers()),
             started,
+            log,
+        }
+    }
+
+    fn body_log(&self, side: &'static str) -> Option<BodyLog> {
+        self.log
+            .as_ref()
+            .map(|log| BodyLog::new(log.clone(), self.id.value(), side))
+    }
+
+    fn failure(&self, stage: FailureStage, message: &str) {
+        if let Some(log) = self.log.as_ref() {
+            log.text(format!(
+                "[{}] Failure {stage:?}: {}\n",
+                self.id.value(),
+                message.escape_debug()
+            ));
         }
     }
 
     fn record(&self, request_body: Option<BodyPreview>, outcome: CaptureOutcome) -> CaptureRecord {
+        if let Some(log) = self.log.as_ref() {
+            let result = match &outcome {
+                CaptureOutcome::Response { status, .. } => format!("Response {status}"),
+                CaptureOutcome::TunnelEstablished => {
+                    "CONNECT tunnel established (encrypted contents not inspected)".to_owned()
+                }
+                CaptureOutcome::InspectionEstablished => "HTTPS inspection established".to_owned(),
+                CaptureOutcome::Failed { stage, .. } => format!("Failed {stage:?}"),
+            };
+            log.text(format!(
+                "[{}] {result} · Response headers in {:.1} ms\n",
+                self.id.value(),
+                self.started.elapsed().as_secs_f64() * 1000.0
+            ));
+        }
         CaptureRecord {
             id: self.id,
             method: self.method.clone(),
@@ -140,6 +189,15 @@ pub struct ProxyHandle {
 impl ProxyHandle {
     /// Starts a proxy on the configured loopback address.
     pub fn start(config: ProxyConfig) -> Result<Self, StartError> {
+        Self::start_inner(config, None)
+    }
+
+    /// Starts a proxy that also records every observed exchange to a full-session log.
+    pub fn start_recording(config: ProxyConfig, log: FullLog) -> Result<Self, StartError> {
+        Self::start_inner(config, Some(log))
+    }
+
+    fn start_inner(config: ProxyConfig, log: Option<FullLog>) -> Result<Self, StartError> {
         let ProxyConfig {
             bind_addr,
             event_capacity,
@@ -166,6 +224,7 @@ impl ProxyHandle {
         let event_sink = EventSink {
             sender: event_sender,
             dropped: Arc::clone(&dropped),
+            log,
         };
         let (shutdown, shutdown_receiver) = watch::channel(false);
         let thread = thread::Builder::new()
@@ -311,7 +370,7 @@ async fn proxy_request(
     inspector: Option<Arc<TlsInspector>>,
 ) -> Result<Response<ProxyBody>, Infallible> {
     let started = Instant::now();
-    let capture = CaptureContext::new(&request, started);
+    let capture = CaptureContext::new(&request, started, events.log.clone());
 
     let response = if request.method() == Method::CONNECT {
         connect_tunnel(&mut request, &events, capture, inspector).await
@@ -499,7 +558,7 @@ async fn proxy_https_request(
         .path_and_query()
         .map_or("/", http::uri::PathAndQuery::as_str);
     let target = destination.absolute_target(path);
-    let capture = CaptureContext::new_with_target(&request, started, &target);
+    let capture = CaptureContext::new_with_target(&request, started, &target, events.log.clone());
 
     let response = match validate_inner_request(&request, &destination) {
         Ok(()) => forward_https(request, &events, &capture, &inspector, &destination).await,
@@ -657,10 +716,18 @@ where
     *request.uri_mut() = path;
     remove_hop_by_hop_headers(request.headers_mut());
     let request_body = BodyPreview::new(BODY_PREVIEW_BYTES);
-    let request = request.map(|body| ObservedBody::new(body, request_body.clone()));
+    let request = request
+        .map(|body| ObservedBody::new(body, request_body.clone(), capture.body_log("Request")));
 
     match sender.send_request(request).await {
         Ok(mut response) => {
+            if let Some(log) = capture.log.as_ref() {
+                log.text(format!(
+                    "[{}] Response headers\n{}",
+                    capture.id.value(),
+                    full_headers(response.headers())
+                ));
+            }
             let response_headers = capture_headers(response.headers());
             remove_hop_by_hop_headers(response.headers_mut());
             let status = response.status();
@@ -674,7 +741,7 @@ where
                 },
             ));
             response
-                .map(|body| ObservedBody::new(body, response_body))
+                .map(|body| ObservedBody::new(body, response_body, capture.body_log("Response")))
                 .map(BodyExt::boxed)
         }
         Err(error) => failed_response(
@@ -694,6 +761,7 @@ fn send_connection_failure(
     stage: FailureStage,
     message: &str,
 ) {
+    capture.failure(stage, message);
     let message = bounded_text(message, ERROR_BYTES);
     events.send(capture.record(None, CaptureOutcome::Failed { stage, message }));
 }
@@ -762,6 +830,7 @@ fn failed_response(
     status: StatusCode,
     message: &str,
 ) -> Response<ProxyBody> {
+    capture.failure(stage, message);
     let message = bounded_text(message, ERROR_BYTES);
     events.send(capture.record(
         request_body,

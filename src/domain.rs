@@ -19,6 +19,10 @@ impl RecordId {
     pub(crate) const fn new(value: u64) -> Self {
         Self(value)
     }
+
+    pub(crate) const fn value(self) -> u64 {
+        self.0
+    }
 }
 
 /// One bounded HTTP header field.

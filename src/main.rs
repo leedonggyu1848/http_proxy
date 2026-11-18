@@ -1,13 +1,19 @@
 #![forbid(unsafe_code)]
 
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "Save controls are visible only to the parent application module."
+)]
+mod save;
+
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
 use http_proxy::{
-    BodyLifecycle, BodyPreview, BodyRetention, CaptureOutcome, CaptureRecord, HeaderPreview,
-    HttpsInspection, ProxyConfig, ProxyHandle, RecordId,
+    BodyLifecycle, BodyPreview, BodyRetention, CaptureOutcome, CaptureRecord, FullLog,
+    HeaderPreview, HttpsInspection, ProxyConfig, ProxyHandle, RecordId,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -44,10 +50,20 @@ struct InspectorApp {
     https_inspection: bool,
     ca_directory: Option<PathBuf>,
     error: Option<String>,
+    full_log: Option<FullLog>,
+    log_init_error: Option<String>,
+    save: save::SaveControls,
 }
 
 impl InspectorApp {
     fn new() -> Self {
+        let (full_log, log_init_error) = match FullLog::new() {
+            Ok(log) => (Some(log), None),
+            Err(error) => (
+                None,
+                Some(format!("Full-session logging is unavailable: {error}")),
+            ),
+        };
         let mut app = Self {
             proxy: None,
             records: VecDeque::with_capacity(MAX_RECORDS),
@@ -57,6 +73,9 @@ impl InspectorApp {
             https_inspection: false,
             ca_directory: default_ca_directory(),
             error: None,
+            full_log,
+            log_init_error,
+            save: save::SaveControls::new(),
         };
         app.start_proxy();
         app
@@ -74,7 +93,11 @@ impl InspectorApp {
             };
             config = config.with_https_inspection(HttpsInspection::new(directory.clone()));
         }
-        match ProxyHandle::start(config) {
+        let result = self.full_log.as_ref().map_or_else(
+            || ProxyHandle::start(config.clone()),
+            |log| ProxyHandle::start_recording(config.clone(), log.clone()),
+        );
+        match result {
             Ok(proxy) => {
                 self.proxy = Some(proxy);
                 self.error = None;
@@ -129,7 +152,11 @@ impl InspectorApp {
             if dropped > 0 {
                 ui.colored_label(Color32::LIGHT_RED, format!("{dropped} records dropped"));
             }
-            if ui.button("Clear").clicked() {
+            if ui
+                .button("Clear")
+                .on_hover_text("Clear the displayed requests. The full-session log is retained.")
+                .clicked()
+            {
                 self.records.clear();
                 self.selected = None;
             }
@@ -138,6 +165,15 @@ impl InspectorApp {
         if let Some(error) = self.error.as_ref() {
             ui.colored_label(Color32::LIGHT_RED, error);
         }
+        if let Some(error) = self
+            .log_init_error
+            .clone()
+            .or_else(|| self.full_log.as_ref().and_then(FullLog::error))
+        {
+            ui.colored_label(Color32::LIGHT_RED, error);
+        }
+
+        self.save.ui(ui, self.full_log.as_ref());
 
         ui.separator();
         ui.horizontal(|ui| {
@@ -191,6 +227,7 @@ impl InspectorApp {
         let selected = self.selected;
         let mut new_selection = None;
         egui::ScrollArea::both()
+            .id_salt("requests-scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 egui::Grid::new("request-table")
@@ -243,6 +280,7 @@ impl InspectorApp {
         };
 
         egui::ScrollArea::vertical()
+            .id_salt("details-scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.heading(format!("{} {}", record.method(), record.target()));

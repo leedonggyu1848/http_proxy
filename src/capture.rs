@@ -5,7 +5,7 @@ use bytes::Bytes;
 use http::HeaderMap;
 use http_body::{Body, Frame, SizeHint};
 
-use crate::{BodyPreview, CapturedHeader, HeaderPreview};
+use crate::{BodyPreview, CapturedHeader, FullLog, HeaderPreview};
 
 pub(super) const BODY_PREVIEW_BYTES: usize = 8 * 1024;
 const HEADER_PREVIEW_BYTES: usize = 16 * 1024;
@@ -53,20 +53,66 @@ fn is_sensitive(name: &str) -> bool {
     )
 }
 
+pub(super) fn full_headers(headers: &HeaderMap) -> String {
+    headers
+        .iter()
+        .fold(String::new(), |mut text, (name, value)| {
+            let value = if is_sensitive(name.as_str()) {
+                "[REDACTED]".to_owned()
+            } else {
+                value.as_bytes().escape_ascii().to_string()
+            };
+            text.push_str(name.as_str());
+            text.push_str(": ");
+            text.push_str(&value);
+            text.push('\n');
+            text
+        })
+}
+
+pub(super) struct BodyLog {
+    log: FullLog,
+    id: u64,
+    side: &'static str,
+    ended: bool,
+}
+
+impl BodyLog {
+    pub(super) const fn new(log: FullLog, id: u64, side: &'static str) -> Self {
+        Self {
+            log,
+            id,
+            side,
+            ended: false,
+        }
+    }
+
+    fn end(&mut self, state: &str) {
+        if !self.ended {
+            self.log.body_end(self.id, self.side, state);
+            self.ended = true;
+        }
+    }
+}
+
 pub(super) struct ObservedBody<B> {
     body: B,
     preview: BodyPreview,
+    log: Option<BodyLog>,
 }
 
 impl<B> ObservedBody<B>
 where
     B: Body,
 {
-    pub(super) fn new(body: B, preview: BodyPreview) -> Self {
+    pub(super) fn new(body: B, preview: BodyPreview, mut log: Option<BodyLog>) -> Self {
         if body.is_end_stream() {
             preview.complete();
+            if let Some(log) = log.as_mut() {
+                log.end("complete");
+            }
         }
-        Self { body, preview }
+        Self { body, preview, log }
     }
 }
 
@@ -87,13 +133,39 @@ where
             Poll::Ready(Some(Ok(frame))) => {
                 if let Some(data) = frame.data_ref() {
                     this.preview.observe(data);
+                    if let Some(log) = this.log.as_ref() {
+                        log.log.body(log.id, log.side, data);
+                    }
+                }
+                if let Some(trailers) = frame.trailers_ref()
+                    && let Some(log) = this.log.as_ref()
+                {
+                    log.log.text(format!(
+                        "[{}] {} trailers\n{}",
+                        log.id,
+                        log.side,
+                        full_headers(trailers)
+                    ));
                 }
                 if this.body.is_end_stream() {
                     this.preview.complete();
+                    if let Some(log) = this.log.as_mut() {
+                        log.end("complete");
+                    }
                 }
             }
-            Poll::Ready(Some(Err(_))) => this.preview.interrupt(),
-            Poll::Ready(None) => this.preview.complete(),
+            Poll::Ready(Some(Err(_))) => {
+                this.preview.interrupt();
+                if let Some(log) = this.log.as_mut() {
+                    log.end("interrupted");
+                }
+            }
+            Poll::Ready(None) => {
+                this.preview.complete();
+                if let Some(log) = this.log.as_mut() {
+                    log.end("complete");
+                }
+            }
             Poll::Pending => {}
         }
         polled
@@ -111,5 +183,8 @@ where
 impl<B> Drop for ObservedBody<B> {
     fn drop(&mut self) {
         self.preview.interrupt();
+        if let Some(log) = self.log.as_mut() {
+            log.end("interrupted");
+        }
     }
 }
