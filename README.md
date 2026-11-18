@@ -115,10 +115,6 @@ HTTPS 복호화는 사용 권한이 있는 트래픽에만 사용한다.
 5. **Start**를 누른다.
 6. Chrome·Chromium을 완전히 종료한 후 프록시 설정과 함께 다시 실행한다.
 
-다음 화면은 현재 사용자 저장소에 CA를 등록하고 테스트 HTTPS 요청을 확인한 모습이다.
-
-![CA 등록 상태와 테스트 HTTPS 요청](docs/images/ca-registration.png)
-
 **Register CA**는 NSS의 `certutil` 명령으로 현재 사용자의 Chrome·Chromium 인증서 저장소에 공개 CA만 등록한다. 관리자 권한은 필요하지 않다. Ubuntu·Debian에서는 `sudo apt install libnss3-tools`, Fedora에서는 `sudo dnf install nss-tools`로 도구를 설치한다. 도구가 없거나 등록에 실패하면 화면에 오류를 표시한다. 수동으로 등록하려면 Chrome의 `chrome://settings/certificates`에서 공개 CA를 가져온다.
 
 등록 대상은 [Chromium의 NSS 저장소 선택 규칙](https://chromium.googlesource.com/chromium/src/+/HEAD/crypto/nss_util.cc)을 따른다. `$HOME/.pki/nssdb` 디렉터리가 있으면 그 경로를 사용한다. 없으면 `$XDG_DATA_HOME/pki/nssdb`를 사용하고, `XDG_DATA_HOME`이 없으면 `$HOME/.local/share/pki/nssdb`를 사용한다. 화면에 실제 대상 경로를 표시한다. 별도 저장소를 사용하는 Snap·Flatpak 브라우저와 Firefox, 시스템 전체 저장소에는 등록하지 않는다.
