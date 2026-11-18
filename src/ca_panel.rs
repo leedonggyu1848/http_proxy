@@ -34,6 +34,10 @@ enum Event {
 }
 
 impl CaPanel {
+    pub(super) const fn refresh(&mut self) {
+        self.checked = false;
+    }
+
     pub(super) fn show(&mut self, ui: &mut egui::Ui, directory: Option<&Path>) {
         self.receive();
         let Some(directory) = directory else {
@@ -43,7 +47,7 @@ impl CaPanel {
             );
             return;
         };
-        if !self.checked {
+        if !self.checked && self.pending.is_none() {
             self.start(Action::Check, directory, ui.ctx());
             self.checked = true;
         }

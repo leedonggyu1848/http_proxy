@@ -12,6 +12,12 @@ mod save;
 )]
 mod ca_panel;
 
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "Browser controls are private to the application module."
+)]
+mod browser_panel;
+
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -56,6 +62,7 @@ struct InspectorApp {
     https_inspection: bool,
     ca_directory: Option<PathBuf>,
     ca_panel: ca_panel::CaPanel,
+    browsers: browser_panel::BrowserPanel,
     error: Option<String>,
     full_log: Option<FullLog>,
     log_init_error: Option<String>,
@@ -80,6 +87,7 @@ impl InspectorApp {
             https_inspection: false,
             ca_directory: default_ca_directory(),
             ca_panel: ca_panel::CaPanel::default(),
+            browsers: browser_panel::BrowserPanel::default(),
             error: None,
             full_log,
             log_init_error,
@@ -117,6 +125,8 @@ impl InspectorApp {
     }
 
     fn stop_proxy(&mut self) {
+        self.browsers.close();
+        self.ca_panel.refresh();
         if let Some(proxy) = self.proxy.take()
             && let Err(error) = proxy.stop()
         {
@@ -183,6 +193,20 @@ impl InspectorApp {
 
         self.save.ui(ui, self.full_log.as_ref());
 
+        self.https_controls(ui);
+        ui.separator();
+        if self.browsers.show(
+            ui,
+            self.proxy.as_ref().map(ProxyHandle::local_addr),
+            self.ca_directory
+                .as_deref()
+                .filter(|_| self.https_inspection),
+        ) {
+            self.ca_panel.refresh();
+        }
+    }
+
+    fn https_controls(&mut self, ui: &mut egui::Ui) {
         ui.separator();
         ui.horizontal(|ui| {
             ui.label("HTTPS inspection");

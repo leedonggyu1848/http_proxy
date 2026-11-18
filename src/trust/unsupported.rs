@@ -14,6 +14,10 @@ impl PlatformStore {
         Err(CaTrustError::UnsupportedPlatform)
     }
 
+    pub(super) const fn for_firefox_profile(_profile: &Path) -> Result<Self, CaTrustError> {
+        Err(CaTrustError::UnsupportedPlatform)
+    }
+
     pub(super) fn location(&self) -> &Path {
         match *self {}
     }
