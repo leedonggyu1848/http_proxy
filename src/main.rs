@@ -300,10 +300,13 @@ impl eframe::App for InspectorApp {
         self.filters(ui);
         ui.separator();
         ui.columns(2, |columns| {
-            columns[0].heading("Requests");
-            self.request_table(&mut columns[0]);
-            columns[1].heading("Details");
-            self.detail_panel(&mut columns[1]);
+            let [requests, details] = columns else {
+                return;
+            };
+            requests.heading("Requests");
+            self.request_table(requests);
+            details.heading("Details");
+            self.detail_panel(details);
         });
 
         if self.proxy.is_some() {

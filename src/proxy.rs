@@ -82,15 +82,15 @@ impl CaptureContext {
     }
 
     fn record(&self, request_body: Option<BodyPreview>, outcome: CaptureOutcome) -> CaptureRecord {
-        CaptureRecord::new(
-            self.id,
-            self.method.clone(),
-            self.target.clone(),
-            self.request_headers.clone(),
+        CaptureRecord {
+            id: self.id,
+            method: self.method.clone(),
+            target: self.target.clone(),
+            request_headers: self.request_headers.clone(),
             request_body,
             outcome,
-            self.started.elapsed(),
-        )
+            elapsed: self.started.elapsed(),
+        }
     }
 }
 
