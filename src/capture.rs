@@ -42,11 +42,8 @@ pub(super) fn bounded_text(value: &str, max_bytes: usize) -> String {
     if value.len() <= max_bytes {
         return value.to_owned();
     }
-    let mut end = max_bytes;
-    while !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…", &value[..end])
+    let (prefix, _) = value.split_at(value.floor_char_boundary(max_bytes));
+    format!("{prefix}…")
 }
 
 fn is_sensitive(name: &str) -> bool {

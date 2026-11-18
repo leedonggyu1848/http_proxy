@@ -121,7 +121,8 @@ impl BodyPreview {
                 }
                 let remaining = self.inner.limit.saturating_sub(prefix.len());
                 let retained = remaining.min(data.len());
-                prefix.extend_from_slice(&data[..retained]);
+                let (retained_data, _) = data.split_at(retained);
+                prefix.extend_from_slice(retained_data);
                 if retained < data.len() {
                     self.inner.retention.store(TRUNCATED, Ordering::Release);
                 }
@@ -251,36 +252,16 @@ pub enum BodyRetention {
 /// One HTTP exchange observed by the proxy.
 #[derive(Clone, Debug)]
 pub struct CaptureRecord {
-    id: RecordId,
-    method: Method,
-    target: String,
-    request_headers: HeaderPreview,
-    request_body: Option<BodyPreview>,
-    outcome: CaptureOutcome,
-    elapsed: Duration,
+    pub(crate) id: RecordId,
+    pub(crate) method: Method,
+    pub(crate) target: String,
+    pub(crate) request_headers: HeaderPreview,
+    pub(crate) request_body: Option<BodyPreview>,
+    pub(crate) outcome: CaptureOutcome,
+    pub(crate) elapsed: Duration,
 }
 
 impl CaptureRecord {
-    pub(crate) const fn new(
-        id: RecordId,
-        method: Method,
-        target: String,
-        request_headers: HeaderPreview,
-        request_body: Option<BodyPreview>,
-        outcome: CaptureOutcome,
-        elapsed: Duration,
-    ) -> Self {
-        Self {
-            id,
-            method,
-            target,
-            request_headers,
-            request_body,
-            outcome,
-            elapsed,
-        }
-    }
-
     /// Returns the stable exchange identity.
     #[must_use]
     pub const fn id(&self) -> RecordId {

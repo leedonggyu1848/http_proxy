@@ -1,0 +1,17 @@
+# Keep each function small enough to review as one unit.
+too-many-lines-threshold = 80
+cognitive-complexity-threshold = 20
+too-many-arguments-threshold = 6
+
+# Preserve cleanup and avoid blocking Tokio's worker threads.
+disallowed-methods = [
+    { path = "std::process::abort", reason = "Return an error so proxy shutdown and destructors can run." },
+    { path = "tokio::sync::mpsc::unbounded_channel", reason = "Use a bounded channel to limit queued capture memory." },
+    { path = "std::thread::sleep", reason = "Use tokio::time::sleep in async work to avoid blocking a runtime worker." },
+]
+
+# Runtime channels must have explicit capacity and overflow handling.
+disallowed-types = [
+    { path = "tokio::sync::mpsc::UnboundedSender", reason = "Use a bounded channel to limit queued capture memory." },
+    { path = "tokio::sync::mpsc::UnboundedReceiver", reason = "Use a bounded channel to limit queued capture memory." },
+]

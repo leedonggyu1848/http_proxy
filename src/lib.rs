@@ -1,10 +1,16 @@
 #![forbid(unsafe_code)]
 
-#[allow(clippy::redundant_pub_crate)]
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "Items are re-exported at the crate root for sibling modules."
+)]
 mod capture;
 mod domain;
 mod proxy;
-#[allow(clippy::redundant_pub_crate)]
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "Items are re-exported at the crate root for sibling modules."
+)]
 mod tls;
 
 pub(crate) use capture::{

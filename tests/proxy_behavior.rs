@@ -214,33 +214,7 @@ async fn decrypts_https_with_a_trusted_local_ca() -> Result<(), Box<dyn Error>> 
     let inspection = HttpsInspection::new(temporary.path().join("proxy-ca"))
         .with_additional_upstream_root(upstream_root_path);
     let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0).with_https_inspection(inspection))?;
-    let ca_path = proxy
-        .ca_info()
-        .ok_or("inspection CA metadata missing")?
-        .certificate_path();
-    let mut roots = RootCertStore::empty();
-    let certificates = CertificateDer::pem_file_iter(ca_path)?.collect::<Result<Vec<_>, _>>()?;
-    for certificate in certificates {
-        roots.add(certificate)?;
-    }
-    let mut client_config = ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    client_config.alpn_protocols = vec![b"http/1.1".to_vec()];
-    let connector = TlsConnector::from(Arc::new(client_config));
-
-    let mut client = TcpStream::connect(proxy.local_addr()).await?;
-    let connect = format!(
-        "CONNECT localhost:{} HTTP/1.1\r\nHost: localhost:{}\r\n\r\n",
-        upstream_addr.port(),
-        upstream_addr.port()
-    );
-    client.write_all(connect.as_bytes()).await?;
-    let connect_response = timeout(TEST_TIMEOUT, read_headers(&mut client)).await??;
-    assert!(connect_response.starts_with(b"HTTP/1.1 200 OK"));
-
-    let server_name = ServerName::try_from("localhost".to_owned())?;
-    let mut tls = timeout(TEST_TIMEOUT, connector.connect(server_name, client)).await??;
+    let mut tls = connect_to_inspection(&proxy, upstream_addr.port()).await?;
     let request = format!(
         "GET /secure HTTP/1.1\r\nHost: localhost:{}\r\nAuthorization: Bearer secret\r\nConnection: close\r\n\r\n",
         upstream_addr.port()
