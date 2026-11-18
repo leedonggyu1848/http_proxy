@@ -11,6 +11,7 @@ HTTP Inspector는 로컬 HTTP 프록시를 통해 요청 기록을 보여주는 
 - HTTPS `CONNECT` TCP 터널
 - 사용자가 켤 수 있는 HTTPS 복호화
 - 설치별 로컬 CA 생성과 제한된 개인키 저장
+- 버튼으로 현재 사용자의 Linux Chrome·Chromium CA 등록, 상태 확인, 제거
 - 실제 HTTPS 서버 인증서와 호스트 이름 검증
 - 메서드, 대상, 결과, 응답 헤더 도착 시간 표시
 - 요청과 응답 헤더 상세 보기
@@ -27,7 +28,8 @@ HTTP Inspector는 로컬 HTTP 프록시를 통해 요청 기록을 보여주는 
 
 현재 버전은 다음 기능을 제공하지 않는다.
 
-- 브라우저 신뢰 저장소 자동 변경
+- 시스템 전체 CA 등록과 Firefox 인증서 저장소 변경
+- macOS와 Windows 지원
 - 종료한 앱의 세션 복원과 SQLite 저장소
 - 시스템 프록시 자동 변경
 - HTTP/2와 HTTP/3
@@ -54,6 +56,7 @@ sudo apt-get install --yes \
 	libxcursor-dev \
 	libxi-dev \
 	libxrandr-dev \
+	libnss3-tools \
 	pkg-config
 ```
 
@@ -107,10 +110,20 @@ HTTPS 복호화는 사용 권한이 있는 트래픽에만 사용한다.
 
 1. 실행 중인 프록시에서 **Stop**을 누른다.
 2. **Decrypt HTTPS**를 선택한다.
-3. **Start**를 누른다.
-4. UI에 표시된 `root-ca.pem` 경로와 SHA-256 지문을 확인한다.
-5. Chrome의 `chrome://settings/certificates`에서 공개 CA 인증서를 신뢰 기관으로 가져온다.
-6. Chrome을 완전히 종료한 후 프록시 설정과 함께 다시 실행한다.
+3. UI에 표시된 `root-ca.pem` 경로와 SHA-256 지문을 확인한다. CA는 프록시를 시작하기 전에도 생성된다.
+4. **Register CA**를 누른다. **CA is registered and trusted for HTTPS.**가 표시되는지 확인한다.
+5. **Start**를 누른다.
+6. Chrome·Chromium을 완전히 종료한 후 프록시 설정과 함께 다시 실행한다.
+
+다음 화면은 현재 사용자 저장소에 CA를 등록하고 테스트 HTTPS 요청을 확인한 모습이다.
+
+![CA 등록 상태와 테스트 HTTPS 요청](docs/images/ca-registration.png)
+
+**Register CA**는 NSS의 `certutil` 명령으로 현재 사용자의 Chrome·Chromium 인증서 저장소에 공개 CA만 등록한다. 관리자 권한은 필요하지 않다. Ubuntu·Debian에서는 `sudo apt install libnss3-tools`, Fedora에서는 `sudo dnf install nss-tools`로 도구를 설치한다. 도구가 없거나 등록에 실패하면 화면에 오류를 표시한다. 수동으로 등록하려면 Chrome의 `chrome://settings/certificates`에서 공개 CA를 가져온다.
+
+등록 대상은 [Chromium의 NSS 저장소 선택 규칙](https://chromium.googlesource.com/chromium/src/+/HEAD/crypto/nss_util.cc)을 따른다. `$HOME/.pki/nssdb` 디렉터리가 있으면 그 경로를 사용한다. 없으면 `$XDG_DATA_HOME/pki/nssdb`를 사용하고, `XDG_DATA_HOME`이 없으면 `$HOME/.local/share/pki/nssdb`를 사용한다. 화면에 실제 대상 경로를 표시한다. 별도 저장소를 사용하는 Snap·Flatpak 브라우저와 Firefox, 시스템 전체 저장소에는 등록하지 않는다.
+
+**Check registration**은 이 앱이 관리하는 항목의 인증서와 HTTPS 신뢰 설정을 확인한다. **Remove CA**는 현재 CA와 일치하는 앱 관리 항목만 제거한다. 다른 설치의 CA와 수동으로 등록한 다른 이름의 항목은 제거하지 않는다. 등록 상태를 바꾼 후에는 브라우저를 다시 시작한다.
 
 기본 CA 경로는 다음과 같다.
 
@@ -133,7 +146,7 @@ google-chrome \
 	--disable-quic
 ```
 
-Chrome에는 `root-ca.pem`만 등록한다. `ca-identity.pem`에는 개인키가 있으므로 열거나 복사하거나 신뢰 저장소에 등록하지 않는다. 앱을 삭제해도 Chrome에 등록한 CA는 남는다. 현재 버전에서는 Chrome 설정에서 CA를 직접 제거해야 한다.
+Chrome에는 `root-ca.pem`만 등록한다. `ca-identity.pem`에는 개인키가 있으므로 열거나 복사하거나 신뢰 저장소에 등록하지 않는다. 앱을 삭제해도 등록한 CA는 남으므로, 삭제 전에 **Remove CA**로 제거한다. 수동으로 등록한 항목은 Chrome 설정에서 직접 제거한다.
 
 ## 검증
 

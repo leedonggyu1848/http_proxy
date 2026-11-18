@@ -6,6 +6,12 @@
 )]
 mod save;
 
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "The CA panel is private to the binary; unreachable_pub forbids public exports."
+)]
+mod ca_panel;
+
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -49,6 +55,7 @@ struct InspectorApp {
     record_filter: RecordFilter,
     https_inspection: bool,
     ca_directory: Option<PathBuf>,
+    ca_panel: ca_panel::CaPanel,
     error: Option<String>,
     full_log: Option<FullLog>,
     log_init_error: Option<String>,
@@ -72,6 +79,7 @@ impl InspectorApp {
             record_filter: RecordFilter::All,
             https_inspection: false,
             ca_directory: default_ca_directory(),
+            ca_panel: ca_panel::CaPanel::default(),
             error: None,
             full_log,
             log_init_error,
@@ -187,17 +195,7 @@ impl InspectorApp {
             }
         });
         if self.https_inspection {
-            if let Some(proxy) = self.proxy.as_ref()
-                && let Some(info) = proxy.ca_info()
-            {
-                ui.label("Trust this public CA certificate in the test browser:");
-                ui.monospace(info.certificate_path().display().to_string());
-                ui.label("SHA-256 fingerprint:");
-                ui.monospace(info.fingerprint_sha256());
-            } else if let Some(directory) = self.ca_directory.as_ref() {
-                ui.label("The CA will be created when the proxy starts:");
-                ui.monospace(directory.join("root-ca.pem").display().to_string());
-            }
+            self.ca_panel.show(ui, self.ca_directory.as_deref());
             ui.colored_label(
                 Color32::YELLOW,
                 "Only enable inspection for traffic that you are authorized to inspect.",

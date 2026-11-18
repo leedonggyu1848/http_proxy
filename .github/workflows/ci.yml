@@ -25,6 +25,7 @@ jobs:
             libxcursor-dev \
             libxi-dev \
             libxrandr-dev \
+            libnss3-tools \
             pkg-config
       - name: Show Rust version
         run: rustc --version --verbose

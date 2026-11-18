@@ -60,6 +60,11 @@ pub struct CaInfo {
 }
 
 impl CaInfo {
+    /// Prepares the persistent CA without starting a proxy.
+    pub fn load_or_create(directory: &Path) -> Result<Self, HttpsSetupError> {
+        CertificateAuthority::load_or_create(directory).map(|ca| ca.info)
+    }
+
     /// Returns the certificate-only PEM path that clients can trust.
     #[must_use]
     pub fn certificate_path(&self) -> &Path {
@@ -359,7 +364,12 @@ fn create_identity(identity_path: &Path, certificate_path: &Path) -> Result<(), 
     ];
     params.use_authority_key_identifier_extension = true;
     let mut name = DistinguishedName::new();
-    name.push(DnType::CommonName, "HTTP Inspector Local CA");
+    // NSS groups certificates by subject; give each installation its own subject.
+    let identifier = format!("{:X}", Sha256::digest(key.public_key_raw()));
+    name.push(
+        DnType::CommonName,
+        format!("HTTP Inspector Local CA {identifier:.16}"),
+    );
     params.distinguished_name = name;
     let certificate = params
         .self_signed(&key)
@@ -436,7 +446,7 @@ fn parse_identity(
     Ok((issuer, certificate))
 }
 
-fn fingerprint(certificate: &CertificateDer<'_>) -> String {
+pub(crate) fn fingerprint(certificate: &CertificateDer<'_>) -> String {
     Sha256::digest(certificate)
         .iter()
         .map(|byte| format!("{byte:02X}"))
