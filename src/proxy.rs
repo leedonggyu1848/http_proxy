@@ -221,6 +221,15 @@ impl ProxyConfig {
         self
     }
 
+    /// Limits capture events waiting for the UI. Events beyond the limit are
+    /// counted by [`ProxyHandle::dropped_records`] instead of blocking forwarding.
+    /// Zero is treated as one.
+    #[must_use]
+    pub const fn with_event_capacity(mut self, limit: usize) -> Self {
+        self.event_capacity = if limit == 0 { 1 } else { limit };
+        self
+    }
+
     /// Limits concurrently served client connections, including open tunnels.
     ///
     /// Further clients wait in the listen backlog until a connection closes.
