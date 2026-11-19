@@ -18,7 +18,9 @@ mod trust;
 
 pub(crate) use capture::{
     BODY_PREVIEW_BYTES, ERROR_BYTES, ObservedBody, TARGET_BYTES, bounded_text, capture_headers,
+    response_body_preview,
 };
+pub use capture::{IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES, is_png_media_type};
 
 pub use browser::{Browser, BrowserEvent, BrowserSession};
 pub use domain::{
