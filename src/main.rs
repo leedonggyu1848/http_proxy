@@ -24,7 +24,12 @@ mod browser_panel;
 )]
 mod body_view;
 
-use std::collections::VecDeque;
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "The displayed record list is private to the application module."
+)]
+mod records;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -89,7 +94,7 @@ fn init_tracing() {
 
 struct InspectorApp {
     proxy: Option<ProxyHandle>,
-    records: VecDeque<CaptureRecord>,
+    records: records::RecordList<CaptureRecord>,
     selected: Option<RecordId>,
     filter_text: String,
     record_filter: RecordFilter,
@@ -114,7 +119,7 @@ impl InspectorApp {
         };
         let mut app = Self {
             proxy: None,
-            records: VecDeque::with_capacity(MAX_RECORDS),
+            records: records::RecordList::new(MAX_RECORDS),
             selected: None,
             filter_text: String::new(),
             record_filter: RecordFilter::All,
@@ -161,7 +166,7 @@ impl InspectorApp {
     fn stop_proxy(&mut self) {
         self.browsers.close();
         self.ca_panel.refresh();
-        if let Some(proxy) = self.proxy.take()
+        if let Some(proxy) = self.take_proxy()
             && let Err(error) = proxy.stop()
         {
             self.error = Some(error.to_string());
@@ -177,7 +182,7 @@ impl InspectorApp {
         };
         self.receive_records();
         let mut error = format!("The proxy stopped: {message}. Press Start to restart it.");
-        if let Some(proxy) = self.proxy.take()
+        if let Some(proxy) = self.take_proxy()
             && let Err(stop_error) = proxy.stop()
         {
             error = format!("{error} ({stop_error})");
@@ -185,18 +190,27 @@ impl InspectorApp {
         self.error = Some(error);
     }
 
+    /// Detaches the running proxy, keeping its drop count for the toolbar.
+    fn take_proxy(&mut self) -> Option<ProxyHandle> {
+        let proxy = self.proxy.take()?;
+        self.records.proxy_stopped(proxy.dropped_records());
+        Some(proxy)
+    }
+
+    fn engine_dropped(&self) -> u64 {
+        self.proxy.as_ref().map_or(0, ProxyHandle::dropped_records)
+    }
+
     fn receive_records(&mut self) {
         let Some(proxy) = self.proxy.as_mut() else {
             return;
         };
         while let Some(record) = proxy.try_receive() {
-            if self.records.len() == MAX_RECORDS
-                && let Some(removed) = self.records.pop_front()
+            if let Some(removed) = self.records.push(record)
                 && self.selected == Some(removed.id())
             {
                 self.selected = None;
             }
-            self.records.push_back(record);
         }
     }
 
@@ -217,16 +231,29 @@ impl InspectorApp {
 
             ui.separator();
             ui.label(format!("{} requests", self.records.len()));
-            let dropped = self.proxy.as_ref().map_or(0, ProxyHandle::dropped_records);
+            let dropped = self.records.dropped(self.engine_dropped());
             if dropped > 0 {
-                ui.colored_label(Color32::LIGHT_RED, format!("{dropped} records dropped"));
+                ui.colored_label(Color32::LIGHT_RED, format!("{dropped} records dropped"))
+                    .on_hover_text(
+                        "The capture queue was full, so these exchanges were forwarded but not shown.",
+                    );
+            }
+            let evicted = self.records.evicted();
+            if evicted > 0 {
+                ui.colored_label(
+                    Color32::YELLOW,
+                    format!("{evicted} older records removed"),
+                )
+                .on_hover_text(format!(
+                    "Only the newest {MAX_RECORDS} requests are kept on screen. The full-session log keeps every record."
+                ));
             }
             if ui
                 .button("Clear")
                 .on_hover_text("Clear the displayed requests. The full-session log is retained.")
                 .clicked()
             {
-                self.records.clear();
+                self.records.clear(self.engine_dropped());
                 self.selected = None;
             }
         });
