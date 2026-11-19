@@ -16,13 +16,13 @@ use hyper::body::Incoming;
 use hyper::client::conn::http1 as client_http1;
 use hyper::server::conn::http1 as server_http1;
 use hyper::service::service_fn;
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, copy_bidirectional};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Builder as RuntimeBuilder;
-use tokio::sync::{mpsc, watch};
-use tokio::time::timeout;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch};
+use tokio::time::{timeout, timeout_at};
 
 use crate::FullLog;
 use crate::capture::{BodyLog, full_headers};
@@ -46,12 +46,22 @@ type ProxyBody = BoxBody<Bytes, hyper::Error>;
 
 static NEXT_RECORD_ID: AtomicU64 = AtomicU64::new(1);
 const TLS_TIMEOUT: Duration = Duration::from_secs(10);
+const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
+const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
+const DEFAULT_MAX_CONNECTIONS: usize = 256;
+
+/// Keeps one client connection, and any tunnel it upgrades into, counted
+/// against the connection limit.
+type ConnectionPermit = Arc<OwnedSemaphorePermit>;
 
 /// Shared state that every connection handled by one proxy run uses.
 struct Engine {
     events: EventSink,
     inspector: Option<Arc<TlsInspector>>,
     local_addr: SocketAddr,
+    connect_timeout: Duration,
+    response_timeout: Duration,
 }
 
 #[derive(Clone)]
@@ -160,6 +170,9 @@ pub struct ProxyConfig {
     bind_addr: SocketAddr,
     event_capacity: usize,
     https_inspection: Option<HttpsInspection>,
+    connect_timeout: Duration,
+    response_timeout: Duration,
+    max_connections: usize,
 }
 
 impl ProxyConfig {
@@ -170,7 +183,34 @@ impl ProxyConfig {
             bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
             event_capacity: 512,
             https_inspection: None,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            response_timeout: DEFAULT_RESPONSE_TIMEOUT,
+            max_connections: DEFAULT_MAX_CONNECTIONS,
         }
+    }
+
+    /// Limits name resolution plus TCP connection to an upstream server.
+    #[must_use]
+    pub const fn with_connect_timeout(mut self, limit: Duration) -> Self {
+        self.connect_timeout = limit;
+        self
+    }
+
+    /// Limits the wait from sending a request upstream to receiving response headers.
+    #[must_use]
+    pub const fn with_response_timeout(mut self, limit: Duration) -> Self {
+        self.response_timeout = limit;
+        self
+    }
+
+    /// Limits concurrently served client connections, including open tunnels.
+    ///
+    /// Further clients wait in the listen backlog until a connection closes.
+    /// Zero is treated as one.
+    #[must_use]
+    pub const fn with_max_connections(mut self, limit: usize) -> Self {
+        self.max_connections = if limit == 0 { 1 } else { limit };
+        self
     }
 
     /// Enables HTTPS inspection for this proxy run.
@@ -213,6 +253,9 @@ impl ProxyHandle {
             bind_addr,
             event_capacity,
             https_inspection,
+            connect_timeout,
+            response_timeout,
+            max_connections,
         } = config;
         let (inspector, ca_info) = match https_inspection.as_ref() {
             Some(settings) => {
@@ -241,13 +284,15 @@ impl ProxyHandle {
             events: event_sink,
             inspector,
             local_addr,
+            connect_timeout,
+            response_timeout,
         });
         let (shutdown, shutdown_receiver) = watch::channel(false);
         let thread = thread::Builder::new()
             .name("http-inspector-proxy".to_owned())
             .spawn(move || {
                 runtime.block_on(async move {
-                    let result = run(listener, engine, shutdown_receiver).await;
+                    let result = run(listener, engine, max_connections, shutdown_receiver).await;
                     if let Err(error) = result {
                         tracing::error!(%error, "proxy server stopped");
                     }
@@ -342,30 +387,48 @@ pub enum StopError {
 async fn run(
     listener: StdTcpListener,
     engine: Arc<Engine>,
+    max_connections: usize,
     mut shutdown: watch::Receiver<bool>,
 ) -> io::Result<()> {
     let listener = TcpListener::from_std(listener)?;
+    let connections = Arc::new(Semaphore::new(max_connections));
     loop {
+        let permit = tokio::select! {
+            () = wait_for_shutdown(&mut shutdown) => return Ok(()),
+            permit = Arc::clone(&connections).acquire_owned() => match permit {
+                Ok(permit) => Arc::new(permit),
+                Err(_) => return Ok(()),
+            },
+        };
         tokio::select! {
-            changed = shutdown.changed() => {
-                if changed.is_err() || *shutdown.borrow() {
-                    return Ok(());
-                }
-            }
+            () = wait_for_shutdown(&mut shutdown) => return Ok(()),
             accepted = listener.accept() => {
                 let (stream, _) = accepted?;
                 let connection_engine = Arc::clone(&engine);
                 tokio::spawn(async move {
-                    serve_connection(stream, connection_engine).await;
+                    serve_connection(stream, connection_engine, permit).await;
                 });
             }
         }
     }
 }
 
-async fn serve_connection(stream: TcpStream, engine: Arc<Engine>) {
-    let service = service_fn(move |request| proxy_request(request, Arc::clone(&engine)));
-    let connection = server_http1::Builder::new()
+async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
+    let _sender_dropped = shutdown.wait_for(|stopping| *stopping).await.is_err();
+}
+
+fn server_builder() -> server_http1::Builder {
+    let mut builder = server_http1::Builder::new();
+    builder
+        .timer(TokioTimer::new())
+        .header_read_timeout(HEADER_READ_TIMEOUT);
+    builder
+}
+
+async fn serve_connection(stream: TcpStream, engine: Arc<Engine>, permit: ConnectionPermit) {
+    let service =
+        service_fn(move |request| proxy_request(request, Arc::clone(&engine), Arc::clone(&permit)));
+    let connection = server_builder()
         .serve_connection(TokioIo::new(stream), service)
         .with_upgrades();
     if let Err(error) = connection.await {
@@ -376,12 +439,13 @@ async fn serve_connection(stream: TcpStream, engine: Arc<Engine>) {
 async fn proxy_request(
     mut request: Request<Incoming>,
     engine: Arc<Engine>,
+    permit: ConnectionPermit,
 ) -> Result<Response<ProxyBody>, Infallible> {
     let started = Instant::now();
     let capture = CaptureContext::new(&request, started, engine.events.log.clone());
 
     let response = if request.method() == Method::CONNECT {
-        connect_tunnel(&mut request, &engine, capture).await
+        connect_tunnel(&mut request, &engine, capture, permit).await
     } else {
         forward_http(request, &engine, &capture).await
     };
@@ -391,8 +455,9 @@ async fn proxy_request(
 
 async fn connect_tunnel(
     request: &mut Request<Incoming>,
-    engine: &Engine,
+    engine: &Arc<Engine>,
     capture: CaptureContext,
+    permit: ConnectionPermit,
 ) -> Response<ProxyBody> {
     let events = &engine.events;
     let Some(authority) = request.uri().authority().cloned() else {
@@ -406,25 +471,24 @@ async fn connect_tunnel(
         );
     };
 
-    let addresses = match resolve_upstream(&authority, 443, engine.local_addr).await {
+    let deadline = connect_deadline(engine);
+    let addresses = match resolve_within(deadline, &authority, 443, engine).await {
         Ok(addresses) => addresses,
-        Err(error) => {
-            let failure = UpstreamFailure::from(error);
-            return failure.respond(events, &capture);
-        }
+        Err(failure) => return failure.respond(events, &capture),
     };
 
     if let Some(inspector) = engine.inspector.clone() {
-        return connect_inspected(request, events, capture, inspector, &authority);
+        return connect_inspected(request, engine, capture, inspector, &authority, permit);
     }
 
-    let upstream = match connect_addresses(&addresses).await {
+    let upstream = match connect_within(deadline, &addresses, engine).await {
         Ok(stream) => stream,
         Err(failure) => return failure.respond(events, &capture),
     };
 
     let on_upgrade = hyper::upgrade::on(request);
     tokio::spawn(async move {
+        let _permit = permit;
         if let Ok(upgraded) = on_upgrade.await {
             let mut client = TokioIo::new(upgraded);
             let mut upstream = upstream;
@@ -441,11 +505,13 @@ async fn connect_tunnel(
 
 fn connect_inspected(
     request: &mut Request<Incoming>,
-    events: &EventSink,
+    engine: &Arc<Engine>,
     capture: CaptureContext,
     inspector: Arc<TlsInspector>,
     authority: &Authority,
+    permit: ConnectionPermit,
 ) -> Response<ProxyBody> {
+    let events = &engine.events;
     let destination = match Destination::from_authority(authority) {
         Ok(destination) => Arc::new(destination),
         Err(error) => {
@@ -474,14 +540,15 @@ fn connect_inspected(
     };
 
     let on_upgrade = hyper::upgrade::on(request);
-    let connection_events = events.clone();
+    let connection_engine = Arc::clone(engine);
     tokio::spawn(async move {
+        let _permit = permit;
         run_inspected_connection(
             on_upgrade,
             prepared,
             destination,
             inspector,
-            connection_events,
+            connection_engine,
             capture,
         )
         .await;
@@ -495,18 +562,19 @@ async fn run_inspected_connection(
     prepared: PreparedInspection,
     destination: Arc<Destination>,
     inspector: Arc<TlsInspector>,
-    events: EventSink,
+    engine: Arc<Engine>,
     capture: CaptureContext,
 ) {
+    let events = &engine.events;
     let upgraded = match timeout(TLS_TIMEOUT, on_upgrade).await {
         Ok(Ok(upgraded)) => upgraded,
         Ok(Err(error)) => {
-            send_connection_failure(&events, &capture, FailureStage::Upgrade, &error.to_string());
+            send_connection_failure(events, &capture, FailureStage::Upgrade, &error.to_string());
             return;
         }
         Err(_) => {
             send_connection_failure(
-                &events,
+                events,
                 &capture,
                 FailureStage::Upgrade,
                 "CONNECT upgrade timed out",
@@ -518,7 +586,7 @@ async fn run_inspected_connection(
         Ok(Ok(tls)) => tls,
         Ok(Err(error)) => {
             send_connection_failure(
-                &events,
+                events,
                 &capture,
                 FailureStage::ClientTls,
                 &error.to_string(),
@@ -527,7 +595,7 @@ async fn run_inspected_connection(
         }
         Err(_) => {
             send_connection_failure(
-                &events,
+                events,
                 &capture,
                 FailureStage::ClientTls,
                 "client TLS handshake timed out",
@@ -540,12 +608,12 @@ async fn run_inspected_connection(
     let service = service_fn(move |request| {
         proxy_https_request(
             request,
-            events.clone(),
+            Arc::clone(&engine),
             Arc::clone(&inspector),
             Arc::clone(&destination),
         )
     });
-    let connection = server_http1::Builder::new()
+    let connection = server_builder()
         .serve_connection(TokioIo::new(tls), service)
         .with_upgrades();
     if let Err(error) = connection.await {
@@ -555,7 +623,7 @@ async fn run_inspected_connection(
 
 async fn proxy_https_request(
     request: Request<Incoming>,
-    events: EventSink,
+    engine: Arc<Engine>,
     inspector: Arc<TlsInspector>,
     destination: Arc<Destination>,
 ) -> Result<Response<ProxyBody>, Infallible> {
@@ -565,12 +633,13 @@ async fn proxy_https_request(
         .path_and_query()
         .map_or("/", http::uri::PathAndQuery::as_str);
     let target = destination.absolute_target(path);
-    let capture = CaptureContext::new_with_target(&request, started, &target, events.log.clone());
+    let capture =
+        CaptureContext::new_with_target(&request, started, &target, engine.events.log.clone());
 
     let response = match validate_inner_request(&request, &destination) {
-        Ok(()) => forward_https(request, &events, &capture, &inspector, &destination).await,
+        Ok(()) => forward_https(request, &engine, &capture, &inspector, &destination).await,
         Err(message) => failed_response(
-            &events,
+            &engine.events,
             &capture,
             None,
             FailureStage::Request,
@@ -631,16 +700,17 @@ async fn forward_http(
         Err(failure) => return failure.respond(events, capture),
     };
 
-    forward_over_stream(request, stream, events, capture, target_parts.path).await
+    forward_over_stream(request, stream, engine, capture, target_parts.path).await
 }
 
 async fn forward_https(
     request: Request<Incoming>,
-    events: &EventSink,
+    engine: &Engine,
     capture: &CaptureContext,
     inspector: &TlsInspector,
     destination: &Destination,
 ) -> Response<ProxyBody> {
+    let events = &engine.events;
     let path = request
         .uri()
         .path_and_query()
@@ -678,19 +748,20 @@ async fn forward_https(
             );
         }
     };
-    forward_over_stream(request, stream, events, capture, path).await
+    forward_over_stream(request, stream, engine, capture, path).await
 }
 
 async fn forward_over_stream<IO>(
     mut request: Request<Incoming>,
     stream: IO,
-    events: &EventSink,
+    engine: &Engine,
     capture: &CaptureContext,
     path: Uri,
 ) -> Response<ProxyBody>
 where
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    let events = &engine.events;
     let handshake = client_http1::handshake(TokioIo::new(stream)).await;
     let (mut sender, connection) = match handshake {
         Ok(parts) => parts,
@@ -718,7 +789,20 @@ where
     let request = request
         .map(|body| ObservedBody::new(body, request_body.clone(), capture.body_log("Request")));
 
-    match sender.send_request(request).await {
+    let Ok(response) = timeout(engine.response_timeout, sender.send_request(request)).await else {
+        return failed_response(
+            events,
+            capture,
+            Some(request_body),
+            FailureStage::ResponseTimeout,
+            StatusCode::GATEWAY_TIMEOUT,
+            &format!(
+                "no response headers within {} ms",
+                engine.response_timeout.as_millis()
+            ),
+        );
+    };
+    match response {
         Ok(mut response) => {
             if let Some(log) = capture.log.as_ref() {
                 log.text(format!(
@@ -773,6 +857,17 @@ struct UpstreamFailure {
 }
 
 impl UpstreamFailure {
+    fn connect_timeout(engine: &Engine) -> Self {
+        Self {
+            stage: FailureStage::ConnectTimeout,
+            status: StatusCode::GATEWAY_TIMEOUT,
+            message: format!(
+                "the upstream connection was not established within {} ms",
+                engine.connect_timeout.as_millis()
+            ),
+        }
+    }
+
     fn respond(&self, events: &EventSink, capture: &CaptureContext) -> Response<ProxyBody> {
         failed_response(
             events,
@@ -802,13 +897,45 @@ impl From<ResolveError> for UpstreamFailure {
     }
 }
 
+fn connect_deadline(engine: &Engine) -> tokio::time::Instant {
+    tokio::time::Instant::now() + engine.connect_timeout
+}
+
 async fn connect_upstream(
     authority: &Authority,
     default_port: u16,
     engine: &Engine,
 ) -> Result<TcpStream, UpstreamFailure> {
-    let addresses = resolve_upstream(authority, default_port, engine.local_addr).await?;
-    connect_addresses(&addresses).await
+    let deadline = connect_deadline(engine);
+    let addresses = resolve_within(deadline, authority, default_port, engine).await?;
+    connect_within(deadline, &addresses, engine).await
+}
+
+async fn resolve_within(
+    deadline: tokio::time::Instant,
+    authority: &Authority,
+    default_port: u16,
+    engine: &Engine,
+) -> Result<Vec<SocketAddr>, UpstreamFailure> {
+    timeout_at(
+        deadline,
+        resolve_upstream(authority, default_port, engine.local_addr),
+    )
+    .await
+    .map_or_else(
+        |_| Err(UpstreamFailure::connect_timeout(engine)),
+        |result| result.map_err(UpstreamFailure::from),
+    )
+}
+
+async fn connect_within(
+    deadline: tokio::time::Instant,
+    addresses: &[SocketAddr],
+    engine: &Engine,
+) -> Result<TcpStream, UpstreamFailure> {
+    timeout_at(deadline, connect_addresses(addresses))
+        .await
+        .unwrap_or_else(|_| Err(UpstreamFailure::connect_timeout(engine)))
 }
 
 async fn connect_addresses(addresses: &[SocketAddr]) -> Result<TcpStream, UpstreamFailure> {

@@ -151,6 +151,81 @@ async fn rejects_requests_that_target_the_proxy_itself() -> Result<(), Box<dyn E
 }
 
 #[tokio::test]
+async fn records_a_timeout_when_upstream_never_responds() -> Result<(), Box<dyn Error>> {
+    let upstream = TcpListener::bind("127.0.0.1:0").await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let _request = read_headers(&mut stream).await?;
+        tokio::time::sleep(TEST_TIMEOUT).await;
+        Ok::<_, std::io::Error>(())
+    });
+
+    let config = ProxyConfig::loopback(0).with_response_timeout(Duration::from_millis(200));
+    let mut proxy = ProxyHandle::start(config)?;
+    let mut client = TcpStream::connect(proxy.local_addr()).await?;
+    let request = format!(
+        "GET http://{upstream_addr}/slow HTTP/1.1\r\nHost: {upstream_addr}\r\nConnection: close\r\n\r\n"
+    );
+    client.write_all(request.as_bytes()).await?;
+
+    let response = timeout(Duration::from_secs(2), read_headers(&mut client)).await??;
+    assert!(String::from_utf8(response)?.starts_with("HTTP/1.1 504 Gateway Timeout"));
+    let record = timeout(TEST_TIMEOUT, proxy.receive())
+        .await?
+        .ok_or("capture channel closed")?;
+    assert!(matches!(
+        record.outcome(),
+        CaptureOutcome::Failed {
+            stage: http_proxy::FailureStage::ResponseTimeout,
+            ..
+        }
+    ));
+    assert!(record.elapsed() < Duration::from_secs(2));
+
+    upstream_task.abort();
+    proxy.stop()?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn holds_new_clients_while_the_connection_limit_is_reached() -> Result<(), Box<dyn Error>> {
+    let upstream = TcpListener::bind("127.0.0.1:0").await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let _request = read_headers(&mut stream).await?;
+        stream
+            .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+            .await?;
+        Ok::<_, std::io::Error>(())
+    });
+
+    let proxy = ProxyHandle::start(ProxyConfig::loopback(0).with_max_connections(1))?;
+    let first = TcpStream::connect(proxy.local_addr()).await?;
+    let mut second = TcpStream::connect(proxy.local_addr()).await?;
+    let request = format!(
+        "GET http://{upstream_addr}/ HTTP/1.1\r\nHost: {upstream_addr}\r\nConnection: close\r\n\r\n"
+    );
+    second.write_all(request.as_bytes()).await?;
+    let mut byte = [0_u8; 1];
+    assert!(
+        timeout(Duration::from_millis(300), second.read(&mut byte))
+            .await
+            .is_err(),
+        "the second client must wait while the first holds the only slot"
+    );
+
+    drop(first);
+    let response = timeout(TEST_TIMEOUT, read_headers(&mut second)).await??;
+    assert!(String::from_utf8(response)?.starts_with("HTTP/1.1 204 No Content"));
+
+    timeout(TEST_TIMEOUT, upstream_task).await???;
+    proxy.stop()?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn connect_creates_a_bidirectional_tunnel() -> Result<(), Box<dyn Error>> {
     let upstream = TcpListener::bind("127.0.0.1:0").await?;
     let upstream_addr = upstream.local_addr()?;

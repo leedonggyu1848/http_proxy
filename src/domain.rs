@@ -336,8 +336,12 @@ pub enum FailureStage {
     Request,
     /// The upstream TCP connection failed.
     Connect,
+    /// Resolving or connecting to the upstream exceeded the connect timeout.
+    ConnectTimeout,
     /// The upstream HTTP exchange failed.
     Response,
+    /// Response headers did not arrive within the response timeout.
+    ResponseTimeout,
     /// The CONNECT stream could not be upgraded.
     Upgrade,
     /// The client-side TLS handshake failed.
