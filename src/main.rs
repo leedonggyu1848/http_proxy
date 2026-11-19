@@ -130,6 +130,7 @@ struct InspectorApp {
     save: save::SaveControls,
     port: PortChoice,
     table: request_table::RequestTable,
+    detail_tab: DetailTab,
     context: egui::Context,
 }
 
@@ -201,6 +202,7 @@ impl InspectorApp {
             save: save::SaveControls::new(),
             port: PortChoice::from_launch(),
             table: request_table::RequestTable::new(),
+            detail_tab: DetailTab::Headers,
             context,
         };
         app.start_proxy();
@@ -435,7 +437,7 @@ impl InspectorApp {
         });
     }
 
-    fn request_table(&mut self, ui: &mut egui::Ui) {
+    fn request_table(&mut self, ui: &mut egui::Ui, shortcuts_allowed: bool) {
         let query = self.filter_text.to_lowercase();
         let rows: Vec<&Exchange> = self
             .records
@@ -443,8 +445,8 @@ impl InspectorApp {
             .filter(|record| record_matches(record, self.record_filter, &query))
             .collect();
         self.table.controls(ui);
-        if let Some(clicked) = self.table.show(ui, rows, self.selected) {
-            self.selected = Some(clicked);
+        if let Some(selected) = self.table.show(ui, rows, self.selected, shortcuts_allowed) {
+            self.selected = Some(selected);
         }
     }
 
@@ -461,7 +463,7 @@ impl InspectorApp {
         })
     }
 
-    fn detail_panel(&self, ui: &mut egui::Ui) {
+    fn detail_panel(&mut self, ui: &mut egui::Ui, shortcuts_allowed: bool) {
         let Some(selected) = self.selected else {
             ui.centered_and_justified(|ui| {
                 ui.label("Select a request to inspect headers and body previews.");
@@ -472,21 +474,41 @@ impl InspectorApp {
             return;
         };
 
+        if shortcuts_allowed
+            && ui.input_mut(|input| {
+                !input.modifiers.any() && input.consume_key(egui::Modifiers::NONE, egui::Key::F6)
+            })
+        {
+            self.detail_tab = match self.detail_tab {
+                DetailTab::Headers => DetailTab::Body,
+                DetailTab::Body => DetailTab::Headers,
+            };
+        }
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.detail_tab, DetailTab::Headers, "Headers");
+            ui.selectable_value(&mut self.detail_tab, DetailTab::Body, "Body");
+        });
+
         egui::ScrollArea::vertical()
-            .id_salt("details-scroll")
+            .id_salt(("details-scroll", self.detail_tab))
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let request = record.request();
                 ui.heading(format!("{} {}", request.method(), request.target()));
                 render_timing(ui, record);
                 ui.separator();
-                ui.strong("Request headers");
-                render_headers(ui, "request-headers", request.headers());
+                match self.detail_tab {
+                    DetailTab::Headers => {
+                        ui.strong("Request headers");
+                        render_headers(ui, "request-headers", request.headers());
+                    }
+                    DetailTab::Body => {
+                        ui.strong("Request body");
+                        render_optional_body(ui, request.body(), request.headers());
+                    }
+                }
                 ui.separator();
-                ui.strong("Request body");
-                render_optional_body(ui, request.body(), request.headers());
-                ui.separator();
-                render_outcome(ui, record.outcome());
+                render_outcome(ui, record.outcome(), self.detail_tab);
             });
     }
 }
@@ -502,14 +524,15 @@ impl eframe::App for InspectorApp {
         ui.separator();
         self.filters(ui);
         ui.separator();
+        let shortcuts_allowed = request_shortcuts_allowed(ui.ctx());
         ui.columns(2, |columns| {
             let [requests, details] = columns else {
                 return;
             };
             requests.heading("Requests");
-            self.request_table(requests);
+            self.request_table(requests, shortcuts_allowed);
             details.heading("Details");
-            self.detail_panel(details);
+            self.detail_panel(details, shortcuts_allowed);
         });
 
         // New exchanges wake the UI through the proxy's notifier. Periodic
@@ -521,6 +544,18 @@ impl eframe::App for InspectorApp {
             ui.ctx().request_repaint_after(IDLE_REPAINT);
         }
     }
+}
+
+fn request_shortcuts_allowed(ctx: &egui::Context) -> bool {
+    let focused = ctx.memory(egui::Memory::focused);
+    !egui::Popup::is_any_open(ctx)
+        && focused.is_none_or(|id| egui::TextEdit::load_state(ctx, id).is_none())
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum DetailTab {
+    Headers,
+    Body,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -702,23 +737,26 @@ const fn retention_text(retention: BodyRetention) -> &'static str {
     }
 }
 
-fn render_outcome(ui: &mut egui::Ui, outcome: &Outcome) {
+fn render_outcome(ui: &mut egui::Ui, outcome: &Outcome, tab: DetailTab) {
     match outcome {
         Outcome::InFlight => {
             ui.weak("Waiting for the upstream server.");
         }
-        Outcome::Response(response) => {
-            ui.strong(format!(
-                "Response headers · {} {} · {:?}",
-                response.status().as_str(),
-                response.reason(),
-                response.version()
-            ));
-            render_headers(ui, "response-headers", response.headers());
-            ui.separator();
-            ui.strong("Response body");
-            render_body(ui, response.body(), response.headers());
-        }
+        Outcome::Response(response) => match tab {
+            DetailTab::Headers => {
+                ui.strong(format!(
+                    "Response headers · {} {} · {:?}",
+                    response.status().as_str(),
+                    response.reason(),
+                    response.version()
+                ));
+                render_headers(ui, "response-headers", response.headers());
+            }
+            DetailTab::Body => {
+                ui.strong("Response body");
+                render_body(ui, response.body(), response.headers());
+            }
+        },
         Outcome::Tunnel(tunnel) => {
             ui.label(scope_help::TUNNEL_NOTE);
             render_tunnel(ui, tunnel);

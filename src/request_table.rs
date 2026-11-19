@@ -3,7 +3,7 @@
 use std::cmp::Ordering;
 use std::time::Duration;
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, Color32, Key, RichText};
 use egui_extras::{Column, TableBuilder};
 use http_proxy::{Exchange, Outcome, RecordId, TunnelPreview, TunnelState};
 
@@ -106,10 +106,57 @@ impl Sort {
     }
 }
 
+fn move_selection(key: Key, current: Option<usize>, len: usize, page: usize) -> Option<usize> {
+    let last = len.checked_sub(1)?;
+    let index = match key {
+        Key::ArrowUp => current.map_or(last, |index| index.saturating_sub(1)),
+        Key::ArrowDown => current.map_or(0, |index| index.saturating_add(1)),
+        Key::Home => 0,
+        Key::End => last,
+        Key::PageUp => current.map_or(last, |index| index.saturating_sub(page)),
+        Key::PageDown => current.map_or(0, |index| index.saturating_add(page)),
+        _ => return None,
+    };
+    Some(index.min(last))
+}
+
+fn keyboard_selection(
+    ui: &egui::Ui,
+    current: Option<usize>,
+    len: usize,
+    page: usize,
+) -> Option<usize> {
+    let mut selected = current;
+    let mut moved_with_arrow = false;
+    ui.input_mut(|input| {
+        input.events.retain(|event| {
+            if let egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+                ..
+            } = *event
+                && let Some(index) = move_selection(key, selected, len, page)
+            {
+                selected = Some(index);
+                moved_with_arrow |= matches!(key, Key::ArrowUp | Key::ArrowDown);
+                return false;
+            }
+            true
+        });
+    });
+    if moved_with_arrow {
+        ui.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
+    }
+    selected.filter(|&index| Some(index) != current)
+}
+
 /// Sort state and scrolling preference of the request list.
 pub(crate) struct RequestTable {
     sort: Sort,
     follow_newest: bool,
+    keyboard_row: Option<usize>,
+    page_rows: usize,
 }
 
 impl RequestTable {
@@ -120,6 +167,8 @@ impl RequestTable {
                 descending: false,
             },
             follow_newest: true,
+            keyboard_row: None,
+            page_rows: 1,
         }
     }
 
@@ -128,18 +177,22 @@ impl RequestTable {
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.follow_newest, "Follow newest")
                 .on_hover_text("Keep the newest request in view while sorted by arrival.");
+            if self.follow_newest {
+                self.keyboard_row = None;
+            }
             if self.sort.field.is_some() && ui.button("Arrival order").clicked() {
                 self.sort = Self::new().sort;
             }
         });
     }
 
-    /// Shows `rows` (oldest first) and returns a newly clicked record.
+    /// Shows `rows` (oldest first) and returns a newly selected record.
     pub(crate) fn show(
         &mut self,
         ui: &mut egui::Ui,
         mut rows: Vec<&Exchange>,
-        selected: Option<RecordId>,
+        mut selected: Option<RecordId>,
+        shortcuts_allowed: bool,
     ) -> Option<RecordId> {
         if let Some(field) = self.sort.field {
             rows.sort_by(|left, right| {
@@ -151,6 +204,26 @@ impl RequestTable {
                 }
             });
         }
+        let mut changed = None;
+        let mut scroll_to = None;
+        if shortcuts_allowed || self.keyboard_row.is_some() {
+            let current = rows.iter().position(|record| Some(record.id()) == selected);
+            if shortcuts_allowed
+                && let Some(index) = keyboard_selection(ui, current, rows.len(), self.page_rows)
+                && let Some(record) = rows.get(index)
+            {
+                self.follow_newest = false;
+                self.keyboard_row = Some(index);
+                changed = Some(record.id());
+                selected = changed;
+                scroll_to = Some(index);
+                ui.ctx().request_repaint();
+            } else if self.keyboard_row.is_some() && self.keyboard_row != current {
+                self.keyboard_row = current;
+                scroll_to = current;
+            }
+        }
+
         let mut table = TableBuilder::new(ui)
             .id_salt("requests")
             .striped(true)
@@ -163,8 +236,10 @@ impl RequestTable {
             table = table.column(field.column());
         }
 
-        let mut clicked = None;
-        table
+        if let Some(index) = scroll_to {
+            table = table.scroll_to_row(index, None).animate_scrolling(false);
+        }
+        let body = table
             .header(HEADER_HEIGHT, |mut header| {
                 for field in Field::ALL {
                     header.col(|ui| {
@@ -186,11 +261,20 @@ impl RequestTable {
                     row.set_selected(selected == Some(record.id()));
                     show_cells(&mut row, record);
                     if row.response().clicked() {
-                        clicked = Some(record.id());
+                        self.keyboard_row = None;
+                        changed = Some(record.id());
                     }
                 });
             });
-        clicked
+        let row_stride = ROW_HEIGHT + ui.spacing().item_spacing.y;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "The viewport height is nonnegative and UI-sized, and a page counts only full rows"
+        )]
+        let page_rows = (body.inner_rect.height() / row_stride) as usize;
+        self.page_rows = page_rows.max(1);
+        changed
     }
 }
 
@@ -337,6 +421,105 @@ fn tunnel_summary(tunnel: &TunnelPreview) -> (String, Color32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn moves_within_the_visible_row_order() {
+        assert_eq!(move_selection(Key::ArrowDown, None, 0, 3), None);
+        assert_eq!(move_selection(Key::End, None, 0, 3), None);
+        assert_eq!(move_selection(Key::ArrowDown, None, 8, 3), Some(0));
+        assert_eq!(move_selection(Key::ArrowUp, None, 8, 3), Some(7));
+        assert_eq!(move_selection(Key::ArrowUp, Some(0), 8, 3), Some(0));
+        assert_eq!(move_selection(Key::ArrowDown, Some(7), 8, 3), Some(7));
+        assert_eq!(move_selection(Key::Home, Some(5), 8, 3), Some(0));
+        assert_eq!(move_selection(Key::End, Some(0), 8, 3), Some(7));
+        assert_eq!(move_selection(Key::PageUp, Some(5), 8, 3), Some(2));
+        assert_eq!(move_selection(Key::PageUp, Some(2), 8, 3), Some(0));
+        assert_eq!(move_selection(Key::PageDown, Some(3), 8, 3), Some(6));
+        assert_eq!(move_selection(Key::PageDown, Some(6), 8, 3), Some(7));
+    }
+
+    #[tokio::test]
+    async fn keyboard_selection_uses_sorted_filtered_records()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::{TcpListener, TcpStream};
+
+        let upstream = TcpListener::bind("127.0.0.1:0").await?;
+        let upstream_addr = upstream.local_addr()?;
+        let mut proxy = http_proxy::ProxyHandle::start(http_proxy::ProxyConfig::loopback(0))?;
+        let mut records = Vec::new();
+        for path in ["visible-z", "hidden", "visible-a", "visible-m"] {
+            let mut client = TcpStream::connect(proxy.local_addr()).await?;
+            client
+                .write_all(
+                    format!("GET http://{upstream_addr}/{path} HTTP/1.1\r\nHost: {upstream_addr}\r\n\r\n")
+                        .as_bytes(),
+                )
+                .await?;
+            let record = tokio::time::timeout(Duration::from_secs(5), proxy.receive())
+                .await?
+                .ok_or("capture channel closed")?;
+            records.push(record);
+        }
+
+        let id_for = |path: &str| {
+            records
+                .iter()
+                .find(|record| record.request().target().ends_with(path))
+                .map(Exchange::id)
+        };
+        let ctx = egui::Context::default();
+        let mut table = RequestTable::new();
+        table.sort = table.sort.toggled(Field::Target);
+        let mut selected = id_for("/hidden");
+        assert!(selected.is_some());
+        for (key, editing, expected) in [
+            (Key::ArrowDown, false, "/visible-a"),
+            (Key::ArrowDown, false, "/visible-m"),
+            (Key::End, true, "/visible-m"),
+            (Key::End, false, "/visible-z"),
+        ] {
+            let expected = id_for(expected).ok_or("expected record was not captured")?;
+            let input = egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                let mut query = "/visible".to_owned();
+                let filter = ui.text_edit_singleline(&mut query);
+                if editing {
+                    filter.request_focus();
+                } else {
+                    filter.surrender_focus();
+                }
+                let rows = records
+                    .iter()
+                    .filter(|record| {
+                        super::super::record_matches(
+                            record,
+                            super::super::RecordFilter::All,
+                            &query,
+                        )
+                    })
+                    .collect();
+                let shortcuts_allowed = super::super::request_shortcuts_allowed(ui.ctx());
+                if let Some(id) = table.show(ui, rows, selected, shortcuts_allowed) {
+                    selected = Some(id);
+                }
+            });
+            output.textures_delta.clear();
+            assert_eq!(selected, Some(expected));
+            assert!(!table.follow_newest);
+        }
+        proxy.stop()?;
+        Ok(())
+    }
 
     #[test]
     fn cycles_sort_through_ascending_descending_and_arrival() {
