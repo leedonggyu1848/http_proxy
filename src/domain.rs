@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, TryLockError};
+use std::sync::{Arc, Mutex, OnceLock, TryLockError};
+use std::time::Instant;
 
 mod exchange;
 mod tunnel;
@@ -12,6 +13,7 @@ pub use tunnel::{TunnelPreview, TunnelSnapshot, TunnelState};
 const STREAMING: u8 = 0;
 const COMPLETE: u8 = 1;
 const INTERRUPTED: u8 = 2;
+const CANCELLED: u8 = 3;
 const PREFIX: u8 = 0;
 const TRUNCATED: u8 = 1;
 const OMITTED: u8 = 2;
@@ -85,6 +87,7 @@ struct BodyPreviewInner {
     prefix: Mutex<Vec<u8>>,
     observed_bytes: AtomicU64,
     lifecycle: AtomicU8,
+    ended: OnceLock<Instant>,
     retention: AtomicU8,
     limit: usize,
 }
@@ -102,6 +105,7 @@ impl BodyPreview {
                 prefix: Mutex::new(Vec::with_capacity(limit)),
                 observed_bytes: AtomicU64::new(0),
                 lifecycle: AtomicU8::new(STREAMING),
+                ended: OnceLock::new(),
                 retention: AtomicU8::new(PREFIX),
                 limit,
             }),
@@ -143,21 +147,45 @@ impl BodyPreview {
     }
 
     pub(crate) fn complete(&self) {
-        let _unchanged = self.inner.lifecycle.compare_exchange(
-            STREAMING,
-            COMPLETE,
-            Ordering::Release,
-            Ordering::Relaxed,
-        );
+        self.end(COMPLETE);
     }
 
     pub(crate) fn interrupt(&self) {
-        let _unchanged = self.inner.lifecycle.compare_exchange(
+        self.end(INTERRUPTED);
+    }
+
+    pub(crate) fn cancel(&self) {
+        self.end(CANCELLED);
+    }
+
+    /// Records the first end of the stream and when it happened.
+    fn end(&self, lifecycle: u8) {
+        let ended = self.inner.lifecycle.compare_exchange(
             STREAMING,
-            INTERRUPTED,
-            Ordering::Release,
+            lifecycle,
+            Ordering::AcqRel,
             Ordering::Relaxed,
         );
+        if ended.is_ok() {
+            let _already_set = self.inner.ended.set(Instant::now()).is_err();
+        }
+    }
+
+    /// Returns the number of body bytes observed so far without copying the preview.
+    #[must_use]
+    pub fn observed_bytes(&self) -> u64 {
+        self.inner.observed_bytes.load(Ordering::Acquire)
+    }
+
+    /// Returns the stream lifecycle without copying the preview.
+    #[must_use]
+    pub fn lifecycle(&self) -> BodyLifecycle {
+        lifecycle_from(self.inner.lifecycle.load(Ordering::Acquire))
+    }
+
+    /// Returns when the stream ended, or `None` while it is streaming.
+    pub(crate) fn ended_at(&self) -> Option<Instant> {
+        self.inner.ended.get().copied()
     }
 
     /// Returns a coherent snapshot, or `None` when a writer holds the preview.
@@ -187,17 +215,22 @@ impl BodyPreview {
         BodySnapshot {
             bytes,
             observed_bytes: self.inner.observed_bytes.load(Ordering::Acquire),
-            lifecycle: match self.inner.lifecycle.load(Ordering::Acquire) {
-                COMPLETE => BodyLifecycle::Complete,
-                INTERRUPTED => BodyLifecycle::Interrupted,
-                _ => BodyLifecycle::Streaming,
-            },
+            lifecycle: self.lifecycle(),
             retention: match retention {
                 TRUNCATED => BodyRetention::Truncated,
                 OMITTED => BodyRetention::Omitted,
                 _ => BodyRetention::Prefix,
             },
         }
+    }
+}
+
+const fn lifecycle_from(value: u8) -> BodyLifecycle {
+    match value {
+        COMPLETE => BodyLifecycle::Complete,
+        INTERRUPTED => BodyLifecycle::Interrupted,
+        CANCELLED => BodyLifecycle::Cancelled,
+        _ => BodyLifecycle::Streaming,
     }
 }
 
@@ -243,8 +276,12 @@ pub enum BodyLifecycle {
     Streaming,
     /// End of stream was observed.
     Complete,
-    /// The body errored or was dropped before completion.
+    /// The sending side failed before the end, for example an upstream
+    /// server that closed the connection early.
     Interrupted,
+    /// The receiving side stopped reading before the end, for example a
+    /// client that disconnected or a proxy that stopped.
+    Cancelled,
 }
 
 /// Retention result for a bounded body preview.

@@ -36,6 +36,12 @@ mod records;
 )]
 mod port_settings;
 
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "The request list is private to the application module."
+)]
+mod request_table;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -47,6 +53,10 @@ use http_proxy::{
 use tracing_subscriber::EnvFilter;
 
 const MAX_RECORDS: usize = 2_000;
+/// Repaint interval while pending requests or streaming bodies change on screen.
+const LIVE_REPAINT: Duration = Duration::from_millis(250);
+/// Repaint interval otherwise, to notice an engine that stopped on its own.
+const IDLE_REPAINT: Duration = Duration::from_secs(1);
 
 fn main() -> eframe::Result {
     init_tracing();
@@ -59,7 +69,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(|context| {
             configure_fonts(&context.egui_ctx);
-            Ok(Box::new(InspectorApp::new()))
+            Ok(Box::new(InspectorApp::new(context.egui_ctx.clone())))
         }),
     )
 }
@@ -112,6 +122,8 @@ struct InspectorApp {
     log_init_error: Option<String>,
     save: save::SaveControls,
     port: PortChoice,
+    table: request_table::RequestTable,
+    context: egui::Context,
 }
 
 /// Port typed in the toolbar and where its current value came from.
@@ -158,7 +170,7 @@ impl PortChoice {
 }
 
 impl InspectorApp {
-    fn new() -> Self {
+    fn new(context: egui::Context) -> Self {
         let (full_log, log_init_error) = match FullLog::new() {
             Ok(log) => (Some(log), None),
             Err(error) => (
@@ -181,6 +193,8 @@ impl InspectorApp {
             log_init_error,
             save: save::SaveControls::new(),
             port: PortChoice::from_launch(),
+            table: request_table::RequestTable::new(),
+            context,
         };
         app.start_proxy();
         app
@@ -211,6 +225,8 @@ impl InspectorApp {
         );
         match result {
             Ok(proxy) => {
+                let context = self.context.clone();
+                let _first_notifier = proxy.notify_on_event(move || context.request_repaint());
                 self.proxy = Some(proxy);
                 self.error = self.port.remember(port).err();
             }
@@ -396,48 +412,28 @@ impl InspectorApp {
 
     fn request_table(&mut self, ui: &mut egui::Ui) {
         let query = self.filter_text.to_lowercase();
-        let selected = self.selected;
-        let mut new_selection = None;
-        egui::ScrollArea::both()
-            .id_salt("requests-scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                egui::Grid::new("request-table")
-                    .striped(true)
-                    .min_col_width(80.0)
-                    .show(ui, |ui| {
-                        ui.strong("Method");
-                        ui.strong("Target");
-                        ui.strong("Result");
-                        ui.strong("Time");
-                        ui.end_row();
-
-                        for record in self
-                            .records
-                            .iter()
-                            .rev()
-                            .filter(|record| record_matches(record, self.record_filter, &query))
-                        {
-                            if ui
-                                .selectable_label(
-                                    selected == Some(record.id()),
-                                    RichText::new(record.request().method().as_str()).monospace(),
-                                )
-                                .clicked()
-                            {
-                                new_selection = Some(record.id());
-                            }
-                            ui.monospace(record.request().target());
-                            let (result, color) = outcome_text(record.outcome());
-                            ui.colored_label(color, result);
-                            ui.monospace(elapsed_text(record));
-                            ui.end_row();
-                        }
-                    });
-            });
-        if new_selection.is_some() {
-            self.selected = new_selection;
+        let rows: Vec<&Exchange> = self
+            .records
+            .iter()
+            .filter(|record| record_matches(record, self.record_filter, &query))
+            .collect();
+        self.table.controls(ui);
+        if let Some(clicked) = self.table.show(ui, rows, self.selected) {
+            self.selected = Some(clicked);
         }
+    }
+
+    /// Reports whether any displayed value still changes over time.
+    fn has_live_records(&self) -> bool {
+        self.records.iter().any(|record| match record.outcome() {
+            Outcome::InFlight => true,
+            Outcome::Response(response) => response.body().lifecycle() == BodyLifecycle::Streaming,
+            Outcome::Tunnel(tunnel) => tunnel.snapshot().state() == &TunnelState::Open,
+            Outcome::InspectionEstablished
+            | Outcome::Failed { .. }
+            | Outcome::Cancelled
+            | Outcome::Incomplete => false,
+        })
     }
 
     fn detail_panel(&self, ui: &mut egui::Ui) {
@@ -491,8 +487,13 @@ impl eframe::App for InspectorApp {
             self.detail_panel(details);
         });
 
-        if self.proxy.is_some() {
-            ui.ctx().request_repaint_after(Duration::from_millis(100));
+        // New exchanges wake the UI through the proxy's notifier. Periodic
+        // repaints are needed only for values that change without an event
+        // and for noticing an engine that stopped on its own.
+        if self.has_live_records() {
+            ui.ctx().request_repaint_after(LIVE_REPAINT);
+        } else if self.proxy.is_some() {
+            ui.ctx().request_repaint_after(IDLE_REPAINT);
         }
     }
 }
@@ -663,7 +664,8 @@ const fn lifecycle_text(lifecycle: BodyLifecycle) -> &'static str {
     match lifecycle {
         BodyLifecycle::Streaming => "streaming",
         BodyLifecycle::Complete => "complete",
-        BodyLifecycle::Interrupted => "interrupted",
+        BodyLifecycle::Interrupted => "interrupted by the sender",
+        BodyLifecycle::Cancelled => "cancelled by the receiver",
     }
 }
 
@@ -672,26 +674,6 @@ const fn retention_text(retention: BodyRetention) -> &'static str {
         BodyRetention::Prefix => "full preview",
         BodyRetention::Truncated => "truncated preview",
         BodyRetention::Omitted => "preview omitted",
-    }
-}
-
-fn outcome_text(outcome: &Outcome) -> (String, Color32) {
-    match outcome {
-        Outcome::InFlight => ("Pending".to_owned(), Color32::GRAY),
-        Outcome::Response(response) => {
-            let status = response.status();
-            let color = if status.as_u16() < 400 {
-                Color32::LIGHT_GREEN
-            } else {
-                Color32::LIGHT_RED
-            };
-            (status.as_str().to_owned(), color)
-        }
-        Outcome::Tunnel(tunnel) => tunnel_summary(tunnel),
-        Outcome::InspectionEstablished => ("HTTPS".to_owned(), Color32::LIGHT_BLUE),
-        Outcome::Failed { stage, message } => (format!("{stage:?}: {message}"), Color32::LIGHT_RED),
-        Outcome::Cancelled => ("Cancelled by client".to_owned(), Color32::YELLOW),
-        Outcome::Incomplete => ("Incomplete (proxy stopped)".to_owned(), Color32::YELLOW),
     }
 }
 
@@ -749,13 +731,24 @@ fn render_timing(ui: &mut egui::Ui, record: &Exchange) {
             ("Ended", optional_millis(timing.settled()))
         }
     };
+    let total = timing.complete().map_or_else(
+        || "in progress".to_owned(),
+        |duration| format!("{:.1} ms", elapsed_millis(duration)),
+    );
+    let rows = [
+        ("Connect", optional_millis(timing.connect())),
+        ("Send", optional_millis(timing.send())),
+        ("Wait (TTFB)", optional_millis(timing.wait())),
+        ("Receive", optional_millis(timing.receive())),
+        (settled_label, settled_value),
+        ("Total", total),
+    ];
     egui::Grid::new("timing").num_columns(2).show(ui, |ui| {
-        ui.label("Connect");
-        ui.monospace(optional_millis(timing.connect()));
-        ui.end_row();
-        ui.label(settled_label);
-        ui.monospace(settled_value);
-        ui.end_row();
+        for (label, value) in rows {
+            ui.label(label);
+            ui.monospace(value);
+            ui.end_row();
+        }
     });
 }
 
@@ -772,17 +765,6 @@ fn elapsed_text(record: &Exchange) -> String {
         format!("{millis:.0} ms…")
     } else {
         format!("{millis:.1} ms")
-    }
-}
-
-fn tunnel_summary(tunnel: &TunnelPreview) -> (String, Color32) {
-    match tunnel.snapshot().state() {
-        TunnelState::Open => ("Tunnel · open".to_owned(), Color32::LIGHT_BLUE),
-        TunnelState::Closed => ("Tunnel · closed".to_owned(), Color32::LIGHT_BLUE),
-        TunnelState::Failed { stage, .. } => {
-            (format!("Tunnel · failed ({stage:?})"), Color32::LIGHT_RED)
-        }
-        TunnelState::Incomplete => ("Tunnel · incomplete".to_owned(), Color32::YELLOW),
     }
 }
 
