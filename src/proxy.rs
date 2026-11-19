@@ -37,13 +37,22 @@ use crate::{
 use crate::{CaptureOutcome, CaptureRecord, FailureStage};
 
 mod headers;
+mod target;
 
 use headers::remove_hop_by_hop_headers;
+use target::{ResolveError, resolve_upstream, upstream_target};
 
 type ProxyBody = BoxBody<Bytes, hyper::Error>;
 
 static NEXT_RECORD_ID: AtomicU64 = AtomicU64::new(1);
 const TLS_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Shared state that every connection handled by one proxy run uses.
+struct Engine {
+    events: EventSink,
+    inspector: Option<Arc<TlsInspector>>,
+    local_addr: SocketAddr,
+}
 
 #[derive(Clone)]
 struct EventSink {
@@ -228,12 +237,17 @@ impl ProxyHandle {
             dropped: Arc::clone(&dropped),
             log,
         };
+        let engine = Arc::new(Engine {
+            events: event_sink,
+            inspector,
+            local_addr,
+        });
         let (shutdown, shutdown_receiver) = watch::channel(false);
         let thread = thread::Builder::new()
             .name("http-inspector-proxy".to_owned())
             .spawn(move || {
                 runtime.block_on(async move {
-                    let result = run(listener, event_sink, inspector, shutdown_receiver).await;
+                    let result = run(listener, engine, shutdown_receiver).await;
                     if let Err(error) = result {
                         tracing::error!(%error, "proxy server stopped");
                     }
@@ -327,8 +341,7 @@ pub enum StopError {
 
 async fn run(
     listener: StdTcpListener,
-    events: EventSink,
-    inspector: Option<Arc<TlsInspector>>,
+    engine: Arc<Engine>,
     mut shutdown: watch::Receiver<bool>,
 ) -> io::Result<()> {
     let listener = TcpListener::from_std(listener)?;
@@ -341,23 +354,17 @@ async fn run(
             }
             accepted = listener.accept() => {
                 let (stream, _) = accepted?;
-                let connection_events = events.clone();
-                let connection_inspector = inspector.clone();
+                let connection_engine = Arc::clone(&engine);
                 tokio::spawn(async move {
-                    serve_connection(stream, connection_events, connection_inspector).await;
+                    serve_connection(stream, connection_engine).await;
                 });
             }
         }
     }
 }
 
-async fn serve_connection(
-    stream: TcpStream,
-    events: EventSink,
-    inspector: Option<Arc<TlsInspector>>,
-) {
-    let service =
-        service_fn(move |request| proxy_request(request, events.clone(), inspector.clone()));
+async fn serve_connection(stream: TcpStream, engine: Arc<Engine>) {
+    let service = service_fn(move |request| proxy_request(request, Arc::clone(&engine)));
     let connection = server_http1::Builder::new()
         .serve_connection(TokioIo::new(stream), service)
         .with_upgrades();
@@ -368,16 +375,15 @@ async fn serve_connection(
 
 async fn proxy_request(
     mut request: Request<Incoming>,
-    events: EventSink,
-    inspector: Option<Arc<TlsInspector>>,
+    engine: Arc<Engine>,
 ) -> Result<Response<ProxyBody>, Infallible> {
     let started = Instant::now();
-    let capture = CaptureContext::new(&request, started, events.log.clone());
+    let capture = CaptureContext::new(&request, started, engine.events.log.clone());
 
     let response = if request.method() == Method::CONNECT {
-        connect_tunnel(&mut request, &events, capture, inspector).await
+        connect_tunnel(&mut request, &engine, capture).await
     } else {
-        forward_http(request, &events, &capture).await
+        forward_http(request, &engine, &capture).await
     };
 
     Ok(response)
@@ -385,10 +391,10 @@ async fn proxy_request(
 
 async fn connect_tunnel(
     request: &mut Request<Incoming>,
-    events: &EventSink,
+    engine: &Engine,
     capture: CaptureContext,
-    inspector: Option<Arc<TlsInspector>>,
 ) -> Response<ProxyBody> {
+    let events = &engine.events;
     let Some(authority) = request.uri().authority().cloned() else {
         return failed_response(
             events,
@@ -400,22 +406,21 @@ async fn connect_tunnel(
         );
     };
 
-    if let Some(inspector) = inspector {
+    let addresses = match resolve_upstream(&authority, 443, engine.local_addr).await {
+        Ok(addresses) => addresses,
+        Err(error) => {
+            let failure = UpstreamFailure::from(error);
+            return failure.respond(events, &capture);
+        }
+    };
+
+    if let Some(inspector) = engine.inspector.clone() {
         return connect_inspected(request, events, capture, inspector, &authority);
     }
 
-    let upstream = match TcpStream::connect(authority.as_str()).await {
+    let upstream = match connect_addresses(&addresses).await {
         Ok(stream) => stream,
-        Err(error) => {
-            return failed_response(
-                events,
-                &capture,
-                None,
-                FailureStage::Connect,
-                StatusCode::BAD_GATEWAY,
-                &error.to_string(),
-            );
-        }
+        Err(failure) => return failure.respond(events, &capture),
     };
 
     let on_upgrade = hyper::upgrade::on(request);
@@ -603,9 +608,10 @@ fn validate_inner_request(
 
 async fn forward_http(
     request: Request<Incoming>,
-    events: &EventSink,
+    engine: &Engine,
     capture: &CaptureContext,
 ) -> Response<ProxyBody> {
+    let events = &engine.events;
     let target_parts = match upstream_target(&request) {
         Ok(parts) => parts,
         Err(message) => {
@@ -620,18 +626,9 @@ async fn forward_http(
         }
     };
 
-    let stream = match TcpStream::connect(&target_parts.socket_target).await {
+    let stream = match connect_upstream(&target_parts.authority, 80, engine).await {
         Ok(stream) => stream,
-        Err(error) => {
-            return failed_response(
-                events,
-                capture,
-                None,
-                FailureStage::Connect,
-                StatusCode::BAD_GATEWAY,
-                &error.to_string(),
-            );
-        }
+        Err(failure) => return failure.respond(events, capture),
     };
 
     forward_over_stream(request, stream, events, capture, target_parts.path).await
@@ -768,49 +765,60 @@ fn send_connection_failure(
     events.send(capture.record(None, CaptureOutcome::Failed { stage, message }));
 }
 
-struct UpstreamTarget {
-    socket_target: String,
-    path: Uri,
+/// Why the proxy could not open an upstream connection.
+struct UpstreamFailure {
+    stage: FailureStage,
+    status: StatusCode,
+    message: String,
 }
 
-fn upstream_target(request: &Request<Incoming>) -> Result<UpstreamTarget, &'static str> {
-    if let Some(scheme) = request.uri().scheme_str()
-        && scheme != "http"
-    {
-        return Err("only http:// requests are supported without CONNECT");
+impl UpstreamFailure {
+    fn respond(&self, events: &EventSink, capture: &CaptureContext) -> Response<ProxyBody> {
+        failed_response(
+            events,
+            capture,
+            None,
+            self.stage,
+            self.status,
+            &self.message,
+        )
     }
+}
 
-    let authority = request
-        .uri()
-        .authority()
-        .cloned()
-        .or_else(|| {
-            request
-                .headers()
-                .get(HOST)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.parse::<Authority>().ok())
+impl From<ResolveError> for UpstreamFailure {
+    fn from(error: ResolveError) -> Self {
+        match error {
+            ResolveError::Lookup(error) => Self {
+                stage: FailureStage::Connect,
+                status: StatusCode::BAD_GATEWAY,
+                message: error.to_string(),
+            },
+            ResolveError::Loop => Self {
+                stage: FailureStage::Request,
+                status: StatusCode::LOOP_DETECTED,
+                message: "the request targets this proxy itself".to_owned(),
+            },
+        }
+    }
+}
+
+async fn connect_upstream(
+    authority: &Authority,
+    default_port: u16,
+    engine: &Engine,
+) -> Result<TcpStream, UpstreamFailure> {
+    let addresses = resolve_upstream(authority, default_port, engine.local_addr).await?;
+    connect_addresses(&addresses).await
+}
+
+async fn connect_addresses(addresses: &[SocketAddr]) -> Result<TcpStream, UpstreamFailure> {
+    TcpStream::connect(addresses)
+        .await
+        .map_err(|error| UpstreamFailure {
+            stage: FailureStage::Connect,
+            status: StatusCode::BAD_GATEWAY,
+            message: error.to_string(),
         })
-        .ok_or("the request has no upstream authority")?;
-    let path = match request.uri().path_and_query() {
-        Some(value) => value
-            .as_str()
-            .parse()
-            .map_err(|_| "the request path is invalid")?,
-        None => Uri::from_static("/"),
-    };
-    let host = authority.host();
-    let port = authority.port_u16().unwrap_or(80);
-    let socket_target = if host.contains(':') {
-        format!("[{host}]:{port}")
-    } else {
-        format!("{host}:{port}")
-    };
-
-    Ok(UpstreamTarget {
-        socket_target,
-        path,
-    })
 }
 
 fn failed_response(

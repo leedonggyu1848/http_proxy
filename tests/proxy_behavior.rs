@@ -110,6 +110,47 @@ async fn strips_fields_named_by_connection_in_both_directions() -> Result<(), Bo
 }
 
 #[tokio::test]
+async fn rejects_requests_that_target_the_proxy_itself() -> Result<(), Box<dyn Error>> {
+    let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0))?;
+    let proxy_addr = proxy.local_addr();
+    let port = proxy_addr.port();
+    let requests = [
+        format!("GET http://{proxy_addr}/ HTTP/1.1\r\nHost: {proxy_addr}\r\n\r\n"),
+        format!("GET / HTTP/1.1\r\nHost: localhost:{port}\r\n\r\n"),
+        format!("CONNECT 0.0.0.0:{port} HTTP/1.1\r\nHost: 0.0.0.0:{port}\r\n\r\n"),
+    ];
+    for request in requests {
+        let mut client = TcpStream::connect(proxy_addr).await?;
+        client.write_all(request.as_bytes()).await?;
+        let response = timeout(TEST_TIMEOUT, read_headers(&mut client)).await??;
+        let response = String::from_utf8(response)?;
+        assert!(
+            response.starts_with("HTTP/1.1 508 Loop Detected"),
+            "{request:?} -> {response:?}"
+        );
+
+        let record = timeout(TEST_TIMEOUT, proxy.receive())
+            .await?
+            .ok_or("capture channel closed")?;
+        assert!(matches!(
+            record.outcome(),
+            CaptureOutcome::Failed {
+                stage: http_proxy::FailureStage::Request,
+                ..
+            }
+        ));
+    }
+    assert!(
+        timeout(Duration::from_millis(200), proxy.receive())
+            .await
+            .is_err(),
+        "a rejected request must not be forwarded again"
+    );
+    proxy.stop()?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn connect_creates_a_bidirectional_tunnel() -> Result<(), Box<dyn Error>> {
     let upstream = TcpListener::bind("127.0.0.1:0").await?;
     let upstream_addr = upstream.local_addr()?;
