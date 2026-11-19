@@ -36,7 +36,8 @@ use std::time::Duration;
 use eframe::egui::{self, Color32, RichText};
 use http_proxy::{
     BodyLifecycle, BodyPreview, BodyRetention, EngineState, Exchange, FullLog, HeaderPreview,
-    HttpsInspection, Outcome, ProxyConfig, ProxyHandle, RecordId, TunnelPreview, TunnelState,
+    HttpsInspection, Outcome, ProxyConfig, ProxyHandle, RecordId, SESSION_BODY_LIMIT_BYTES,
+    TunnelPreview, TunnelState,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -267,6 +268,19 @@ impl InspectorApp {
             .or_else(|| self.full_log.as_ref().and_then(FullLog::error))
         {
             ui.colored_label(Color32::LIGHT_RED, error);
+        }
+        if self
+            .full_log
+            .as_ref()
+            .is_some_and(FullLog::body_limit_reached)
+        {
+            ui.colored_label(
+                Color32::YELLOW,
+                format!(
+                    "The full-session log reached its {} MiB body limit. Later body bytes are omitted; headers and results are still logged.",
+                    SESSION_BODY_LIMIT_BYTES / (1_024 * 1_024)
+                ),
+            );
         }
 
         self.save.ui(ui, self.full_log.as_ref());

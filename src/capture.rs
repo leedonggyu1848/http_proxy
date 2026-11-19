@@ -75,6 +75,7 @@ pub(super) struct BodyLog {
     id: u64,
     side: &'static str,
     ended: bool,
+    limited: bool,
 }
 
 impl BodyLog {
@@ -84,6 +85,19 @@ impl BodyLog {
             id,
             side,
             ended: false,
+            limited: false,
+        }
+    }
+
+    /// Writes observed body bytes until the session body limit is reached,
+    /// then records once that later bytes of this body were omitted.
+    fn observe(&mut self, data: &[u8]) {
+        if self.limited {
+            return;
+        }
+        if !self.log.body(self.id, self.side, data) {
+            self.limited = true;
+            self.log.body_omitted(self.id, self.side);
         }
     }
 
@@ -133,8 +147,8 @@ where
             Poll::Ready(Some(Ok(frame))) => {
                 if let Some(data) = frame.data_ref() {
                     this.preview.observe(data);
-                    if let Some(log) = this.log.as_ref() {
-                        log.log.body(log.id, log.side, data);
+                    if let Some(log) = this.log.as_mut() {
+                        log.observe(data);
                     }
                 }
                 if let Some(trailers) = frame.trailers_ref()
@@ -186,5 +200,33 @@ impl<B> Drop for ObservedBody<B> {
         if let Some(log) = self.log.as_mut() {
             log.end("interrupted");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use super::*;
+
+    #[test]
+    fn body_log_marks_the_omission_once_after_the_session_limit() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("limited.log");
+        let log = FullLog::with_body_limit(3)?;
+        let mut body = BodyLog::new(log.clone(), 9, "Response");
+        body.observe(b"abcd");
+        body.observe(b"ef");
+        body.end("complete");
+        log.export(path.clone())?
+            .recv()
+            .map_err(io::Error::other)??;
+        assert_eq!(
+            std::fs::read_to_string(path)?,
+            "[9] Response body bytes: abc\n\
+             [9] Response body: later bytes omitted because the session body limit of 512 MiB was reached\n\
+             [9] Response body: complete\n"
+        );
+        Ok(())
     }
 }

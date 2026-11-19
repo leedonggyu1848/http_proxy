@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -10,6 +11,13 @@ use tempfile::NamedTempFile;
 const QUEUE_CAPACITY: usize = 1_024;
 const EVENT_BYTES: usize = 8 * 1_024;
 const BODY_CHUNK_BYTES: usize = 8 * 1_024;
+
+/// Body bytes one app session may write to its journal.
+///
+/// The journal lives in the temporary directory, which is often a RAM-backed
+/// tmpfs, so an unbounded download must not exhaust memory or disk. Headers,
+/// results and failures are still written after the limit is reached.
+pub const SESSION_BODY_LIMIT_BYTES: u64 = 512 * 1_024 * 1_024;
 
 type ExportResult = io::Result<PathBuf>;
 type Failure = Arc<Mutex<Option<String>>>;
@@ -25,11 +33,16 @@ enum Event {
 pub struct FullLog {
     sender: SyncSender<Event>,
     failure: Failure,
+    body_budget: Arc<AtomicU64>,
 }
 
 impl FullLog {
     /// Creates a private temporary journal and starts its writer.
     pub fn new() -> io::Result<Self> {
+        Self::with_body_limit(SESSION_BODY_LIMIT_BYTES)
+    }
+
+    pub(crate) fn with_body_limit(body_limit: u64) -> io::Result<Self> {
         let journal = NamedTempFile::new()?;
         let writer = BufWriter::new(journal.reopen()?);
         let (sender, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
@@ -38,7 +51,18 @@ impl FullLog {
         thread::Builder::new()
             .name("session-journal".to_owned())
             .spawn(move || run(&journal, writer, &receiver, &worker_failure))?;
-        Ok(Self { sender, failure })
+        Ok(Self {
+            sender,
+            failure,
+            body_budget: Arc::new(AtomicU64::new(body_limit)),
+        })
+    }
+
+    /// Returns whether the session body limit stopped body bytes from being
+    /// written to the journal.
+    #[must_use]
+    pub fn body_limit_reached(&self) -> bool {
+        self.body_budget.load(Ordering::Relaxed) == 0
     }
 
     /// Returns the first error that made this journal incomplete.
@@ -67,13 +91,38 @@ impl FullLog {
         }
     }
 
-    pub(crate) fn body(&self, id: u64, side: &str, bytes: &[u8]) {
-        for chunk in bytes.chunks(BODY_CHUNK_BYTES) {
+    /// Writes body bytes while the session body budget lasts.
+    ///
+    /// Returns `false` when some of `bytes` were not written.
+    pub(crate) fn body(&self, id: u64, side: &str, bytes: &[u8]) -> bool {
+        let allowed = self.reserve_body(bytes.len());
+        let written = bytes.get(..allowed).unwrap_or_default();
+        for chunk in written.chunks(BODY_CHUNK_BYTES) {
             self.text(format!(
                 "[{id}] {side} body bytes: {}",
                 chunk.escape_ascii()
             ));
         }
+        allowed == bytes.len()
+    }
+
+    pub(crate) fn body_omitted(&self, id: u64, side: &str) {
+        self.text(format!(
+            "[{id}] {side} body: later bytes omitted because the session body limit of {} MiB was reached",
+            SESSION_BODY_LIMIT_BYTES / (1_024 * 1_024)
+        ));
+    }
+
+    /// Takes up to `length` bytes from the session budget and returns how
+    /// many may be written.
+    fn reserve_body(&self, length: usize) -> usize {
+        let wanted = u64::try_from(length).unwrap_or(u64::MAX);
+        let remaining =
+            self.body_budget
+                .update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                    remaining.saturating_sub(wanted)
+                });
+        usize::try_from(remaining.min(wanted)).unwrap_or(length)
     }
 
     pub(crate) fn body_end(&self, id: u64, side: &str, state: &str) {
@@ -225,7 +274,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let log = FullLog::new()?;
         let body: Vec<u8> = (0..=255).cycle().take(20_000).collect();
-        log.body(7, "Request", &body);
+        assert!(log.body(7, "Request", &body));
         log.body_end(7, "Request", "complete");
         let text = exported(&log, directory.path().join("session.txt"))?;
         let mut expected = String::new();
@@ -234,6 +283,25 @@ mod tests {
                 .map_err(io::Error::other)?;
         }
         assert_eq!(text, format!("{expected}[7] Request body: complete\n"));
+        assert!(log.error().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn body_limit_writes_a_prefix_and_reports_the_omission() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let log = FullLog::with_body_limit(5)?;
+        assert!(log.body(1, "Request", b"abc"));
+        assert!(!log.body_limit_reached());
+        assert!(!log.body(1, "Request", b"defg"));
+        assert!(log.body_limit_reached());
+        assert!(!log.body(2, "Response", b"h"));
+        assert!(log.body(2, "Response", b""));
+        let text = exported(&log, directory.path().join("limited.txt"))?;
+        assert_eq!(
+            text,
+            "[1] Request body bytes: abc\n[1] Request body bytes: de\n"
+        );
         assert!(log.error().is_none());
         Ok(())
     }
@@ -269,6 +337,7 @@ mod tests {
         let log = FullLog {
             sender,
             failure: Arc::new(Mutex::new(None)),
+            body_budget: Arc::new(AtomicU64::new(SESSION_BODY_LIMIT_BYTES)),
         };
         log.text("first".to_owned());
         log.text("lost".to_owned());
@@ -285,6 +354,7 @@ mod tests {
         let log = FullLog {
             sender,
             failure: Arc::new(Mutex::new(None)),
+            body_budget: Arc::new(AtomicU64::new(SESSION_BODY_LIMIT_BYTES)),
         };
         log.text("first".to_owned());
         let error = log.export(PathBuf::from("unused.txt"));
@@ -304,6 +374,7 @@ mod tests {
         let log = FullLog {
             sender,
             failure: Arc::clone(&failure),
+            body_budget: Arc::new(AtomicU64::new(SESSION_BODY_LIMIT_BYTES)),
         };
         let destination = directory.path().join("snapshot.txt");
         let saved = log.export(destination.clone())?;
@@ -326,6 +397,7 @@ mod tests {
         let log = FullLog {
             sender,
             failure: Arc::clone(&failure),
+            body_budget: Arc::new(AtomicU64::new(SESSION_BODY_LIMIT_BYTES)),
         };
         log.text("cannot write to read-only journal".to_owned());
         let destination = directory.path().join("snapshot.txt");

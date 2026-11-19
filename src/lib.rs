@@ -26,7 +26,7 @@ pub use domain::{
     CapturedRequest, CapturedResponse, Exchange, FailureStage, HeaderPreview, Outcome, RecordId,
     SessionId, Timing, TunnelPreview, TunnelSnapshot, TunnelState,
 };
-pub use journal::FullLog;
+pub use journal::{FullLog, SESSION_BODY_LIMIT_BYTES};
 pub use proxy::{EngineState, ProxyConfig, ProxyHandle, StartError, StopError};
 pub use tls::{CaInfo, HttpsInspection, HttpsSetupError};
 pub(crate) use tls::{Destination, PreparedInspection, TlsInspector, UpstreamTlsError};
