@@ -2,6 +2,8 @@
 
 use std::error::Error;
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 use http_proxy::{
@@ -181,6 +183,27 @@ async fn tags_exchanges_with_their_session_and_source() -> Result<(), TestError>
     let later = exchange_through(&mut restarted, second).await?;
     assert_ne!(later.session(), http.session());
     restarted.stop()?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn notifies_after_each_queued_exchange() -> Result<(), TestError> {
+    let upstream = upstream_replying(Some(
+        b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n",
+    ))
+    .await?;
+    let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0))?;
+    let notified = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&notified);
+    assert!(proxy.notify_on_event(move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    }));
+    assert!(!proxy.notify_on_event(|| {}));
+
+    let exchange = exchange_through(&mut proxy, upstream).await?;
+    assert!(matches!(settled(&exchange).await?, Outcome::Response(_)));
+    assert_eq!(notified.load(Ordering::SeqCst), 1);
+    proxy.stop()?;
     Ok(())
 }
 
