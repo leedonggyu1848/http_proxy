@@ -37,15 +37,19 @@ use crate::{
 use crate::{CaptureOutcome, CaptureRecord, FailureStage};
 
 mod headers;
+mod status;
 mod target;
 
 use headers::remove_hop_by_hop_headers;
+pub use status::EngineState;
+use status::{AcceptAction, EngineStatus, accept_action};
 use target::{ResolveError, resolve_upstream, upstream_target};
 
 type ProxyBody = BoxBody<Bytes, hyper::Error>;
 
 static NEXT_RECORD_ID: AtomicU64 = AtomicU64::new(1);
 const TLS_TIMEOUT: Duration = Duration::from_secs(10);
+const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(50);
 const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -234,6 +238,7 @@ pub struct ProxyHandle {
     dropped: Arc<AtomicU64>,
     ca_info: Option<CaInfo>,
     shutdown: watch::Sender<bool>,
+    status: EngineStatus,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -288,6 +293,8 @@ impl ProxyHandle {
             response_timeout,
         });
         let (shutdown, shutdown_receiver) = watch::channel(false);
+        let status = EngineStatus::default();
+        let engine_status = status.clone();
         let thread = thread::Builder::new()
             .name("http-inspector-proxy".to_owned())
             .spawn(move || {
@@ -295,6 +302,7 @@ impl ProxyHandle {
                     let result = run(listener, engine, max_connections, shutdown_receiver).await;
                     if let Err(error) = result {
                         tracing::error!(%error, "proxy server stopped");
+                        engine_status.fail(error.to_string());
                     }
                 });
             })
@@ -306,6 +314,7 @@ impl ProxyHandle {
             dropped,
             ca_info,
             shutdown,
+            status,
             thread: Some(thread),
         })
     }
@@ -330,6 +339,13 @@ impl ProxyHandle {
     #[must_use]
     pub fn dropped_records(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
+    }
+
+    /// Reports whether the engine is still accepting connections.
+    #[must_use]
+    pub fn state(&self) -> EngineState {
+        let finished = self.thread.as_ref().is_none_or(JoinHandle::is_finished);
+        self.status.state(finished)
     }
 
     /// Returns public CA metadata when HTTPS inspection is enabled.
@@ -392,6 +408,7 @@ async fn run(
 ) -> io::Result<()> {
     let listener = TcpListener::from_std(listener)?;
     let connections = Arc::new(Semaphore::new(max_connections));
+    let mut failures = AcceptFailures::default();
     loop {
         let permit = tokio::select! {
             () = wait_for_shutdown(&mut shutdown) => return Ok(()),
@@ -402,14 +419,48 @@ async fn run(
         };
         tokio::select! {
             () = wait_for_shutdown(&mut shutdown) => return Ok(()),
-            accepted = listener.accept() => {
-                let (stream, _) = accepted?;
-                let connection_engine = Arc::clone(&engine);
-                tokio::spawn(async move {
-                    serve_connection(stream, connection_engine, permit).await;
-                });
-            }
+            accepted = listener.accept() => match accepted {
+                Ok((stream, _)) => {
+                    failures.reset();
+                    let connection_engine = Arc::clone(&engine);
+                    tokio::spawn(async move {
+                        serve_connection(stream, connection_engine, permit).await;
+                    });
+                }
+                Err(error) => {
+                    drop(permit);
+                    if accept_action(&error) == AcceptAction::Stop {
+                        return Err(error);
+                    }
+                    failures.report(&error);
+                    tokio::select! {
+                        () = wait_for_shutdown(&mut shutdown) => return Ok(()),
+                        () = tokio::time::sleep(ACCEPT_RETRY_DELAY) => {}
+                    }
+                }
+            },
         }
+    }
+}
+
+/// Logs the first failure of a run of accept errors loudly and the rest quietly.
+#[derive(Default)]
+struct AcceptFailures {
+    consecutive: u64,
+}
+
+impl AcceptFailures {
+    fn report(&mut self, error: &io::Error) {
+        self.consecutive = self.consecutive.saturating_add(1);
+        if self.consecutive == 1 {
+            tracing::warn!(%error, "accepting a client failed; retrying");
+        } else {
+            tracing::debug!(%error, count = self.consecutive, "accepting a client failed again");
+        }
+    }
+
+    const fn reset(&mut self) {
+        self.consecutive = 0;
     }
 }
 

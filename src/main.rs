@@ -30,7 +30,7 @@ use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
 use http_proxy::{
-    BodyLifecycle, BodyPreview, BodyRetention, CaptureOutcome, CaptureRecord, FullLog,
+    BodyLifecycle, BodyPreview, BodyRetention, CaptureOutcome, CaptureRecord, EngineState, FullLog,
     HeaderPreview, HttpsInspection, ProxyConfig, ProxyHandle, RecordId,
 };
 use tracing_subscriber::EnvFilter;
@@ -166,6 +166,23 @@ impl InspectorApp {
         {
             self.error = Some(error.to_string());
         }
+    }
+
+    /// Releases a proxy whose engine stopped on its own so the toolbar shows
+    /// `Stopped` with the cause and `Start` can be pressed again.
+    fn release_failed_proxy(&mut self) {
+        let Some(EngineState::Failed { message }) = self.proxy.as_ref().map(ProxyHandle::state)
+        else {
+            return;
+        };
+        self.receive_records();
+        let mut error = format!("The proxy stopped: {message}. Press Start to restart it.");
+        if let Some(proxy) = self.proxy.take()
+            && let Err(stop_error) = proxy.stop()
+        {
+            error = format!("{error} ({stop_error})");
+        }
+        self.error = Some(error);
     }
 
     fn receive_records(&mut self) {
@@ -386,6 +403,7 @@ impl InspectorApp {
 impl eframe::App for InspectorApp {
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
         self.receive_records();
+        self.release_failed_proxy();
         ui.heading(http_proxy::APP_NAME);
         ui.label("Configure an HTTP client to use the proxy shown below.");
         ui.separator();

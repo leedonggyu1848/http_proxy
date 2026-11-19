@@ -37,6 +37,7 @@ async fn forwards_http_request_and_records_response() -> Result<(), Box<dyn Erro
     });
 
     let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0))?;
+    assert_eq!(proxy.state(), http_proxy::EngineState::Running);
     let mut client = TcpStream::connect(proxy.local_addr()).await?;
     let request = format!(
         "GET http://{upstream_addr}/hello?name=rust HTTP/1.1\r\nHost: {upstream_addr}\r\nConnection: close\r\n\r\n"
@@ -63,6 +64,7 @@ async fn forwards_http_request_and_records_response() -> Result<(), Box<dyn Erro
     ));
 
     timeout(TEST_TIMEOUT, upstream_task).await???;
+    assert_eq!(proxy.state(), http_proxy::EngineState::Running);
     proxy.stop()?;
     Ok(())
 }
