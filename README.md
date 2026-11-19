@@ -41,15 +41,28 @@ HTTPS 복호화는 기본으로 꺼져 있다. 이 상태에서 앱은 `CONNECT`
 
 본문 미리보기는 메모리에 유지하며 화면 기록을 삭제하거나 앱을 종료하면 사라진다. 전체 로그는 앱이 실행되는 동안 별도의 임시 파일에 기록한다. `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie` 헤더 값은 미리보기와 전체 로그에서 가린다. 큰 본문은 전체를 계속 전달하며 화면 미리보기만 8KiB에서 자른다.
 
+요청·응답 본문의 `Content-Encoding`이 `gzip`, `deflate`, `br`, `zstd`이면 화면 미리보기에서 압축을 푼다. 압축 해제한 출력도 최대 8KiB로 제한하며, 캡처한 압축 데이터가 일부뿐이면 표시 가능한 앞부분과 불완전 상태를 보여 준다. 지원하지 않는 형식이나 손상된 압축 데이터에는 오류를 표시한다. 과도한 중첩 압축과 중간 데이터 확장은 미리보기를 거부한다. 프록시 전달과 전체 로그에는 압축된 원본 바이트를 유지한다.
+
+한글 표시는 설치된 Nanum 또는 Noto CJK 폰트를 사용한다. Ubuntu에서 글자가 네모로 보이면 `sudo apt install fonts-noto-cjk`로 폰트를 설치하고 앱을 다시 실행한다.
+
+다음은 Brotli로 압축한 테스트 JSON의 한글 본문을 미리보기에서 표시한 실제 화면이다.
+
+![Brotli 압축을 푼 한글 JSON 본문 미리보기](docs/screenshots/decoded-body-preview.png)
+
+다음은 Chrome으로 접속한 HTTPS 응답의 `Content-Encoding: br` 헤더와 압축을 푼 HTML 본문이다.
+
+![HTTPS 응답의 Brotli 압축 해제와 HTML 본문 표시](docs/screenshots/decoded-https-body.png)
+
 ## Linux 요구사항
 
 프로젝트는 Rust 1.100.0과 X11을 사용한다. `rustup`은 `rust-toolchain.toml`에 지정된 툴체인을 설치한다.
 
-Ubuntu 계열 배포판에서 CI와 같은 개발 패키지를 설치하려면 다음 명령을 사용한다.
+Ubuntu 계열 배포판에서 개발과 한글 표시에 필요한 패키지를 설치하려면 다음 명령을 사용한다.
 
 ```bash
 sudo apt-get update
 sudo apt-get install --yes \
+	fonts-noto-cjk \
 	libgl1-mesa-dev \
 	libx11-dev \
 	libxkbcommon-dev \
