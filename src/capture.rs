@@ -196,9 +196,9 @@ where
 
 impl<B> Drop for ObservedBody<B> {
     fn drop(&mut self) {
-        self.preview.interrupt();
+        self.preview.cancel();
         if let Some(log) = self.log.as_mut() {
-            log.end("interrupted");
+            log.end("cancelled");
         }
     }
 }

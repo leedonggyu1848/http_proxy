@@ -36,6 +36,18 @@ mod records;
 )]
 mod scope_help;
 
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "Port settings are private to the application module."
+)]
+mod port_settings;
+
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "The request list is private to the application module."
+)]
+mod request_table;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -47,8 +59,11 @@ use http_proxy::{
 };
 use tracing_subscriber::EnvFilter;
 
-const PROXY_PORT: u16 = 8080;
 const MAX_RECORDS: usize = 2_000;
+/// Repaint interval while pending requests or streaming bodies change on screen.
+const LIVE_REPAINT: Duration = Duration::from_millis(250);
+/// Repaint interval otherwise, to notice an engine that stopped on its own.
+const IDLE_REPAINT: Duration = Duration::from_secs(1);
 
 fn main() -> eframe::Result {
     init_tracing();
@@ -61,7 +76,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(|context| {
             configure_fonts(&context.egui_ctx);
-            Ok(Box::new(InspectorApp::new()))
+            Ok(Box::new(InspectorApp::new(context.egui_ctx.clone())))
         }),
     )
 }
@@ -113,10 +128,56 @@ struct InspectorApp {
     full_log: Option<FullLog>,
     log_init_error: Option<String>,
     save: save::SaveControls,
+    port: PortChoice,
+    table: request_table::RequestTable,
+    context: egui::Context,
+}
+
+/// Port typed in the toolbar and where its current value came from.
+struct PortChoice {
+    text: String,
+    origin: port_settings::PortOrigin,
+    settings_directory: Option<PathBuf>,
+    launch_warning: Option<String>,
+}
+
+impl PortChoice {
+    fn from_launch() -> Self {
+        let settings_directory = port_settings::default_settings_directory();
+        let saved = settings_directory
+            .as_deref()
+            .and_then(port_settings::load_port);
+        let launch = port_settings::launch_port(
+            std::env::args_os(),
+            std::env::var_os(port_settings::PORT_ENV),
+            saved,
+        );
+        Self {
+            text: launch.port.to_string(),
+            origin: launch.origin,
+            settings_directory,
+            launch_warning: launch.warning,
+        }
+    }
+
+    /// Remembers a port the user typed once the proxy started on it.
+    fn remember(&self, port: port_settings::ProxyPort) -> Result<(), String> {
+        if self.origin != port_settings::PortOrigin::User {
+            return Ok(());
+        }
+        let Some(directory) = self.settings_directory.as_deref() else {
+            return Err(
+                "The port could not be saved because XDG_CONFIG_HOME and HOME are unset."
+                    .to_owned(),
+            );
+        };
+        port_settings::save_port(directory, port)
+            .map_err(|error| format!("The proxy started, but the port could not be saved: {error}"))
+    }
 }
 
 impl InspectorApp {
-    fn new() -> Self {
+    fn new(context: egui::Context) -> Self {
         let (full_log, log_init_error) = match FullLog::new() {
             Ok(log) => (Some(log), None),
             Err(error) => (
@@ -138,13 +199,23 @@ impl InspectorApp {
             full_log,
             log_init_error,
             save: save::SaveControls::new(),
+            port: PortChoice::from_launch(),
+            table: request_table::RequestTable::new(),
+            context,
         };
         app.start_proxy();
         app
     }
 
     fn start_proxy(&mut self) {
-        let mut config = ProxyConfig::loopback(PROXY_PORT);
+        let port = match port_settings::ProxyPort::parse(&self.port.text) {
+            Ok(port) => port,
+            Err(error) => {
+                self.error = Some(error.to_string());
+                return;
+            }
+        };
+        let mut config = ProxyConfig::loopback(port.value());
         if self.https_inspection {
             let Some(directory) = self.ca_directory.as_ref() else {
                 self.error = Some(
@@ -161,11 +232,13 @@ impl InspectorApp {
         );
         match result {
             Ok(proxy) => {
+                let context = self.context.clone();
+                let _first_notifier = proxy.notify_on_event(move || context.request_repaint());
                 self.proxy = Some(proxy);
-                self.error = None;
+                self.error = self.port.remember(port).err();
             }
             Err(error) => {
-                self.error = Some(error.to_string());
+                self.error = Some(port_settings::start_error_text(&error, port));
             }
         }
     }
@@ -224,13 +297,25 @@ impl InspectorApp {
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if let Some(proxy) = self.proxy.as_ref() {
+                let address = proxy.local_addr();
                 ui.label(RichText::new("Running").color(Color32::LIGHT_GREEN));
-                ui.monospace(proxy.local_addr().to_string());
+                ui.monospace(address.to_string());
+                copy_menu(ui, address);
                 if ui.button("Stop").clicked() {
                     self.stop_proxy();
                 }
             } else {
                 ui.label(RichText::new("Stopped").color(Color32::LIGHT_RED));
+                ui.label("Port");
+                let edited = ui
+                    .add(egui::TextEdit::singleline(&mut self.port.text).desired_width(56.0))
+                    .on_hover_text(
+                        "Loopback port for the proxy. 0 picks a free port. A port you type is remembered.",
+                    )
+                    .changed();
+                if edited {
+                    self.port.origin = port_settings::PortOrigin::User;
+                }
                 if ui.button("Start").clicked() {
                     self.start_proxy();
                 }
@@ -265,6 +350,28 @@ impl InspectorApp {
             }
         });
 
+        self.status_messages(ui);
+
+        self.save.ui(ui, self.full_log.as_ref());
+
+        self.https_controls(ui);
+        ui.separator();
+        if self.browsers.show(
+            ui,
+            self.proxy.as_ref().map(ProxyHandle::local_addr),
+            self.ca_directory
+                .as_deref()
+                .filter(|_| self.https_inspection),
+        ) {
+            self.ca_panel.refresh();
+        }
+    }
+
+    /// Shows launch warnings, errors, and full-session log notices.
+    fn status_messages(&self, ui: &mut egui::Ui) {
+        if let Some(warning) = self.port.launch_warning.as_ref() {
+            ui.colored_label(Color32::YELLOW, warning);
+        }
         if let Some(error) = self.error.as_ref() {
             ui.colored_label(Color32::LIGHT_RED, error);
         }
@@ -287,20 +394,6 @@ impl InspectorApp {
                     SESSION_BODY_LIMIT_BYTES / (1_024 * 1_024)
                 ),
             );
-        }
-
-        self.save.ui(ui, self.full_log.as_ref());
-
-        self.https_controls(ui);
-        ui.separator();
-        if self.browsers.show(
-            ui,
-            self.proxy.as_ref().map(ProxyHandle::local_addr),
-            self.ca_directory
-                .as_deref()
-                .filter(|_| self.https_inspection),
-        ) {
-            self.ca_panel.refresh();
         }
     }
 
@@ -344,51 +437,28 @@ impl InspectorApp {
 
     fn request_table(&mut self, ui: &mut egui::Ui) {
         let query = self.filter_text.to_lowercase();
-        let selected = self.selected;
-        let mut new_selection = None;
-        egui::ScrollArea::both()
-            .id_salt("requests-scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                egui::Grid::new("request-table")
-                    .striped(true)
-                    .min_col_width(80.0)
-                    .show(ui, |ui| {
-                        ui.strong("Method");
-                        ui.strong("Target");
-                        ui.strong("Result");
-                        ui.strong("Time");
-                        ui.end_row();
-
-                        for record in self
-                            .records
-                            .iter()
-                            .rev()
-                            .filter(|record| record_matches(record, self.record_filter, &query))
-                        {
-                            if ui
-                                .selectable_label(
-                                    selected == Some(record.id()),
-                                    RichText::new(record.request().method().as_str()).monospace(),
-                                )
-                                .clicked()
-                            {
-                                new_selection = Some(record.id());
-                            }
-                            ui.monospace(record.request().target());
-                            let (result, color) = outcome_text(record.outcome());
-                            let result = ui.colored_label(color, result);
-                            if matches!(record.outcome(), Outcome::Tunnel(_)) {
-                                result.on_hover_text(scope_help::TUNNEL_NOTE);
-                            }
-                            ui.monospace(elapsed_text(record));
-                            ui.end_row();
-                        }
-                    });
-            });
-        if new_selection.is_some() {
-            self.selected = new_selection;
+        let rows: Vec<&Exchange> = self
+            .records
+            .iter()
+            .filter(|record| record_matches(record, self.record_filter, &query))
+            .collect();
+        self.table.controls(ui);
+        if let Some(clicked) = self.table.show(ui, rows, self.selected) {
+            self.selected = Some(clicked);
         }
+    }
+
+    /// Reports whether any displayed value still changes over time.
+    fn has_live_records(&self) -> bool {
+        self.records.iter().any(|record| match record.outcome() {
+            Outcome::InFlight => true,
+            Outcome::Response(response) => response.body().lifecycle() == BodyLifecycle::Streaming,
+            Outcome::Tunnel(tunnel) => tunnel.snapshot().state() == &TunnelState::Open,
+            Outcome::InspectionEstablished
+            | Outcome::Failed { .. }
+            | Outcome::Cancelled
+            | Outcome::Incomplete => false,
+        })
     }
 
     fn detail_panel(&self, ui: &mut egui::Ui) {
@@ -442,8 +512,13 @@ impl eframe::App for InspectorApp {
             self.detail_panel(details);
         });
 
-        if self.proxy.is_some() {
-            ui.ctx().request_repaint_after(Duration::from_millis(100));
+        // New exchanges wake the UI through the proxy's notifier. Periodic
+        // repaints are needed only for values that change without an event
+        // and for noticing an engine that stopped on its own.
+        if self.has_live_records() {
+            ui.ctx().request_repaint_after(LIVE_REPAINT);
+        } else if self.proxy.is_some() {
+            ui.ctx().request_repaint_after(IDLE_REPAINT);
         }
     }
 }
@@ -614,7 +689,8 @@ const fn lifecycle_text(lifecycle: BodyLifecycle) -> &'static str {
     match lifecycle {
         BodyLifecycle::Streaming => "streaming",
         BodyLifecycle::Complete => "complete",
-        BodyLifecycle::Interrupted => "interrupted",
+        BodyLifecycle::Interrupted => "interrupted by the sender",
+        BodyLifecycle::Cancelled => "cancelled by the receiver",
     }
 }
 
@@ -623,26 +699,6 @@ const fn retention_text(retention: BodyRetention) -> &'static str {
         BodyRetention::Prefix => "full preview",
         BodyRetention::Truncated => "truncated preview",
         BodyRetention::Omitted => "preview omitted",
-    }
-}
-
-fn outcome_text(outcome: &Outcome) -> (String, Color32) {
-    match outcome {
-        Outcome::InFlight => ("Pending".to_owned(), Color32::GRAY),
-        Outcome::Response(response) => {
-            let status = response.status();
-            let color = if status.as_u16() < 400 {
-                Color32::LIGHT_GREEN
-            } else {
-                Color32::LIGHT_RED
-            };
-            (status.as_str().to_owned(), color)
-        }
-        Outcome::Tunnel(tunnel) => tunnel_summary(tunnel),
-        Outcome::InspectionEstablished => ("HTTPS".to_owned(), Color32::LIGHT_BLUE),
-        Outcome::Failed { stage, message } => (format!("{stage:?}: {message}"), Color32::LIGHT_RED),
-        Outcome::Cancelled => ("Cancelled by client".to_owned(), Color32::YELLOW),
-        Outcome::Incomplete => ("Incomplete (proxy stopped)".to_owned(), Color32::YELLOW),
     }
 }
 
@@ -700,13 +756,24 @@ fn render_timing(ui: &mut egui::Ui, record: &Exchange) {
             ("Ended", optional_millis(timing.settled()))
         }
     };
+    let total = timing.complete().map_or_else(
+        || "in progress".to_owned(),
+        |duration| format!("{:.1} ms", elapsed_millis(duration)),
+    );
+    let rows = [
+        ("Connect", optional_millis(timing.connect())),
+        ("Send", optional_millis(timing.send())),
+        ("Wait (TTFB)", optional_millis(timing.wait())),
+        ("Receive", optional_millis(timing.receive())),
+        (settled_label, settled_value),
+        ("Total", total),
+    ];
     egui::Grid::new("timing").num_columns(2).show(ui, |ui| {
-        ui.label("Connect");
-        ui.monospace(optional_millis(timing.connect()));
-        ui.end_row();
-        ui.label(settled_label);
-        ui.monospace(settled_value);
-        ui.end_row();
+        for (label, value) in rows {
+            ui.label(label);
+            ui.monospace(value);
+            ui.end_row();
+        }
     });
 }
 
@@ -723,17 +790,6 @@ fn elapsed_text(record: &Exchange) -> String {
         format!("{millis:.0} ms…")
     } else {
         format!("{millis:.1} ms")
-    }
-}
-
-fn tunnel_summary(tunnel: &TunnelPreview) -> (String, Color32) {
-    match tunnel.snapshot().state() {
-        TunnelState::Open => ("Tunnel · open".to_owned(), Color32::LIGHT_BLUE),
-        TunnelState::Closed => ("Tunnel · closed".to_owned(), Color32::LIGHT_BLUE),
-        TunnelState::Failed { stage, .. } => {
-            (format!("Tunnel · failed ({stage:?})"), Color32::LIGHT_RED)
-        }
-        TunnelState::Incomplete => ("Tunnel · incomplete".to_owned(), Color32::YELLOW),
     }
 }
 
@@ -765,6 +821,18 @@ fn render_tunnel(ui: &mut egui::Ui, tunnel: &TunnelPreview) {
 
 fn elapsed_millis(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1_000.0
+}
+
+fn copy_menu(ui: &mut egui::Ui, address: std::net::SocketAddr) {
+    ui.menu_button("Copy", |ui| {
+        for target in port_settings::CopyTarget::ALL {
+            let text = target.text(address);
+            if ui.button(target.label()).on_hover_text(&text).clicked() {
+                ui.ctx().copy_text(text);
+                ui.close();
+            }
+        }
+    });
 }
 
 fn default_ca_directory() -> Option<PathBuf> {

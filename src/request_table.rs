@@ -1,0 +1,369 @@
+//! Network-panel style request list that lays out only the visible rows.
+
+use std::cmp::Ordering;
+use std::time::Duration;
+
+use eframe::egui::{self, Color32, RichText};
+use egui_extras::{Column, TableBuilder};
+use http_proxy::{Exchange, Outcome, RecordId, TunnelPreview, TunnelState};
+
+const ROW_HEIGHT: f32 = 20.0;
+const HEADER_HEIGHT: f32 = 22.0;
+
+/// Sortable column of the request list.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Field {
+    Method,
+    Target,
+    Status,
+    Type,
+    Size,
+    Duration,
+}
+
+impl Field {
+    const ALL: [Self; 6] = [
+        Self::Method,
+        Self::Target,
+        Self::Status,
+        Self::Type,
+        Self::Size,
+        Self::Duration,
+    ];
+
+    const fn title(self) -> &'static str {
+        match self {
+            Self::Method => "Method",
+            Self::Target => "Host / Path",
+            Self::Status => "Status",
+            Self::Type => "Type",
+            Self::Size => "Size",
+            Self::Duration => "Duration",
+        }
+    }
+
+    /// Columns truncate their text instead of clipping, because a clipped
+    /// cell gets its own clip rectangle and therefore its own draw call.
+    fn column(self) -> Column {
+        match self {
+            Self::Method => Column::initial(56.0).at_least(40.0),
+            Self::Target => Column::initial(170.0).at_least(60.0),
+            Self::Status => Column::initial(64.0).at_least(40.0),
+            Self::Type => Column::initial(44.0).at_least(32.0),
+            Self::Size => Column::initial(68.0).at_least(40.0),
+            Self::Duration => Column::remainder().at_least(56.0),
+        }
+    }
+
+    fn compare(self, left: &Exchange, right: &Exchange) -> Ordering {
+        match self {
+            Self::Method => left
+                .request()
+                .method()
+                .as_str()
+                .cmp(right.request().method().as_str()),
+            Self::Target => target_text(left).cmp(target_text(right)),
+            Self::Status => status_rank(left.outcome()).cmp(&status_rank(right.outcome())),
+            Self::Type => content_type(left).cmp(&content_type(right)),
+            Self::Size => size_bytes(left).cmp(&size_bytes(right)),
+            Self::Duration => duration(left).cmp(&duration(right)),
+        }
+    }
+}
+
+/// Row order: arrival order unless the user picked a column.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Sort {
+    field: Option<Field>,
+    descending: bool,
+}
+
+impl Sort {
+    /// Cycles a header through ascending, descending, and arrival order.
+    fn toggled(self, field: Field) -> Self {
+        match self.field {
+            Some(current) if current == field && !self.descending => Self {
+                field: Some(field),
+                descending: true,
+            },
+            Some(current) if current == field => Self {
+                field: None,
+                descending: false,
+            },
+            _ => Self {
+                field: Some(field),
+                descending: false,
+            },
+        }
+    }
+
+    fn arrow(self, field: Field) -> &'static str {
+        match self.field {
+            Some(current) if current == field && self.descending => " ▼",
+            Some(current) if current == field => " ▲",
+            _ => "",
+        }
+    }
+}
+
+/// Sort state and scrolling preference of the request list.
+pub(crate) struct RequestTable {
+    sort: Sort,
+    follow_newest: bool,
+}
+
+impl RequestTable {
+    pub(crate) const fn new() -> Self {
+        Self {
+            sort: Sort {
+                field: None,
+                descending: false,
+            },
+            follow_newest: true,
+        }
+    }
+
+    /// Shows the controls above the table.
+    pub(crate) fn controls(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.follow_newest, "Follow newest")
+                .on_hover_text("Keep the newest request in view while sorted by arrival.");
+            if self.sort.field.is_some() && ui.button("Arrival order").clicked() {
+                self.sort = Self::new().sort;
+            }
+        });
+    }
+
+    /// Shows `rows` (oldest first) and returns a newly clicked record.
+    pub(crate) fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        mut rows: Vec<&Exchange>,
+        selected: Option<RecordId>,
+    ) -> Option<RecordId> {
+        if let Some(field) = self.sort.field {
+            rows.sort_by(|left, right| {
+                let order = field.compare(left, right);
+                if self.sort.descending {
+                    order.reverse()
+                } else {
+                    order
+                }
+            });
+        }
+        let mut table = TableBuilder::new(ui)
+            .id_salt("requests")
+            .striped(true)
+            .resizable(true)
+            .sense(egui::Sense::click())
+            .auto_shrink([false, false])
+            .stick_to_bottom(self.follow_newest && self.sort.field.is_none())
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
+        for field in Field::ALL {
+            table = table.column(field.column());
+        }
+
+        let mut clicked = None;
+        table
+            .header(HEADER_HEIGHT, |mut header| {
+                for field in Field::ALL {
+                    header.col(|ui| {
+                        let title = format!("{}{}", field.title(), self.sort.arrow(field));
+                        if ui
+                            .add(egui::Button::new(RichText::new(title).strong()).frame(false))
+                            .clicked()
+                        {
+                            self.sort = self.sort.toggled(field);
+                        }
+                    });
+                }
+            })
+            .body(|body| {
+                body.rows(ROW_HEIGHT, rows.len(), |mut row| {
+                    let Some(record) = rows.get(row.index()) else {
+                        return;
+                    };
+                    row.set_selected(selected == Some(record.id()));
+                    show_cells(&mut row, record);
+                    if row.response().clicked() {
+                        clicked = Some(record.id());
+                    }
+                });
+            });
+        clicked
+    }
+}
+
+fn show_cells(row: &mut egui_extras::TableRow<'_, '_>, record: &Exchange) {
+    row.col(|ui| {
+        ui.monospace(record.request().method().as_str());
+    });
+    row.col(|ui| {
+        ui.add(egui::Label::new(RichText::new(target_text(record)).monospace()).truncate())
+            .on_hover_text(record.request().target());
+    });
+    row.col(|ui| {
+        let (text, color) = outcome_text(record.outcome());
+        let status = ui.add(egui::Label::new(RichText::new(text).color(color)).truncate());
+        if matches!(record.outcome(), Outcome::Tunnel(_)) {
+            status.on_hover_text(super::scope_help::TUNNEL_NOTE);
+        }
+    });
+    row.col(|ui| {
+        ui.add(egui::Label::new(content_type(record).unwrap_or("—")).truncate());
+    });
+    row.col(|ui| {
+        ui.monospace(size_bytes(record).map_or_else(|| "—".to_owned(), format_bytes));
+    });
+    row.col(|ui| {
+        ui.monospace(duration_text(record));
+    });
+}
+
+/// Target without the `http://` or `https://` prefix.
+fn target_text(record: &Exchange) -> &str {
+    let target = record.request().target();
+    target
+        .strip_prefix("http://")
+        .or_else(|| target.strip_prefix("https://"))
+        .unwrap_or(target)
+}
+
+/// Orders responses by status code, then every other outcome after them.
+const fn status_rank(outcome: &Outcome) -> (u8, u16) {
+    match outcome {
+        Outcome::Response(response) => (0, response.status().as_u16()),
+        Outcome::InFlight => (1, 0),
+        Outcome::Tunnel(_) => (2, 0),
+        Outcome::InspectionEstablished => (3, 0),
+        Outcome::Failed { .. } => (4, 0),
+        Outcome::Cancelled => (5, 0),
+        Outcome::Incomplete => (6, 0),
+    }
+}
+
+/// Short media type such as `json` or `html`, from the response `Content-Type`.
+fn content_type(record: &Exchange) -> Option<&str> {
+    let Outcome::Response(response) = record.outcome() else {
+        return None;
+    };
+    let value = response
+        .headers()
+        .entries()
+        .iter()
+        .find(|header| header.name() == "content-type")?
+        .value();
+    let essence = value.split(';').next().unwrap_or(value).trim();
+    let subtype = essence.rsplit('/').next().unwrap_or(essence);
+    let subtype = subtype.rsplit('+').next().unwrap_or(subtype);
+    Some(subtype.strip_prefix("x-").unwrap_or(subtype))
+}
+
+/// Bytes received from upstream: the response body, or a tunnel's download.
+fn size_bytes(record: &Exchange) -> Option<u64> {
+    match record.outcome() {
+        Outcome::Response(response) => Some(response.body().observed_bytes()),
+        Outcome::Tunnel(tunnel) => Some(tunnel.snapshot().upstream_to_client()),
+        Outcome::InFlight
+        | Outcome::InspectionEstablished
+        | Outcome::Failed { .. }
+        | Outcome::Cancelled
+        | Outcome::Incomplete => None,
+    }
+}
+
+/// Total time once nothing more will be observed, for sorting.
+fn duration(record: &Exchange) -> Option<Duration> {
+    record.timing().complete()
+}
+
+fn duration_text(record: &Exchange) -> String {
+    let millis = |duration: Duration| duration.as_secs_f64() * 1_000.0;
+    record.timing().complete().map_or_else(
+        || format!("{:.0} ms…", millis(record.elapsed())),
+        |total| format!("{:.1} ms", millis(total)),
+    )
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = KIB * 1024;
+    let scaled = |unit: u64| {
+        let whole = bytes / unit;
+        let tenths = (bytes % unit) * 10 / unit;
+        format!("{whole}.{tenths}")
+    };
+    if bytes < KIB {
+        format!("{bytes} B")
+    } else if bytes < MIB {
+        format!("{} KiB", scaled(KIB))
+    } else {
+        format!("{} MiB", scaled(MIB))
+    }
+}
+
+/// Short status text and color for one outcome.
+pub(crate) fn outcome_text(outcome: &Outcome) -> (String, Color32) {
+    match outcome {
+        Outcome::InFlight => ("Pending".to_owned(), Color32::GRAY),
+        Outcome::Response(response) => {
+            let status = response.status();
+            let color = if status.as_u16() < 400 {
+                Color32::LIGHT_GREEN
+            } else {
+                Color32::LIGHT_RED
+            };
+            (status.as_str().to_owned(), color)
+        }
+        Outcome::Tunnel(tunnel) => tunnel_summary(tunnel),
+        Outcome::InspectionEstablished => ("HTTPS".to_owned(), Color32::LIGHT_BLUE),
+        Outcome::Failed { stage, message } => (format!("{stage:?}: {message}"), Color32::LIGHT_RED),
+        Outcome::Cancelled => ("Cancelled by client".to_owned(), Color32::YELLOW),
+        Outcome::Incomplete => ("Incomplete (proxy stopped)".to_owned(), Color32::YELLOW),
+    }
+}
+
+fn tunnel_summary(tunnel: &TunnelPreview) -> (String, Color32) {
+    match tunnel.snapshot().state() {
+        TunnelState::Open => ("Tunnel · open".to_owned(), Color32::LIGHT_BLUE),
+        TunnelState::Closed => ("Tunnel · closed".to_owned(), Color32::LIGHT_BLUE),
+        TunnelState::Failed { stage, .. } => {
+            (format!("Tunnel · failed ({stage:?})"), Color32::LIGHT_RED)
+        }
+        TunnelState::Incomplete => ("Tunnel · incomplete".to_owned(), Color32::YELLOW),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cycles_sort_through_ascending_descending_and_arrival() {
+        let arrival = RequestTable::new().sort;
+        let ascending = arrival.toggled(Field::Size);
+        assert_eq!(ascending.field, Some(Field::Size));
+        assert!(!ascending.descending);
+        let descending = ascending.toggled(Field::Size);
+        assert!(descending.descending);
+        assert_eq!(descending.toggled(Field::Size), arrival);
+        assert_eq!(descending.toggled(Field::Method).field, Some(Field::Method));
+        assert_eq!(ascending.arrow(Field::Size), " ▲");
+        assert_eq!(descending.arrow(Field::Size), " ▼");
+        assert_eq!(descending.arrow(Field::Method), "");
+    }
+
+    #[test]
+    fn formats_sizes_with_binary_units() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(1023), "1023 B");
+        assert_eq!(format_bytes(1536), "1.5 KiB");
+        assert_eq!(format_bytes(4 * 1024 * 1024), "4.0 MiB");
+    }
+
+    #[test]
+    fn ranks_responses_by_status_before_other_outcomes() {
+        assert!(status_rank(&Outcome::InFlight) > (0, 599));
+        assert!(status_rank(&Outcome::Cancelled) > status_rank(&Outcome::InFlight));
+    }
+}

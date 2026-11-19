@@ -12,10 +12,12 @@ publish = false
 brotli-decompressor = "6"
 bytes = "1"
 eframe = { version = "0.37", default-features = false, features = [
+	"clipboard",
 	"default_fonts",
 	"glow",
 	"x11",
 ] }
+egui_extras = { version = "0.37", default-features = false }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 fs2 = "0.4"
 http = "1"

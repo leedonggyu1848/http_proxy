@@ -1,8 +1,8 @@
 use std::convert::Infallible;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener as StdTcpListener};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -75,20 +75,29 @@ struct Engine {
     response_timeout: Duration,
 }
 
+/// Callback run after an exchange was queued, for example to wake a UI.
+type EventNotifier = Box<dyn Fn() + Send + Sync>;
+
 #[derive(Clone)]
 struct EventSink {
     sender: mpsc::Sender<Exchange>,
     dropped: Arc<AtomicU64>,
+    notifier: Arc<OnceLock<EventNotifier>>,
     log: Option<FullLog>,
 }
 
 impl EventSink {
     fn send(&self, exchange: Exchange) {
         match self.sender.try_send(exchange) {
+            Ok(()) => {
+                if let Some(notify) = self.notifier.get() {
+                    notify();
+                }
+            }
             Err(mpsc::error::TrySendError::Full(_)) => {
                 self.dropped.fetch_add(1, Ordering::Relaxed);
             }
-            Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {}
+            Err(mpsc::error::TrySendError::Closed(_)) => {}
         }
     }
 }
@@ -301,6 +310,7 @@ pub struct ProxyHandle {
     local_addr: SocketAddr,
     events: mpsc::Receiver<Exchange>,
     dropped: Arc<AtomicU64>,
+    notifier: Arc<OnceLock<EventNotifier>>,
     ca_info: Option<CaInfo>,
     shutdown: watch::Sender<bool>,
     status: EngineStatus,
@@ -345,9 +355,11 @@ impl ProxyHandle {
             .map_err(StartError::Runtime)?;
         let (event_sender, events) = mpsc::channel(event_capacity);
         let dropped = Arc::new(AtomicU64::new(0));
+        let notifier = Arc::new(OnceLock::new());
         let event_sink = EventSink {
             sender: event_sender,
             dropped: Arc::clone(&dropped),
+            notifier: Arc::clone(&notifier),
             log,
         };
         let stopped = Arc::new(AtomicBool::new(false));
@@ -382,6 +394,7 @@ impl ProxyHandle {
             local_addr,
             events,
             dropped,
+            notifier,
             ca_info,
             shutdown,
             status,
@@ -406,6 +419,14 @@ impl ProxyHandle {
     /// Waits for the next started exchange.
     pub async fn receive(&mut self) -> Option<Exchange> {
         self.events.recv().await
+    }
+
+    /// Runs `notify` on the engine's threads after each queued exchange so a
+    /// UI can wake up instead of polling. Only the first call has an effect;
+    /// it returns `false` when a notifier was already set. `notify` must
+    /// return quickly because it runs on the forwarding path.
+    pub fn notify_on_event(&self, notify: impl Fn() + Send + Sync + 'static) -> bool {
+        self.notifier.set(Box::new(notify)).is_ok()
     }
 
     /// Returns the number of exchanges omitted because the event queue was full.
