@@ -1,11 +1,12 @@
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, TryLockError};
-use std::time::Duration;
 
-use http::Method;
-
+mod exchange;
 mod tunnel;
 
+pub use exchange::{
+    CaptureSource, CapturedRequest, CapturedResponse, Exchange, Outcome, SessionId, Timing,
+};
 pub use tunnel::{TunnelPreview, TunnelSnapshot, TunnelState};
 
 const STREAMING: u8 = 0;
@@ -255,82 +256,6 @@ pub enum BodyRetention {
     Truncated,
     /// Capture was skipped to avoid blocking forwarding.
     Omitted,
-}
-
-/// One HTTP exchange observed by the proxy.
-#[derive(Clone, Debug)]
-pub struct CaptureRecord {
-    pub(crate) id: RecordId,
-    pub(crate) method: Method,
-    pub(crate) target: String,
-    pub(crate) request_headers: HeaderPreview,
-    pub(crate) request_body: Option<BodyPreview>,
-    pub(crate) outcome: CaptureOutcome,
-    pub(crate) elapsed: Duration,
-}
-
-impl CaptureRecord {
-    /// Returns the stable exchange identity.
-    #[must_use]
-    pub const fn id(&self) -> RecordId {
-        self.id
-    }
-
-    /// Returns the HTTP method.
-    #[must_use]
-    pub const fn method(&self) -> &Method {
-        &self.method
-    }
-
-    /// Returns the absolute request target or CONNECT authority.
-    #[must_use]
-    pub fn target(&self) -> &str {
-        &self.target
-    }
-
-    /// Returns the original parsed request headers.
-    #[must_use]
-    pub const fn request_headers(&self) -> &HeaderPreview {
-        &self.request_headers
-    }
-
-    /// Returns a live request-body preview when forwarding began.
-    #[must_use]
-    pub const fn request_body(&self) -> Option<&BodyPreview> {
-        self.request_body.as_ref()
-    }
-
-    /// Returns the observed result.
-    #[must_use]
-    pub const fn outcome(&self) -> &CaptureOutcome {
-        &self.outcome
-    }
-
-    /// Returns the time until response headers or tunnel connection arrived.
-    #[must_use]
-    pub const fn elapsed(&self) -> Duration {
-        self.elapsed
-    }
-}
-
-/// Result observed for a captured request.
-#[derive(Clone, Debug)]
-pub enum CaptureOutcome {
-    /// An HTTP response arrived.
-    Response {
-        status: u16,
-        headers: HeaderPreview,
-        body: BodyPreview,
-    },
-    /// The proxy established a TCP tunnel; `tunnel` keeps updating until it ends.
-    TunnelEstablished { tunnel: TunnelPreview },
-    /// The proxy established a TLS inspection session.
-    InspectionEstablished,
-    /// The request failed before a response arrived.
-    Failed {
-        stage: FailureStage,
-        message: String,
-    },
 }
 
 /// Stage at which a proxied request failed.

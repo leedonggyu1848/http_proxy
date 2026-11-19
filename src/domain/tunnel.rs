@@ -54,6 +54,11 @@ impl TunnelPreview {
         self.finish(TunnelState::Failed { stage, message });
     }
 
+    /// Ends a tunnel that the proxy stopped relaying before either side finished.
+    pub(crate) fn abandon(&self) {
+        self.finish(TunnelState::Incomplete);
+    }
+
     fn finish(&self, state: TunnelState) {
         let mut end = self
             .inner
@@ -109,6 +114,8 @@ pub enum TunnelState {
         stage: FailureStage,
         message: String,
     },
+    /// The proxy stopped while the tunnel was open.
+    Incomplete,
 }
 
 /// Immutable view of a tunnel at one instant.
@@ -159,6 +166,7 @@ mod tests {
 
         tunnel.close();
         tunnel.fail(FailureStage::Tunnel, "late".to_owned());
+        tunnel.abandon();
         let first = tunnel.snapshot();
         assert_eq!(first.state(), &TunnelState::Closed);
         assert_eq!(first.client_to_upstream(), 3);
