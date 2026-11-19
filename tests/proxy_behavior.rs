@@ -68,6 +68,48 @@ async fn forwards_http_request_and_records_response() -> Result<(), Box<dyn Erro
 }
 
 #[tokio::test]
+async fn strips_fields_named_by_connection_in_both_directions() -> Result<(), Box<dyn Error>> {
+    let upstream = TcpListener::bind("127.0.0.1:0").await?;
+    let upstream_addr = upstream.local_addr()?;
+    let (request_sender, request_receiver) = tokio::sync::oneshot::channel();
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let request = read_headers(&mut stream).await?;
+        let _send_result = request_sender.send(request);
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nConnection: close, X-Upstream-Only\r\nX-Upstream-Only: 1\r\nProxy-Authenticate: Basic\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await?;
+        Ok::<_, std::io::Error>(())
+    });
+
+    let proxy = ProxyHandle::start(ProxyConfig::loopback(0))?;
+    let mut client = TcpStream::connect(proxy.local_addr()).await?;
+    let request = format!(
+        "GET http://{upstream_addr}/ HTTP/1.1\r\nHost: {upstream_addr}\r\nConnection: X-Internal\r\nConnection: close, x-other\r\nx-internal: a\r\nX-Other: b\r\nX-Kept: c\r\n\r\n"
+    );
+    client.write_all(request.as_bytes()).await?;
+
+    let mut response = Vec::new();
+    timeout(TEST_TIMEOUT, client.read_to_end(&mut response)).await??;
+    let response = String::from_utf8(response)?.to_ascii_lowercase();
+    assert!(response.starts_with("http/1.1 200 ok"));
+    assert!(!response.contains("x-upstream-only"));
+    assert!(!response.contains("proxy-authenticate"));
+
+    let upstream_request = timeout(TEST_TIMEOUT, request_receiver).await??;
+    let upstream_request = String::from_utf8(upstream_request)?.to_ascii_lowercase();
+    assert!(!upstream_request.contains("x-internal"));
+    assert!(!upstream_request.contains("x-other"));
+    assert!(upstream_request.contains("x-kept: c"));
+
+    timeout(TEST_TIMEOUT, upstream_task).await???;
+    proxy.stop()?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn connect_creates_a_bidirectional_tunnel() -> Result<(), Box<dyn Error>> {
     let upstream = TcpListener::bind("127.0.0.1:0").await?;
     let upstream_addr = upstream.local_addr()?;

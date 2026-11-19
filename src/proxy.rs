@@ -7,9 +7,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use http::header::{
-    CONNECTION, HOST, PROXY_AUTHORIZATION, TE, TRAILER, TRANSFER_ENCODING, UPGRADE,
-};
+use http::header::{HOST, UPGRADE};
 use http::uri::Authority;
 use http::{Method, Request, Response, StatusCode, Uri};
 use http_body_util::combinators::BoxBody;
@@ -37,6 +35,10 @@ use crate::{
     UpstreamTlsError,
 };
 use crate::{CaptureOutcome, CaptureRecord, FailureStage};
+
+mod headers;
+
+use headers::remove_hop_by_hop_headers;
 
 type ProxyBody = BoxBody<Bytes, hyper::Error>;
 
@@ -809,17 +811,6 @@ fn upstream_target(request: &Request<Incoming>) -> Result<UpstreamTarget, &'stat
         socket_target,
         path,
     })
-}
-
-fn remove_hop_by_hop_headers(headers: &mut http::HeaderMap) {
-    headers.remove(CONNECTION);
-    headers.remove(PROXY_AUTHORIZATION);
-    headers.remove("proxy-connection");
-    headers.remove("keep-alive");
-    headers.remove(TE);
-    headers.remove(TRAILER);
-    headers.remove(TRANSFER_ENCODING);
-    headers.remove(UPGRADE);
 }
 
 fn failed_response(
