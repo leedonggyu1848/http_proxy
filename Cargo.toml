@@ -12,6 +12,7 @@ publish = false
 brotli-decompressor = "6"
 bytes = "1"
 eframe = { version = "0.37", default-features = false, features = [
+	"clipboard",
 	"default_fonts",
 	"glow",
 	"x11",

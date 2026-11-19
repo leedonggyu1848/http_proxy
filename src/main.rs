@@ -30,6 +30,12 @@ mod body_view;
 )]
 mod records;
 
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "Port settings are private to the application module."
+)]
+mod port_settings;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -40,7 +46,6 @@ use http_proxy::{
 };
 use tracing_subscriber::EnvFilter;
 
-const PROXY_PORT: u16 = 8080;
 const MAX_RECORDS: usize = 2_000;
 
 fn main() -> eframe::Result {
@@ -106,6 +111,50 @@ struct InspectorApp {
     full_log: Option<FullLog>,
     log_init_error: Option<String>,
     save: save::SaveControls,
+    port: PortChoice,
+}
+
+/// Port typed in the toolbar and where its current value came from.
+struct PortChoice {
+    text: String,
+    origin: port_settings::PortOrigin,
+    settings_directory: Option<PathBuf>,
+    launch_warning: Option<String>,
+}
+
+impl PortChoice {
+    fn from_launch() -> Self {
+        let settings_directory = port_settings::default_settings_directory();
+        let saved = settings_directory
+            .as_deref()
+            .and_then(port_settings::load_port);
+        let launch = port_settings::launch_port(
+            std::env::args_os(),
+            std::env::var_os(port_settings::PORT_ENV),
+            saved,
+        );
+        Self {
+            text: launch.port.to_string(),
+            origin: launch.origin,
+            settings_directory,
+            launch_warning: launch.warning,
+        }
+    }
+
+    /// Remembers a port the user typed once the proxy started on it.
+    fn remember(&self, port: port_settings::ProxyPort) -> Result<(), String> {
+        if self.origin != port_settings::PortOrigin::User {
+            return Ok(());
+        }
+        let Some(directory) = self.settings_directory.as_deref() else {
+            return Err(
+                "The port could not be saved because XDG_CONFIG_HOME and HOME are unset."
+                    .to_owned(),
+            );
+        };
+        port_settings::save_port(directory, port)
+            .map_err(|error| format!("The proxy started, but the port could not be saved: {error}"))
+    }
 }
 
 impl InspectorApp {
@@ -131,13 +180,21 @@ impl InspectorApp {
             full_log,
             log_init_error,
             save: save::SaveControls::new(),
+            port: PortChoice::from_launch(),
         };
         app.start_proxy();
         app
     }
 
     fn start_proxy(&mut self) {
-        let mut config = ProxyConfig::loopback(PROXY_PORT);
+        let port = match port_settings::ProxyPort::parse(&self.port.text) {
+            Ok(port) => port,
+            Err(error) => {
+                self.error = Some(error.to_string());
+                return;
+            }
+        };
+        let mut config = ProxyConfig::loopback(port.value());
         if self.https_inspection {
             let Some(directory) = self.ca_directory.as_ref() else {
                 self.error = Some(
@@ -155,10 +212,10 @@ impl InspectorApp {
         match result {
             Ok(proxy) => {
                 self.proxy = Some(proxy);
-                self.error = None;
+                self.error = self.port.remember(port).err();
             }
             Err(error) => {
-                self.error = Some(error.to_string());
+                self.error = Some(port_settings::start_error_text(&error, port));
             }
         }
     }
@@ -217,13 +274,25 @@ impl InspectorApp {
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if let Some(proxy) = self.proxy.as_ref() {
+                let address = proxy.local_addr();
                 ui.label(RichText::new("Running").color(Color32::LIGHT_GREEN));
-                ui.monospace(proxy.local_addr().to_string());
+                ui.monospace(address.to_string());
+                copy_menu(ui, address);
                 if ui.button("Stop").clicked() {
                     self.stop_proxy();
                 }
             } else {
                 ui.label(RichText::new("Stopped").color(Color32::LIGHT_RED));
+                ui.label("Port");
+                let edited = ui
+                    .add(egui::TextEdit::singleline(&mut self.port.text).desired_width(56.0))
+                    .on_hover_text(
+                        "Loopback port for the proxy. 0 picks a free port. A port you type is remembered.",
+                    )
+                    .changed();
+                if edited {
+                    self.port.origin = port_settings::PortOrigin::User;
+                }
                 if ui.button("Start").clicked() {
                     self.start_proxy();
                 }
@@ -258,6 +327,9 @@ impl InspectorApp {
             }
         });
 
+        if let Some(warning) = self.port.launch_warning.as_ref() {
+            ui.colored_label(Color32::YELLOW, warning);
+        }
         if let Some(error) = self.error.as_ref() {
             ui.colored_label(Color32::LIGHT_RED, error);
         }
@@ -742,6 +814,18 @@ fn render_tunnel(ui: &mut egui::Ui, tunnel: &TunnelPreview) {
 
 fn elapsed_millis(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1_000.0
+}
+
+fn copy_menu(ui: &mut egui::Ui, address: std::net::SocketAddr) {
+    ui.menu_button("Copy", |ui| {
+        for target in port_settings::CopyTarget::ALL {
+            let text = target.text(address);
+            if ui.button(target.label()).on_hover_text(&text).clicked() {
+                ui.ctx().copy_text(text);
+                ui.close();
+            }
+        }
+    });
 }
 
 fn default_ca_directory() -> Option<PathBuf> {

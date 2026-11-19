@@ -6,7 +6,7 @@ HTTP Inspector는 로컬 HTTP 프록시를 통해 요청 기록을 보여주는 
 
 현재 버전은 다음 기능을 제공한다.
 
-- `127.0.0.1:8080`의 HTTP 프록시
+- 루프백 주소의 HTTP 프록시(기본 포트 `8080`, 변경 가능)
 - HTTP/1.1 요청과 응답 스트리밍
 - HTTPS `CONNECT` TCP 터널
 - 사용자가 켤 수 있는 HTTPS 복호화
@@ -82,7 +82,23 @@ sudo apt-get install --yes \
 cargo run --release
 ```
 
-UI에 `Running`과 `127.0.0.1:8080`이 표시되면 프록시가 요청을 받을 수 있다.
+UI에 `Running`과 `127.0.0.1:8080`이 표시되면 프록시가 요청을 받을 수 있다. 툴바의 `Copy` 메뉴는 프록시 URL, `curl` 예시, `HTTP_PROXY` 변수를 클립보드에 복사한다.
+
+### 프록시 포트
+
+프록시는 항상 `127.0.0.1`에서만 연결을 받는다. 포트는 다음 순서로 정한다.
+
+1. `--port <번호>` 또는 `--port=<번호>` 명령줄 인자
+2. `HTTP_INSPECTOR_PORT` 환경 변수
+3. 툴바에서 마지막으로 입력해 시작에 성공한 포트(`$XDG_CONFIG_HOME/http-inspector/settings`, 없으면 `~/.config/http-inspector/settings`)
+4. 기본값 `8080`
+
+```bash
+cargo run --release -- --port 18080
+HTTP_INSPECTOR_PORT=0 cargo run --release
+```
+
+`0`은 운영체제가 비어 있는 포트를 고르게 한다. 실제 포트는 툴바 주소에 표시된다. 다른 프로그램이 포트를 쓰고 있으면 앱은 그 사실을 안내하고, 프록시를 멈춘 상태에서 `Port` 칸에 다른 번호를 입력해 `Start`로 다시 시작할 수 있다. 명령줄 인자와 환경 변수는 그 실행에만 적용되며 저장하지 않는다.
 
 HTTP 요청을 확인하려면 `curl`에 프록시 주소를 지정한다.
 
