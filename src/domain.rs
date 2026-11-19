@@ -171,6 +171,18 @@ impl BodyPreview {
         }
     }
 
+    /// Returns the number of body bytes observed so far without copying the preview.
+    #[must_use]
+    pub fn observed_bytes(&self) -> u64 {
+        self.inner.observed_bytes.load(Ordering::Acquire)
+    }
+
+    /// Returns the stream lifecycle without copying the preview.
+    #[must_use]
+    pub fn lifecycle(&self) -> BodyLifecycle {
+        lifecycle_from(self.inner.lifecycle.load(Ordering::Acquire))
+    }
+
     /// Returns when the stream ended, or `None` while it is streaming.
     pub(crate) fn ended_at(&self) -> Option<Instant> {
         self.inner.ended.get().copied()
@@ -203,18 +215,22 @@ impl BodyPreview {
         BodySnapshot {
             bytes,
             observed_bytes: self.inner.observed_bytes.load(Ordering::Acquire),
-            lifecycle: match self.inner.lifecycle.load(Ordering::Acquire) {
-                COMPLETE => BodyLifecycle::Complete,
-                INTERRUPTED => BodyLifecycle::Interrupted,
-                CANCELLED => BodyLifecycle::Cancelled,
-                _ => BodyLifecycle::Streaming,
-            },
+            lifecycle: self.lifecycle(),
             retention: match retention {
                 TRUNCATED => BodyRetention::Truncated,
                 OMITTED => BodyRetention::Omitted,
                 _ => BodyRetention::Prefix,
             },
         }
+    }
+}
+
+const fn lifecycle_from(value: u8) -> BodyLifecycle {
+    match value {
+        COMPLETE => BodyLifecycle::Complete,
+        INTERRUPTED => BodyLifecycle::Interrupted,
+        CANCELLED => BodyLifecycle::Cancelled,
+        _ => BodyLifecycle::Streaming,
     }
 }
 
