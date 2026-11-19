@@ -177,12 +177,20 @@ impl Outcome {
     }
 }
 
-/// Observed durations of an exchange. A phase the proxy did not observe is
-/// `None`, never zero.
+/// Observed durations of an exchange. A phase the proxy did not observe, or
+/// that has not finished yet, is `None`, never zero.
+///
+/// For a response the phases follow each other: `connect`, then `send`
+/// until the client's request body was fully forwarded, then `wait` until
+/// response headers arrived, then `receive` until the response body ended.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Timing {
     connect: Option<Duration>,
+    send: Option<Duration>,
+    wait: Option<Duration>,
+    receive: Option<Duration>,
     settled: Option<Duration>,
+    complete: Option<Duration>,
 }
 
 impl Timing {
@@ -191,6 +199,37 @@ impl Timing {
     #[must_use]
     pub const fn connect(&self) -> Option<Duration> {
         self.connect
+    }
+
+    /// Returns the time from handing the request to the upstream connection
+    /// until the request body ended.
+    #[must_use]
+    pub const fn send(&self) -> Option<Duration> {
+        self.send
+    }
+
+    /// Returns the time from the end of the request body until response
+    /// headers arrived (time to first byte). `None` when the server answered
+    /// before the request body ended.
+    #[must_use]
+    pub const fn wait(&self) -> Option<Duration> {
+        self.wait
+    }
+
+    /// Returns the time from response headers until the response body ended,
+    /// whether it completed, was interrupted, or was cancelled.
+    #[must_use]
+    pub const fn receive(&self) -> Option<Duration> {
+        self.receive
+    }
+
+    /// Returns the time from the request start until nothing more will be
+    /// observed: the end of the response body for a response, or the
+    /// settlement for every other outcome. `None` while a response body or
+    /// the request is still in progress.
+    #[must_use]
+    pub const fn complete(&self) -> Option<Duration> {
+        self.complete
     }
 
     /// Returns the time from the request start until the exchange left
@@ -216,6 +255,7 @@ struct ExchangeInner {
     started: Instant,
     request: CapturedRequest,
     connect: OnceLock<Duration>,
+    send_started: OnceLock<Instant>,
     settlement: OnceLock<Settlement>,
     settled_signal: Notify,
 }
@@ -245,6 +285,7 @@ impl Exchange {
                 started: Instant::now(),
                 request,
                 connect: OnceLock::new(),
+                send_started: OnceLock::new(),
                 settlement: OnceLock::new(),
                 settled_signal: Notify::new(),
             }),
@@ -293,13 +334,34 @@ impl Exchange {
     /// Returns the observed durations so far.
     #[must_use]
     pub fn timing(&self) -> Timing {
+        let since_start = |instant: Instant| instant.saturating_duration_since(self.inner.started);
+        let settlement = self.inner.settlement.get();
+        let settled = settlement.map(|settlement| settlement.after);
+        let send_started = self.inner.send_started.get().copied().map(since_start);
+        let request_ended = self
+            .request()
+            .body()
+            .and_then(BodyPreview::ended_at)
+            .map(since_start);
+        let response = settlement.and_then(|settlement| match &settlement.outcome {
+            Outcome::Response(response) => Some(response),
+            _ => None,
+        });
+        let headers = response.and(settled);
+        let response_ended = response
+            .and_then(|response| response.body().ended_at())
+            .map(since_start);
         Timing {
             connect: self.inner.connect.get().copied(),
-            settled: self
-                .inner
-                .settlement
-                .get()
-                .map(|settlement| settlement.after),
+            send: between(send_started, request_ended),
+            wait: between(request_ended, headers),
+            receive: between(headers, response_ended),
+            settled,
+            complete: if response.is_some() {
+                response_ended
+            } else {
+                settled
+            },
         }
     }
 
@@ -324,7 +386,10 @@ impl Exchange {
         }
     }
 
+    /// Attaches the request-body preview as the request is handed to the
+    /// upstream connection, which starts the `send` phase.
     pub(crate) fn attach_request_body(&self, body: BodyPreview) {
+        let _already_started = self.inner.send_started.set(Instant::now()).is_err();
         let _already_attached = self.inner.request.body.set(body).is_err();
     }
 
@@ -345,6 +410,11 @@ impl Exchange {
         }
         settled
     }
+}
+
+/// Returns `end - start` when both were observed and `end` is not earlier.
+fn between(start: Option<Duration>, end: Option<Duration>) -> Option<Duration> {
+    end?.checked_sub(start?)
 }
 
 #[cfg(test)]
@@ -392,6 +462,67 @@ mod tests {
         assert_eq!(view.timing().connect(), Some(Duration::from_millis(3)));
         assert!(view.request().body().is_some());
         assert!(matches!(view.outcome(), Outcome::InspectionEstablished));
+    }
+
+    fn response(body: &BodyPreview) -> Outcome {
+        Outcome::Response(CapturedResponse::new(
+            StatusCode::OK,
+            Version::HTTP_11,
+            "OK".to_owned(),
+            HeaderPreview::default(),
+            body.clone(),
+        ))
+    }
+
+    #[test]
+    fn splits_a_response_into_consecutive_phases() {
+        let exchange = exchange();
+        let request_body = BodyPreview::new(8);
+        let response_body = BodyPreview::new(8);
+        exchange.record_connect(Duration::from_millis(1));
+        exchange.attach_request_body(request_body.clone());
+        assert_eq!(exchange.timing().send(), None);
+        request_body.complete();
+        assert!(exchange.settle(response(&response_body)));
+
+        let streaming = exchange.timing();
+        assert!(streaming.send().is_some());
+        assert!(streaming.wait().is_some());
+        assert_eq!(streaming.receive(), None);
+        assert_eq!(streaming.complete(), None);
+
+        response_body.interrupt();
+        let ended = exchange.timing();
+        let receive = ended.receive().unwrap_or_default();
+        let settled = ended.settled().unwrap_or_default();
+        assert_eq!(ended.complete(), Some(settled + receive));
+    }
+
+    #[test]
+    fn leaves_wait_unobserved_when_the_response_beats_the_request_body() {
+        let exchange = exchange();
+        let request_body = BodyPreview::new(8);
+        exchange.attach_request_body(request_body.clone());
+        assert!(exchange.settle(response(&BodyPreview::new(8))));
+        request_body.cancel();
+        let timing = exchange.timing();
+        assert!(timing.send().is_some());
+        assert_eq!(timing.wait(), None);
+    }
+
+    #[test]
+    fn completes_other_outcomes_when_they_settle() {
+        let exchange = exchange();
+        assert!(exchange.settle(Outcome::Failed {
+            stage: FailureStage::Connect,
+            message: "refused".to_owned(),
+        }));
+        let timing = exchange.timing();
+        assert_eq!(timing.complete(), timing.settled());
+        assert_eq!(
+            (timing.send(), timing.wait(), timing.receive()),
+            (None, None, None)
+        );
     }
 
     #[tokio::test]

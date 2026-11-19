@@ -663,7 +663,8 @@ const fn lifecycle_text(lifecycle: BodyLifecycle) -> &'static str {
     match lifecycle {
         BodyLifecycle::Streaming => "streaming",
         BodyLifecycle::Complete => "complete",
-        BodyLifecycle::Interrupted => "interrupted",
+        BodyLifecycle::Interrupted => "interrupted by the sender",
+        BodyLifecycle::Cancelled => "cancelled by the receiver",
     }
 }
 
@@ -749,13 +750,24 @@ fn render_timing(ui: &mut egui::Ui, record: &Exchange) {
             ("Ended", optional_millis(timing.settled()))
         }
     };
+    let total = timing.complete().map_or_else(
+        || "in progress".to_owned(),
+        |duration| format!("{:.1} ms", elapsed_millis(duration)),
+    );
+    let rows = [
+        ("Connect", optional_millis(timing.connect())),
+        ("Send", optional_millis(timing.send())),
+        ("Wait (TTFB)", optional_millis(timing.wait())),
+        ("Receive", optional_millis(timing.receive())),
+        (settled_label, settled_value),
+        ("Total", total),
+    ];
     egui::Grid::new("timing").num_columns(2).show(ui, |ui| {
-        ui.label("Connect");
-        ui.monospace(optional_millis(timing.connect()));
-        ui.end_row();
-        ui.label(settled_label);
-        ui.monospace(settled_value);
-        ui.end_row();
+        for (label, value) in rows {
+            ui.label(label);
+            ui.monospace(value);
+            ui.end_row();
+        }
     });
 }
 
