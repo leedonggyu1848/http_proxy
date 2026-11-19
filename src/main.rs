@@ -658,10 +658,10 @@ fn render_tunnel(ui: &mut egui::Ui, tunnel: &TunnelPreview) {
             ui.label("State");
             ui.label(state);
             ui.end_row();
-            ui.label("Client → upstream");
+            ui.label("Sent to upstream");
             ui.monospace(format!("{} bytes", snapshot.client_to_upstream()));
             ui.end_row();
-            ui.label("Upstream → client");
+            ui.label("Received from upstream");
             ui.monospace(format!("{} bytes", snapshot.upstream_to_client()));
             ui.end_row();
             ui.label("Duration");
