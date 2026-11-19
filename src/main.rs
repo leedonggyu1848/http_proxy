@@ -32,6 +32,12 @@ mod records;
 
 #[allow(
     clippy::redundant_pub_crate,
+    reason = "Capture scope help is private to the application module."
+)]
+mod scope_help;
+
+#[allow(
+    clippy::redundant_pub_crate,
     reason = "Port settings are private to the application module."
 )]
 mod port_settings;
@@ -48,7 +54,8 @@ use std::time::Duration;
 use eframe::egui::{self, Color32, RichText};
 use http_proxy::{
     BodyLifecycle, BodyPreview, BodyRetention, EngineState, Exchange, FullLog, HeaderPreview,
-    HttpsInspection, Outcome, ProxyConfig, ProxyHandle, RecordId, TunnelPreview, TunnelState,
+    HttpsInspection, Outcome, ProxyConfig, ProxyHandle, RecordId, SESSION_BODY_LIMIT_BYTES,
+    TunnelPreview, TunnelState,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -343,19 +350,7 @@ impl InspectorApp {
             }
         });
 
-        if let Some(warning) = self.port.launch_warning.as_ref() {
-            ui.colored_label(Color32::YELLOW, warning);
-        }
-        if let Some(error) = self.error.as_ref() {
-            ui.colored_label(Color32::LIGHT_RED, error);
-        }
-        if let Some(error) = self
-            .log_init_error
-            .clone()
-            .or_else(|| self.full_log.as_ref().and_then(FullLog::error))
-        {
-            ui.colored_label(Color32::LIGHT_RED, error);
-        }
+        self.status_messages(ui);
 
         self.save.ui(ui, self.full_log.as_ref());
 
@@ -369,6 +364,36 @@ impl InspectorApp {
                 .filter(|_| self.https_inspection),
         ) {
             self.ca_panel.refresh();
+        }
+    }
+
+    /// Shows launch warnings, errors, and full-session log notices.
+    fn status_messages(&self, ui: &mut egui::Ui) {
+        if let Some(warning) = self.port.launch_warning.as_ref() {
+            ui.colored_label(Color32::YELLOW, warning);
+        }
+        if let Some(error) = self.error.as_ref() {
+            ui.colored_label(Color32::LIGHT_RED, error);
+        }
+        if let Some(error) = self
+            .log_init_error
+            .clone()
+            .or_else(|| self.full_log.as_ref().and_then(FullLog::error))
+        {
+            ui.colored_label(Color32::LIGHT_RED, error);
+        }
+        if self
+            .full_log
+            .as_ref()
+            .is_some_and(FullLog::body_limit_reached)
+        {
+            ui.colored_label(
+                Color32::YELLOW,
+                format!(
+                    "The full-session log reached its {} MiB body limit. Later body bytes are omitted; headers and results are still logged.",
+                    SESSION_BODY_LIMIT_BYTES / (1_024 * 1_024)
+                ),
+            );
         }
     }
 
@@ -471,7 +496,7 @@ impl eframe::App for InspectorApp {
         self.receive_records();
         self.release_failed_proxy();
         ui.heading(http_proxy::APP_NAME);
-        ui.label("Configure an HTTP client to use the proxy shown below.");
+        scope_help::show(ui);
         ui.separator();
         self.toolbar(ui);
         ui.separator();
@@ -695,7 +720,7 @@ fn render_outcome(ui: &mut egui::Ui, outcome: &Outcome) {
             render_body(ui, response.body(), response.headers());
         }
         Outcome::Tunnel(tunnel) => {
-            ui.label("CONNECT tunnel established. Encrypted tunnel contents are not inspected.");
+            ui.label(scope_help::TUNNEL_NOTE);
             render_tunnel(ui, tunnel);
         }
         Outcome::InspectionEstablished => {

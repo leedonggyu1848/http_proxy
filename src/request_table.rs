@@ -204,7 +204,10 @@ fn show_cells(row: &mut egui_extras::TableRow<'_, '_>, record: &Exchange) {
     });
     row.col(|ui| {
         let (text, color) = outcome_text(record.outcome());
-        ui.add(egui::Label::new(RichText::new(text).color(color)).truncate());
+        let status = ui.add(egui::Label::new(RichText::new(text).color(color)).truncate());
+        if matches!(record.outcome(), Outcome::Tunnel(_)) {
+            status.on_hover_text(super::scope_help::TUNNEL_NOTE);
+        }
     });
     row.col(|ui| {
         ui.add(egui::Label::new(content_type(record).unwrap_or("—")).truncate());
