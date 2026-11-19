@@ -30,6 +30,12 @@ mod body_view;
 )]
 mod records;
 
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "Capture scope help is private to the application module."
+)]
+mod scope_help;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -371,7 +377,10 @@ impl InspectorApp {
                             }
                             ui.monospace(record.request().target());
                             let (result, color) = outcome_text(record.outcome());
-                            ui.colored_label(color, result);
+                            let result = ui.colored_label(color, result);
+                            if matches!(record.outcome(), Outcome::Tunnel(_)) {
+                                result.on_hover_text(scope_help::TUNNEL_NOTE);
+                            }
                             ui.monospace(elapsed_text(record));
                             ui.end_row();
                         }
@@ -417,7 +426,7 @@ impl eframe::App for InspectorApp {
         self.receive_records();
         self.release_failed_proxy();
         ui.heading(http_proxy::APP_NAME);
-        ui.label("Configure an HTTP client to use the proxy shown below.");
+        scope_help::show(ui);
         ui.separator();
         self.toolbar(ui);
         ui.separator();
@@ -655,7 +664,7 @@ fn render_outcome(ui: &mut egui::Ui, outcome: &Outcome) {
             render_body(ui, response.body(), response.headers());
         }
         Outcome::Tunnel(tunnel) => {
-            ui.label("CONNECT tunnel established. Encrypted tunnel contents are not inspected.");
+            ui.label(scope_help::TUNNEL_NOTE);
             render_tunnel(ui, tunnel);
         }
         Outcome::InspectionEstablished => {
