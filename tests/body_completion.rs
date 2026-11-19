@@ -6,8 +6,8 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use http_proxy::{
-    BodyLifecycle, BodyPreview, BodySnapshot, CapturedResponse, Exchange, Outcome, ProxyConfig,
-    ProxyHandle,
+    BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, CapturedResponse, Exchange, Outcome,
+    ProxyConfig, ProxyHandle,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -176,6 +176,40 @@ async fn relays_each_chunk_before_the_body_ends() -> Result<(), TestError> {
     let body = wait_for_end(response.body()).await?;
     assert_eq!(body.lifecycle(), BodyLifecycle::Complete);
     assert_eq!(body.bytes(), b"firstlast");
+
+    timeout(TEST_TIMEOUT, upstream_task).await???;
+    proxy.stop()?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn keeps_a_whole_png_response_but_only_a_prefix_of_other_bodies() -> Result<(), TestError> {
+    const BODY: usize = 100 * 1024;
+    let upstream = TcpListener::bind("127.0.0.1:0").await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        for content_type in ["Image/PNG; foo=bar", "application/octet-stream"] {
+            let (mut stream, _) = upstream.accept().await?;
+            let _request = read_headers(&mut stream).await?;
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {BODY}\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(head.as_bytes()).await?;
+            stream.write_all(&vec![b'p'; BODY]).await?;
+        }
+        Ok::<_, std::io::Error>(())
+    });
+
+    let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0))?;
+    let png = exchange_through(&mut proxy, upstream_addr, "/image.png").await?;
+    let png_body = wait_for_end(settled_response(&png).await?.body()).await?;
+    assert_eq!(png_body.bytes().len(), BODY);
+    assert_eq!(png_body.retention(), BodyRetention::Prefix);
+
+    let other = exchange_through(&mut proxy, upstream_addr, "/data.bin").await?;
+    let other_body = wait_for_end(settled_response(&other).await?.body()).await?;
+    assert_eq!(other_body.bytes().len(), 8 * 1024);
+    assert_eq!(other_body.retention(), BodyRetention::Truncated);
 
     timeout(TEST_TIMEOUT, upstream_task).await???;
     proxy.stop()?;

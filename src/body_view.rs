@@ -14,36 +14,20 @@ pub(super) enum BodyText {
 }
 
 pub(super) fn decode(bytes: &[u8], encodings: &[&str], complete: bool) -> BodyText {
-    let encodings: Vec<_> = encodings
-        .iter()
-        .flat_map(|value| value.split(','))
-        .map(str::trim)
-        .filter(|value| !value.eq_ignore_ascii_case("identity"))
-        .take(MAX_ENCODINGS + 1)
-        .map(str::to_ascii_lowercase)
-        .collect();
+    let encodings = match content_encodings(encodings) {
+        Ok(encodings) => encodings,
+        Err(message) => return BodyText::Unavailable(message),
+    };
     if encodings.is_empty() {
+        // PNG responses retain more than the text preview shows.
+        let limited = bytes.len() > PREVIEW_BYTES;
+        let (shown, _) = bytes.split_at(bytes.len().min(PREVIEW_BYTES));
         return BodyText::Ready {
-            text: text(bytes, !complete),
-            notice: None,
+            text: text(shown, limited || !complete),
+            notice: limited.then(|| "first 8 KiB of retained bytes".to_owned()),
         };
     }
-    if encodings.len() > MAX_ENCODINGS {
-        return BodyText::Unavailable(
-            "Too many Content-Encoding layers to preview safely.".to_owned(),
-        );
-    }
-    if let Some(unsupported) = encodings.iter().find(|encoding| {
-        !matches!(
-            encoding.as_str(),
-            "gzip" | "x-gzip" | "deflate" | "br" | "zstd"
-        )
-    }) {
-        return BodyText::Unavailable(format!(
-            "Unsupported Content-Encoding: {unsupported:?}. Raw bytes are retained in the full log."
-        ));
-    }
-    match read_decoded(bytes, &encodings) {
+    match read_decoded(bytes, &encodings, PREVIEW_BYTES, INTERMEDIATE_BYTES) {
         Ok((mut decoded, error)) => {
             let limited = decoded.len() > PREVIEW_BYTES;
             decoded.truncate(PREVIEW_BYTES);
@@ -74,15 +58,83 @@ pub(super) fn decode(bytes: &[u8], encodings: &[&str], complete: bool) -> BodyTe
     }
 }
 
-fn read_decoded(bytes: &[u8], encodings: &[String]) -> io::Result<(Vec<u8>, Option<io::Error>)> {
+/// Removes the `Content-Encoding` layers from a complete body and returns at
+/// most `limit` decoded bytes. Unencoded bodies are returned as they are.
+///
+/// Fails when an encoding is unsupported, the data is invalid, or decoding
+/// would produce more than `limit` bytes.
+pub(super) fn decode_complete(
+    bytes: &[u8],
+    encodings: &[&str],
+    limit: usize,
+) -> Result<Vec<u8>, String> {
+    let encodings = content_encodings(encodings)?;
+    if encodings.is_empty() {
+        return Ok(bytes.to_vec());
+    }
+    // One byte past the limit on every layer, so an oversized body is
+    // detected instead of silently cut.
+    let intermediate = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
+    let (decoded, error) = read_decoded(bytes, &encodings, limit, intermediate)
+        .map_err(|error| format!("Could not decompress the body: {error}"))?;
+    if let Some(error) = error {
+        return Err(format!(
+            "Could not decompress the body ({}): {error}",
+            encodings.join(", ")
+        ));
+    }
+    if decoded.len() > limit {
+        return Err(format!(
+            "The decompressed body is larger than {} MiB.",
+            limit / (1024 * 1024)
+        ));
+    }
+    Ok(decoded)
+}
+
+/// Splits `Content-Encoding` values into lowercase layers in the order they
+/// were applied, without `identity`, and rejects layers it cannot decode.
+fn content_encodings(values: &[&str]) -> Result<Vec<String>, String> {
+    let encodings: Vec<_> = values
+        .iter()
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|value| !value.eq_ignore_ascii_case("identity"))
+        .take(MAX_ENCODINGS + 1)
+        .map(str::to_ascii_lowercase)
+        .collect();
+    if encodings.len() > MAX_ENCODINGS {
+        return Err("Too many Content-Encoding layers to preview safely.".to_owned());
+    }
+    if let Some(unsupported) = encodings.iter().find(|encoding| {
+        !matches!(
+            encoding.as_str(),
+            "gzip" | "x-gzip" | "deflate" | "br" | "zstd"
+        )
+    }) {
+        return Err(format!(
+            "Unsupported Content-Encoding: {unsupported:?}. Raw bytes are retained in the full log."
+        ));
+    }
+    Ok(encodings)
+}
+
+/// Reads at most `limit + 1` decoded bytes so callers can tell whether the
+/// output was cut, and stops each inner layer after `intermediate` bytes.
+fn read_decoded(
+    bytes: &[u8],
+    encodings: &[String],
+    limit: usize,
+    intermediate: u64,
+) -> io::Result<(Vec<u8>, Option<io::Error>)> {
     let mut reader: Box<dyn Read + '_> = Box::new(bytes);
     for encoding in encodings.iter().rev() {
         // Bound hidden expansion while inner decoders consume headers or skippable frames.
-        reader = Box::new(decoder(reader, encoding)?.take(INTERMEDIATE_BYTES));
+        reader = Box::new(decoder(reader, encoding)?.take(intermediate));
     }
     let mut decoded = Vec::new();
     let error = reader
-        .take((PREVIEW_BYTES + 1) as u64)
+        .take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
         .read_to_end(&mut decoded)
         .err();
     Ok((decoded, error))
@@ -125,7 +177,7 @@ mod tests {
     use std::error::Error;
     use std::io::Write;
 
-    use super::{BodyText, PREVIEW_BYTES, decode};
+    use super::{BodyText, PREVIEW_BYTES, decode, decode_complete};
 
     const EXPECTED: &[u8] = include_bytes!("../tests/fixtures/body-preview.json");
     const BROTLI: &[u8] = include_bytes!("../tests/fixtures/body-preview.json.br");
@@ -244,6 +296,16 @@ mod tests {
             decode(GZIP, &["gzip,gzip,gzip,gzip,gzip"], true),
             BodyText::Unavailable(_)
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn decodes_complete_bodies_within_a_limit() -> Result<(), Box<dyn Error>> {
+        assert_eq!(decode_complete(GZIP, &["gzip"], EXPECTED.len())?, EXPECTED);
+        assert_eq!(decode_complete(EXPECTED, &["identity"], 1)?, EXPECTED);
+        assert!(decode_complete(GZIP, &["gzip"], EXPECTED.len() - 1).is_err());
+        assert!(decode_complete(GZIP.split_at(20).0, &["gzip"], 1 << 20).is_err());
+        assert!(decode_complete(GZIP, &["compress"], 1 << 20).is_err());
         Ok(())
     }
 }

@@ -253,7 +253,9 @@ impl RequestTable {
                     });
                 }
             })
-            .body(|body| {
+            .body(|mut body| {
+                // Let the table cells handle row clicks while labels still show tooltips.
+                body.ui_mut().style_mut().interaction.selectable_labels = false;
                 body.rows(ROW_HEIGHT, rows.len(), |mut row| {
                     let Some(record) = rows.get(row.index()) else {
                         return;

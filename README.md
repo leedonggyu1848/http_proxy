@@ -17,6 +17,7 @@ HTTP Inspector는 로컬 HTTP 프록시를 통해 요청 기록을 보여주는 
 - 메서드, 대상, 결과, 응답 헤더 도착 시간 표시
 - 요청과 응답 헤더 상세 보기
 - 방향별 최대 8KiB의 실시간 본문 미리보기
+- `Content-Type: image/png` 응답 본문의 이미지 미리보기와 16진수 보기
 - 문자열 검색과 응답, 실패, 터널 결과 필터
 - 선택한 요청의 Headers와 Body 상세 패널
 - 프록시 시작, 중지, 기록 삭제
@@ -53,6 +54,25 @@ HTTPS 복호화는 기본으로 꺼져 있다. 이 상태에서 앱은 `CONNECT`
 다음은 Chrome으로 접속한 HTTPS 응답의 `Content-Encoding: br` 헤더와 압축을 푼 HTML 본문이다.
 
 ![HTTPS 응답의 Brotli 압축 해제와 HTML 본문 표시](docs/screenshots/decoded-https-body.png)
+
+### PNG 응답 미리보기
+
+`Content-Type`이 `image/png`인 응답은 **Body** 탭의 **Response body**에서 이미지로 그린다. 이미지를 그리려면 본문 전체가 필요하므로 PNG 응답만 응답당 최대 8MiB까지 메모리에 보관한다. 모든 PNG 응답이 함께 쓰는 보관 한도는 64MiB이며, 기록을 삭제하거나 오래된 기록이 밀려나면 그만큼 다시 쓸 수 있다. `Content-Length`가 8MiB를 넘는 PNG 응답은 공용 한도를 쓰지 않고 다른 본문처럼 앞 8KiB만 보관한다. 한도를 넘은 응답은 이미지 대신 보관한 바이트 수와 한도를 안내한다.
+
+- `Content-Encoding`이 있으면 텍스트 미리보기와 같은 방식으로 압축을 푼 뒤 디코딩한다.
+- 이미지 크기(가로×세로)와 PNG 바이트 수를 표시한다. 압축 전송이면 받은 바이트 수도 함께 표시한다.
+- 가로·세로 8,192px 또는 16메가픽셀을 넘는 이미지는 헤더만 읽고 픽셀 메모리를 할당하기 전에 거부한다.
+- 본문이 잘렸거나 손상되어 디코딩하지 못하면 오류를 표시한다. **Hex** 또는 **Show bytes as hex**로 받은 바이트의 앞 8KiB를 16진수로 확인할 수 있다.
+
+다음은 gzip으로 전송한 테스트 PNG 응답을 이미지로 표시한 실제 화면이다.
+
+![gzip 전송 PNG 응답을 이미지로 표시한 Response body](docs/screenshots/png-body-image.png)
+
+다음은 본문 앞 3분의 1만 보낸 테스트 PNG 응답의 디코딩 오류와 16진수 보기다.
+
+![잘린 PNG 응답의 디코딩 오류](docs/screenshots/png-body-error.png)
+
+![잘린 PNG 응답의 16진수 보기](docs/screenshots/png-body-hex.png)
 
 ## Linux 요구사항
 
