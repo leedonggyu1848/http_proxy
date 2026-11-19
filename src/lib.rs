@@ -23,7 +23,8 @@ pub(crate) use capture::{
 pub use browser::{Browser, BrowserEvent, BrowserSession};
 pub use domain::{
     BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, CaptureOutcome, CaptureRecord,
-    CapturedHeader, FailureStage, HeaderPreview, RecordId,
+    CapturedHeader, FailureStage, HeaderPreview, RecordId, TunnelPreview, TunnelSnapshot,
+    TunnelState,
 };
 pub use journal::FullLog;
 pub use proxy::{EngineState, ProxyConfig, ProxyHandle, StartError, StopError};

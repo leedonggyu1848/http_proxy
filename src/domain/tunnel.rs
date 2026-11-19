@@ -1,0 +1,168 @@
+//! Live observation of a CONNECT tunnel that the proxy relays without decrypting.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
+
+use super::FailureStage;
+
+#[derive(Debug)]
+struct TunnelInner {
+    opened: Instant,
+    client_to_upstream: AtomicU64,
+    upstream_to_client: AtomicU64,
+    end: Mutex<Option<TunnelEnd>>,
+}
+
+#[derive(Clone, Debug)]
+struct TunnelEnd {
+    at: Instant,
+    state: TunnelState,
+}
+
+/// Shared, updating view of one CONNECT tunnel.
+#[derive(Clone, Debug)]
+pub struct TunnelPreview {
+    inner: Arc<TunnelInner>,
+}
+
+impl TunnelPreview {
+    pub(crate) fn new() -> Self {
+        Self {
+            inner: Arc::new(TunnelInner {
+                opened: Instant::now(),
+                client_to_upstream: AtomicU64::new(0),
+                upstream_to_client: AtomicU64::new(0),
+                end: Mutex::new(None),
+            }),
+        }
+    }
+
+    pub(crate) fn add_client_to_upstream(&self, bytes: usize) {
+        add(&self.inner.client_to_upstream, bytes);
+    }
+
+    pub(crate) fn add_upstream_to_client(&self, bytes: usize) {
+        add(&self.inner.upstream_to_client, bytes);
+    }
+
+    pub(crate) fn close(&self) {
+        self.finish(TunnelState::Closed);
+    }
+
+    pub(crate) fn fail(&self, stage: FailureStage, message: String) {
+        self.finish(TunnelState::Failed { stage, message });
+    }
+
+    fn finish(&self, state: TunnelState) {
+        let mut end = self
+            .inner
+            .end
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if end.is_none() {
+            *end = Some(TunnelEnd {
+                at: Instant::now(),
+                state,
+            });
+        }
+    }
+
+    /// Returns the transfer totals and state at this instant.
+    #[must_use]
+    pub fn snapshot(&self) -> TunnelSnapshot {
+        let end = self
+            .inner
+            .end
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let (state, until) = end.map_or_else(
+            || (TunnelState::Open, Instant::now()),
+            |end| (end.state, end.at),
+        );
+        TunnelSnapshot {
+            client_to_upstream: self.inner.client_to_upstream.load(Ordering::Relaxed),
+            upstream_to_client: self.inner.upstream_to_client.load(Ordering::Relaxed),
+            duration: until.saturating_duration_since(self.inner.opened),
+            state,
+        }
+    }
+}
+
+fn add(counter: &AtomicU64, bytes: usize) {
+    let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+    let _previous = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        Some(value.saturating_add(bytes))
+    });
+}
+
+/// Lifecycle of a CONNECT tunnel after the proxy answered `200`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TunnelState {
+    /// Bytes may still flow.
+    Open,
+    /// Both sides finished without an error.
+    Closed,
+    /// The tunnel could not start or ended with an error.
+    Failed {
+        stage: FailureStage,
+        message: String,
+    },
+}
+
+/// Immutable view of a tunnel at one instant.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TunnelSnapshot {
+    client_to_upstream: u64,
+    upstream_to_client: u64,
+    duration: Duration,
+    state: TunnelState,
+}
+
+impl TunnelSnapshot {
+    /// Returns bytes relayed from the client to the upstream server.
+    #[must_use]
+    pub const fn client_to_upstream(&self) -> u64 {
+        self.client_to_upstream
+    }
+
+    /// Returns bytes relayed from the upstream server to the client.
+    #[must_use]
+    pub const fn upstream_to_client(&self) -> u64 {
+        self.upstream_to_client
+    }
+
+    /// Returns the time since the tunnel was accepted, up to its end when it ended.
+    #[must_use]
+    pub const fn duration(&self) -> Duration {
+        self.duration
+    }
+
+    /// Returns the lifecycle state.
+    #[must_use]
+    pub const fn state(&self) -> &TunnelState {
+        &self.state
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeps_the_first_end_and_freezes_duration() {
+        let tunnel = TunnelPreview::new();
+        tunnel.add_client_to_upstream(3);
+        tunnel.add_upstream_to_client(5);
+        assert_eq!(tunnel.snapshot().state(), &TunnelState::Open);
+
+        tunnel.close();
+        tunnel.fail(FailureStage::Tunnel, "late".to_owned());
+        let first = tunnel.snapshot();
+        assert_eq!(first.state(), &TunnelState::Closed);
+        assert_eq!(first.client_to_upstream(), 3);
+        assert_eq!(first.upstream_to_client(), 5);
+        assert_eq!(tunnel.snapshot().duration(), first.duration());
+    }
+}

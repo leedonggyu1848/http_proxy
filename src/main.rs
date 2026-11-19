@@ -31,7 +31,7 @@ use std::time::Duration;
 use eframe::egui::{self, Color32, RichText};
 use http_proxy::{
     BodyLifecycle, BodyPreview, BodyRetention, CaptureOutcome, CaptureRecord, EngineState, FullLog,
-    HeaderPreview, HttpsInspection, ProxyConfig, ProxyHandle, RecordId,
+    HeaderPreview, HttpsInspection, ProxyConfig, ProxyHandle, RecordId, TunnelPreview, TunnelState,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -381,11 +381,12 @@ impl InspectorApp {
                         ui.strong("Response body");
                         render_body(ui, body, headers);
                     }
-                    CaptureOutcome::TunnelEstablished => {
+                    CaptureOutcome::TunnelEstablished { tunnel } => {
                         ui.separator();
                         ui.label(
                             "CONNECT tunnel established. Encrypted tunnel contents are not inspected.",
                         );
+                        render_tunnel(ui, tunnel);
                     }
                     CaptureOutcome::InspectionEstablished => {
                         ui.separator();
@@ -449,14 +450,21 @@ impl RecordFilter {
 }
 
 fn record_matches(record: &CaptureRecord, filter: RecordFilter, query: &str) -> bool {
+    let failed_tunnel = matches!(
+        (filter, record.outcome()),
+        (RecordFilter::Failures, CaptureOutcome::TunnelEstablished { tunnel })
+            if matches!(tunnel.snapshot().state(), TunnelState::Failed { .. })
+    );
     let outcome_matches = matches!(filter, RecordFilter::All)
+        || failed_tunnel
         || matches!(
             (filter, record.outcome()),
             (RecordFilter::Responses, CaptureOutcome::Response { .. })
                 | (RecordFilter::Failures, CaptureOutcome::Failed { .. })
                 | (
                     RecordFilter::Tunnels,
-                    CaptureOutcome::TunnelEstablished | CaptureOutcome::InspectionEstablished
+                    CaptureOutcome::TunnelEstablished { .. }
+                        | CaptureOutcome::InspectionEstablished
                 )
         );
     outcome_matches
@@ -472,7 +480,7 @@ fn outcome_matches_query(outcome: &CaptureOutcome, query: &str) -> bool {
         CaptureOutcome::Response {
             status, headers, ..
         } => status.to_string().contains(query) || headers_match(headers, query),
-        CaptureOutcome::TunnelEstablished => "tunnel".contains(query),
+        CaptureOutcome::TunnelEstablished { .. } => "tunnel".contains(query),
         CaptureOutcome::InspectionEstablished => "https inspection".contains(query),
         CaptureOutcome::Failed { stage, message } => {
             text_matches(&format!("{stage:?}"), query) || text_matches(message, query)
@@ -592,12 +600,47 @@ fn outcome_text(outcome: &CaptureOutcome) -> (String, Color32) {
             };
             (status.to_string(), color)
         }
-        CaptureOutcome::TunnelEstablished => ("Tunnel".to_owned(), Color32::LIGHT_BLUE),
+        CaptureOutcome::TunnelEstablished { tunnel } => tunnel_summary(tunnel),
         CaptureOutcome::InspectionEstablished => ("HTTPS".to_owned(), Color32::LIGHT_BLUE),
         CaptureOutcome::Failed { stage, message } => {
             (format!("{stage:?}: {message}"), Color32::LIGHT_RED)
         }
     }
+}
+
+fn tunnel_summary(tunnel: &TunnelPreview) -> (String, Color32) {
+    match tunnel.snapshot().state() {
+        TunnelState::Open => ("Tunnel · open".to_owned(), Color32::LIGHT_BLUE),
+        TunnelState::Closed => ("Tunnel · closed".to_owned(), Color32::LIGHT_BLUE),
+        TunnelState::Failed { stage, .. } => {
+            (format!("Tunnel · failed ({stage:?})"), Color32::LIGHT_RED)
+        }
+    }
+}
+
+fn render_tunnel(ui: &mut egui::Ui, tunnel: &TunnelPreview) {
+    let snapshot = tunnel.snapshot();
+    let state = match snapshot.state() {
+        TunnelState::Open => "Open".to_owned(),
+        TunnelState::Closed => "Closed".to_owned(),
+        TunnelState::Failed { stage, message } => format!("Failed at {stage:?}: {message}"),
+    };
+    egui::Grid::new("tunnel-details")
+        .num_columns(2)
+        .show(ui, |ui| {
+            ui.label("State");
+            ui.label(state);
+            ui.end_row();
+            ui.label("Client → upstream");
+            ui.monospace(format!("{} bytes", snapshot.client_to_upstream()));
+            ui.end_row();
+            ui.label("Upstream → client");
+            ui.monospace(format!("{} bytes", snapshot.upstream_to_client()));
+            ui.end_row();
+            ui.label("Duration");
+            ui.monospace(format!("{:.1} ms", elapsed_millis(snapshot.duration())));
+            ui.end_row();
+        });
 }
 
 fn elapsed_millis(duration: Duration) -> f64 {

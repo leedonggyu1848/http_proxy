@@ -18,7 +18,7 @@ use hyper::server::conn::http1 as server_http1;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncWrite, copy_bidirectional};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Builder as RuntimeBuilder;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch};
@@ -34,11 +34,12 @@ use crate::{
     CaInfo, Destination, HttpsInspection, HttpsSetupError, PreparedInspection, TlsInspector,
     UpstreamTlsError,
 };
-use crate::{CaptureOutcome, CaptureRecord, FailureStage};
+use crate::{CaptureOutcome, CaptureRecord, FailureStage, TunnelPreview, TunnelSnapshot};
 
 mod headers;
 mod status;
 mod target;
+mod tunnel;
 
 use headers::remove_hop_by_hop_headers;
 pub use status::EngineState;
@@ -140,11 +141,24 @@ impl CaptureContext {
         }
     }
 
+    fn tunnel_ended(&self, tunnel: &TunnelSnapshot) {
+        if let Some(log) = self.log.as_ref() {
+            log.text(format!(
+                "[{}] Tunnel ended {:?} · {} bytes client→upstream · {} bytes upstream→client · {:.1} ms\n",
+                self.id.value(),
+                tunnel.state(),
+                tunnel.client_to_upstream(),
+                tunnel.upstream_to_client(),
+                tunnel.duration().as_secs_f64() * 1000.0
+            ));
+        }
+    }
+
     fn record(&self, request_body: Option<BodyPreview>, outcome: CaptureOutcome) -> CaptureRecord {
         if let Some(log) = self.log.as_ref() {
             let result = match &outcome {
                 CaptureOutcome::Response { status, .. } => format!("Response {status}"),
-                CaptureOutcome::TunnelEstablished => {
+                CaptureOutcome::TunnelEstablished { .. } => {
                     "CONNECT tunnel established (encrypted contents not inspected)".to_owned()
                 }
                 CaptureOutcome::InspectionEstablished => "HTTPS inspection established".to_owned(),
@@ -537,19 +551,20 @@ async fn connect_tunnel(
         Err(failure) => return failure.respond(events, &capture),
     };
 
+    let tunnel = TunnelPreview::new();
+    events.send(capture.record(
+        None,
+        CaptureOutcome::TunnelEstablished {
+            tunnel: tunnel.clone(),
+        },
+    ));
     let on_upgrade = hyper::upgrade::on(request);
     tokio::spawn(async move {
         let _permit = permit;
-        if let Ok(upgraded) = on_upgrade.await {
-            let mut client = TokioIo::new(upgraded);
-            let mut upstream = upstream;
-            if let Err(error) = copy_bidirectional(&mut client, &mut upstream).await {
-                tracing::debug!(%error, "CONNECT tunnel ended");
-            }
-        }
+        let client = async { on_upgrade.await.map(TokioIo::new) };
+        tunnel::relay(client, upstream, tunnel.clone()).await;
+        capture.tunnel_ended(&tunnel.snapshot());
     });
-
-    events.send(capture.record(None, CaptureOutcome::TunnelEstablished));
 
     empty_response(StatusCode::OK)
 }

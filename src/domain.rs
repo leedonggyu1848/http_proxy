@@ -4,6 +4,10 @@ use std::time::Duration;
 
 use http::Method;
 
+mod tunnel;
+
+pub use tunnel::{TunnelPreview, TunnelSnapshot, TunnelState};
+
 const STREAMING: u8 = 0;
 const COMPLETE: u8 = 1;
 const INTERRUPTED: u8 = 2;
@@ -318,8 +322,8 @@ pub enum CaptureOutcome {
         headers: HeaderPreview,
         body: BodyPreview,
     },
-    /// The proxy established a TCP tunnel.
-    TunnelEstablished,
+    /// The proxy established a TCP tunnel; `tunnel` keeps updating until it ends.
+    TunnelEstablished { tunnel: TunnelPreview },
     /// The proxy established a TLS inspection session.
     InspectionEstablished,
     /// The request failed before a response arrived.
@@ -348,4 +352,6 @@ pub enum FailureStage {
     ClientTls,
     /// The upstream TLS handshake or verification failed.
     UpstreamTls,
+    /// Relaying bytes through an established tunnel failed.
+    Tunnel,
 }
