@@ -29,6 +29,7 @@ use crate::FullLog;
 use crate::capture::{BodyLog, full_headers};
 use crate::{
     BODY_PREVIEW_BYTES, ERROR_BYTES, ObservedBody, TARGET_BYTES, bounded_text, capture_headers,
+    response_body_preview,
 };
 use crate::{BodyPreview, RecordId};
 use crate::{
@@ -916,7 +917,7 @@ where
                     full_headers(response.headers())
                 ));
             }
-            let response_body = BodyPreview::new(BODY_PREVIEW_BYTES);
+            let response_body = response_body_preview(response.headers());
             capture.settle(Outcome::Response(captured_response(
                 &response,
                 response_body.clone(),

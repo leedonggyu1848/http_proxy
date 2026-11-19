@@ -26,6 +26,12 @@ mod body_view;
 
 #[allow(
     clippy::redundant_pub_crate,
+    reason = "Image previews are private to the application module."
+)]
+mod image_view;
+
+#[allow(
+    clippy::redundant_pub_crate,
     reason = "The displayed record list is private to the application module."
 )]
 mod records;
@@ -130,6 +136,7 @@ struct InspectorApp {
     save: save::SaveControls,
     port: PortChoice,
     table: request_table::RequestTable,
+    image: image_view::ImagePanel,
     context: egui::Context,
 }
 
@@ -201,6 +208,7 @@ impl InspectorApp {
             save: save::SaveControls::new(),
             port: PortChoice::from_launch(),
             table: request_table::RequestTable::new(),
+            image: image_view::ImagePanel::default(),
             context,
         };
         app.start_proxy();
@@ -461,7 +469,7 @@ impl InspectorApp {
         })
     }
 
-    fn detail_panel(&self, ui: &mut egui::Ui) {
+    fn detail_panel(&mut self, ui: &mut egui::Ui) {
         let Some(selected) = self.selected else {
             ui.centered_and_justified(|ui| {
                 ui.label("Select a request to inspect headers and body previews.");
@@ -486,7 +494,7 @@ impl InspectorApp {
                 ui.strong("Request body");
                 render_optional_body(ui, request.body(), request.headers());
                 ui.separator();
-                render_outcome(ui, record.outcome());
+                render_outcome(ui, record, &mut self.image);
             });
     }
 }
@@ -628,14 +636,20 @@ fn render_headers(ui: &mut egui::Ui, id: &str, headers: &HeaderPreview) {
 
 fn render_optional_body(ui: &mut egui::Ui, body: Option<&BodyPreview>, headers: &HeaderPreview) {
     match body {
-        Some(body) => render_body(ui, body, headers),
+        Some(body) => render_body(ui, body, headers, None),
         None => {
             ui.weak("Body was not observed.");
         }
     }
 }
 
-fn render_body(ui: &mut egui::Ui, body: &BodyPreview, headers: &HeaderPreview) {
+/// Draws a body preview; `image` draws PNG bodies of that record as images.
+fn render_body(
+    ui: &mut egui::Ui,
+    body: &BodyPreview,
+    headers: &HeaderPreview,
+    image: Option<(&mut image_view::ImagePanel, RecordId)>,
+) {
     let Some(snapshot) = body.snapshot() else {
         ui.weak("Preview is updating.");
         return;
@@ -657,12 +671,15 @@ fn render_body(ui: &mut egui::Ui, body: &BodyPreview, headers: &HeaderPreview) {
         ui.weak("Empty body.");
         return;
     }
-    let encodings: Vec<_> = headers
-        .entries()
-        .iter()
-        .filter(|header| header.name() == "content-encoding")
-        .map(http_proxy::CapturedHeader::value)
-        .collect();
+    let encodings = header_values(headers, "content-encoding");
+    if let Some((panel, record)) = image
+        && header_values(headers, "content-type")
+            .first()
+            .is_some_and(|value| http_proxy::is_png_media_type(value))
+    {
+        panel.show(ui, record, &snapshot, &encodings);
+        return;
+    }
     let complete = snapshot.lifecycle() == BodyLifecycle::Complete
         && snapshot.retention() == BodyRetention::Prefix;
     let mut preview = match body_view::decode(snapshot.bytes(), &encodings, complete) {
@@ -685,6 +702,15 @@ fn render_body(ui: &mut egui::Ui, body: &BodyPreview, headers: &HeaderPreview) {
     );
 }
 
+fn header_values<'a>(headers: &'a HeaderPreview, name: &str) -> Vec<&'a str> {
+    headers
+        .entries()
+        .iter()
+        .filter(|header| header.name() == name)
+        .map(http_proxy::CapturedHeader::value)
+        .collect()
+}
+
 const fn lifecycle_text(lifecycle: BodyLifecycle) -> &'static str {
     match lifecycle {
         BodyLifecycle::Streaming => "streaming",
@@ -702,8 +728,8 @@ const fn retention_text(retention: BodyRetention) -> &'static str {
     }
 }
 
-fn render_outcome(ui: &mut egui::Ui, outcome: &Outcome) {
-    match outcome {
+fn render_outcome(ui: &mut egui::Ui, record: &Exchange, image: &mut image_view::ImagePanel) {
+    match record.outcome() {
         Outcome::InFlight => {
             ui.weak("Waiting for the upstream server.");
         }
@@ -717,7 +743,12 @@ fn render_outcome(ui: &mut egui::Ui, outcome: &Outcome) {
             render_headers(ui, "response-headers", response.headers());
             ui.separator();
             ui.strong("Response body");
-            render_body(ui, response.body(), response.headers());
+            render_body(
+                ui,
+                response.body(),
+                response.headers(),
+                Some((image, record.id())),
+            );
         }
         Outcome::Tunnel(tunnel) => {
             ui.label(scope_help::TUNNEL_NOTE);

@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, TryLockError};
+use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, TryLockError};
 use std::time::Instant;
 
 mod exchange;
@@ -82,6 +82,44 @@ impl HeaderPreview {
     }
 }
 
+/// Memory shared by every body preview that retains more than the default
+/// prefix. Each retained byte is reserved before it is copied and returned
+/// when the preview is dropped.
+#[derive(Debug)]
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "The capture module shares this budget; unreachable_pub forbids pub."
+)]
+pub(crate) struct RetentionBudget {
+    available: AtomicUsize,
+}
+
+impl RetentionBudget {
+    pub(crate) const fn new(bytes: usize) -> Self {
+        Self {
+            available: AtomicUsize::new(bytes),
+        }
+    }
+
+    /// Reserves as many of `wanted` bytes as remain and returns that count.
+    fn reserve_up_to(&self, wanted: usize) -> usize {
+        self.available
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |available| {
+                Some(available - available.min(wanted))
+            })
+            .map_or(0, |previous| previous.min(wanted))
+    }
+
+    fn release(&self, bytes: usize) {
+        let _previous = self.available.fetch_add(bytes, Ordering::AcqRel);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn available(&self) -> usize {
+        self.available.load(Ordering::Acquire)
+    }
+}
+
 #[derive(Debug)]
 struct BodyPreviewInner {
     prefix: Mutex<Vec<u8>>,
@@ -90,7 +128,24 @@ struct BodyPreviewInner {
     ended: OnceLock<Instant>,
     retention: AtomicU8,
     limit: usize,
+    budget: Option<&'static RetentionBudget>,
 }
+
+impl Drop for BodyPreviewInner {
+    fn drop(&mut self) {
+        if let Some(budget) = self.budget {
+            let retained = self
+                .prefix
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len();
+            budget.release(retained);
+        }
+    }
+}
+
+/// Initial allocation for a preview; larger budgeted previews grow on demand.
+const INITIAL_PREVIEW_CAPACITY: usize = 8 * 1024;
 
 /// Live, bounded observation of a streamed HTTP body.
 #[derive(Clone, Debug)]
@@ -100,14 +155,22 @@ pub struct BodyPreview {
 
 impl BodyPreview {
     pub(crate) fn new(limit: usize) -> Self {
+        Self::with_budget(limit, None)
+    }
+
+    /// Creates a preview that retains up to `limit` bytes, each reserved from
+    /// `budget` when one is given. Bytes the budget cannot cover are not
+    /// retained and the preview becomes [`BodyRetention::Truncated`].
+    pub(crate) fn with_budget(limit: usize, budget: Option<&'static RetentionBudget>) -> Self {
         Self {
             inner: Arc::new(BodyPreviewInner {
-                prefix: Mutex::new(Vec::with_capacity(limit)),
+                prefix: Mutex::new(Vec::with_capacity(limit.min(INITIAL_PREVIEW_CAPACITY))),
                 observed_bytes: AtomicU64::new(0),
                 lifecycle: AtomicU8::new(STREAMING),
                 ended: OnceLock::new(),
                 retention: AtomicU8::new(PREFIX),
                 limit,
+                budget,
             }),
         }
     }
@@ -133,7 +196,10 @@ impl BodyPreview {
                     return;
                 }
                 let remaining = self.inner.limit.saturating_sub(prefix.len());
-                let retained = remaining.min(data.len());
+                let mut retained = remaining.min(data.len());
+                if let Some(budget) = self.inner.budget {
+                    retained = budget.reserve_up_to(retained);
+                }
                 let (retained_data, _) = data.split_at(retained);
                 prefix.extend_from_slice(retained_data);
                 if retained < data.len() {
@@ -316,4 +382,37 @@ pub enum FailureStage {
     UpstreamTls,
     /// Relaying bytes through an established tunnel failed.
     Tunnel,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn budgeted_previews_share_and_return_memory() {
+        static BUDGET: RetentionBudget = RetentionBudget::new(10);
+        let first = BodyPreview::with_budget(8, Some(&BUDGET));
+        first.observe(b"abcdef");
+        assert_eq!(BUDGET.available(), 4);
+
+        let second = BodyPreview::with_budget(8, Some(&BUDGET));
+        second.observe(b"123456");
+        let snapshot = second.snapshot();
+        assert_eq!(
+            snapshot.as_ref().map(BodySnapshot::bytes),
+            Some(&b"1234"[..])
+        );
+        assert_eq!(
+            snapshot.map(|snapshot| snapshot.retention()),
+            Some(BodyRetention::Truncated)
+        );
+        assert_eq!(BUDGET.available(), 0);
+
+        let view = first.clone();
+        drop(first);
+        assert_eq!(BUDGET.available(), 0, "a clone still holds the bytes");
+        drop(view);
+        drop(second);
+        assert_eq!(BUDGET.available(), 10);
+    }
 }
