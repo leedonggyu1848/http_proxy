@@ -17,8 +17,8 @@ use http_body::{Body, Frame, SizeHint};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use http_proxy::{
-    BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, CaptureOutcome, CaptureRecord,
-    FailureStage, HeaderPreview, ProxyConfig, ProxyHandle,
+    BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, Exchange, FailureStage, HeaderPreview,
+    Outcome, ProxyConfig, ProxyHandle, TunnelState,
 };
 use hyper::body::Incoming;
 use hyper::service::service_fn;
@@ -73,14 +73,14 @@ async fn preserves_the_order_of_repeated_header_fields() -> Result<(), TestError
 
     let record = next_record(&mut proxy).await?;
     assert_eq!(
-        captured_values(record.request_headers(), "x-dup"),
+        captured_values(record.request().headers(), "x-dup"),
         vec!["first", "second"]
     );
-    let CaptureOutcome::Response { headers, .. } = record.outcome() else {
+    let Outcome::Response(response) = settled(&record).await? else {
         return Err("expected a response record".into());
     };
     assert_eq!(
-        captured_values(headers, "x-multi"),
+        captured_values(response.headers(), "x-multi"),
         vec!["one", "two", "three"]
     );
 
@@ -125,17 +125,18 @@ async fn streams_large_chunked_bodies_in_both_directions() -> Result<(), TestErr
     let record = next_record(&mut proxy).await?;
     let request_body = wait_for_body_end(
         record
-            .request_body()
+            .request()
+            .body()
             .ok_or("request body preview missing")?,
     )
     .await?;
     assert_eq!(request_body.observed_bytes(), LARGE_BODY_BYTES);
     assert_eq!(request_body.lifecycle(), BodyLifecycle::Complete);
     assert_eq!(request_body.retention(), BodyRetention::Truncated);
-    let CaptureOutcome::Response { body, .. } = record.outcome() else {
+    let Outcome::Response(response) = settled(&record).await? else {
         return Err("expected a response record".into());
     };
-    let response_body = wait_for_body_end(body).await?;
+    let response_body = wait_for_body_end(response.body()).await?;
     assert_eq!(response_body.observed_bytes(), LARGE_BODY_BYTES);
     assert_eq!(response_body.lifecycle(), BodyLifecycle::Complete);
 
@@ -173,11 +174,11 @@ async fn records_an_interrupted_body_when_upstream_closes_mid_response() -> Resu
     assert!(received.len() < 100, "the client must not see a full body");
 
     let record = next_record(&mut proxy).await?;
-    let CaptureOutcome::Response { status, body, .. } = record.outcome() else {
+    let Outcome::Response(response) = settled(&record).await? else {
         return Err("expected a response record".into());
     };
-    assert_eq!(*status, 200);
-    let body = wait_for_body_end(body).await?;
+    assert_eq!(response.status(), 200);
+    let body = wait_for_body_end(response.body()).await?;
     assert_eq!(body.lifecycle(), BodyLifecycle::Interrupted);
     assert_eq!(body.bytes(), b"partial...");
 
@@ -219,11 +220,11 @@ async fn forwards_many_concurrent_requests_independently() -> Result<(), TestErr
     for _ in 0..CLIENTS {
         let record = next_record(&mut proxy).await?;
         assert!(matches!(
-            record.outcome(),
-            CaptureOutcome::Response { status: 200, .. }
+            settled(&record).await?,
+            Outcome::Response(response) if response.status() == 200
         ));
         ids.insert(record.id());
-        targets.insert(record.target().to_owned());
+        targets.insert(record.request().target().to_owned());
     }
     assert_eq!(ids.len(), CLIENTS);
     assert_eq!(targets.len(), CLIENTS);
@@ -276,7 +277,7 @@ async fn records_the_stage_at_which_a_request_failed() -> Result<(), TestError> 
             "{request:?} -> {response:?}"
         );
         let record = next_record(&mut proxy).await?;
-        let CaptureOutcome::Failed { stage, message } = record.outcome() else {
+        let Outcome::Failed { stage, message } = settled(&record).await? else {
             return Err(format!("{request:?} was not recorded as a failure").into());
         };
         assert_eq!(*stage, expected_stage, "{request:?}");
@@ -315,10 +316,10 @@ async fn forwards_several_requests_on_one_keep_alive_connection() -> Result<(), 
 
     for path in ["/first", "/second"] {
         let record = next_record(&mut proxy).await?;
-        assert!(record.target().ends_with(path));
+        assert!(record.request().target().ends_with(path));
         assert!(matches!(
-            record.outcome(),
-            CaptureOutcome::Response { status: 200, .. }
+            settled(&record).await?,
+            Outcome::Response(response) if response.status() == 200
         ));
     }
 
@@ -347,7 +348,7 @@ async fn keeps_forwarding_and_counts_records_dropped_from_a_full_queue() -> Resu
 
     assert_eq!(proxy.dropped_records(), REQUESTS - 1);
     let kept = next_record(&mut proxy).await?;
-    assert!(kept.target().ends_with("/0"));
+    assert!(kept.request().target().ends_with("/0"));
     assert!(proxy.try_receive().is_none());
 
     upstream_task.abort();
@@ -356,7 +357,8 @@ async fn keeps_forwarding_and_counts_records_dropped_from_a_full_queue() -> Resu
 }
 
 #[tokio::test]
-async fn stop_closes_pending_exchanges_and_open_tunnels() -> Result<(), TestError> {
+async fn stop_closes_and_marks_pending_exchanges_and_open_tunnels_incomplete()
+-> Result<(), TestError> {
     let upstream = TcpListener::bind("127.0.0.1:0").await?;
     let upstream_addr = upstream.local_addr()?;
     let (received_sender, received_receiver) = tokio::sync::oneshot::channel();
@@ -377,18 +379,22 @@ async fn stop_closes_pending_exchanges_and_open_tunnels() -> Result<(), TestErro
     );
     pending.write_all(request.as_bytes()).await?;
     timeout(TEST_TIMEOUT, received_receiver).await??;
+    let pending_record = next_record(&mut proxy).await?;
+    assert!(pending_record.outcome().is_in_flight());
 
     let mut tunnel = TcpStream::connect(proxy_addr).await?;
     let connect = format!("CONNECT {upstream_addr} HTTP/1.1\r\nHost: {upstream_addr}\r\n\r\n");
     tunnel.write_all(connect.as_bytes()).await?;
     let tunnel_response = timeout(TEST_TIMEOUT, read_headers(&mut tunnel)).await??;
     assert!(tunnel_response.starts_with(b"HTTP/1.1 200 OK"));
-    assert!(matches!(
-        next_record(&mut proxy).await?.outcome(),
-        CaptureOutcome::TunnelEstablished { .. }
-    ));
+    let tunnel_record = next_record(&mut proxy).await?;
+    let Outcome::Tunnel(tunnel_preview) = settled(&tunnel_record).await? else {
+        return Err("expected a tunnel record".into());
+    };
 
     tokio::task::spawn_blocking(move || proxy.stop()).await??;
+    assert!(matches!(pending_record.outcome(), Outcome::Incomplete));
+    assert_eq!(tunnel_preview.snapshot().state(), &TunnelState::Incomplete);
 
     let mut rest = Vec::new();
     let pending_closed = timeout(TEST_TIMEOUT, pending.read_to_end(&mut rest)).await?;
@@ -479,7 +485,7 @@ async fn exchange_raw(proxy_addr: SocketAddr, request: &str) -> Result<String, T
     Ok(String::from_utf8(response)?)
 }
 
-async fn next_record(proxy: &mut ProxyHandle) -> Result<CaptureRecord, TestError> {
+async fn next_record(proxy: &mut ProxyHandle) -> Result<Exchange, TestError> {
     Ok(timeout(TEST_TIMEOUT, proxy.receive())
         .await?
         .ok_or("capture channel closed")?)
@@ -515,6 +521,10 @@ fn captured_values<'a>(headers: &'a HeaderPreview, name: &str) -> Vec<&'a str> {
         .filter(|header| header.name() == name)
         .map(http_proxy::CapturedHeader::value)
         .collect()
+}
+
+async fn settled(exchange: &Exchange) -> Result<&Outcome, TestError> {
+    Ok(timeout(TEST_TIMEOUT, exchange.settled()).await?)
 }
 
 async fn read_headers<S>(stream: &mut S) -> std::io::Result<Vec<u8>>

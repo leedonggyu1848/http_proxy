@@ -2,7 +2,7 @@ use std::convert::Infallible;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener as StdTcpListener};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -14,6 +14,7 @@ use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::Incoming;
 use hyper::client::conn::http1 as client_http1;
+use hyper::ext::ReasonPhrase;
 use hyper::server::conn::http1 as server_http1;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
@@ -29,12 +30,15 @@ use crate::capture::{BodyLog, full_headers};
 use crate::{
     BODY_PREVIEW_BYTES, ERROR_BYTES, ObservedBody, TARGET_BYTES, bounded_text, capture_headers,
 };
-use crate::{BodyPreview, HeaderPreview, RecordId};
+use crate::{BodyPreview, RecordId};
 use crate::{
     CaInfo, Destination, HttpsInspection, HttpsSetupError, PreparedInspection, TlsInspector,
     UpstreamTlsError,
 };
-use crate::{CaptureOutcome, CaptureRecord, FailureStage, TunnelPreview, TunnelSnapshot};
+use crate::{
+    CaptureSource, CapturedRequest, CapturedResponse, Exchange, FailureStage, Outcome, SessionId,
+    TunnelPreview, TunnelSnapshot,
+};
 
 mod headers;
 mod status;
@@ -63,6 +67,8 @@ type ConnectionPermit = Arc<OwnedSemaphorePermit>;
 /// Shared state that every connection handled by one proxy run uses.
 struct Engine {
     events: EventSink,
+    session: SessionId,
+    stopped: Arc<AtomicBool>,
     inspector: Option<Arc<TlsInspector>>,
     local_addr: SocketAddr,
     connect_timeout: Duration,
@@ -71,14 +77,14 @@ struct Engine {
 
 #[derive(Clone)]
 struct EventSink {
-    sender: mpsc::Sender<CaptureRecord>,
+    sender: mpsc::Sender<Exchange>,
     dropped: Arc<AtomicU64>,
     log: Option<FullLog>,
 }
 
 impl EventSink {
-    fn send(&self, record: CaptureRecord) {
-        match self.sender.try_send(record) {
+    fn send(&self, exchange: Exchange) {
+        match self.sender.try_send(exchange) {
             Err(mpsc::error::TrySendError::Full(_)) => {
                 self.dropped.fetch_add(1, Ordering::Relaxed);
             }
@@ -87,27 +93,24 @@ impl EventSink {
     }
 }
 
+/// Engine-side owner of one exchange. Dropping it before the exchange
+/// settles records why the request never finished.
 struct CaptureContext {
-    id: RecordId,
-    method: Method,
-    target: String,
-    request_headers: HeaderPreview,
-    started: Instant,
+    exchange: Exchange,
     log: Option<FullLog>,
+    stopped: Arc<AtomicBool>,
 }
 
 impl CaptureContext {
-    fn new(request: &Request<Incoming>, started: Instant, log: Option<FullLog>) -> Self {
-        Self::new_with_target(request, started, &request.uri().to_string(), log)
-    }
-
-    fn new_with_target(
+    /// Publishes a new in-flight exchange for `request`.
+    fn start(
         request: &Request<Incoming>,
-        started: Instant,
+        source: CaptureSource,
         target: &str,
-        log: Option<FullLog>,
+        engine: &Engine,
     ) -> Self {
         let id = NEXT_RECORD_ID.fetch_add(1, Ordering::Relaxed);
+        let log = engine.events.log.clone();
         if let Some(log) = log.as_ref() {
             log.text(format!(
                 "[{id}] Request {} {target}\n{}",
@@ -115,28 +118,65 @@ impl CaptureContext {
                 full_headers(request.headers())
             ));
         }
+        let exchange = Exchange::new(
+            RecordId::new(id),
+            engine.session,
+            source,
+            CapturedRequest::new(
+                request.method().clone(),
+                bounded_text(target, TARGET_BYTES),
+                capture_headers(request.headers()),
+            ),
+        );
+        engine.events.send(exchange.clone());
         Self {
-            id: RecordId::new(id),
-            method: request.method().clone(),
-            target: bounded_text(target, TARGET_BYTES),
-            request_headers: capture_headers(request.headers()),
-            started,
+            exchange,
             log,
+            stopped: Arc::clone(&engine.stopped),
         }
+    }
+
+    fn id(&self) -> u64 {
+        self.exchange.id().value()
     }
 
     fn body_log(&self, side: &'static str) -> Option<BodyLog> {
         self.log
             .as_ref()
-            .map(|log| BodyLog::new(log.clone(), self.id.value(), side))
+            .map(|log| BodyLog::new(log.clone(), self.id(), side))
     }
 
-    fn failure(&self, stage: FailureStage, message: &str) {
+    /// Records a failure and returns the bounded message shown to the client.
+    fn fail(&self, stage: FailureStage, message: &str) -> String {
         if let Some(log) = self.log.as_ref() {
             log.text(format!(
                 "[{}] Failure {stage:?}: {}\n",
-                self.id.value(),
+                self.id(),
                 message.escape_debug()
+            ));
+        }
+        let message = bounded_text(message, ERROR_BYTES);
+        self.settle(Outcome::Failed {
+            stage,
+            message: message.clone(),
+        });
+        message
+    }
+
+    fn settle(&self, outcome: Outcome) {
+        let summary = outcome_summary(&outcome);
+        let timing_label = if matches!(outcome, Outcome::Response(_)) {
+            "Response headers in"
+        } else {
+            "Settled after"
+        };
+        if self.exchange.settle(outcome)
+            && let Some(log) = self.log.as_ref()
+        {
+            log.text(format!(
+                "[{}] {summary} · {timing_label} {:.1} ms\n",
+                self.id(),
+                self.exchange.elapsed().as_secs_f64() * 1000.0
             ));
         }
     }
@@ -145,7 +185,7 @@ impl CaptureContext {
         if let Some(log) = self.log.as_ref() {
             log.text(format!(
                 "[{}] Tunnel ended {:?} · {} bytes client→upstream · {} bytes upstream→client · {:.1} ms\n",
-                self.id.value(),
+                self.id(),
                 tunnel.state(),
                 tunnel.client_to_upstream(),
                 tunnel.upstream_to_client(),
@@ -153,32 +193,34 @@ impl CaptureContext {
             ));
         }
     }
+}
 
-    fn record(&self, request_body: Option<BodyPreview>, outcome: CaptureOutcome) -> CaptureRecord {
-        if let Some(log) = self.log.as_ref() {
-            let result = match &outcome {
-                CaptureOutcome::Response { status, .. } => format!("Response {status}"),
-                CaptureOutcome::TunnelEstablished { .. } => {
-                    "CONNECT tunnel established (encrypted contents not inspected)".to_owned()
-                }
-                CaptureOutcome::InspectionEstablished => "HTTPS inspection established".to_owned(),
-                CaptureOutcome::Failed { stage, .. } => format!("Failed {stage:?}"),
-            };
-            log.text(format!(
-                "[{}] {result} · Response headers in {:.1} ms\n",
-                self.id.value(),
-                self.started.elapsed().as_secs_f64() * 1000.0
-            ));
+impl Drop for CaptureContext {
+    fn drop(&mut self) {
+        if self.exchange.outcome().is_in_flight() {
+            // The engine sets `stopped` before shutting its runtime down, so
+            // any request dropped after that was cut off by the stop rather
+            // than abandoned by its client.
+            if self.stopped.load(Ordering::Acquire) {
+                self.settle(Outcome::Incomplete);
+            } else {
+                self.settle(Outcome::Cancelled);
+            }
         }
-        CaptureRecord {
-            id: self.id,
-            method: self.method.clone(),
-            target: self.target.clone(),
-            request_headers: self.request_headers.clone(),
-            request_body,
-            outcome,
-            elapsed: self.started.elapsed(),
+    }
+}
+
+fn outcome_summary(outcome: &Outcome) -> String {
+    match outcome {
+        Outcome::InFlight => "In flight".to_owned(),
+        Outcome::Response(response) => format!("Response {}", response.status().as_u16()),
+        Outcome::Tunnel(_) => {
+            "CONNECT tunnel established (encrypted contents not inspected)".to_owned()
         }
+        Outcome::InspectionEstablished => "HTTPS inspection established".to_owned(),
+        Outcome::Failed { stage, .. } => format!("Failed {stage:?}"),
+        Outcome::Cancelled => "Cancelled by the client".to_owned(),
+        Outcome::Incomplete => "Incomplete because the proxy stopped".to_owned(),
     }
 }
 
@@ -257,7 +299,7 @@ impl Default for ProxyConfig {
 /// A running proxy and its capture event stream.
 pub struct ProxyHandle {
     local_addr: SocketAddr,
-    events: mpsc::Receiver<CaptureRecord>,
+    events: mpsc::Receiver<Exchange>,
     dropped: Arc<AtomicU64>,
     ca_info: Option<CaInfo>,
     shutdown: watch::Sender<bool>,
@@ -308,8 +350,11 @@ impl ProxyHandle {
             dropped: Arc::clone(&dropped),
             log,
         };
+        let stopped = Arc::new(AtomicBool::new(false));
         let engine = Arc::new(Engine {
             events: event_sink,
+            session: SessionId::next(),
+            stopped: Arc::clone(&stopped),
             inspector,
             local_addr,
             connect_timeout,
@@ -328,6 +373,8 @@ impl ProxyHandle {
                         engine_status.fail(error.to_string());
                     }
                 });
+                stopped.store(true, Ordering::Release);
+                drop(runtime);
             })
             .map_err(StartError::Thread)?;
 
@@ -348,17 +395,20 @@ impl ProxyHandle {
         self.local_addr
     }
 
-    /// Receives the next captured request without waiting.
-    pub fn try_receive(&mut self) -> Option<CaptureRecord> {
+    /// Receives the next started exchange without waiting.
+    ///
+    /// Exchanges arrive when their request starts; their outcome keeps
+    /// updating in place afterwards.
+    pub fn try_receive(&mut self) -> Option<Exchange> {
         self.events.try_recv().ok()
     }
 
-    /// Waits for the next captured request.
-    pub async fn receive(&mut self) -> Option<CaptureRecord> {
+    /// Waits for the next started exchange.
+    pub async fn receive(&mut self) -> Option<Exchange> {
         self.events.recv().await
     }
 
-    /// Returns the number of records omitted because the event queue was full.
+    /// Returns the number of exchanges omitted because the event queue was full.
     #[must_use]
     pub fn dropped_records(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
@@ -515,12 +565,12 @@ async fn proxy_request(
     engine: Arc<Engine>,
     permit: ConnectionPermit,
 ) -> Result<Response<ProxyBody>, Infallible> {
-    let started = Instant::now();
-    let capture = CaptureContext::new(&request, started, engine.events.log.clone());
-
+    let target = request.uri().to_string();
     let response = if request.method() == Method::CONNECT {
+        let capture = CaptureContext::start(&request, CaptureSource::Connect, &target, &engine);
         connect_tunnel(&mut request, &engine, capture, permit).await
     } else {
+        let capture = CaptureContext::start(&request, CaptureSource::HttpProxy, &target, &engine);
         forward_http(request, &engine, &capture).await
     };
 
@@ -533,22 +583,20 @@ async fn connect_tunnel(
     capture: CaptureContext,
     permit: ConnectionPermit,
 ) -> Response<ProxyBody> {
-    let events = &engine.events;
     let Some(authority) = request.uri().authority().cloned() else {
         return failed_response(
-            events,
             &capture,
-            None,
             FailureStage::Request,
             StatusCode::BAD_REQUEST,
             "CONNECT requires an authority",
         );
     };
 
+    let connect_started = Instant::now();
     let deadline = connect_deadline(engine);
     let addresses = match resolve_within(deadline, &authority, 443, engine).await {
         Ok(addresses) => addresses,
-        Err(failure) => return failure.respond(events, &capture),
+        Err(failure) => return failure.respond(&capture),
     };
 
     if let Some(inspector) = engine.inspector.clone() {
@@ -557,16 +605,12 @@ async fn connect_tunnel(
 
     let upstream = match connect_within(deadline, &addresses, engine).await {
         Ok(stream) => stream,
-        Err(failure) => return failure.respond(events, &capture),
+        Err(failure) => return failure.respond(&capture),
     };
+    capture.exchange.record_connect(connect_started.elapsed());
 
     let tunnel = TunnelPreview::new();
-    events.send(capture.record(
-        None,
-        CaptureOutcome::TunnelEstablished {
-            tunnel: tunnel.clone(),
-        },
-    ));
+    capture.settle(Outcome::Tunnel(tunnel.clone()));
     let on_upgrade = hyper::upgrade::on(request);
     tokio::spawn(async move {
         let _permit = permit;
@@ -586,14 +630,11 @@ fn connect_inspected(
     authority: &Authority,
     permit: ConnectionPermit,
 ) -> Response<ProxyBody> {
-    let events = &engine.events;
     let destination = match Destination::from_authority(authority) {
         Ok(destination) => Arc::new(destination),
         Err(error) => {
             return failed_response(
-                events,
                 &capture,
-                None,
                 FailureStage::Request,
                 StatusCode::BAD_REQUEST,
                 &error.to_string(),
@@ -604,9 +645,7 @@ fn connect_inspected(
         Ok(prepared) => prepared,
         Err(error) => {
             return failed_response(
-                events,
                 &capture,
-                None,
                 FailureStage::ClientTls,
                 StatusCode::BAD_GATEWAY,
                 &error.to_string(),
@@ -640,46 +679,30 @@ async fn run_inspected_connection(
     engine: Arc<Engine>,
     capture: CaptureContext,
 ) {
-    let events = &engine.events;
     let upgraded = match timeout(TLS_TIMEOUT, on_upgrade).await {
         Ok(Ok(upgraded)) => upgraded,
         Ok(Err(error)) => {
-            send_connection_failure(events, &capture, FailureStage::Upgrade, &error.to_string());
+            capture.fail(FailureStage::Upgrade, &error.to_string());
             return;
         }
         Err(_) => {
-            send_connection_failure(
-                events,
-                &capture,
-                FailureStage::Upgrade,
-                "CONNECT upgrade timed out",
-            );
+            capture.fail(FailureStage::Upgrade, "CONNECT upgrade timed out");
             return;
         }
     };
     let tls = match timeout(TLS_TIMEOUT, prepared.accept(TokioIo::new(upgraded))).await {
         Ok(Ok(tls)) => tls,
         Ok(Err(error)) => {
-            send_connection_failure(
-                events,
-                &capture,
-                FailureStage::ClientTls,
-                &error.to_string(),
-            );
+            capture.fail(FailureStage::ClientTls, &error.to_string());
             return;
         }
         Err(_) => {
-            send_connection_failure(
-                events,
-                &capture,
-                FailureStage::ClientTls,
-                "client TLS handshake timed out",
-            );
+            capture.fail(FailureStage::ClientTls, "client TLS handshake timed out");
             return;
         }
     };
 
-    events.send(capture.record(None, CaptureOutcome::InspectionEstablished));
+    capture.settle(Outcome::InspectionEstablished);
     let service = service_fn(move |request| {
         proxy_https_request(
             request,
@@ -702,21 +725,17 @@ async fn proxy_https_request(
     inspector: Arc<TlsInspector>,
     destination: Arc<Destination>,
 ) -> Result<Response<ProxyBody>, Infallible> {
-    let started = Instant::now();
     let path = request
         .uri()
         .path_and_query()
         .map_or("/", http::uri::PathAndQuery::as_str);
     let target = destination.absolute_target(path);
-    let capture =
-        CaptureContext::new_with_target(&request, started, &target, engine.events.log.clone());
+    let capture = CaptureContext::start(&request, CaptureSource::InspectedHttps, &target, &engine);
 
     let response = match validate_inner_request(&request, &destination) {
         Ok(()) => forward_https(request, &engine, &capture, &inspector, &destination).await,
         Err(message) => failed_response(
-            &engine.events,
             &capture,
-            None,
             FailureStage::Request,
             StatusCode::BAD_REQUEST,
             message,
@@ -755,14 +774,11 @@ async fn forward_http(
     engine: &Engine,
     capture: &CaptureContext,
 ) -> Response<ProxyBody> {
-    let events = &engine.events;
     let target_parts = match upstream_target(&request) {
         Ok(parts) => parts,
         Err(message) => {
             return failed_response(
-                events,
                 capture,
-                None,
                 FailureStage::Request,
                 StatusCode::BAD_REQUEST,
                 message,
@@ -770,10 +786,12 @@ async fn forward_http(
         }
     };
 
+    let connect_started = Instant::now();
     let stream = match connect_upstream(&target_parts.authority, 80, engine).await {
         Ok(stream) => stream,
-        Err(failure) => return failure.respond(events, capture),
+        Err(failure) => return failure.respond(capture),
     };
+    capture.exchange.record_connect(connect_started.elapsed());
 
     forward_over_stream(request, stream, engine, capture, target_parts.path).await
 }
@@ -785,18 +803,16 @@ async fn forward_https(
     inspector: &TlsInspector,
     destination: &Destination,
 ) -> Response<ProxyBody> {
-    let events = &engine.events;
     let path = request
         .uri()
         .path_and_query()
         .map_or_else(|| Uri::from_static("/"), |value| value.clone().into());
+    let connect_started = Instant::now();
     let stream = match timeout(TLS_TIMEOUT, inspector.connect(destination)).await {
         Ok(Ok(stream)) => stream,
         Ok(Err(UpstreamTlsError::Connect(error))) => {
             return failed_response(
-                events,
                 capture,
-                None,
                 FailureStage::Connect,
                 StatusCode::BAD_GATEWAY,
                 &error.to_string(),
@@ -804,9 +820,7 @@ async fn forward_https(
         }
         Ok(Err(UpstreamTlsError::Handshake(error))) => {
             return failed_response(
-                events,
                 capture,
-                None,
                 FailureStage::UpstreamTls,
                 StatusCode::BAD_GATEWAY,
                 &error.to_string(),
@@ -814,15 +828,14 @@ async fn forward_https(
         }
         Err(_) => {
             return failed_response(
-                events,
                 capture,
-                None,
                 FailureStage::UpstreamTls,
                 StatusCode::GATEWAY_TIMEOUT,
                 "upstream TLS connection timed out",
             );
         }
     };
+    capture.exchange.record_connect(connect_started.elapsed());
     forward_over_stream(request, stream, engine, capture, path).await
 }
 
@@ -836,15 +849,12 @@ async fn forward_over_stream<IO>(
 where
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let events = &engine.events;
     let handshake = client_http1::handshake(TokioIo::new(stream)).await;
     let (mut sender, connection) = match handshake {
         Ok(parts) => parts,
         Err(error) => {
             return failed_response(
-                events,
                 capture,
-                None,
                 FailureStage::Connect,
                 StatusCode::BAD_GATEWAY,
                 &error.to_string(),
@@ -861,14 +871,13 @@ where
     *request.uri_mut() = path;
     remove_hop_by_hop_headers(request.headers_mut());
     let request_body = BodyPreview::new(BODY_PREVIEW_BYTES);
-    let request = request
-        .map(|body| ObservedBody::new(body, request_body.clone(), capture.body_log("Request")));
+    capture.exchange.attach_request_body(request_body.clone());
+    let request =
+        request.map(|body| ObservedBody::new(body, request_body, capture.body_log("Request")));
 
     let Ok(response) = timeout(engine.response_timeout, sender.send_request(request)).await else {
         return failed_response(
-            events,
             capture,
-            Some(request_body),
             FailureStage::ResponseTimeout,
             StatusCode::GATEWAY_TIMEOUT,
             &format!(
@@ -882,30 +891,22 @@ where
             if let Some(log) = capture.log.as_ref() {
                 log.text(format!(
                     "[{}] Response headers\n{}",
-                    capture.id.value(),
+                    capture.id(),
                     full_headers(response.headers())
                 ));
             }
-            let response_headers = capture_headers(response.headers());
-            remove_hop_by_hop_headers(response.headers_mut());
-            let status = response.status();
             let response_body = BodyPreview::new(BODY_PREVIEW_BYTES);
-            events.send(capture.record(
-                Some(request_body),
-                CaptureOutcome::Response {
-                    status: status.as_u16(),
-                    headers: response_headers,
-                    body: response_body.clone(),
-                },
-            ));
+            capture.settle(Outcome::Response(captured_response(
+                &response,
+                response_body.clone(),
+            )));
+            remove_hop_by_hop_headers(response.headers_mut());
             response
                 .map(|body| ObservedBody::new(body, response_body, capture.body_log("Response")))
                 .map(BodyExt::boxed)
         }
         Err(error) => failed_response(
-            events,
             capture,
-            Some(request_body),
             FailureStage::Response,
             StatusCode::BAD_GATEWAY,
             &error.to_string(),
@@ -913,15 +914,19 @@ where
     }
 }
 
-fn send_connection_failure(
-    events: &EventSink,
-    capture: &CaptureContext,
-    stage: FailureStage,
-    message: &str,
-) {
-    capture.failure(stage, message);
-    let message = bounded_text(message, ERROR_BYTES);
-    events.send(capture.record(None, CaptureOutcome::Failed { stage, message }));
+fn captured_response<B>(response: &Response<B>, body: BodyPreview) -> CapturedResponse {
+    let status = response.status();
+    let reason = response.extensions().get::<ReasonPhrase>().map_or_else(
+        || status.canonical_reason().unwrap_or_default().to_owned(),
+        |phrase| String::from_utf8_lossy(phrase.as_bytes()).into_owned(),
+    );
+    CapturedResponse::new(
+        status,
+        response.version(),
+        bounded_text(&reason, ERROR_BYTES),
+        capture_headers(response.headers()),
+        body,
+    )
 }
 
 /// Why the proxy could not open an upstream connection.
@@ -943,15 +948,8 @@ impl UpstreamFailure {
         }
     }
 
-    fn respond(&self, events: &EventSink, capture: &CaptureContext) -> Response<ProxyBody> {
-        failed_response(
-            events,
-            capture,
-            None,
-            self.stage,
-            self.status,
-            &self.message,
-        )
+    fn respond(&self, capture: &CaptureContext) -> Response<ProxyBody> {
+        failed_response(capture, self.stage, self.status, &self.message)
     }
 }
 
@@ -1024,22 +1022,12 @@ async fn connect_addresses(addresses: &[SocketAddr]) -> Result<TcpStream, Upstre
 }
 
 fn failed_response(
-    events: &EventSink,
     capture: &CaptureContext,
-    request_body: Option<BodyPreview>,
     stage: FailureStage,
     status: StatusCode,
     message: &str,
 ) -> Response<ProxyBody> {
-    capture.failure(stage, message);
-    let message = bounded_text(message, ERROR_BYTES);
-    events.send(capture.record(
-        request_body,
-        CaptureOutcome::Failed {
-            stage,
-            message: message.clone(),
-        },
-    ));
+    let message = capture.fail(stage, message);
     text_response(status, &message)
 }
 

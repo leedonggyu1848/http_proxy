@@ -35,8 +35,8 @@ use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
 use http_proxy::{
-    BodyLifecycle, BodyPreview, BodyRetention, CaptureOutcome, CaptureRecord, EngineState, FullLog,
-    HeaderPreview, HttpsInspection, ProxyConfig, ProxyHandle, RecordId, TunnelPreview, TunnelState,
+    BodyLifecycle, BodyPreview, BodyRetention, EngineState, Exchange, FullLog, HeaderPreview,
+    HttpsInspection, Outcome, ProxyConfig, ProxyHandle, RecordId, TunnelPreview, TunnelState,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -94,7 +94,7 @@ fn init_tracing() {
 
 struct InspectorApp {
     proxy: Option<ProxyHandle>,
-    records: records::RecordList<CaptureRecord>,
+    records: records::RecordList<Exchange>,
     selected: Option<RecordId>,
     filter_text: String,
     record_filter: RecordFilter,
@@ -349,16 +349,16 @@ impl InspectorApp {
                             if ui
                                 .selectable_label(
                                     selected == Some(record.id()),
-                                    RichText::new(record.method().as_str()).monospace(),
+                                    RichText::new(record.request().method().as_str()).monospace(),
                                 )
                                 .clicked()
                             {
                                 new_selection = Some(record.id());
                             }
-                            ui.monospace(record.target());
+                            ui.monospace(record.request().target());
                             let (result, color) = outcome_text(record.outcome());
                             ui.colored_label(color, result);
-                            ui.monospace(format!("{:.1} ms", elapsed_millis(record.elapsed())));
+                            ui.monospace(elapsed_text(record));
                             ui.end_row();
                         }
                     });
@@ -383,47 +383,17 @@ impl InspectorApp {
             .id_salt("details-scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.heading(format!("{} {}", record.method(), record.target()));
-                ui.label(format!(
-                    "Response headers in {:.1} ms",
-                    elapsed_millis(record.elapsed())
-                ));
+                let request = record.request();
+                ui.heading(format!("{} {}", request.method(), request.target()));
+                render_timing(ui, record);
                 ui.separator();
                 ui.strong("Request headers");
-                render_headers(ui, "request-headers", record.request_headers());
+                render_headers(ui, "request-headers", request.headers());
                 ui.separator();
                 ui.strong("Request body");
-                render_optional_body(ui, record.request_body(), record.request_headers());
-
-                match record.outcome() {
-                    CaptureOutcome::Response {
-                        status,
-                        headers,
-                        body,
-                    } => {
-                        ui.separator();
-                        ui.strong(format!("Response headers · {status}"));
-                        render_headers(ui, "response-headers", headers);
-                        ui.separator();
-                        ui.strong("Response body");
-                        render_body(ui, body, headers);
-                    }
-                    CaptureOutcome::TunnelEstablished { tunnel } => {
-                        ui.separator();
-                        ui.label(
-                            "CONNECT tunnel established. Encrypted tunnel contents are not inspected.",
-                        );
-                        render_tunnel(ui, tunnel);
-                    }
-                    CaptureOutcome::InspectionEstablished => {
-                        ui.separator();
-                        ui.label("HTTPS inspection session established.");
-                    }
-                    CaptureOutcome::Failed { stage, message } => {
-                        ui.separator();
-                        ui.colored_label(Color32::LIGHT_RED, format!("{stage:?}: {message}"));
-                    }
-                }
+                render_optional_body(ui, request.body(), request.headers());
+                ui.separator();
+                render_outcome(ui, record.outcome());
             });
     }
 }
@@ -476,42 +446,58 @@ impl RecordFilter {
     }
 }
 
-fn record_matches(record: &CaptureRecord, filter: RecordFilter, query: &str) -> bool {
-    let failed_tunnel = matches!(
-        (filter, record.outcome()),
-        (RecordFilter::Failures, CaptureOutcome::TunnelEstablished { tunnel })
-            if matches!(tunnel.snapshot().state(), TunnelState::Failed { .. })
-    );
-    let outcome_matches = matches!(filter, RecordFilter::All)
-        || failed_tunnel
-        || matches!(
-            (filter, record.outcome()),
-            (RecordFilter::Responses, CaptureOutcome::Response { .. })
-                | (RecordFilter::Failures, CaptureOutcome::Failed { .. })
-                | (
-                    RecordFilter::Tunnels,
-                    CaptureOutcome::TunnelEstablished { .. }
-                        | CaptureOutcome::InspectionEstablished
-                )
-        );
+fn record_matches(record: &Exchange, filter: RecordFilter, query: &str) -> bool {
+    let outcome = record.outcome();
+    let outcome_matches = match filter {
+        RecordFilter::All => true,
+        RecordFilter::Responses => matches!(outcome, Outcome::Response(_)),
+        RecordFilter::Failures => match outcome {
+            Outcome::Failed { .. } | Outcome::Cancelled | Outcome::Incomplete => true,
+            Outcome::Tunnel(tunnel) => matches!(
+                tunnel.snapshot().state(),
+                TunnelState::Failed { .. } | TunnelState::Incomplete
+            ),
+            Outcome::InFlight | Outcome::Response(_) | Outcome::InspectionEstablished => false,
+        },
+        RecordFilter::Tunnels => {
+            matches!(outcome, Outcome::Tunnel(_) | Outcome::InspectionEstablished)
+        }
+    };
+    let request = record.request();
     outcome_matches
         && (query.is_empty()
-            || text_matches(record.method().as_str(), query)
-            || text_matches(record.target(), query)
-            || headers_match(record.request_headers(), query)
-            || outcome_matches_query(record.outcome(), query))
+            || text_matches(request.method().as_str(), query)
+            || text_matches(request.target(), query)
+            || headers_match(request.headers(), query)
+            || outcome_matches_query(outcome, query))
 }
 
-fn outcome_matches_query(outcome: &CaptureOutcome, query: &str) -> bool {
+fn outcome_matches_query(outcome: &Outcome, query: &str) -> bool {
     match outcome {
-        CaptureOutcome::Response {
-            status, headers, ..
-        } => status.to_string().contains(query) || headers_match(headers, query),
-        CaptureOutcome::TunnelEstablished { .. } => "tunnel".contains(query),
-        CaptureOutcome::InspectionEstablished => "https inspection".contains(query),
-        CaptureOutcome::Failed { stage, message } => {
+        Outcome::Response(response) => {
+            response.status().as_str().contains(query) || headers_match(response.headers(), query)
+        }
+        Outcome::Failed { stage, message } => {
             text_matches(&format!("{stage:?}"), query) || text_matches(message, query)
         }
+        Outcome::InFlight
+        | Outcome::Tunnel(_)
+        | Outcome::InspectionEstablished
+        | Outcome::Cancelled
+        | Outcome::Incomplete => outcome_label(outcome).contains(query),
+    }
+}
+
+/// Lowercase search keyword for outcomes that carry no searchable text.
+const fn outcome_label(outcome: &Outcome) -> &'static str {
+    match outcome {
+        Outcome::InFlight => "pending",
+        Outcome::Response(_) => "response",
+        Outcome::Tunnel(_) => "tunnel",
+        Outcome::InspectionEstablished => "https inspection",
+        Outcome::Failed { .. } => "failed",
+        Outcome::Cancelled => "cancelled",
+        Outcome::Incomplete => "incomplete",
     }
 }
 
@@ -617,21 +603,103 @@ const fn retention_text(retention: BodyRetention) -> &'static str {
     }
 }
 
-fn outcome_text(outcome: &CaptureOutcome) -> (String, Color32) {
+fn outcome_text(outcome: &Outcome) -> (String, Color32) {
     match outcome {
-        CaptureOutcome::Response { status, .. } => {
-            let color = if *status < 400 {
+        Outcome::InFlight => ("Pending".to_owned(), Color32::GRAY),
+        Outcome::Response(response) => {
+            let status = response.status();
+            let color = if status.as_u16() < 400 {
                 Color32::LIGHT_GREEN
             } else {
                 Color32::LIGHT_RED
             };
-            (status.to_string(), color)
+            (status.as_str().to_owned(), color)
         }
-        CaptureOutcome::TunnelEstablished { tunnel } => tunnel_summary(tunnel),
-        CaptureOutcome::InspectionEstablished => ("HTTPS".to_owned(), Color32::LIGHT_BLUE),
-        CaptureOutcome::Failed { stage, message } => {
-            (format!("{stage:?}: {message}"), Color32::LIGHT_RED)
+        Outcome::Tunnel(tunnel) => tunnel_summary(tunnel),
+        Outcome::InspectionEstablished => ("HTTPS".to_owned(), Color32::LIGHT_BLUE),
+        Outcome::Failed { stage, message } => (format!("{stage:?}: {message}"), Color32::LIGHT_RED),
+        Outcome::Cancelled => ("Cancelled by client".to_owned(), Color32::YELLOW),
+        Outcome::Incomplete => ("Incomplete (proxy stopped)".to_owned(), Color32::YELLOW),
+    }
+}
+
+fn render_outcome(ui: &mut egui::Ui, outcome: &Outcome) {
+    match outcome {
+        Outcome::InFlight => {
+            ui.weak("Waiting for the upstream server.");
         }
+        Outcome::Response(response) => {
+            ui.strong(format!(
+                "Response headers · {} {} · {:?}",
+                response.status().as_str(),
+                response.reason(),
+                response.version()
+            ));
+            render_headers(ui, "response-headers", response.headers());
+            ui.separator();
+            ui.strong("Response body");
+            render_body(ui, response.body(), response.headers());
+        }
+        Outcome::Tunnel(tunnel) => {
+            ui.label("CONNECT tunnel established. Encrypted tunnel contents are not inspected.");
+            render_tunnel(ui, tunnel);
+        }
+        Outcome::InspectionEstablished => {
+            ui.label("HTTPS inspection session established.");
+        }
+        Outcome::Failed { stage, message } => {
+            ui.colored_label(Color32::LIGHT_RED, format!("{stage:?}: {message}"));
+        }
+        Outcome::Cancelled => {
+            ui.colored_label(
+                Color32::YELLOW,
+                "The client closed the connection before a response arrived.",
+            );
+        }
+        Outcome::Incomplete => {
+            ui.colored_label(
+                Color32::YELLOW,
+                "The proxy stopped before a response arrived.",
+            );
+        }
+    }
+}
+
+fn render_timing(ui: &mut egui::Ui, record: &Exchange) {
+    let timing = record.timing();
+    let (settled_label, settled_value) = match record.outcome() {
+        Outcome::InFlight => ("Waiting", elapsed_text(record)),
+        Outcome::Response(_) => ("Response headers", optional_millis(timing.settled())),
+        Outcome::Tunnel(_) | Outcome::InspectionEstablished => {
+            ("Established", optional_millis(timing.settled()))
+        }
+        Outcome::Failed { .. } | Outcome::Cancelled | Outcome::Incomplete => {
+            ("Ended", optional_millis(timing.settled()))
+        }
+    };
+    egui::Grid::new("timing").num_columns(2).show(ui, |ui| {
+        ui.label("Connect");
+        ui.monospace(optional_millis(timing.connect()));
+        ui.end_row();
+        ui.label(settled_label);
+        ui.monospace(settled_value);
+        ui.end_row();
+    });
+}
+
+fn optional_millis(duration: Option<Duration>) -> String {
+    duration.map_or_else(
+        || "not observed".to_owned(),
+        |duration| format!("{:.1} ms", elapsed_millis(duration)),
+    )
+}
+
+fn elapsed_text(record: &Exchange) -> String {
+    let millis = elapsed_millis(record.elapsed());
+    if record.outcome().is_in_flight() {
+        format!("{millis:.0} ms…")
+    } else {
+        format!("{millis:.1} ms")
     }
 }
 
@@ -642,6 +710,7 @@ fn tunnel_summary(tunnel: &TunnelPreview) -> (String, Color32) {
         TunnelState::Failed { stage, .. } => {
             (format!("Tunnel · failed ({stage:?})"), Color32::LIGHT_RED)
         }
+        TunnelState::Incomplete => ("Tunnel · incomplete".to_owned(), Color32::YELLOW),
     }
 }
 
@@ -651,6 +720,7 @@ fn render_tunnel(ui: &mut egui::Ui, tunnel: &TunnelPreview) {
         TunnelState::Open => "Open".to_owned(),
         TunnelState::Closed => "Closed".to_owned(),
         TunnelState::Failed { stage, message } => format!("Failed at {stage:?}: {message}"),
+        TunnelState::Incomplete => "Incomplete: the proxy stopped while it was open".to_owned(),
     };
     egui::Grid::new("tunnel-details")
         .num_columns(2)

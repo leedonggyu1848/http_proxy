@@ -13,6 +13,8 @@ use crate::{ERROR_BYTES, FailureStage, TunnelPreview, bounded_text};
 ///
 /// The outcome is written to `tunnel`: an upgrade error becomes an `Upgrade`
 /// failure, a relay error a `Tunnel` failure, and a clean finish `Closed`.
+/// When the relay is dropped before it finishes, which happens when the
+/// proxy stops, the tunnel becomes `Incomplete`.
 pub(super) async fn relay<F, C, E, U>(on_upgrade: F, mut upstream: U, tunnel: TunnelPreview)
 where
     F: Future<Output = Result<C, E>>,
@@ -20,6 +22,7 @@ where
     E: Display,
     U: AsyncRead + AsyncWrite + Unpin,
 {
+    let _abandoned_on_drop = AbandonOnDrop(tunnel.clone());
     let client = match on_upgrade.await {
         Ok(client) => client,
         Err(error) => {
@@ -34,6 +37,15 @@ where
     match copy_bidirectional(&mut client, &mut upstream).await {
         Ok(_) => tunnel.close(),
         Err(error) => tunnel.fail(FailureStage::Tunnel, failure_text(&error)),
+    }
+}
+
+/// Marks the tunnel `Incomplete` unless it already ended.
+struct AbandonOnDrop(TunnelPreview);
+
+impl Drop for AbandonOnDrop {
+    fn drop(&mut self) {
+        self.0.abandon();
     }
 }
 

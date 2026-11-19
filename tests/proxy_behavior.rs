@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use http_proxy::{
-    BodyLifecycle, BodyRetention, CaptureOutcome, HeaderPreview, HttpsInspection, ProxyConfig,
+    BodyLifecycle, BodyRetention, Exchange, HeaderPreview, HttpsInspection, Outcome, ProxyConfig,
     ProxyHandle, TunnelPreview, TunnelSnapshot, TunnelState,
 };
 use rcgen::{
@@ -57,10 +57,10 @@ async fn forwards_http_request_and_records_response() -> Result<(), Box<dyn Erro
     let record = timeout(TEST_TIMEOUT, proxy.receive())
         .await?
         .ok_or("capture channel closed")?;
-    assert_eq!(record.method(), http::Method::GET);
+    assert_eq!(record.request().method(), http::Method::GET);
     assert!(matches!(
-        record.outcome(),
-        CaptureOutcome::Response { status: 200, .. }
+        settled(&record).await?,
+        Outcome::Response(response) if response.status() == 200
     ));
 
     timeout(TEST_TIMEOUT, upstream_task).await???;
@@ -135,8 +135,8 @@ async fn rejects_requests_that_target_the_proxy_itself() -> Result<(), Box<dyn E
             .await?
             .ok_or("capture channel closed")?;
         assert!(matches!(
-            record.outcome(),
-            CaptureOutcome::Failed {
+            settled(&record).await?,
+            Outcome::Failed {
                 stage: http_proxy::FailureStage::Request,
                 ..
             }
@@ -177,8 +177,8 @@ async fn records_a_timeout_when_upstream_never_responds() -> Result<(), Box<dyn 
         .await?
         .ok_or("capture channel closed")?;
     assert!(matches!(
-        record.outcome(),
-        CaptureOutcome::Failed {
+        settled(&record).await?,
+        Outcome::Failed {
             stage: http_proxy::FailureStage::ResponseTimeout,
             ..
         }
@@ -257,8 +257,8 @@ async fn connect_creates_a_bidirectional_tunnel() -> Result<(), Box<dyn Error>> 
     let record = timeout(TEST_TIMEOUT, proxy.receive())
         .await?
         .ok_or("capture channel closed")?;
-    assert_eq!(record.method(), http::Method::CONNECT);
-    let CaptureOutcome::TunnelEstablished { tunnel } = record.outcome() else {
+    assert_eq!(record.request().method(), http::Method::CONNECT);
+    let Outcome::Tunnel(tunnel) = settled(&record).await? else {
         return Err("expected a tunnel record".into());
     };
 
@@ -295,7 +295,7 @@ async fn records_a_tunnel_reset_by_upstream() -> Result<(), Box<dyn Error>> {
     let record = timeout(TEST_TIMEOUT, proxy.receive())
         .await?
         .ok_or("capture channel closed")?;
-    let CaptureOutcome::TunnelEstablished { tunnel } = record.outcome() else {
+    let Outcome::Tunnel(tunnel) = settled(&record).await? else {
         return Err("expected a tunnel record".into());
     };
     timeout(TEST_TIMEOUT, upstream_task).await???;
@@ -366,16 +366,17 @@ async fn captures_bounded_headers_and_body_previews() -> Result<(), Box<dyn Erro
         .await?
         .ok_or("capture channel closed")?;
     assert_eq!(
-        header_value(record.request_headers(), "x-request"),
+        header_value(record.request().headers(), "x-request"),
         Some("yes")
     );
     assert_eq!(
-        header_value(record.request_headers(), "authorization"),
+        header_value(record.request().headers(), "authorization"),
         Some("[REDACTED]")
     );
 
     let request_body = record
-        .request_body()
+        .request()
+        .body()
         .ok_or("request body preview missing")?
         .snapshot()
         .ok_or("request body preview busy")?;
@@ -384,15 +385,11 @@ async fn captures_bounded_headers_and_body_previews() -> Result<(), Box<dyn Erro
     assert_eq!(request_body.retention(), BodyRetention::Truncated);
     assert!(request_body.bytes().iter().all(|byte| *byte == b'q'));
 
-    let CaptureOutcome::Response {
-        status,
-        headers,
-        body,
-    } = record.outcome()
-    else {
+    let Outcome::Response(response) = settled(&record).await? else {
         return Err("expected an HTTP response capture".into());
     };
-    assert_eq!(*status, 201);
+    let (status, headers, body) = (response.status(), response.headers(), response.body());
+    assert_eq!(status, 201);
     assert_eq!(header_value(headers, "x-reply"), Some("yes"));
     assert_eq!(header_value(headers, "set-cookie"), Some("[REDACTED]"));
     let response_body = body.snapshot().ok_or("response body preview busy")?;
@@ -449,29 +446,25 @@ async fn decrypts_https_with_a_trusted_local_ca() -> Result<(), Box<dyn Error>> 
         .await?
         .ok_or("inspection setup capture missing")?;
     assert!(matches!(
-        setup.outcome(),
-        CaptureOutcome::InspectionEstablished
+        settled(&setup).await?,
+        Outcome::InspectionEstablished
     ));
     let exchange = timeout(TEST_TIMEOUT, proxy.receive())
         .await?
         .ok_or("decrypted exchange capture missing")?;
     assert_eq!(
-        exchange.target(),
+        exchange.request().target(),
         format!("https://localhost:{}/secure", upstream_addr.port())
     );
     assert_eq!(
-        header_value(exchange.request_headers(), "authorization"),
+        header_value(exchange.request().headers(), "authorization"),
         Some("[REDACTED]")
     );
-    let CaptureOutcome::Response {
-        status,
-        headers,
-        body,
-    } = exchange.outcome()
-    else {
+    let Outcome::Response(response) = settled(&exchange).await? else {
         return Err("expected a decrypted HTTP response capture".into());
     };
-    assert_eq!(*status, 200);
+    let (status, headers, body) = (response.status(), response.headers(), response.body());
+    assert_eq!(status, 200);
     assert_eq!(header_value(headers, "x-secure"), Some("yes"));
     let body = body.snapshot().ok_or("response preview busy")?;
     assert_eq!(body.bytes(), b"secret");
@@ -511,15 +504,15 @@ async fn rejects_an_untrusted_upstream_certificate() -> Result<(), Box<dyn Error
         .await?
         .ok_or("inspection setup capture missing")?;
     assert!(matches!(
-        setup.outcome(),
-        CaptureOutcome::InspectionEstablished
+        settled(&setup).await?,
+        Outcome::InspectionEstablished
     ));
     let exchange = timeout(TEST_TIMEOUT, proxy.receive())
         .await?
         .ok_or("upstream TLS failure capture missing")?;
     assert!(matches!(
-        exchange.outcome(),
-        CaptureOutcome::Failed {
+        settled(&exchange).await?,
+        Outcome::Failed {
             stage: http_proxy::FailureStage::UpstreamTls,
             ..
         }
@@ -550,15 +543,15 @@ async fn rejects_a_host_that_differs_from_connect() -> Result<(), Box<dyn Error>
         .await?
         .ok_or("inspection setup capture missing")?;
     assert!(matches!(
-        setup.outcome(),
-        CaptureOutcome::InspectionEstablished
+        settled(&setup).await?,
+        Outcome::InspectionEstablished
     ));
     let rejected = timeout(TEST_TIMEOUT, proxy.receive())
         .await?
         .ok_or("rejected request capture missing")?;
     assert!(matches!(
-        rejected.outcome(),
-        CaptureOutcome::Failed {
+        settled(&rejected).await?,
+        Outcome::Failed {
             stage: http_proxy::FailureStage::Request,
             ..
         }
@@ -636,6 +629,10 @@ fn header_value<'a>(headers: &'a HeaderPreview, name: &str) -> Option<&'a str> {
         .iter()
         .find(|header| header.name() == name)
         .map(http_proxy::CapturedHeader::value)
+}
+
+async fn settled(exchange: &Exchange) -> Result<&Outcome, Box<dyn Error>> {
+    Ok(timeout(TEST_TIMEOUT, exchange.settled()).await?)
 }
 
 async fn read_headers<S>(stream: &mut S) -> std::io::Result<Vec<u8>>
