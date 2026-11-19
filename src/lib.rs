@@ -23,10 +23,11 @@ pub(crate) use capture::{
 pub use browser::{Browser, BrowserEvent, BrowserSession};
 pub use domain::{
     BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, CaptureOutcome, CaptureRecord,
-    CapturedHeader, FailureStage, HeaderPreview, RecordId,
+    CapturedHeader, FailureStage, HeaderPreview, RecordId, TunnelPreview, TunnelSnapshot,
+    TunnelState,
 };
 pub use journal::FullLog;
-pub use proxy::{ProxyConfig, ProxyHandle, StartError, StopError};
+pub use proxy::{EngineState, ProxyConfig, ProxyHandle, StartError, StopError};
 pub use tls::{CaInfo, HttpsInspection, HttpsSetupError};
 pub(crate) use tls::{Destination, PreparedInspection, TlsInspector, UpstreamTlsError};
 pub use trust::{CaTrustError, CaTrustStatus, CaTrustStore};

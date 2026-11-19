@@ -24,14 +24,19 @@ mod browser_panel;
 )]
 mod body_view;
 
-use std::collections::VecDeque;
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "The displayed record list is private to the application module."
+)]
+mod records;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
 use http_proxy::{
-    BodyLifecycle, BodyPreview, BodyRetention, CaptureOutcome, CaptureRecord, FullLog,
-    HeaderPreview, HttpsInspection, ProxyConfig, ProxyHandle, RecordId,
+    BodyLifecycle, BodyPreview, BodyRetention, CaptureOutcome, CaptureRecord, EngineState, FullLog,
+    HeaderPreview, HttpsInspection, ProxyConfig, ProxyHandle, RecordId, TunnelPreview, TunnelState,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -89,7 +94,7 @@ fn init_tracing() {
 
 struct InspectorApp {
     proxy: Option<ProxyHandle>,
-    records: VecDeque<CaptureRecord>,
+    records: records::RecordList<CaptureRecord>,
     selected: Option<RecordId>,
     filter_text: String,
     record_filter: RecordFilter,
@@ -114,7 +119,7 @@ impl InspectorApp {
         };
         let mut app = Self {
             proxy: None,
-            records: VecDeque::with_capacity(MAX_RECORDS),
+            records: records::RecordList::new(MAX_RECORDS),
             selected: None,
             filter_text: String::new(),
             record_filter: RecordFilter::All,
@@ -161,11 +166,39 @@ impl InspectorApp {
     fn stop_proxy(&mut self) {
         self.browsers.close();
         self.ca_panel.refresh();
-        if let Some(proxy) = self.proxy.take()
+        if let Some(proxy) = self.take_proxy()
             && let Err(error) = proxy.stop()
         {
             self.error = Some(error.to_string());
         }
+    }
+
+    /// Releases a proxy whose engine stopped on its own so the toolbar shows
+    /// `Stopped` with the cause and `Start` can be pressed again.
+    fn release_failed_proxy(&mut self) {
+        let Some(EngineState::Failed { message }) = self.proxy.as_ref().map(ProxyHandle::state)
+        else {
+            return;
+        };
+        self.receive_records();
+        let mut error = format!("The proxy stopped: {message}. Press Start to restart it.");
+        if let Some(proxy) = self.take_proxy()
+            && let Err(stop_error) = proxy.stop()
+        {
+            error = format!("{error} ({stop_error})");
+        }
+        self.error = Some(error);
+    }
+
+    /// Detaches the running proxy, keeping its drop count for the toolbar.
+    fn take_proxy(&mut self) -> Option<ProxyHandle> {
+        let proxy = self.proxy.take()?;
+        self.records.proxy_stopped(proxy.dropped_records());
+        Some(proxy)
+    }
+
+    fn engine_dropped(&self) -> u64 {
+        self.proxy.as_ref().map_or(0, ProxyHandle::dropped_records)
     }
 
     fn receive_records(&mut self) {
@@ -173,13 +206,11 @@ impl InspectorApp {
             return;
         };
         while let Some(record) = proxy.try_receive() {
-            if self.records.len() == MAX_RECORDS
-                && let Some(removed) = self.records.pop_front()
+            if let Some(removed) = self.records.push(record)
                 && self.selected == Some(removed.id())
             {
                 self.selected = None;
             }
-            self.records.push_back(record);
         }
     }
 
@@ -200,16 +231,29 @@ impl InspectorApp {
 
             ui.separator();
             ui.label(format!("{} requests", self.records.len()));
-            let dropped = self.proxy.as_ref().map_or(0, ProxyHandle::dropped_records);
+            let dropped = self.records.dropped(self.engine_dropped());
             if dropped > 0 {
-                ui.colored_label(Color32::LIGHT_RED, format!("{dropped} records dropped"));
+                ui.colored_label(Color32::LIGHT_RED, format!("{dropped} records dropped"))
+                    .on_hover_text(
+                        "The capture queue was full, so these exchanges were forwarded but not shown.",
+                    );
+            }
+            let evicted = self.records.evicted();
+            if evicted > 0 {
+                ui.colored_label(
+                    Color32::YELLOW,
+                    format!("{evicted} older records removed"),
+                )
+                .on_hover_text(format!(
+                    "Only the newest {MAX_RECORDS} requests are kept on screen. The full-session log keeps every record."
+                ));
             }
             if ui
                 .button("Clear")
                 .on_hover_text("Clear the displayed requests. The full-session log is retained.")
                 .clicked()
             {
-                self.records.clear();
+                self.records.clear(self.engine_dropped());
                 self.selected = None;
             }
         });
@@ -364,11 +408,12 @@ impl InspectorApp {
                         ui.strong("Response body");
                         render_body(ui, body, headers);
                     }
-                    CaptureOutcome::TunnelEstablished => {
+                    CaptureOutcome::TunnelEstablished { tunnel } => {
                         ui.separator();
                         ui.label(
                             "CONNECT tunnel established. Encrypted tunnel contents are not inspected.",
                         );
+                        render_tunnel(ui, tunnel);
                     }
                     CaptureOutcome::InspectionEstablished => {
                         ui.separator();
@@ -386,6 +431,7 @@ impl InspectorApp {
 impl eframe::App for InspectorApp {
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
         self.receive_records();
+        self.release_failed_proxy();
         ui.heading(http_proxy::APP_NAME);
         ui.label("Configure an HTTP client to use the proxy shown below.");
         ui.separator();
@@ -431,14 +477,21 @@ impl RecordFilter {
 }
 
 fn record_matches(record: &CaptureRecord, filter: RecordFilter, query: &str) -> bool {
+    let failed_tunnel = matches!(
+        (filter, record.outcome()),
+        (RecordFilter::Failures, CaptureOutcome::TunnelEstablished { tunnel })
+            if matches!(tunnel.snapshot().state(), TunnelState::Failed { .. })
+    );
     let outcome_matches = matches!(filter, RecordFilter::All)
+        || failed_tunnel
         || matches!(
             (filter, record.outcome()),
             (RecordFilter::Responses, CaptureOutcome::Response { .. })
                 | (RecordFilter::Failures, CaptureOutcome::Failed { .. })
                 | (
                     RecordFilter::Tunnels,
-                    CaptureOutcome::TunnelEstablished | CaptureOutcome::InspectionEstablished
+                    CaptureOutcome::TunnelEstablished { .. }
+                        | CaptureOutcome::InspectionEstablished
                 )
         );
     outcome_matches
@@ -454,7 +507,7 @@ fn outcome_matches_query(outcome: &CaptureOutcome, query: &str) -> bool {
         CaptureOutcome::Response {
             status, headers, ..
         } => status.to_string().contains(query) || headers_match(headers, query),
-        CaptureOutcome::TunnelEstablished => "tunnel".contains(query),
+        CaptureOutcome::TunnelEstablished { .. } => "tunnel".contains(query),
         CaptureOutcome::InspectionEstablished => "https inspection".contains(query),
         CaptureOutcome::Failed { stage, message } => {
             text_matches(&format!("{stage:?}"), query) || text_matches(message, query)
@@ -574,12 +627,47 @@ fn outcome_text(outcome: &CaptureOutcome) -> (String, Color32) {
             };
             (status.to_string(), color)
         }
-        CaptureOutcome::TunnelEstablished => ("Tunnel".to_owned(), Color32::LIGHT_BLUE),
+        CaptureOutcome::TunnelEstablished { tunnel } => tunnel_summary(tunnel),
         CaptureOutcome::InspectionEstablished => ("HTTPS".to_owned(), Color32::LIGHT_BLUE),
         CaptureOutcome::Failed { stage, message } => {
             (format!("{stage:?}: {message}"), Color32::LIGHT_RED)
         }
     }
+}
+
+fn tunnel_summary(tunnel: &TunnelPreview) -> (String, Color32) {
+    match tunnel.snapshot().state() {
+        TunnelState::Open => ("Tunnel · open".to_owned(), Color32::LIGHT_BLUE),
+        TunnelState::Closed => ("Tunnel · closed".to_owned(), Color32::LIGHT_BLUE),
+        TunnelState::Failed { stage, .. } => {
+            (format!("Tunnel · failed ({stage:?})"), Color32::LIGHT_RED)
+        }
+    }
+}
+
+fn render_tunnel(ui: &mut egui::Ui, tunnel: &TunnelPreview) {
+    let snapshot = tunnel.snapshot();
+    let state = match snapshot.state() {
+        TunnelState::Open => "Open".to_owned(),
+        TunnelState::Closed => "Closed".to_owned(),
+        TunnelState::Failed { stage, message } => format!("Failed at {stage:?}: {message}"),
+    };
+    egui::Grid::new("tunnel-details")
+        .num_columns(2)
+        .show(ui, |ui| {
+            ui.label("State");
+            ui.label(state);
+            ui.end_row();
+            ui.label("Sent to upstream");
+            ui.monospace(format!("{} bytes", snapshot.client_to_upstream()));
+            ui.end_row();
+            ui.label("Received from upstream");
+            ui.monospace(format!("{} bytes", snapshot.upstream_to_client()));
+            ui.end_row();
+            ui.label("Duration");
+            ui.monospace(format!("{:.1} ms", elapsed_millis(snapshot.duration())));
+            ui.end_row();
+        });
 }
 
 fn elapsed_millis(duration: Duration) -> f64 {
