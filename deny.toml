@@ -18,6 +18,16 @@ allow = [
 	"Zlib",
 ]
 
+# Windows-only clipboard backends pulled in by eframe's `clipboard` feature.
+# BSL-1.0 is OSI-approved and permissive; allow it only for these crates.
+[[licenses.exceptions]]
+crate = "clipboard-win"
+allow = ["BSL-1.0"]
+
+[[licenses.exceptions]]
+crate = "error-code"
+allow = ["BSL-1.0"]
+
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
