@@ -311,3 +311,9 @@ cargo test --test macos_integration -- --ignored
 ## 라이선스
 
 이 프로젝트는 [MIT License](LICENSE)를 따른다.
+
+### 화면 테마
+
+상단의 **Theme: System / Light / Dark**에서 테마를 고른다. 기본값은 **System**이며, 감지 가능한 환경에서는 실행 중 시스템 외관 변경도 반영한다. 감지에 실패하면 Dark를 사용하고 화면에 안내한다. Tab으로 선택 항목에 이동한 뒤 Space로 바꿀 수 있다.
+
+선택은 즉시 적용되며 `$XDG_CONFIG_HOME/http-inspector/theme`에 저장된다. `XDG_CONFIG_HOME`이 없으면 `~/.config/http-inspector/theme`를 사용한다. 설정 파일이 없거나 값이 잘못되면 System으로 시작한다.

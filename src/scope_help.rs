@@ -1,6 +1,6 @@
 //! Explains which traffic the proxy can and cannot record.
 
-use eframe::egui::{self, Color32};
+use eframe::egui;
 
 /// One-line scope shown above the toolbar.
 pub(super) const SCOPE_SUMMARY: &str = "Capture scope: only HTTP traffic that a client sends through this proxy. \
@@ -44,7 +44,7 @@ pub(super) fn show(ui: &mut egui::Ui) {
             ui.add_space(4.0);
             ui.strong("Not recorded");
             for line in NOT_RECORDED {
-                ui.colored_label(Color32::YELLOW, format!("• {line}"));
+                ui.colored_label(crate::theme::Palette::of(ui).warning, format!("• {line}"));
             }
             ui.add_space(4.0);
             ui.label(QUIC_HINT);

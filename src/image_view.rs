@@ -3,7 +3,7 @@
 use std::fmt::Write as _;
 use std::io::Cursor;
 
-use eframe::egui::{self, Color32, TextureHandle, TextureOptions};
+use eframe::egui::{self, TextureHandle, TextureOptions};
 use http_proxy::{
     BodyLifecycle, BodyRetention, BodySnapshot, IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES,
     RecordId,
@@ -167,7 +167,7 @@ impl ImagePanel {
         }
         self.hex_record = None;
         if let Some(message) = unavailable_reason(snapshot) {
-            ui.colored_label(Color32::YELLOW, message);
+            ui.colored_label(crate::theme::Palette::of(ui).warning, message);
             return;
         }
         let key = BodyKey {
@@ -188,10 +188,20 @@ impl ImagePanel {
             Some(Ok(drawn)) => {
                 ui.label(size_text(drawn, snapshot.observed_bytes()));
                 let size = egui::vec2(ui.available_width(), MAX_DISPLAY_HEIGHT);
-                ui.add(egui::Image::from_texture(&drawn.texture).max_size(size));
+                let image = egui::Image::from_texture(&drawn.texture).max_size(size);
+                let image_size = image.calc_size(size, Some(drawn.texture.size_vec2()));
+                let (rect, _) = ui.allocate_exact_size(image_size, egui::Sense::hover());
+                checkerboard(ui, rect);
+                image.paint_at(ui, rect);
+                ui.painter().rect_stroke(
+                    rect,
+                    0.0,
+                    ui.visuals().window_stroke,
+                    egui::StrokeKind::Outside,
+                );
             }
             Some(Err(message)) => {
-                ui.colored_label(Color32::LIGHT_RED, message);
+                ui.colored_label(crate::theme::Palette::of(ui).error, message);
                 switch_to_hex = ui
                     .horizontal(|ui| ui.button("Show bytes as hex").clicked())
                     .inner;
@@ -287,6 +297,37 @@ fn show_hex(ui: &mut egui::Ui, snapshot: &BodySnapshot) {
                     .interactive(false),
             );
         });
+}
+
+fn checkerboard(ui: &egui::Ui, rect: egui::Rect) {
+    let mut y = rect.top();
+    let mut row = false;
+    loop {
+        if y >= rect.bottom() {
+            break;
+        }
+        let mut x = rect.left();
+        let mut alternate = row;
+        loop {
+            if x >= rect.right() {
+                break;
+            }
+            let tile = egui::Rect::from_min_max(
+                egui::pos2(x, y),
+                egui::pos2((x + 12.0).min(rect.right()), (y + 12.0).min(rect.bottom())),
+            );
+            let fill = if alternate {
+                ui.visuals().extreme_bg_color
+            } else {
+                ui.visuals().widgets.hovered.bg_fill
+            };
+            ui.painter().rect_filled(tile, 0.0, fill);
+            alternate = !alternate;
+            x += 12.0;
+        }
+        row = !row;
+        y += 12.0;
+    }
 }
 
 #[cfg(test)]

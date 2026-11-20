@@ -68,7 +68,10 @@ impl SaveControls {
                     ui.label(format!("Saved: {}", path.display()));
                 }
                 Err(error) => {
-                    ui.colored_label(Color32::LIGHT_RED, format!("Save failed: {error}"));
+                    ui.colored_label(
+                        crate::theme::Palette::of(ui).error,
+                        format!("Save failed: {error}"),
+                    );
                 }
             }
         }

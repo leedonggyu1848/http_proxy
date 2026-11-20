@@ -2,9 +2,14 @@
 
 #[allow(
     clippy::redundant_pub_crate,
-    reason = "Save controls are visible only to the parent application module."
+    reason = "Save controls are private to the application module."
 )]
 mod save;
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "Theme settings are private to the application module."
+)]
+mod theme;
 
 #[allow(
     clippy::redundant_pub_crate,
@@ -57,7 +62,7 @@ mod request_table;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 use http_proxy::{
     BodyLifecycle, BodyPreview, BodyRetention, EngineState, Exchange, FullLog, HeaderPreview,
     HttpsInspection, Outcome, ProxyConfig, ProxyHandle, RecordId, SESSION_BODY_LIMIT_BYTES,
@@ -122,6 +127,7 @@ fn init_tracing() {
 }
 
 struct InspectorApp {
+    theme: theme::ThemeSettings,
     proxy: Option<ProxyHandle>,
     records: records::RecordList<Exchange>,
     selected: Option<RecordId>,
@@ -187,6 +193,7 @@ impl PortChoice {
 
 impl InspectorApp {
     fn new(context: egui::Context) -> Self {
+        let theme = theme::ThemeSettings::new(&context);
         let (full_log, log_init_error) = match FullLog::new() {
             Ok(log) => (Some(log), None),
             Err(error) => (
@@ -212,6 +219,7 @@ impl InspectorApp {
             table: request_table::RequestTable::new(),
             detail_tab: DetailTab::Headers,
             image: image_view::ImagePanel::default(),
+            theme,
             context,
         };
         app.start_proxy();
@@ -309,14 +317,14 @@ impl InspectorApp {
         ui.horizontal(|ui| {
             if let Some(proxy) = self.proxy.as_ref() {
                 let address = proxy.local_addr();
-                ui.label(RichText::new("Running").color(Color32::LIGHT_GREEN));
+                ui.label(RichText::new("Running").color(crate::theme::Palette::of(ui).success));
                 ui.monospace(address.to_string());
                 copy_menu(ui, address);
                 if ui.button("Stop").clicked() {
                     self.stop_proxy();
                 }
             } else {
-                ui.label(RichText::new("Stopped").color(Color32::LIGHT_RED));
+                ui.label(RichText::new("Stopped").color(crate::theme::Palette::of(ui).error));
                 ui.label("Port");
                 let edited = ui
                     .add(egui::TextEdit::singleline(&mut self.port.text).desired_width(56.0))
@@ -336,7 +344,7 @@ impl InspectorApp {
             ui.label(format!("{} requests", self.records.len()));
             let dropped = self.records.dropped(self.engine_dropped());
             if dropped > 0 {
-                ui.colored_label(Color32::LIGHT_RED, format!("{dropped} records dropped"))
+                ui.colored_label(crate::theme::Palette::of(ui).error, format!("{dropped} records dropped"))
                     .on_hover_text(
                         "The capture queue was full, so these exchanges were forwarded but not shown.",
                     );
@@ -344,7 +352,7 @@ impl InspectorApp {
             let evicted = self.records.evicted();
             if evicted > 0 {
                 ui.colored_label(
-                    Color32::YELLOW,
+                    crate::theme::Palette::of(ui).warning,
                     format!("{evicted} older records removed"),
                 )
                 .on_hover_text(format!(
@@ -381,17 +389,17 @@ impl InspectorApp {
     /// Shows launch warnings, errors, and full-session log notices.
     fn status_messages(&self, ui: &mut egui::Ui) {
         if let Some(warning) = self.port.launch_warning.as_ref() {
-            ui.colored_label(Color32::YELLOW, warning);
+            ui.colored_label(crate::theme::Palette::of(ui).warning, warning);
         }
         if let Some(error) = self.error.as_ref() {
-            ui.colored_label(Color32::LIGHT_RED, error);
+            ui.colored_label(crate::theme::Palette::of(ui).error, error);
         }
         if let Some(error) = self
             .log_init_error
             .clone()
             .or_else(|| self.full_log.as_ref().and_then(FullLog::error))
         {
-            ui.colored_label(Color32::LIGHT_RED, error);
+            ui.colored_label(crate::theme::Palette::of(ui).error, error);
         }
         if self
             .full_log
@@ -399,7 +407,7 @@ impl InspectorApp {
             .is_some_and(FullLog::body_limit_reached)
         {
             ui.colored_label(
-                Color32::YELLOW,
+                crate::theme::Palette::of(ui).warning,
                 format!(
                     "The full-session log reached its {} MiB body limit. Later body bytes are omitted; headers and results are still logged.",
                     SESSION_BODY_LIMIT_BYTES / (1_024 * 1_024)
@@ -423,7 +431,7 @@ impl InspectorApp {
         if self.https_inspection {
             self.ca_panel.show(ui, self.ca_directory.as_deref());
             ui.colored_label(
-                Color32::YELLOW,
+                crate::theme::Palette::of(ui).warning,
                 "Only enable inspection for traffic that you are authorized to inspect.",
             );
         }
@@ -533,6 +541,7 @@ impl eframe::App for InspectorApp {
         ui.heading(http_proxy::APP_NAME);
         scope_help::show(ui);
         ui.separator();
+        self.theme.show(ui);
         self.toolbar(ui);
         ui.separator();
         self.filters(ui);
@@ -670,7 +679,10 @@ fn render_headers(ui: &mut egui::Ui, id: &str, headers: &HeaderPreview) {
         ui.weak("No headers captured.");
     }
     if headers.omitted() {
-        ui.colored_label(Color32::YELLOW, "Additional headers were omitted.");
+        ui.colored_label(
+            crate::theme::Palette::of(ui).warning,
+            "Additional headers were omitted.",
+        );
     }
 }
 
@@ -702,7 +714,7 @@ fn render_body(
     ));
     if snapshot.retention() == BodyRetention::Omitted {
         ui.colored_label(
-            Color32::YELLOW,
+            crate::theme::Palette::of(ui).warning,
             "Preview was omitted to keep forwarding nonblocking.",
         );
         return;
@@ -730,7 +742,7 @@ fn render_body(
             text
         }
         body_view::BodyText::Unavailable(message) => {
-            ui.colored_label(Color32::YELLOW, message);
+            ui.colored_label(crate::theme::Palette::of(ui).warning, message);
             return;
         }
     };
@@ -806,17 +818,20 @@ fn render_outcome(
             ui.label("HTTPS inspection session established.");
         }
         Outcome::Failed { stage, message } => {
-            ui.colored_label(Color32::LIGHT_RED, format!("{stage:?}: {message}"));
+            ui.colored_label(
+                crate::theme::Palette::of(ui).error,
+                format!("{stage:?}: {message}"),
+            );
         }
         Outcome::Cancelled => {
             ui.colored_label(
-                Color32::YELLOW,
+                crate::theme::Palette::of(ui).warning,
                 "The client closed the connection before a response arrived.",
             );
         }
         Outcome::Incomplete => {
             ui.colored_label(
-                Color32::YELLOW,
+                crate::theme::Palette::of(ui).warning,
                 "The proxy stopped before a response arrived.",
             );
         }

@@ -289,7 +289,7 @@ fn show_cells(row: &mut egui_extras::TableRow<'_, '_>, record: &Exchange) {
             .on_hover_text(record.request().target());
     });
     row.col(|ui| {
-        let (text, color) = outcome_text(record.outcome());
+        let (text, color) = outcome_text(record.outcome(), &crate::theme::Palette::of(ui));
         let status = ui.add(egui::Label::new(RichText::new(text).color(color)).truncate());
         if matches!(record.outcome(), Outcome::Tunnel(_)) {
             status.on_hover_text(super::scope_help::TUNNEL_NOTE);
@@ -389,34 +389,37 @@ fn format_bytes(bytes: u64) -> String {
 }
 
 /// Short status text and color for one outcome.
-pub(crate) fn outcome_text(outcome: &Outcome) -> (String, Color32) {
+pub(crate) fn outcome_text(
+    outcome: &Outcome,
+    palette: &crate::theme::Palette,
+) -> (String, Color32) {
     match outcome {
-        Outcome::InFlight => ("Pending".to_owned(), Color32::GRAY),
+        Outcome::InFlight => ("Pending".to_owned(), palette.muted),
         Outcome::Response(response) => {
             let status = response.status();
             let color = if status.as_u16() < 400 {
-                Color32::LIGHT_GREEN
+                palette.success
             } else {
-                Color32::LIGHT_RED
+                palette.error
             };
             (status.as_str().to_owned(), color)
         }
-        Outcome::Tunnel(tunnel) => tunnel_summary(tunnel),
-        Outcome::InspectionEstablished => ("HTTPS".to_owned(), Color32::LIGHT_BLUE),
-        Outcome::Failed { stage, message } => (format!("{stage:?}: {message}"), Color32::LIGHT_RED),
-        Outcome::Cancelled => ("Cancelled by client".to_owned(), Color32::YELLOW),
-        Outcome::Incomplete => ("Incomplete (proxy stopped)".to_owned(), Color32::YELLOW),
+        Outcome::Tunnel(tunnel) => tunnel_summary(tunnel, palette),
+        Outcome::InspectionEstablished => ("HTTPS".to_owned(), palette.info),
+        Outcome::Failed { stage, message } => (format!("{stage:?}: {message}"), palette.error),
+        Outcome::Cancelled => ("Cancelled by client".to_owned(), palette.warning),
+        Outcome::Incomplete => ("Incomplete (proxy stopped)".to_owned(), palette.warning),
     }
 }
 
-fn tunnel_summary(tunnel: &TunnelPreview) -> (String, Color32) {
+fn tunnel_summary(tunnel: &TunnelPreview, palette: &crate::theme::Palette) -> (String, Color32) {
     match tunnel.snapshot().state() {
-        TunnelState::Open => ("Tunnel · open".to_owned(), Color32::LIGHT_BLUE),
-        TunnelState::Closed => ("Tunnel · closed".to_owned(), Color32::LIGHT_BLUE),
+        TunnelState::Open => ("Tunnel · open".to_owned(), palette.info),
+        TunnelState::Closed => ("Tunnel · closed".to_owned(), palette.info),
         TunnelState::Failed { stage, .. } => {
-            (format!("Tunnel · failed ({stage:?})"), Color32::LIGHT_RED)
+            (format!("Tunnel · failed ({stage:?})"), palette.error)
         }
-        TunnelState::Incomplete => ("Tunnel · incomplete".to_owned(), Color32::YELLOW),
+        TunnelState::Incomplete => ("Tunnel · incomplete".to_owned(), palette.warning),
     }
 }
 
