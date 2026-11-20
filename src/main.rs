@@ -13,6 +13,13 @@ mod save;
 
 #[allow(
     clippy::redundant_pub_crate,
+    reason = "Shared presentation within the application."
+)]
+mod outcome_view;
+use outcome_view::outcome_matches_query;
+
+#[allow(
+    clippy::redundant_pub_crate,
     reason = "The CA panel is private to the binary; unreachable_pub forbids public exports."
 )]
 mod ca_panel;
@@ -71,7 +78,7 @@ use std::time::Duration;
 use eframe::egui::{self, Color32, RichText};
 use http_proxy::{
     BodyLifecycle, BodyPreview, BodyRetention, EngineState, Exchange, FullLog, HeaderPreview,
-    HttpsInspection, Outcome, ProxyConfig, ProxyHandle, RecordId, TunnelPreview, TunnelState,
+    HttpsInspection, Outcome, ProxyConfig, ProxyHandle, RecordId, TunnelPreview,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -479,15 +486,7 @@ impl InspectorApp {
 
     /// Reports whether any displayed value still changes over time.
     fn has_live_records(&self) -> bool {
-        self.records.iter().any(|record| match record.outcome() {
-            Outcome::InFlight => true,
-            Outcome::Response(response) => response.body().lifecycle() == BodyLifecycle::Streaming,
-            Outcome::Tunnel(tunnel) => tunnel.snapshot().state() == &TunnelState::Open,
-            Outcome::InspectionEstablished
-            | Outcome::Failed { .. }
-            | Outcome::Cancelled
-            | Outcome::Incomplete => false,
-        })
+        self.records.iter().any(Exchange::is_live)
     }
 
     fn detail_panel(&mut self, ui: &mut egui::Ui, shortcuts_allowed: bool) {
@@ -644,14 +643,7 @@ fn record_matches(record: &Exchange, filter: RecordFilter, query: &str) -> bool 
     let outcome_matches = match filter {
         RecordFilter::All => true,
         RecordFilter::Responses => matches!(outcome, Outcome::Response(_)),
-        RecordFilter::Failures => match outcome {
-            Outcome::Failed { .. } | Outcome::Cancelled | Outcome::Incomplete => true,
-            Outcome::Tunnel(tunnel) => matches!(
-                tunnel.snapshot().state(),
-                TunnelState::Failed { .. } | TunnelState::Incomplete
-            ),
-            Outcome::InFlight | Outcome::Response(_) | Outcome::InspectionEstablished => false,
-        },
+        RecordFilter::Failures => outcome.is_failure(),
         RecordFilter::Tunnels => {
             matches!(outcome, Outcome::Tunnel(_) | Outcome::InspectionEstablished)
         }
@@ -663,35 +655,6 @@ fn record_matches(record: &Exchange, filter: RecordFilter, query: &str) -> bool 
             || text_matches(request.target(), query)
             || headers_match(request.headers(), query)
             || outcome_matches_query(outcome, query))
-}
-
-fn outcome_matches_query(outcome: &Outcome, query: &str) -> bool {
-    match outcome {
-        Outcome::Response(response) => {
-            response.status().as_str().contains(query) || headers_match(response.headers(), query)
-        }
-        Outcome::Failed { stage, message } => {
-            text_matches(&format!("{stage:?}"), query) || text_matches(message, query)
-        }
-        Outcome::InFlight
-        | Outcome::Tunnel(_)
-        | Outcome::InspectionEstablished
-        | Outcome::Cancelled
-        | Outcome::Incomplete => outcome_label(outcome).contains(query),
-    }
-}
-
-/// Lowercase search keyword for outcomes that carry no searchable text.
-const fn outcome_label(outcome: &Outcome) -> &'static str {
-    match outcome {
-        Outcome::InFlight => "pending",
-        Outcome::Response(_) => "response",
-        Outcome::Tunnel(_) => "tunnel",
-        Outcome::InspectionEstablished => "https inspection",
-        Outcome::Failed { .. } => "failed",
-        Outcome::Cancelled => "cancelled",
-        Outcome::Incomplete => "incomplete",
-    }
 }
 
 fn headers_match(headers: &HeaderPreview, query: &str) -> bool {
@@ -822,9 +785,6 @@ fn render_outcome(
     image: &mut image_view::ImagePanel,
 ) {
     match record.outcome() {
-        Outcome::InFlight => {
-            ui.weak("Waiting for the upstream server.");
-        }
         Outcome::Response(response) => match tab {
             DetailTab::Headers => {
                 ui.strong(format!(
@@ -849,38 +809,26 @@ fn render_outcome(
             ui.label(scope_help::TUNNEL_NOTE);
             render_tunnel(ui, tunnel);
         }
-        Outcome::InspectionEstablished => {
-            ui.label("HTTPS inspection session established.");
-        }
-        Outcome::Failed { stage, message } => {
-            ui.colored_label(Color32::LIGHT_RED, format!("{stage:?}: {message}"));
-        }
-        Outcome::Cancelled => {
-            ui.colored_label(
-                Color32::YELLOW,
-                "The client closed the connection before a response arrived.",
-            );
-        }
-        Outcome::Incomplete => {
-            ui.colored_label(
-                Color32::YELLOW,
-                "The proxy stopped before a response arrived.",
-            );
+        outcome => {
+            let (text, color) = outcome_view::detail_text(outcome);
+            if outcome.is_in_flight() {
+                ui.weak(text);
+            } else if matches!(outcome, Outcome::InspectionEstablished) {
+                ui.label(text);
+            } else {
+                ui.colored_label(color, text);
+            }
         }
     }
 }
 
 fn render_timing(ui: &mut egui::Ui, record: &Exchange) {
     let timing = record.timing();
-    let (settled_label, settled_value) = match record.outcome() {
-        Outcome::InFlight => ("Waiting", elapsed_text(record)),
-        Outcome::Response(_) => ("Response headers", optional_millis(timing.settled())),
-        Outcome::Tunnel(_) | Outcome::InspectionEstablished => {
-            ("Established", optional_millis(timing.settled()))
-        }
-        Outcome::Failed { .. } | Outcome::Cancelled | Outcome::Incomplete => {
-            ("Ended", optional_millis(timing.settled()))
-        }
+    let settled_label = outcome_view::timing_label(record.outcome());
+    let settled_value = if record.outcome().is_in_flight() {
+        elapsed_text(record)
+    } else {
+        optional_millis(timing.settled())
     };
     let total = timing.complete().map_or_else(
         || "in progress".to_owned(),
@@ -921,12 +869,7 @@ fn elapsed_text(record: &Exchange) -> String {
 
 fn render_tunnel(ui: &mut egui::Ui, tunnel: &TunnelPreview) {
     let snapshot = tunnel.snapshot();
-    let state = match snapshot.state() {
-        TunnelState::Open => "Open".to_owned(),
-        TunnelState::Closed => "Closed".to_owned(),
-        TunnelState::Failed { stage, message } => format!("Failed at {stage:?}: {message}"),
-        TunnelState::Incomplete => "Incomplete: the proxy stopped while it was open".to_owned(),
-    };
+    let state = outcome_view::tunnel_detail(snapshot.state());
     egui::Grid::new("tunnel-details")
         .num_columns(2)
         .show(ui, |ui| {

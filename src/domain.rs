@@ -386,6 +386,22 @@ pub enum FailureStage {
     Tunnel,
 }
 
+impl std::fmt::Display for FailureStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Request => "Request",
+            Self::Connect => "Connection",
+            Self::ConnectTimeout => "Connection timeout",
+            Self::Response => "Response",
+            Self::ResponseTimeout => "Response timeout",
+            Self::Upgrade => "CONNECT upgrade",
+            Self::ClientTls => "Client TLS handshake",
+            Self::UpstreamTls => "Upstream TLS handshake",
+            Self::Tunnel => "Tunnel relay",
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
