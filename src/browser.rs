@@ -40,7 +40,7 @@ pub struct BrowserSession {
 }
 
 impl Browser {
-    /// Finds Firefox and Chrome/Chromium executables on PATH.
+    /// Finds Firefox and Chrome/Chromium on PATH and in macOS application bundles.
     #[must_use]
     pub fn installed() -> Vec<Self> {
         discovery::installed()

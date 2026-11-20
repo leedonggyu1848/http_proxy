@@ -11,10 +11,17 @@ permissions:
 
 jobs:
   quality:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Install macOS build dependencies
+        if: runner.os == 'macOS'
+        run: brew install nss
       - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install --yes \

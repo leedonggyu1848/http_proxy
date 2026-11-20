@@ -13,7 +13,11 @@ use tokio::process::Command;
 use super::{CaTrustError, CaTrustStatus};
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(target_os = "linux")]
 const TOOL_HELP: &str = "Install NSS certutil: Ubuntu/Debian: sudo apt install libnss3-tools; Fedora: sudo dnf install nss-tools";
+
+#[cfg(target_os = "macos")]
+const TOOL_HELP: &str = "Install NSS certutil: brew install nss";
 
 #[derive(Debug)]
 pub(super) struct PlatformStore {
@@ -21,8 +25,10 @@ pub(super) struct PlatformStore {
 }
 
 impl PlatformStore {
+    #[cfg(target_os = "linux")]
     pub(super) const DESCRIPTION: &'static str = "Chrome/Chromium (current user)";
 
+    #[cfg(target_os = "linux")]
     pub(super) fn for_current_user() -> Result<Self, CaTrustError> {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
@@ -34,6 +40,7 @@ impl PlatformStore {
         Ok(Self::for_user(&home, data_home.as_deref()))
     }
 
+    #[cfg(target_os = "linux")]
     fn for_user(home: &Path, data_home: Option<&Path>) -> Self {
         let legacy = home.join(".pki/nssdb");
         let database = if legacy.is_dir() {
@@ -179,7 +186,7 @@ impl PlatformStore {
     async fn run(&self, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, CaTrustError> {
         let mut database = OsString::from("sql:");
         database.push(&self.database);
-        let mut command = Command::new("certutil");
+        let mut command = Command::new(certutil());
         command
             .args(args)
             .arg("-d")
@@ -234,7 +241,18 @@ fn nickname(certificate: &CertificateDer<'_>) -> String {
     )
 }
 
-#[cfg(test)]
+fn certutil() -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    for prefix in ["/opt/homebrew/opt/nss/bin", "/usr/local/opt/nss/bin"] {
+        let tool = Path::new(prefix).join("certutil");
+        if tool.is_file() {
+            return tool;
+        }
+    }
+    "certutil".into()
+}
+
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use std::error::Error;
 

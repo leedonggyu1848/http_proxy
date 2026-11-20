@@ -6,6 +6,21 @@ use std::path::PathBuf;
 use super::{Browser, Kind};
 
 const CANDIDATES: &[(&str, &str, Kind)] = &[
+    (
+        "Firefox.app/Contents/MacOS/firefox",
+        "Firefox",
+        Kind::Firefox { snap: false },
+    ),
+    (
+        "Google Chrome.app/Contents/MacOS/Google Chrome",
+        "Google Chrome",
+        Kind::Chrome,
+    ),
+    (
+        "Chromium.app/Contents/MacOS/Chromium",
+        "Chromium",
+        Kind::Chrome,
+    ),
     ("firefox", "Firefox", Kind::Firefox { snap: false }),
     ("firefox-esr", "Firefox ESR", Kind::Firefox { snap: false }),
     ("google-chrome", "Google Chrome", Kind::Chrome),
@@ -17,9 +32,11 @@ const CANDIDATES: &[(&str, &str, Kind)] = &[
 ];
 
 pub(super) fn installed() -> Vec<Browser> {
-    discover(
-        &std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect::<Vec<_>>(),
-    )
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let paths = std::env::split_paths(&path);
+    #[cfg(target_os = "macos")]
+    let paths = paths.chain(bundle_paths());
+    discover(&paths.collect::<Vec<_>>())
 }
 
 fn discover(paths: &[PathBuf]) -> Vec<Browser> {
@@ -78,6 +95,19 @@ fn is_snap_wrapper(path: &std::path::Path) -> bool {
         })
 }
 
+#[cfg(target_os = "macos")]
+fn bundle_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(home) = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+    {
+        paths.push(home.join("Applications"));
+    }
+    paths.push(PathBuf::from("/Applications"));
+    paths
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,6 +128,30 @@ mod tests {
         assert_eq!(browsers.len(), 1);
         assert_eq!(browsers.first().map(Browser::name), Some("Firefox"));
         assert_eq!(discover(&[PathBuf::from("relative")]), []);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod bundle_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn finds_bundle_executable_with_spaces() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let executable = root
+            .path()
+            .join("Google Chrome.app/Contents/MacOS/Google Chrome");
+        fs::create_dir_all(executable.parent().ok_or("missing parent")?)?;
+        fs::write(&executable, "#!/bin/sh\n")?;
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))?;
+        let browsers = discover(&[root.path().to_owned()]);
+        assert_eq!(browsers.len(), 1);
+        assert_eq!(
+            browsers.first().map(|browser| &browser.executable),
+            Some(&executable)
+        );
         Ok(())
     }
 }

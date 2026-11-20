@@ -252,9 +252,19 @@ mod tests {
         );
         assert!(profile.join("user.js").exists());
         let pid = fs::read_to_string(executable.with_extension("pid"))?;
-        assert!(Path::new("/proc").join(&pid).exists());
+        assert!(
+            std::process::Command::new("kill")
+                .args(["-0", &pid])
+                .status()?
+                .success()
+        );
         drop(session);
-        assert!(!Path::new("/proc").join(pid).exists());
+        assert!(
+            !std::process::Command::new("kill")
+                .args(["-0", &pid])
+                .status()?
+                .success()
+        );
         assert!(!profile.exists());
         Ok(())
     }

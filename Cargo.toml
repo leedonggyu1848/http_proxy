@@ -3,7 +3,7 @@ name = "http-proxy"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.100"
-description = "A Linux desktop HTTP network inspector"
+description = "A Linux and macOS desktop HTTP network inspector"
 license = "MIT"
 repository = "https://github.com/leedonggyu1848/http_proxt"
 publish = false
@@ -15,7 +15,6 @@ eframe = { version = "0.37", default-features = false, features = [
 	"clipboard",
 	"default_fonts",
 	"glow",
-	"x11",
 ] }
 egui_extras = { version = "0.37", default-features = false }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
@@ -54,6 +53,9 @@ tokio-rustls = { version = "0.26", default-features = false, features = [
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 zstd = { version = "0.13", default-features = false }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.37", default-features = false, features = ["x11"] }
 
 [lints.rust]
 unsafe_code = "forbid"

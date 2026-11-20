@@ -43,7 +43,7 @@ impl CaPanel {
         let Some(directory) = directory else {
             ui.colored_label(
                 Color32::LIGHT_RED,
-                "CA storage requires XDG_DATA_HOME or HOME.",
+                "CA storage is unavailable; check HOME and platform storage settings.",
             );
             return;
         };
@@ -59,6 +59,8 @@ impl CaPanel {
             ui.monospace(info.fingerprint_sha256());
         }
         ui.label("Register this CA to inspect HTTPS in Chrome/Chromium for your current user.");
+        #[cfg(target_os = "macos")]
+        ui.weak("macOS may request authorization. Approve the keychain dialog; cancellation leaves registration incomplete.");
         ui.weak("Other browsers and apps may require separate CA registration.");
         if let Some(registration) = &self.registration {
             ui.label(format!("Trust store: {}", registration.target));

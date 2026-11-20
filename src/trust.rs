@@ -8,10 +8,14 @@ use thiserror::Error;
 
 use crate::CaInfo;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 #[cfg(target_os = "linux")]
 use linux::PlatformStore;
+#[cfg(target_os = "macos")]
+use macos::PlatformStore;
 
 /// Registration state of this installation's CA in the selected client store.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -42,7 +46,8 @@ pub enum CaTrustError {
 /// Platform-specific client trust registration, separate from TLS interception.
 ///
 /// Linux supports the current user's Chrome/Chromium NSS shared DB and
-/// explicitly selected Firefox profiles. It does not change the system store.
+/// explicitly selected Firefox profiles. macOS uses the login keychain for
+/// Chrome/Safari and NSS for Firefox profiles. Neither changes the system store.
 #[derive(Debug)]
 pub struct CaTrustStore {
     platform: PlatformStore,
@@ -107,7 +112,7 @@ fn public_certificate(ca: &CaInfo) -> Result<CertificateDer<'static>, CaTrustErr
     Ok(der)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 mod unsupported;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 use unsupported::PlatformStore;
