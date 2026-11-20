@@ -2,6 +2,11 @@
 
 #[allow(
     clippy::redundant_pub_crate,
+    reason = "Panel is private to the application."
+)]
+mod replay_panel;
+#[allow(
+    clippy::redundant_pub_crate,
     reason = "Save controls are visible only to the parent application module."
 )]
 mod save;
@@ -127,6 +132,7 @@ fn init_tracing() {
 }
 
 struct InspectorApp {
+    replay: Option<replay_panel::ReplayPanel>,
     proxy: Option<ProxyHandle>,
     records: records::RecordList<Exchange>,
     selected: Option<RecordId>,
@@ -200,6 +206,7 @@ impl InspectorApp {
             ),
         };
         let mut app = Self {
+            replay: None,
             proxy: None,
             records: records::RecordList::new(MAX_RECORDS),
             selected: None,
@@ -459,6 +466,12 @@ impl InspectorApp {
             .filter(|record| record_matches(record, self.record_filter, &query))
             .collect();
         self.table.controls(ui);
+        if let Some(original) = self.table.replay.take() {
+            match replay_panel::ReplayPanel::new(original) {
+                Ok(panel) => self.replay = Some(panel),
+                Err(error) => self.error = Some(error),
+            }
+        }
         if let Some(selected) = self.table.show(ui, rows, self.selected, shortcuts_allowed) {
             self.selected = Some(selected);
         }
@@ -498,6 +511,25 @@ impl InspectorApp {
                 DetailTab::Body => DetailTab::Headers,
             };
         }
+        if ui
+            .add_enabled(
+                record.source() != http_proxy::CaptureSource::Connect,
+                egui::Button::new("Edit and Resend"),
+            )
+            .clicked()
+        {
+            match replay_panel::ReplayPanel::new(record.clone()) {
+                Ok(panel) => self.replay = Some(panel),
+                Err(error) => self.error = Some(error),
+            }
+        }
+        if let Some(original) = record.replay_of()
+            && ui
+                .link(format!("Replay of #{} — show original", original.value()))
+                .clicked()
+        {
+            self.selected = Some(original);
+        }
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.detail_tab, DetailTab::Headers, "Headers");
             ui.selectable_value(&mut self.detail_tab, DetailTab::Body, "Body");
@@ -535,6 +567,16 @@ impl eframe::App for InspectorApp {
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
         self.receive_records();
         self.release_failed_proxy();
+        if let Some(panel) = self.replay.as_mut() {
+            let latest = self
+                .records
+                .iter()
+                .rev()
+                .find(|record| record.replay_of() == Some(panel.original_id()));
+            if !panel.show(ui.ctx(), self.proxy.as_ref(), latest) {
+                self.replay = None;
+            }
+        }
         ui.heading(http_proxy::APP_NAME);
         scope_help::show(ui);
         ui.separator();

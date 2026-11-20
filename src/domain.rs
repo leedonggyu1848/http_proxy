@@ -27,7 +27,9 @@ impl RecordId {
         Self(value)
     }
 
-    pub(crate) const fn value(self) -> u64 {
+    /// Returns the numeric record identity used in logs and replay links.
+    #[must_use]
+    pub const fn value(self) -> u64 {
         self.0
     }
 }
