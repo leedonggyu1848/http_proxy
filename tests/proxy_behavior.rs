@@ -672,10 +672,12 @@ async fn replays_edited_headers_and_cookie_with_link_and_redaction() -> Result<(
     let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0).with_max_connections(1))?;
     assert_eq!(proxy.state(), http_proxy::EngineState::Running);
     let mut client = TcpStream::connect(proxy.local_addr()).await?;
-    let request = format!(
-        "GET http://{upstream_addr}/hello?name=rust HTTP/1.1\r\nHost: {upstream_addr}\r\nConnection: close\r\n\r\n"
-    );
-    client.write_all(request.as_bytes()).await?;
+    let mut request = format!(
+        "GET http://{upstream_addr}/hello?name=rust HTTP/1.1\r\nHost: {upstream_addr}\r\nX-File-Name: 한글.txt\r\nX-Raw: "
+    )
+    .into_bytes();
+    request.extend_from_slice(b"\xff\r\nConnection: close\r\n\r\n");
+    client.write_all(&request).await?;
 
     let mut response = Vec::new();
     timeout(TEST_TIMEOUT, client.read_to_end(&mut response)).await??;
@@ -684,7 +686,7 @@ async fn replays_edited_headers_and_cookie_with_link_and_redaction() -> Result<(
     assert!(response.ends_with("hello"));
 
     let upstream_request = timeout(TEST_TIMEOUT, request_receiver).await??;
-    let upstream_request = String::from_utf8(upstream_request)?;
+    let upstream_request = String::from_utf8_lossy(&upstream_request);
     assert!(upstream_request.starts_with("GET /hello?name=rust HTTP/1.1\r\n"));
 
     let record = timeout(TEST_TIMEOUT, proxy.receive())
@@ -700,22 +702,16 @@ async fn replays_edited_headers_and_cookie_with_link_and_redaction() -> Result<(
     assert_eq!(proxy.state(), http_proxy::EngineState::Running);
 
     let mut draft = http_proxy::ReplayDraft::new(record.clone())?;
-    draft.headers.push(http_proxy::ReplayField {
-        enabled: true,
-        name: "x-edited".to_owned(),
-        value: "changed".to_owned(),
-    });
-    draft.headers.push(http_proxy::ReplayField {
-        enabled: true,
-        name: "cookie".to_owned(),
-        value: "session=changed".to_owned(),
-    });
+    disable_unreproducible_header(&mut draft, proxy.local_addr())?;
+    add_edited_headers(&mut draft);
     let replay_server = TcpListener::bind("127.0.0.1:0").await?;
     draft.url = format!("http://{}/edited", replay_server.local_addr()?);
     let task = proxy.replay(&draft)?;
     let (mut replay_stream, _) = timeout(TEST_TIMEOUT, replay_server.accept()).await??;
     let replay_headers = String::from_utf8(read_headers(&mut replay_stream).await?)?;
     assert!(replay_headers.contains("x-edited: changed"));
+    assert!(replay_headers.contains("x-file-name: 한글.txt"));
+    assert!(!replay_headers.contains("x-raw"));
     assert!(replay_headers.contains("cookie: session=changed"));
     assert!(replay_headers.contains("content-length: 0"));
     replay_stream
@@ -741,6 +737,40 @@ async fn replays_edited_headers_and_cookie_with_link_and_redaction() -> Result<(
     assert_replay_validation(&mut draft, proxy.local_addr());
     task.cancel();
     proxy.stop()?;
+    Ok(())
+}
+
+fn add_edited_headers(draft: &mut http_proxy::ReplayDraft) {
+    draft.headers.push(http_proxy::ReplayField {
+        enabled: true,
+        name: "x-edited".to_owned(),
+        value: "changed".to_owned(),
+    });
+    draft.headers.push(http_proxy::ReplayField {
+        enabled: true,
+        name: "cookie".to_owned(),
+        value: "session=changed".to_owned(),
+    });
+}
+
+/// UTF-8 values survive as captured; lossy non-UTF-8 values block sending until disabled.
+fn disable_unreproducible_header(
+    draft: &mut http_proxy::ReplayDraft,
+    address: std::net::SocketAddr,
+) -> Result<(), Box<dyn Error>> {
+    assert!(draft.headers.iter().any(|field| {
+        field.name.eq_ignore_ascii_case("x-file-name") && field.value == "한글.txt"
+    }));
+    let raw_error = draft
+        .request(address)
+        .err()
+        .ok_or("non-UTF-8 header must block replay")?;
+    assert!(raw_error.contains("x-raw"), "{raw_error}");
+    for field in &mut draft.headers {
+        if field.name.eq_ignore_ascii_case("x-raw") {
+            field.enabled = false;
+        }
+    }
     Ok(())
 }
 

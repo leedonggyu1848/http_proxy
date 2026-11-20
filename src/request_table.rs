@@ -274,18 +274,7 @@ impl RequestTable {
                         self.keyboard_row = None;
                         changed = Some(record.id());
                     }
-                    row.response().context_menu(|ui| {
-                        if ui
-                            .add_enabled(
-                                record.source() != http_proxy::CaptureSource::Connect,
-                                egui::Button::new("Edit and Resend"),
-                            )
-                            .clicked()
-                        {
-                            self.replay = Some((*record).clone());
-                            ui.close();
-                        }
-                    });
+                    replay_menu(&row.response(), record, &mut self.replay);
                     if row.response().clicked() {
                         self.keyboard_row = None;
                         changed = Some(record.id());
@@ -302,6 +291,21 @@ impl RequestTable {
         self.page_rows = page_rows.max(1);
         changed
     }
+}
+
+fn replay_menu(response: &egui::Response, record: &Exchange, replay: &mut Option<Exchange>) {
+    response.context_menu(|ui| {
+        if ui
+            .add_enabled(
+                record.source() != http_proxy::CaptureSource::Connect,
+                egui::Button::new("Edit and Resend"),
+            )
+            .clicked()
+        {
+            *replay = Some(record.clone());
+            ui.close();
+        }
+    });
 }
 
 fn show_cells(

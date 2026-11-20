@@ -524,13 +524,13 @@ async fn run(
             () = wait_for_shutdown(&mut shutdown) => return Ok(()),
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
-        let permit = tokio::select! {
-            () = wait_for_shutdown(&mut shutdown) => return Ok(()),
-            permit = Arc::clone(&connections).acquire_owned() => match permit {
-                Ok(permit) => Arc::new(permit),
-                Err(_) => return Ok(()),
-            },
-        };
+                    let permit = tokio::select! {
+                        () = wait_for_shutdown(&mut shutdown) => return Ok(()),
+                        permit = Arc::clone(&connections).acquire_owned() => match permit {
+                            Ok(permit) => Arc::new(permit),
+                            Err(_) => return Ok(()),
+                        },
+                    };
                     failures.reset();
                     let connection_engine = Arc::clone(&engine);
                     tokio::spawn(async move {

@@ -563,8 +563,12 @@ impl eframe::App for InspectorApp {
         self.receive_records();
         self.release_failed_proxy();
         if let Some(panel) = self.replay.as_mut() {
-            let records: Vec<_> = self.records.iter().cloned().collect();
-            if !panel.show(ui.ctx(), self.proxy.as_ref(), &records) {
+            let latest = self
+                .records
+                .iter()
+                .rev()
+                .find(|record| record.replay_of() == Some(panel.original_id()));
+            if !panel.show(ui.ctx(), self.proxy.as_ref(), latest) {
                 self.replay = None;
             }
         }

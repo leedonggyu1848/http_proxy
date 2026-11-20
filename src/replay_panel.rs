@@ -1,6 +1,6 @@
 //! Manual replay editor. Sensitive inputs live only as long as the editor.
 use eframe::egui::{self, Color32};
-use http_proxy::{Exchange, ProxyHandle, ReplayDraft, ReplayField, ReplayTask};
+use http_proxy::{Exchange, ProxyHandle, RecordId, ReplayDraft, ReplayField, ReplayTask};
 use std::fmt::Write as _;
 
 pub(crate) struct ReplayPanel {
@@ -11,8 +11,9 @@ pub(crate) struct ReplayPanel {
     skip_confirmation: bool,
     file: String,
     compare: bool,
-    query_url: String,
-    query: Vec<ReplayField>,
+    query: PairTable,
+    cookies: Vec<PairTable>,
+    form: PairTable,
 }
 
 impl ReplayPanel {
@@ -25,16 +26,21 @@ impl ReplayPanel {
             skip_confirmation: false,
             file: String::new(),
             compare: false,
-            query_url: String::new(),
-            query: Vec::new(),
+            query: PairTable::default(),
+            cookies: Vec::new(),
+            form: PairTable::default(),
         })
+    }
+
+    pub(crate) fn original_id(&self) -> RecordId {
+        self.draft.original.id()
     }
 
     pub(crate) fn show(
         &mut self,
         context: &egui::Context,
         proxy: Option<&ProxyHandle>,
-        records: &[Exchange],
+        latest: Option<&Exchange>,
     ) -> bool {
         let mut open = true;
         egui::Window::new("Edit and Resend")
@@ -42,11 +48,16 @@ impl ReplayPanel {
             .default_width(650.0)
             .default_height(600.0)
             .vscroll(true)
-            .show(context, |ui| self.contents(ui, proxy, records));
+            .show(context, |ui| self.contents(ui, proxy, latest));
         open
     }
 
-    fn contents(&mut self, ui: &mut egui::Ui, proxy: Option<&ProxyHandle>, records: &[Exchange]) {
+    fn contents(
+        &mut self,
+        ui: &mut egui::Ui,
+        proxy: Option<&ProxyHandle>,
+        latest: Option<&Exchange>,
+    ) {
         ui.label(format!("Original #{}", self.draft.original.id().value()));
         ui.label("Redacted values must be entered or disabled. Hop-by-hop headers are removed; Content-Length is calculated.");
         ui.horizontal(|ui| {
@@ -64,15 +75,14 @@ impl ReplayPanel {
         ui.strong("Headers (Cookie: name=value; name2=value2)");
         fields(ui, &mut self.draft.headers);
         ui.collapsing("Cookies", |ui| {
-            for field in self
-                .draft
-                .headers
-                .iter_mut()
-                .filter(|field| field.name.eq_ignore_ascii_case("cookie"))
-            {
-                let mut rows = pairs(&field.value, ';');
-                fields(ui, &mut rows);
-                field.value = join_pairs(&rows, "; ");
+            let is_cookie = |field: &ReplayField| field.name.eq_ignore_ascii_case("cookie");
+            let count = self.draft.headers.iter().filter(|f| is_cookie(f)).count();
+            self.cookies.resize_with(count, PairTable::default);
+            let cookies = self.draft.headers.iter_mut().filter(|f| is_cookie(f));
+            for (index, (field, table)) in cookies.zip(&mut self.cookies).enumerate() {
+                ui.push_id(("cookie", index), |ui| {
+                    table.show(ui, &mut field.value, COOKIE, "Add cookie");
+                });
             }
             if ui.button("Add Cookie header").clicked() {
                 self.draft.headers.push(ReplayField {
@@ -84,33 +94,26 @@ impl ReplayPanel {
         });
         self.body_ui(ui);
         self.send_ui(ui, proxy);
-        self.comparison_ui(ui, records);
+        self.comparison_ui(ui, latest);
     }
     fn query_ui(&mut self, ui: &mut egui::Ui) {
-        if self.query_url != self.draft.url {
-            self.query = pairs(
-                self.draft
-                    .url
-                    .split_once('?')
-                    .map_or("", |(_, query)| query),
-                '&',
-            );
-            self.query_url.clone_from(&self.draft.url);
-        }
         ui.collapsing("Query parameters (URL-encoded)", |ui| {
-            fields(ui, &mut self.query);
-            let base = self
+            let (base, query) = self
                 .draft
                 .url
                 .split_once('?')
-                .map_or(self.draft.url.as_str(), |(base, _)| base);
-            let query = join_pairs(&self.query, "&");
-            self.draft.url = if query.is_empty() {
-                base.to_owned()
-            } else {
-                format!("{base}?{query}")
-            };
-            self.query_url.clone_from(&self.draft.url);
+                .unwrap_or((self.draft.url.as_str(), ""));
+            let (base, mut query) = (base.to_owned(), query.to_owned());
+            if self
+                .query
+                .show(ui, &mut query, URL_ENCODED, "Add parameter")
+            {
+                self.draft.url = if query.is_empty() {
+                    base
+                } else {
+                    format!("{base}?{query}")
+                };
+            }
         });
     }
 
@@ -134,10 +137,10 @@ impl ReplayPanel {
         }
         if content_type.starts_with("application/x-www-form-urlencoded") {
             ui.collapsing("Form fields (URL-encoded)", |ui| {
-                if let Ok(text) = std::str::from_utf8(&self.draft.body) {
-                    let mut rows = pairs(text, '&');
-                    fields(ui, &mut rows);
-                    self.draft.body = join_pairs(&rows, "&").into_bytes();
+                if let Ok(mut text) = String::from_utf8(self.draft.body.clone())
+                    && self.form.show(ui, &mut text, URL_ENCODED, "Add field")
+                {
+                    self.draft.body = text.into_bytes();
                 }
             });
         }
@@ -226,14 +229,10 @@ impl ReplayPanel {
             ui.colored_label(Color32::LIGHT_RED, error);
         }
     }
-    fn comparison_ui(&self, ui: &mut egui::Ui, records: &[Exchange]) {
+    fn comparison_ui(&self, ui: &mut egui::Ui, latest: Option<&Exchange>) {
         if self.compare {
             let original = &self.draft.original;
-            if let Some(result) = records
-                .iter()
-                .rev()
-                .find(|record| record.replay_of() == Some(original.id()))
-            {
+            if let Some(result) = latest {
                 ui.columns(2, |columns| {
                     for (column, record) in columns.iter_mut().zip([original, result]) {
                         column.strong(format!(
@@ -344,43 +343,216 @@ fn summary(record: &Exchange) -> String {
     text
 }
 
-fn pairs(text: &str, separator: char) -> Vec<ReplayField> {
+/// How a `name=value` list is split and rejoined.
+#[derive(Clone, Copy)]
+struct PairSyntax {
+    separator: char,
+    joiner: &'static str,
+    mask_values: bool,
+}
+
+const COOKIE: PairSyntax = PairSyntax {
+    separator: ';',
+    joiner: "; ",
+    mask_values: true,
+};
+const URL_ENCODED: PairSyntax = PairSyntax {
+    separator: '&',
+    joiner: "&",
+    mask_values: false,
+};
+
+/// One row of a pair table. `raw` keeps the original text until the row is edited.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PairRow {
+    enabled: bool,
+    name: String,
+    value: String,
+    raw: Option<String>,
+}
+
+/// Rows cached across frames so disabled rows and untouched text survive.
+#[derive(Default)]
+struct PairTable {
+    source: Option<String>,
+    rows: Vec<PairRow>,
+}
+
+impl PairTable {
+    /// Re-parses only when `text` changed outside the table.
+    fn sync(&mut self, text: &str, syntax: PairSyntax) {
+        if self.source.as_deref() != Some(text) {
+            self.rows = parse_pairs(text, syntax.separator);
+            self.source = Some(text.to_owned());
+        }
+    }
+
+    /// Writes the rows back to `text`; call only after an edit.
+    fn apply(&mut self, text: &mut String, syntax: PairSyntax) {
+        *text = join_pairs(&self.rows, syntax.joiner);
+        self.source = Some(text.clone());
+    }
+
+    /// Shows the table and returns whether `text` was rewritten.
+    fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        text: &mut String,
+        syntax: PairSyntax,
+        add: &str,
+    ) -> bool {
+        self.sync(text, syntax);
+        let changed = pair_rows(ui, &mut self.rows, syntax.mask_values, add);
+        if changed {
+            self.apply(text, syntax);
+        }
+        changed
+    }
+}
+
+fn pair_rows(ui: &mut egui::Ui, rows: &mut Vec<PairRow>, mask: bool, add: &str) -> bool {
+    let mut changed = false;
+    let mut remove = None;
+    for (index, row) in rows.iter_mut().enumerate() {
+        ui.push_id(index, |ui| {
+            ui.horizontal(|ui| {
+                changed |= ui.checkbox(&mut row.enabled, "").changed();
+                let mut edited = ui.text_edit_singleline(&mut row.name).changed();
+                edited |= ui
+                    .add(egui::TextEdit::singleline(&mut row.value).password(mask))
+                    .changed();
+                if edited {
+                    row.raw = None;
+                    changed = true;
+                }
+                if ui.button("−").clicked() {
+                    remove = Some(index);
+                }
+            });
+        });
+    }
+    if let Some(index) = remove {
+        rows.remove(index);
+        changed = true;
+    }
+    if ui.button(add).clicked() {
+        rows.push(PairRow {
+            enabled: true,
+            name: String::new(),
+            value: String::new(),
+            raw: None,
+        });
+    }
+    changed
+}
+
+fn parse_pairs(text: &str, separator: char) -> Vec<PairRow> {
     text.split(separator)
+        .map(str::trim)
         .filter(|part| !part.is_empty())
         .map(|part| {
-            let (name, value) = part
-                .trim()
-                .split_once('=')
-                .unwrap_or_else(|| (part.trim(), ""));
-            ReplayField {
+            let (name, value) = part.split_once('=').unwrap_or((part, ""));
+            PairRow {
                 enabled: true,
                 name: name.to_owned(),
                 value: value.to_owned(),
+                raw: Some(part.to_owned()),
             }
         })
         .collect()
 }
 
-fn join_pairs(rows: &[ReplayField], separator: &str) -> String {
+fn join_pairs(rows: &[PairRow], joiner: &str) -> String {
     rows.iter()
         .filter(|row| row.enabled)
-        .map(|row| format!("{}={}", row.name, row.value))
+        .filter_map(|row| match &row.raw {
+            Some(raw) => Some(raw.clone()),
+            None if row.name.is_empty() && row.value.is_empty() => None,
+            None => Some(format!("{}={}", row.name, row.value)),
+        })
         .collect::<Vec<_>>()
-        .join(separator)
+        .join(joiner)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn edit(table: &mut PairTable, index: usize, change: impl FnOnce(&mut PairRow)) {
+        let row = table.rows.get_mut(index);
+        assert!(row.is_some(), "missing row {index}");
+        if let Some(row) = row {
+            change(row);
+        }
+    }
+
+    fn joined(text: &str, syntax: PairSyntax) -> String {
+        join_pairs(&parse_pairs(text, syntax.separator), syntax.joiner)
+    }
+
     #[test]
     fn preserves_encoded_query_and_cookie_values() {
         assert_eq!(
-            join_pairs(&pairs("a=x%26y&a=two%20words", '&'), "&"),
+            joined("a=x%26y&a=two%20words", URL_ENCODED),
             "a=x%26y&a=two%20words"
         );
         assert_eq!(
-            join_pairs(&pairs("session=a=b; theme=dark", ';'), "; "),
+            joined("session=a=b; theme=dark", COOKIE),
             "session=a=b; theme=dark"
         );
+    }
+
+    #[test]
+    fn opening_a_table_does_not_change_the_text() {
+        for (text, syntax) in [("flag&a=1&&b=2", URL_ENCODED), ("a=1;flag; b=2 ", COOKIE)] {
+            let mut table = PairTable::default();
+            table.sync(text, syntax);
+            table.sync(text, syntax);
+            assert_eq!(table.source.as_deref(), Some(text));
+            assert_eq!(table.rows.len(), 3);
+        }
+    }
+
+    #[test]
+    fn disabled_rows_can_be_enabled_again() {
+        let mut text = "a=1; b=2".to_owned();
+        let mut table = PairTable::default();
+        table.sync(&text, COOKIE);
+        edit(&mut table, 0, |row| row.enabled = false);
+        table.apply(&mut text, COOKIE);
+        assert_eq!(text, "b=2");
+        table.sync(&text, COOKIE);
+        assert_eq!(table.rows.len(), 2);
+        edit(&mut table, 0, |row| row.enabled = true);
+        table.apply(&mut text, COOKIE);
+        assert_eq!(text, "a=1; b=2");
+    }
+
+    #[test]
+    fn editing_one_row_keeps_other_rows_verbatim() {
+        let mut text = "flag&a=1".to_owned();
+        let mut table = PairTable::default();
+        table.sync(&text, URL_ENCODED);
+        edit(&mut table, 1, |row| {
+            row.value = "2".to_owned();
+            row.raw = None;
+        });
+        table.apply(&mut text, URL_ENCODED);
+        assert_eq!(text, "flag&a=2");
+    }
+
+    #[test]
+    fn empty_added_rows_are_not_sent() {
+        let mut text = "a=1".to_owned();
+        let mut table = PairTable::default();
+        table.sync(&text, COOKIE);
+        table.rows.push(PairRow {
+            enabled: true,
+            name: String::new(),
+            value: String::new(),
+            raw: None,
+        });
+        table.apply(&mut text, COOKIE);
+        assert_eq!(text, "a=1");
     }
 }

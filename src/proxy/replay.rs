@@ -47,30 +47,21 @@ impl ReplayDraft {
             body.lifecycle() != crate::BodyLifecycle::Complete
                 || body.observed_bytes() != body.bytes().len() as u64
         }) || original.request().headers().omitted();
-        let mut headers: HeaderMap = HeaderMap::new();
-        for field in original.request().headers().entries() {
-            if let (Ok(name), Ok(value)) = (
-                http::HeaderName::from_bytes(field.name().as_bytes()),
-                http::HeaderValue::from_str(field.value()),
-            ) {
-                headers.append(name, value);
-            }
-        }
-        remove_hop_by_hop_headers(&mut headers);
-        headers.remove(http::header::CONTENT_LENGTH);
-        let headers = headers
+        let entries = original.request().headers().entries();
+        let removed =
+            framing_header_names(entries.iter().map(|field| (field.name(), field.value())));
+        // Keep the captured text as-is; `request` rejects values that cannot be sent exactly.
+        let headers = entries
             .iter()
-            .map(|(name, value)| {
-                let value = value.to_str().unwrap_or_default();
-                ReplayField {
-                    enabled: true,
-                    name: name.to_string(),
-                    value: if value == "[REDACTED]" {
-                        String::new()
-                    } else {
-                        value.to_owned()
-                    },
-                }
+            .filter(|field| !removed.contains(&field.name().to_ascii_lowercase()))
+            .map(|field| ReplayField {
+                enabled: true,
+                name: field.name().to_owned(),
+                value: if field.value() == "[REDACTED]" {
+                    String::new()
+                } else {
+                    field.value().to_owned()
+                },
             })
             .collect();
         Ok(Self {
@@ -128,19 +119,7 @@ impl ReplayDraft {
             .body(Full::new(Bytes::copy_from_slice(&self.body)))
             .map_err(|e| e.to_string())?;
         for field in self.headers.iter().filter(|field| field.enabled) {
-            let name = http::HeaderName::from_bytes(field.name.as_bytes())
-                .map_err(|_| "Invalid header name")?;
-            if field.value == "[REDACTED]"
-                || (field.value.is_empty()
-                    && matches!(
-                        name.as_str(),
-                        "authorization" | "cookie" | "set-cookie" | "proxy-authorization"
-                    ))
-            {
-                return Err("Enter redacted header values or disable their rows".to_owned());
-            }
-            let value =
-                http::HeaderValue::from_str(&field.value).map_err(|_| "Invalid header value")?;
+            let (name, value) = header_pair(field)?;
             request.headers_mut().append(name, value);
         }
         remove_hop_by_hop_headers(request.headers_mut());
@@ -169,6 +148,51 @@ impl ReplayDraft {
     pub fn needs_confirmation(&self) -> bool {
         !matches!(self.method.as_str(), "GET" | "HEAD" | "OPTIONS")
     }
+}
+
+/// Converts an enabled editor row, refusing values that would not be sent as entered.
+fn header_pair(field: &ReplayField) -> Result<(http::HeaderName, http::HeaderValue), String> {
+    let name = http::HeaderName::from_bytes(field.name.as_bytes())
+        .map_err(|_| format!("Invalid header name: {}", field.name))?;
+    if field.value == "[REDACTED]"
+        || (field.value.is_empty()
+            && matches!(
+                name.as_str(),
+                "authorization" | "cookie" | "set-cookie" | "proxy-authorization"
+            ))
+    {
+        return Err("Enter redacted header values or disable their rows".to_owned());
+    }
+    if field.value.contains(char::REPLACEMENT_CHARACTER) {
+        return Err(format!(
+            "Header {name} was captured with non-UTF-8 bytes and cannot be reproduced; \
+             re-enter its value or disable the row"
+        ));
+    }
+    let value = http::HeaderValue::from_str(&field.value)
+        .map_err(|_| format!("Invalid value for header {name}"))?;
+    Ok((name, value))
+}
+
+/// Lowercase names that the proxy regenerates or must not forward.
+fn framing_header_names<'a>(fields: impl Iterator<Item = (&'a str, &'a str)>) -> Vec<String> {
+    let mut headers = HeaderMap::new();
+    for (name, value) in fields {
+        if let (Ok(name), Ok(value)) = (
+            http::HeaderName::from_bytes(name.as_bytes()),
+            http::HeaderValue::from_str(value),
+        ) {
+            headers.append(name, value);
+        }
+    }
+    let before: Vec<_> = headers.keys().map(ToString::to_string).collect();
+    remove_hop_by_hop_headers(&mut headers);
+    let mut removed: Vec<_> = before
+        .into_iter()
+        .filter(|name| !headers.contains_key(name.as_str()))
+        .collect();
+    removed.push(http::header::CONTENT_LENGTH.as_str().to_owned());
+    removed
 }
 
 /// Running replay; cancelling aborts the engine task.
