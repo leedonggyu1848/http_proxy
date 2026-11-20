@@ -3,9 +3,11 @@
 use std::cmp::Ordering;
 use std::time::Duration;
 
-use eframe::egui::{self, Color32, Key, RichText};
+use eframe::egui::{self, Key, RichText};
 use egui_extras::{Column, TableBuilder};
-use http_proxy::{Exchange, Outcome, RecordId, TunnelPreview, TunnelState};
+use http_proxy::{Exchange, Outcome, RecordId};
+
+use crate::outcome_view::{outcome_text, status_rank};
 
 const ROW_HEIGHT: f32 = 20.0;
 const HEADER_HEIGHT: f32 = 22.0;
@@ -65,7 +67,7 @@ impl Field {
             Self::Target => target_text(left).cmp(target_text(right)),
             Self::Status => status_rank(left.outcome()).cmp(&status_rank(right.outcome())),
             Self::Type => content_type(left).cmp(&content_type(right)),
-            Self::Size => size_bytes(left).cmp(&size_bytes(right)),
+            Self::Size => left.received_bytes().cmp(&right.received_bytes()),
             Self::Duration => duration(left).cmp(&duration(right)),
         }
     }
@@ -338,7 +340,11 @@ fn show_cells(
         ui.add(egui::Label::new(content_type(record).unwrap_or("—")).truncate());
     });
     row.col(|ui| {
-        ui.monospace(size_bytes(record).map_or_else(|| "—".to_owned(), format_bytes));
+        ui.monospace(
+            record
+                .received_bytes()
+                .map_or_else(|| "—".to_owned(), format_bytes),
+        );
     });
     row.col(|ui| {
         ui.monospace(duration_text(record));
@@ -353,19 +359,6 @@ fn target_text(record: &Exchange) -> &str {
         .strip_prefix("http://")
         .or_else(|| target.strip_prefix("https://"))
         .unwrap_or(target)
-}
-
-/// Orders responses by status code, then every other outcome after them.
-const fn status_rank(outcome: &Outcome) -> (u8, u16) {
-    match outcome {
-        Outcome::Response(response) => (0, response.status().as_u16()),
-        Outcome::InFlight => (1, 0),
-        Outcome::Tunnel(_) => (2, 0),
-        Outcome::InspectionEstablished => (3, 0),
-        Outcome::Failed { .. } => (4, 0),
-        Outcome::Cancelled => (5, 0),
-        Outcome::Incomplete => (6, 0),
-    }
 }
 
 /// Short media type such as `json` or `html`, from the response `Content-Type`.
@@ -383,19 +376,6 @@ fn content_type(record: &Exchange) -> Option<&str> {
     let subtype = essence.rsplit('/').next().unwrap_or(essence);
     let subtype = subtype.rsplit('+').next().unwrap_or(subtype);
     Some(subtype.strip_prefix("x-").unwrap_or(subtype))
-}
-
-/// Bytes received from upstream: the response body, or a tunnel's download.
-fn size_bytes(record: &Exchange) -> Option<u64> {
-    match record.outcome() {
-        Outcome::Response(response) => Some(response.body().observed_bytes()),
-        Outcome::Tunnel(tunnel) => Some(tunnel.snapshot().upstream_to_client()),
-        Outcome::InFlight
-        | Outcome::InspectionEstablished
-        | Outcome::Failed { .. }
-        | Outcome::Cancelled
-        | Outcome::Incomplete => None,
-    }
 }
 
 /// Total time once nothing more will be observed, for sorting.
@@ -425,45 +405,6 @@ fn format_bytes(bytes: u64) -> String {
         format!("{} KiB", scaled(KIB))
     } else {
         format!("{} MiB", scaled(MIB))
-    }
-}
-
-/// Short status text and color for one outcome.
-pub(crate) fn outcome_text(outcome: &Outcome) -> (String, Color32) {
-    match outcome {
-        Outcome::InFlight => ("Pending".to_owned(), Color32::GRAY),
-        Outcome::Response(response) => {
-            let status = response.status();
-            let color = if status.as_u16() < 400 {
-                Color32::LIGHT_GREEN
-            } else {
-                Color32::LIGHT_RED
-            };
-            (
-                format!(
-                    "{} {}",
-                    status.as_str(),
-                    status.canonical_reason().unwrap_or("Unknown status")
-                ),
-                color,
-            )
-        }
-        Outcome::Tunnel(tunnel) => tunnel_summary(tunnel),
-        Outcome::InspectionEstablished => ("HTTPS".to_owned(), Color32::LIGHT_BLUE),
-        Outcome::Failed { stage, message } => (format!("{stage:?}: {message}"), Color32::LIGHT_RED),
-        Outcome::Cancelled => ("Cancelled by client".to_owned(), Color32::YELLOW),
-        Outcome::Incomplete => ("Incomplete (proxy stopped)".to_owned(), Color32::YELLOW),
-    }
-}
-
-fn tunnel_summary(tunnel: &TunnelPreview) -> (String, Color32) {
-    match tunnel.snapshot().state() {
-        TunnelState::Open => ("Tunnel · open".to_owned(), Color32::LIGHT_BLUE),
-        TunnelState::Closed => ("Tunnel · closed".to_owned(), Color32::LIGHT_BLUE),
-        TunnelState::Failed { stage, .. } => {
-            (format!("Tunnel · failed ({stage:?})"), Color32::LIGHT_RED)
-        }
-        TunnelState::Incomplete => ("Tunnel · incomplete".to_owned(), Color32::YELLOW),
     }
 }
 

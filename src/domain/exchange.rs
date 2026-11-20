@@ -7,7 +7,9 @@ use std::time::{Duration, Instant, SystemTime};
 use http::{Method, StatusCode, Version};
 use tokio::sync::Notify;
 
-use super::{BodyPreview, FailureStage, HeaderPreview, RecordId, TunnelPreview};
+use super::{
+    BodyLifecycle, BodyPreview, FailureStage, HeaderPreview, RecordId, TunnelPreview, TunnelState,
+};
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 static IN_FLIGHT: Outcome = Outcome::InFlight;
@@ -170,10 +172,39 @@ pub enum Outcome {
 }
 
 impl Outcome {
+    /// Reports failures, client cancellation, and observations cut short by shutdown.
+    #[must_use]
+    pub fn is_failure(&self) -> bool {
+        match self {
+            Self::Failed { .. } | Self::Cancelled | Self::Incomplete => true,
+            Self::Tunnel(tunnel) => matches!(
+                tunnel.snapshot().state(),
+                TunnelState::Failed { .. } | TunnelState::Incomplete
+            ),
+            Self::InFlight | Self::Response(_) | Self::InspectionEstablished => false,
+        }
+    }
+
     /// Reports whether the exchange has not settled yet.
     #[must_use]
     pub const fn is_in_flight(&self) -> bool {
         matches!(self, Self::InFlight)
+    }
+}
+
+impl std::fmt::Display for Outcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InFlight => f.write_str("In flight"),
+            Self::Response(response) => write!(f, "Response {}", response.status().as_u16()),
+            Self::Tunnel(_) => {
+                f.write_str("CONNECT tunnel established (encrypted contents not inspected)")
+            }
+            Self::InspectionEstablished => f.write_str("HTTPS inspection established"),
+            Self::Failed { stage, .. } => write!(f, "Failed {stage}"),
+            Self::Cancelled => f.write_str("Cancelled by the client"),
+            Self::Incomplete => f.write_str("Incomplete because the proxy stopped"),
+        }
     }
 }
 
@@ -331,6 +362,34 @@ impl Exchange {
             .map_or(&IN_FLIGHT, |settlement| &settlement.outcome)
     }
 
+    /// Reports whether the request, response body, or tunnel can still progress.
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        match self.outcome() {
+            Outcome::InFlight => true,
+            Outcome::Response(response) => response.body().lifecycle() == BodyLifecycle::Streaming,
+            Outcome::Tunnel(tunnel) => tunnel.snapshot().state() == &TunnelState::Open,
+            Outcome::InspectionEstablished
+            | Outcome::Failed { .. }
+            | Outcome::Cancelled
+            | Outcome::Incomplete => false,
+        }
+    }
+
+    /// Returns response-body bytes or tunnel download bytes observed so far.
+    #[must_use]
+    pub fn received_bytes(&self) -> Option<u64> {
+        match self.outcome() {
+            Outcome::Response(response) => Some(response.body().observed_bytes()),
+            Outcome::Tunnel(tunnel) => Some(tunnel.snapshot().upstream_to_client()),
+            Outcome::InFlight
+            | Outcome::InspectionEstablished
+            | Outcome::Failed { .. }
+            | Outcome::Cancelled
+            | Outcome::Incomplete => None,
+        }
+    }
+
     /// Returns the observed durations so far.
     #[must_use]
     pub fn timing(&self) -> Timing {
@@ -432,6 +491,54 @@ mod tests {
                 HeaderPreview::default(),
             ),
         )
+    }
+
+    #[test]
+    fn classifies_outcomes_and_live_transfer_bytes() {
+        let pending = exchange();
+        assert!(pending.is_live());
+        assert_eq!(pending.received_bytes(), None);
+        assert!(!pending.outcome().is_failure());
+        for outcome in [
+            Outcome::Cancelled,
+            Outcome::Incomplete,
+            Outcome::Failed {
+                stage: FailureStage::Connect,
+                message: String::new(),
+            },
+            Outcome::InspectionEstablished,
+        ] {
+            let record = exchange();
+            let failure = !matches!(outcome, Outcome::InspectionEstablished);
+            record.settle(outcome);
+            assert_eq!(record.outcome().is_failure(), failure);
+            assert!(!record.is_live());
+            assert_eq!(record.received_bytes(), None);
+        }
+        let body = BodyPreview::new(8);
+        body.observe(b"abc");
+        let record = exchange();
+        record.settle(response(&body));
+        assert!(record.is_live());
+        assert!(!record.outcome().is_failure());
+        assert_eq!(record.received_bytes(), Some(3));
+        body.complete();
+        assert!(!record.is_live());
+        for state in 0..4 {
+            let tunnel = TunnelPreview::new();
+            tunnel.add_upstream_to_client(7);
+            let record = exchange();
+            record.settle(Outcome::Tunnel(tunnel.clone()));
+            match state {
+                1 => tunnel.close(),
+                2 => tunnel.fail(FailureStage::Tunnel, String::new()),
+                3 => tunnel.abandon(),
+                _ => (),
+            }
+            assert_eq!(record.is_live(), state == 0);
+            assert_eq!(record.outcome().is_failure(), state >= 2);
+            assert_eq!(record.received_bytes(), Some(7));
+        }
     }
 
     #[test]

@@ -160,7 +160,7 @@ impl CaptureContext {
     fn fail(&self, stage: FailureStage, message: &str) -> String {
         if let Some(log) = self.log.as_ref() {
             log.text(format!(
-                "[{}] Failure {stage:?}: {}\n",
+                "[{}] Failure {stage}: {}\n",
                 self.id(),
                 message.escape_debug()
             ));
@@ -221,17 +221,7 @@ impl Drop for CaptureContext {
 }
 
 fn outcome_summary(outcome: &Outcome) -> String {
-    match outcome {
-        Outcome::InFlight => "In flight".to_owned(),
-        Outcome::Response(response) => format!("Response {}", response.status().as_u16()),
-        Outcome::Tunnel(_) => {
-            "CONNECT tunnel established (encrypted contents not inspected)".to_owned()
-        }
-        Outcome::InspectionEstablished => "HTTPS inspection established".to_owned(),
-        Outcome::Failed { stage, .. } => format!("Failed {stage:?}"),
-        Outcome::Cancelled => "Cancelled by the client".to_owned(),
-        Outcome::Incomplete => "Incomplete because the proxy stopped".to_owned(),
-    }
+    outcome.to_string()
 }
 
 /// Settings used to start the local proxy.
