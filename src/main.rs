@@ -89,6 +89,7 @@ fn main() -> eframe::Result {
 
 fn configure_fonts(context: &egui::Context) {
     let candidates = [
+        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
         "/usr/share/fonts/truetype/nanum/NanumGothicCoding.ttf",
         "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
@@ -175,7 +176,7 @@ impl PortChoice {
         }
         let Some(directory) = self.settings_directory.as_deref() else {
             return Err(
-                "The port could not be saved because XDG_CONFIG_HOME and HOME are unset."
+                "The port could not be saved because the application settings directory is unavailable."
                     .to_owned(),
             );
         };
@@ -229,7 +230,7 @@ impl InspectorApp {
         if self.https_inspection {
             let Some(directory) = self.ca_directory.as_ref() else {
                 self.error = Some(
-                    "HTTPS inspection requires XDG_DATA_HOME or HOME to locate the CA directory"
+                    "HTTPS inspection requires an application data directory; check HOME and platform storage settings"
                         .to_owned(),
                 );
                 return;
@@ -522,6 +523,10 @@ impl InspectorApp {
 }
 
 impl eframe::App for InspectorApp {
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        visuals.panel_fill.to_normalized_gamma_f32()
+    }
+
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
         self.receive_records();
         self.release_failed_proxy();
@@ -909,6 +914,12 @@ fn copy_menu(ui: &mut egui::Ui, address: std::net::SocketAddr) {
     });
 }
 
+#[cfg(target_os = "macos")]
+fn default_ca_directory() -> Option<PathBuf> {
+    port_settings::default_settings_directory().map(|directory| directory.join("ca"))
+}
+
+#[cfg(not(target_os = "macos"))]
 fn default_ca_directory() -> Option<PathBuf> {
     std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)

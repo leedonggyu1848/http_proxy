@@ -241,6 +241,17 @@ mod tests {
             next_event(&mut session).await?,
             BrowserEvent::Opened
         ));
+        let pid = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(pid) = fs::read_to_string(executable.with_extension("pid"))
+                    && !pid.is_empty()
+                {
+                    break pid;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await?;
         let args = fs::read_to_string(executable.with_extension("args"))?;
         let mut args = args.lines();
         assert_eq!(args.next(), Some("--no-remote"));
@@ -251,10 +262,19 @@ mod tests {
             ["--private-window", "about:blank"]
         );
         assert!(profile.join("user.js").exists());
-        let pid = fs::read_to_string(executable.with_extension("pid"))?;
-        assert!(Path::new("/proc").join(&pid).exists());
+        assert!(
+            std::process::Command::new("kill")
+                .args(["-0", &pid])
+                .status()?
+                .success()
+        );
         drop(session);
-        assert!(!Path::new("/proc").join(pid).exists());
+        assert!(
+            !std::process::Command::new("kill")
+                .args(["-0", &pid])
+                .status()?
+                .success()
+        );
         assert!(!profile.exists());
         Ok(())
     }

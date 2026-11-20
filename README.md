@@ -1,6 +1,6 @@
 # HTTP Inspector
 
-HTTP Inspector는 로컬 HTTP 프록시를 통해 요청 기록을 보여주는 Linux 데스크톱 MVP다. UI와 프록시 엔진은 모두 Rust로 작성했다.
+HTTP Inspector는 로컬 HTTP 프록시를 통해 요청 기록을 보여주는 Linux와 macOS 데스크톱 앱이다. UI와 프록시 엔진은 모두 Rust로 작성했다.
 
 ## MVP 기능
 
@@ -11,7 +11,7 @@ HTTP Inspector는 로컬 HTTP 프록시를 통해 요청 기록을 보여주는 
 - HTTPS `CONNECT` TCP 터널
 - 사용자가 켤 수 있는 HTTPS 복호화
 - 설치별 로컬 CA 생성과 제한된 개인키 저장
-- 버튼으로 현재 사용자의 Linux Chrome·Chromium CA 등록, 상태 확인, 제거
+- 버튼으로 현재 사용자의 Chrome·Chromium CA 등록, 상태 확인, 제거
 - 설치된 Firefox·Chrome·Chromium 선택과 프록시가 설정된 비공개 검사 창 실행
 - 실제 HTTPS 서버 인증서와 호스트 이름 검증
 - 메서드, 대상, 결과, 응답 헤더 도착 시간 표시
@@ -32,7 +32,7 @@ HTTP Inspector는 로컬 HTTP 프록시를 통해 요청 기록을 보여주는 
 현재 버전은 다음 기능을 제공하지 않는다.
 
 - 시스템 전체 CA 등록과 기존 Firefox 개인 프로필의 인증서 저장소 변경
-- macOS와 Windows 지원
+- Windows 지원
 - 종료한 앱의 세션 복원과 SQLite 저장소
 - 시스템 프록시 자동 변경
 - HTTP/2와 HTTP/3
@@ -172,7 +172,7 @@ HTTPS_PROXY=http://127.0.0.1:8080 your-command
 
 1. **Browser** 목록에서 설치된 Firefox 또는 Chrome을 선택한다. Chromium도 선택할 수 있다. 앱은 기본 브라우저를 자동으로 선택하지 않는다.
 2. HTTPS의 URL, 헤더와 본문을 확인하려면 프록시를 중지하고 **Decrypt HTTPS**를 선택한 뒤 **Start**를 누른다.
-3. **Open Browser**를 누른다. 앱이 프록시를 설정한 검사 전용 프로필로 비공개 창을 연다. HTTPS 복호화를 켰으면 공개 CA도 자동으로 등록한다. 이 작업에는 NSS `certutil`이 필요하다.
+3. **Open Browser**를 누른다. 앱이 프록시를 설정한 검사 전용 프로필로 비공개 창을 연다. HTTPS 복호화를 켰으면 공개 CA도 자동으로 등록한다. Firefox에는 NSS `certutil`이 필요하다. Linux의 Chrome·Chromium도 NSS를 사용한다. macOS의 Chrome·Chromium은 로그인 키체인을 사용한다.
 4. 열린 브라우저에서 확인할 사이트에 접속한다. HTTP Inspector의 요청 목록에서 트래픽을 확인한다.
 5. 검사를 마치면 브라우저 창을 닫거나 **Close browser**를 누른다. **Stop**을 누르거나 앱을 종료해도 앱에서 연 검사 브라우저를 종료한다.
 
@@ -180,7 +180,7 @@ HTTPS_PROXY=http://127.0.0.1:8080 your-command
 
 매번 새 검사 프로필을 만들며 브라우저 프로세스가 종료되면 삭제한다. 기존 개인 프로필의 쿠키와 로그인 상태는 가져오지 않는다. Firefox Snap의 임시 프로필은 `$HOME/snap/firefox/common` 아래에 만든다. 앱이 강제 종료되면 임시 프로필이 남을 수 있다. 비공개 창을 사용해도 HTTP Inspector의 요청 기록과 전체 로그는 남는다.
 
-Firefox의 CA는 검사 전용 프로필에만 등록한다. Chrome·Chromium의 CA는 현재 사용자의 공용 NSS 저장소에 등록하므로 개인 브라우저에도 신뢰 설정이 적용된다. Chrome·Chromium 등록은 검사 창을 닫아도 유지된다. 필요 없으면 **Decrypt HTTPS** 영역의 **Remove CA**로 제거한다.
+Firefox의 CA는 검사 전용 프로필에만 등록한다. Chrome·Chromium의 CA는 Linux에서 현재 사용자의 공용 NSS 저장소에, macOS에서 로그인 키체인에 등록하므로 개인 브라우저에도 신뢰 설정이 적용된다. Chrome·Chromium 등록은 검사 창을 닫아도 유지된다. 필요 없으면 **Decrypt HTTPS** 영역의 **Remove CA**로 제거한다.
 
 다음은 실제 Firefox Snap에서 HTTPS를 복호화한 뒤 브라우저 선택 목록을 연 화면이다.
 
@@ -222,9 +222,9 @@ HTTPS 복호화는 사용 권한이 있는 트래픽에만 사용한다.
 
 기존 Chrome·Chromium을 직접 프록시에 연결하려면 **Register CA**로 CA를 등록한다. **CA is registered and trusted for HTTPS.**가 표시되는지 확인한다.
 
-**Register CA**는 NSS의 `certutil` 명령으로 현재 사용자의 Chrome·Chromium 인증서 저장소에 공개 CA만 등록한다. 관리자 권한은 필요하지 않다. Ubuntu·Debian에서는 `sudo apt install libnss3-tools`, Fedora에서는 `sudo dnf install nss-tools`로 도구를 설치한다. 도구가 없거나 등록에 실패하면 화면에 오류를 표시한다. 수동으로 등록하려면 Chrome의 `chrome://settings/certificates`에서 공개 CA를 가져온다.
+Linux에서 **Register CA**는 NSS의 `certutil` 명령으로 현재 사용자의 Chrome·Chromium 인증서 저장소에 공개 CA만 등록한다. 관리자 권한은 필요하지 않다. Ubuntu·Debian에서는 `sudo apt install libnss3-tools`, Fedora에서는 `sudo dnf install nss-tools`로 도구를 설치한다. 도구가 없거나 등록에 실패하면 화면에 오류를 표시한다. 수동으로 등록하려면 Chrome의 `chrome://settings/certificates`에서 공개 CA를 가져온다.
 
-등록 대상은 [Chromium의 NSS 저장소 선택 규칙](https://chromium.googlesource.com/chromium/src/+/HEAD/crypto/nss_util.cc)을 따른다. `$HOME/.pki/nssdb` 디렉터리가 있으면 그 경로를 사용한다. 없으면 `$XDG_DATA_HOME/pki/nssdb`를 사용하고, `XDG_DATA_HOME`이 없으면 `$HOME/.local/share/pki/nssdb`를 사용한다. 화면에 실제 대상 경로를 표시한다. 별도 저장소를 사용하는 Snap·Flatpak 브라우저와 Firefox, 시스템 전체 저장소에는 등록하지 않는다.
+Linux의 등록 대상은 [Chromium의 NSS 저장소 선택 규칙](https://chromium.googlesource.com/chromium/src/+/HEAD/crypto/nss_util.cc)을 따른다. `$HOME/.pki/nssdb` 디렉터리가 있으면 그 경로를 사용한다. 없으면 `$XDG_DATA_HOME/pki/nssdb`를 사용하고, `XDG_DATA_HOME`이 없으면 `$HOME/.local/share/pki/nssdb`를 사용한다. 화면에 실제 대상 경로를 표시한다. 별도 저장소를 사용하는 Snap·Flatpak 브라우저와 Firefox, 시스템 전체 저장소에는 등록하지 않는다.
 
 **Check registration**은 이 앱이 관리하는 항목의 인증서와 HTTPS 신뢰 설정을 확인한다. **Remove CA**는 현재 CA와 일치하는 앱 관리 항목만 제거한다. 다른 설치의 CA와 수동으로 등록한 다른 이름의 항목은 제거하지 않는다. 등록 상태를 바꾼 후에는 브라우저를 다시 시작한다.
 
@@ -275,6 +275,38 @@ cargo build --release
 - [Network 상세 보기 설계](docs/f12-network-increment-design.md)
 - [HTTPS 복호화 구현 설계](docs/https-inspection-implementation.md)
 - [HTTPS 후속 작업](docs/https-future-work.md)
+
+## macOS에서 실행하기
+
+Apple Silicon과 Intel Mac에서 Rust 툴체인을 설치하고 다음 명령을 실행한다. X11은 필요하지 않다. 한글은 시스템의 Apple SD Gothic Neo 폰트를 사용한다.
+
+```bash
+cargo run --release
+```
+
+Firefox 검사 창에서 HTTPS를 복호화하려면 Homebrew NSS를 설치한다. Chrome 검사 창에는 NSS가 필요하지 않다.
+
+```bash
+brew install nss
+```
+
+**Open Browser**는 `/Applications`와 `~/Applications`에서 Firefox, Google Chrome, Chromium 앱 번들을 찾는다. 번들 안 실행 파일을 새 검사 프로필로 직접 실행한다. 기존 브라우저 창은 그대로 유지한다.
+
+macOS에서는 CA를 `~/Library/Application Support/http-inspector/ca/`에, 포트 설정을 `~/Library/Application Support/http-inspector/settings`에 저장한다. `XDG_DATA_HOME`과 `XDG_CONFIG_HOME`은 사용하지 않는다. CA 디렉터리는 `0700`, 개인키 파일은 `0600` 권한으로 생성한다.
+
+HTTPS를 복호화하려면 **Decrypt HTTPS**를 켜고 **Register CA**를 누른다. 앱은 `security add-trusted-cert`로 공개 CA를 로그인 키체인에 SSL 신뢰 대상으로 등록한다. macOS 인증 창이 나타나면 승인한다. 취소하면 화면에 오류가 표시되며 다시 시도할 수 있다. **Check registration**은 저장된 인증서 바이트와 SSL 신뢰 상태를 확인한다. **Remove CA**는 현재 CA의 SHA-256 지문과 일치하는 인증서 및 사용자 신뢰 설정을 제거한다. 변경 후 브라우저를 다시 실행한다. Safari도 로그인 키체인의 신뢰 설정을 사용하지만 검사 창 실행 목록에는 포함되지 않는다.
+
+서명, 공증과 `.dmg` 배포는 지원하지 않는다. 시스템 키체인과 시스템 프록시 설정은 변경하지 않는다.
+
+다음 화면은 Apple Silicon Mac에서 실행한 앱이 로컬 테스트 서버의 HTTP 응답을 기록한 모습이다. 앱의 **Save window PNG** 경로로 렌더링을 저장했다.
+
+![macOS에서 로컬 테스트 HTTP 요청을 기록한 HTTP Inspector](docs/images/macos.png)
+
+macOS 실환경에서 키체인 등록·상태 확인·제거와 Chrome 검사 창 실행을 확인하려면 다음 검사를 실행한다. 첫 검사는 임시 CA를 로그인 키체인에 등록한 뒤 제거하며, macOS 인증 창이 나타날 수 있다.
+
+```bash
+cargo test --test macos_integration -- --ignored
+```
 
 ## 라이선스
 
