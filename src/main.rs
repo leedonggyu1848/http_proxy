@@ -60,8 +60,7 @@ use std::time::Duration;
 use eframe::egui::{self, Color32, RichText};
 use http_proxy::{
     BodyLifecycle, BodyPreview, BodyRetention, EngineState, Exchange, FullLog, HeaderPreview,
-    HttpsInspection, Outcome, ProxyConfig, ProxyHandle, RecordId, SESSION_BODY_LIMIT_BYTES,
-    TunnelPreview, TunnelState,
+    HttpsInspection, Outcome, ProxyConfig, ProxyHandle, RecordId, TunnelPreview, TunnelState,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -393,16 +392,16 @@ impl InspectorApp {
         {
             ui.colored_label(Color32::LIGHT_RED, error);
         }
-        if self
+        if let Some(log) = self
             .full_log
             .as_ref()
-            .is_some_and(FullLog::body_limit_reached)
+            .filter(|log| log.body_limit_reached())
         {
             ui.colored_label(
                 Color32::YELLOW,
                 format!(
-                    "The full-session log reached its {} MiB body limit. Later body bytes are omitted; headers and results are still logged.",
-                    SESSION_BODY_LIMIT_BYTES / (1_024 * 1_024)
+                    "The full-session log reached its {} body limit. Later body bytes are omitted; headers and results are still logged.",
+                    log.formatted_body_limit()
                 ),
             );
         }

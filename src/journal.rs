@@ -34,6 +34,7 @@ pub struct FullLog {
     sender: SyncSender<Event>,
     failure: Failure,
     body_budget: Arc<AtomicU64>,
+    body_limit: u64,
 }
 
 impl FullLog {
@@ -55,7 +56,28 @@ impl FullLog {
             sender,
             failure,
             body_budget: Arc::new(AtomicU64::new(body_limit)),
+            body_limit,
         })
+    }
+
+    /// Returns the configured session body limit in bytes.
+    #[must_use]
+    pub const fn body_limit(&self) -> u64 {
+        self.body_limit
+    }
+
+    /// Formats the configured body limit, using bytes below one MiB.
+    #[must_use]
+    pub fn formatted_body_limit(&self) -> String {
+        const MIB: u64 = 1_024 * 1_024;
+        let bytes = self.body_limit();
+        if bytes < MIB {
+            format!("{bytes} bytes")
+        } else if bytes.is_multiple_of(MIB) {
+            format!("{} MiB", bytes / MIB)
+        } else {
+            format!("{} MiB + {} bytes", bytes / MIB, bytes % MIB)
+        }
     }
 
     /// Returns whether the session body limit stopped body bytes from being
@@ -108,8 +130,8 @@ impl FullLog {
 
     pub(crate) fn body_omitted(&self, id: u64, side: &str) {
         self.text(format!(
-            "[{id}] {side} body: later bytes omitted because the session body limit of {} MiB was reached",
-            SESSION_BODY_LIMIT_BYTES / (1_024 * 1_024)
+            "[{id}] {side} body: later bytes omitted because the session body limit of {} was reached",
+            self.formatted_body_limit()
         ));
     }
 
@@ -270,6 +292,40 @@ mod tests {
     }
 
     #[test]
+    fn omission_uses_the_configured_limit() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        for (limit, expected) in [(3, "3 bytes"), (SESSION_BODY_LIMIT_BYTES, "512 MiB")] {
+            let log = FullLog::with_body_limit(limit)?;
+            assert_eq!(log.body_limit(), limit);
+            log.body_omitted(1, "Request");
+            let text = exported(&log, directory.path().join(format!("{limit}.txt")))?;
+            assert_eq!(
+                text,
+                format!(
+                    "[1] Request body: later bytes omitted because the session body limit of {expected} was reached\n"
+                )
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn formats_body_limits_at_the_mib_boundary() -> io::Result<()> {
+        for (limit, expected) in [
+            (0, "0 bytes"),
+            (1_048_575, "1048575 bytes"),
+            (1_048_576, "1 MiB"),
+            (1_048_577, "1 MiB + 1 bytes"),
+        ] {
+            assert_eq!(
+                FullLog::with_body_limit(limit)?.formatted_body_limit(),
+                expected
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn retains_complete_large_bodies() -> io::Result<()> {
         let directory = tempfile::tempdir()?;
         let log = FullLog::new()?;
@@ -338,6 +394,7 @@ mod tests {
             sender,
             failure: Arc::new(Mutex::new(None)),
             body_budget: Arc::new(AtomicU64::new(SESSION_BODY_LIMIT_BYTES)),
+            body_limit: SESSION_BODY_LIMIT_BYTES,
         };
         log.text("first".to_owned());
         log.text("lost".to_owned());
@@ -355,6 +412,7 @@ mod tests {
             sender,
             failure: Arc::new(Mutex::new(None)),
             body_budget: Arc::new(AtomicU64::new(SESSION_BODY_LIMIT_BYTES)),
+            body_limit: SESSION_BODY_LIMIT_BYTES,
         };
         log.text("first".to_owned());
         let error = log.export(PathBuf::from("unused.txt"));
@@ -375,6 +433,7 @@ mod tests {
             sender,
             failure: Arc::clone(&failure),
             body_budget: Arc::new(AtomicU64::new(SESSION_BODY_LIMIT_BYTES)),
+            body_limit: SESSION_BODY_LIMIT_BYTES,
         };
         let destination = directory.path().join("snapshot.txt");
         let saved = log.export(destination.clone())?;
@@ -398,6 +457,7 @@ mod tests {
             sender,
             failure: Arc::clone(&failure),
             body_budget: Arc::new(AtomicU64::new(SESSION_BODY_LIMIT_BYTES)),
+            body_limit: SESSION_BODY_LIMIT_BYTES,
         };
         log.text("cannot write to read-only journal".to_owned());
         let destination = directory.path().join("snapshot.txt");
