@@ -4,7 +4,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io::{self, Write as _};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use http_proxy::StartError;
 
@@ -137,16 +137,6 @@ fn port_argument(args: impl IntoIterator<Item = OsString>) -> Result<Option<Prox
     Ok(port)
 }
 
-/// Returns `$XDG_CONFIG_HOME/http-inspector`, or `~/.config/http-inspector`.
-#[cfg(not(target_os = "macos"))]
-pub(crate) fn default_settings_directory() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .map(|directory| directory.join("http-inspector"))
-}
-
 /// Reads the saved port, treating a missing or malformed file as no setting.
 pub(crate) fn load_port(directory: &Path) -> Option<ProxyPort> {
     let text = fs::read_to_string(directory.join(SETTINGS_FILE)).ok()?;
@@ -206,14 +196,6 @@ impl CopyTarget {
             Self::Environment => format!("HTTP_PROXY={url} HTTPS_PROXY={url}"),
         }
     }
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn default_settings_directory() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|home| home.is_absolute())
-        .map(|home| home.join("Library/Application Support/http-inspector"))
 }
 
 #[cfg(test)]

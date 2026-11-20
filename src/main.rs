@@ -54,6 +54,12 @@ mod port_settings;
 )]
 mod request_table;
 
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "Application paths are private to the binary."
+)]
+mod app_paths;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -151,7 +157,7 @@ struct PortChoice {
 
 impl PortChoice {
     fn from_launch() -> Self {
-        let settings_directory = port_settings::default_settings_directory();
+        let settings_directory = app_paths::settings_directory(|name| std::env::var_os(name));
         let saved = settings_directory
             .as_deref()
             .and_then(port_settings::load_port);
@@ -200,7 +206,7 @@ impl InspectorApp {
             filter_text: String::new(),
             record_filter: RecordFilter::All,
             https_inspection: false,
-            ca_directory: default_ca_directory(),
+            ca_directory: app_paths::ca_directory(|name| std::env::var_os(name)),
             ca_panel: ca_panel::CaPanel::default(),
             browsers: browser_panel::BrowserPanel::default(),
             error: None,
@@ -911,17 +917,4 @@ fn copy_menu(ui: &mut egui::Ui, address: std::net::SocketAddr) {
             }
         }
     });
-}
-
-#[cfg(target_os = "macos")]
-fn default_ca_directory() -> Option<PathBuf> {
-    port_settings::default_settings_directory().map(|directory| directory.join("ca"))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn default_ca_directory() -> Option<PathBuf> {
-    std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
-        .map(|directory| directory.join("http-inspector/ca"))
 }
