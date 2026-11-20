@@ -43,7 +43,7 @@ use crate::{
 
 mod headers;
 mod replay;
-pub use replay::{ReplayDraft, ReplayField, ReplayTask};
+pub use replay::{REPLAY_BODY_FILE_LIMIT_BYTES, ReplayDraft, ReplayField, ReplayTask};
 mod status;
 mod target;
 mod tunnel;

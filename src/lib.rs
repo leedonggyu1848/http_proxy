@@ -30,8 +30,8 @@ pub use domain::{
 };
 pub use journal::{FullLog, SESSION_BODY_LIMIT_BYTES};
 pub use proxy::{
-    EngineState, ProxyConfig, ProxyHandle, ReplayDraft, ReplayField, ReplayTask, StartError,
-    StopError,
+    EngineState, ProxyConfig, ProxyHandle, REPLAY_BODY_FILE_LIMIT_BYTES, ReplayDraft, ReplayField,
+    ReplayTask, StartError, StopError,
 };
 pub use tls::{CaInfo, HttpsInspection, HttpsSetupError};
 pub(crate) use tls::{Destination, PreparedInspection, TlsInspector, UpstreamTlsError};

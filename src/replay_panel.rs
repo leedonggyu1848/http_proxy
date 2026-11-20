@@ -2,6 +2,10 @@
 use eframe::egui::{self, Color32};
 use http_proxy::{Exchange, ProxyHandle, RecordId, ReplayDraft, ReplayField, ReplayTask};
 use std::fmt::Write as _;
+use std::path::Path;
+
+/// Bodies above this size are summarized instead of laid out in the text editor.
+const EDITABLE_BODY_BYTES: usize = 256 * 1024;
 
 pub(crate) struct ReplayPanel {
     draft: ReplayDraft,
@@ -10,6 +14,9 @@ pub(crate) struct ReplayPanel {
     confirmed: bool,
     skip_confirmation: bool,
     file: String,
+    /// Where the current body came from, when it was loaded from a file.
+    body_source: Option<String>,
+    body: BodyView,
     compare: bool,
     query: PairTable,
     cookies: Vec<PairTable>,
@@ -18,13 +25,16 @@ pub(crate) struct ReplayPanel {
 
 impl ReplayPanel {
     pub(crate) fn new(original: Exchange) -> Result<Self, String> {
+        let draft = ReplayDraft::new(original)?;
         Ok(Self {
-            draft: ReplayDraft::new(original)?,
+            body: BodyView::new(&draft.body),
+            draft,
             task: None,
             error: None,
             confirmed: false,
             skip_confirmation: false,
             file: String::new(),
+            body_source: None,
             compare: false,
             query: PairTable::default(),
             cookies: Vec::new(),
@@ -126,50 +136,56 @@ impl ReplayPanel {
             .find(|field| field.enabled && field.name.eq_ignore_ascii_case("content-type"))
             .map_or_default(|field| field.value.clone());
         if content_type.starts_with("application/json") {
-            match serde_json::from_slice::<serde_json::Value>(&self.draft.body) {
-                Ok(_) => {
+            match self.body.json_error(&self.draft.body) {
+                None => {
                     ui.label("Valid JSON");
                 }
-                Err(error) => {
-                    ui.colored_label(Color32::YELLOW, error.to_string());
+                Some(error) => {
+                    ui.colored_label(Color32::YELLOW, error);
                 }
             }
         }
-        if content_type.starts_with("application/x-www-form-urlencoded") {
-            ui.collapsing("Form fields (URL-encoded)", |ui| {
-                if let Ok(mut text) = String::from_utf8(self.draft.body.clone())
-                    && self.form.show(ui, &mut text, URL_ENCODED, "Add field")
-                {
-                    self.draft.body = text.into_bytes();
-                }
-            });
-        }
-        if let Ok(mut text) = String::from_utf8(self.draft.body.clone()) {
-            if ui
+        let mut edited = false;
+        if let Some(text) = &mut self.body.text {
+            if content_type.starts_with("application/x-www-form-urlencoded") {
+                ui.collapsing("Form fields (URL-encoded)", |ui| {
+                    edited |= self.form.show(ui, text, URL_ENCODED, "Add field");
+                });
+            }
+            edited |= ui
                 .add(
-                    egui::TextEdit::multiline(&mut text)
+                    egui::TextEdit::multiline(text)
                         .desired_rows(6)
                         .desired_width(f32::INFINITY),
                 )
-                .changed()
-            {
-                self.draft.body = text.into_bytes();
-            }
+                .changed();
         } else {
-            ui.label(format!(
-                "Binary body: {} bytes. Load a replacement file to edit.",
-                self.draft.body.len()
-            ));
+            let size = self.draft.body.len();
+            let origin = self
+                .body_source
+                .as_ref()
+                .map_or_default(|file| format!(" loaded from {file}"));
+            ui.label(if size > EDITABLE_BODY_BYTES {
+                format!("{size} bytes{origin}. Too large to edit here; it is sent as loaded.")
+            } else {
+                format!("Binary body: {size} bytes{origin}. Load a replacement file to edit.")
+            });
+        }
+        if edited && let Some(text) = &self.body.text {
+            self.draft.body = text.clone().into();
+            self.body.json = None;
+            self.body_source = None;
         }
         ui.horizontal(|ui| {
             ui.text_edit_singleline(&mut self.file);
             if ui.button("Load complete body file").clicked() {
-                match std::fs::read(&self.file) {
-                    Ok(body) => {
-                        self.draft.body = body;
-                        self.draft.body_missing = self.draft.original.request().headers().omitted();
+                match self.draft.load_body_file(Path::new(&self.file)) {
+                    Ok(()) => {
+                        self.body = BodyView::new(&self.draft.body);
+                        self.body_source = Some(self.file.clone());
+                        self.error = None;
                     }
-                    Err(error) => self.error = Some(error.to_string()),
+                    Err(error) => self.error = Some(error),
                 }
             }
         });
@@ -219,7 +235,11 @@ impl ReplayPanel {
             }
             if ui.button("Reset to original").clicked() {
                 match ReplayDraft::new(self.draft.original.clone()) {
-                    Ok(draft) => self.draft = draft,
+                    Ok(draft) => {
+                        self.body = BodyView::new(&draft.body);
+                        self.body_source = None;
+                        self.draft = draft;
+                    }
                     Err(error) => self.error = Some(error),
                 }
             }
@@ -344,6 +364,38 @@ fn summary(record: &Exchange) -> String {
 }
 
 /// How a `name=value` list is split and rejoined.
+/// Views derived from the draft body, rebuilt only when the body changes.
+struct BodyView {
+    /// Editable text, present for UTF-8 bodies small enough to lay out every frame.
+    text: Option<String>,
+    /// Cached JSON check; `None` until a JSON content type first asks for it.
+    json: Option<Result<(), String>>,
+}
+
+impl BodyView {
+    fn new(body: &[u8]) -> Self {
+        let text = if body.len() <= EDITABLE_BODY_BYTES {
+            std::str::from_utf8(body).ok().map(str::to_owned)
+        } else {
+            None
+        };
+        Self { text, json: None }
+    }
+
+    /// The JSON syntax error for `body`, parsing only on the first request after a change.
+    fn json_error(&mut self, body: &[u8]) -> Option<&str> {
+        self.json
+            .get_or_insert_with(|| {
+                serde_json::from_slice::<serde_json::Value>(body)
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            })
+            .as_ref()
+            .err()
+            .map(String::as_str)
+    }
+}
+
 #[derive(Clone, Copy)]
 struct PairSyntax {
     separator: char,
@@ -484,6 +536,26 @@ mod tests {
         if let Some(row) = row {
             change(row);
         }
+    }
+
+    #[test]
+    fn large_bodies_are_summarized_instead_of_edited() {
+        assert_eq!(BodyView::new(b"a=1").text.as_deref(), Some("a=1"));
+        assert!(
+            BodyView::new(&vec![b'a'; EDITABLE_BODY_BYTES + 1])
+                .text
+                .is_none()
+        );
+        assert!(BodyView::new(&[0xff]).text.is_none());
+    }
+
+    #[test]
+    fn json_check_is_cached_until_the_body_changes() {
+        let mut view = BodyView::new(b"{");
+        assert!(view.json_error(b"{").is_some());
+        // A cached result is reused even when given other bytes; callers rebuild on change.
+        assert!(view.json_error(b"{}").is_some());
+        assert!(BodyView::new(b"{}").json_error(b"{}").is_none());
     }
 
     fn joined(text: &str, syntax: PairSyntax) -> String {

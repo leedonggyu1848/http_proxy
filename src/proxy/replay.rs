@@ -1,10 +1,16 @@
 //! Explicit, validated manual replay using the normal forwarding path.
 use super::{
     Arc, BodyExt, BodyPreview, Bytes, CaptureContext, CaptureSource, Destination, EngineState,
-    Exchange, Full, HOST, IpAddr, Method, ProxyHandle, Request, SocketAddr, Uri, connect_deadline,
-    forward_http, forward_https, infallible_to_hyper, remove_hop_by_hop_headers, resolve_within,
+    Exchange, FailureStage, Full, HOST, IpAddr, Method, ProxyHandle, Request, SocketAddr,
+    StatusCode, Uri, connect_deadline, failed_response, forward_http, forward_https,
+    infallible_to_hyper, remove_hop_by_hop_headers, resolve_within,
 };
 use http::HeaderMap;
+use std::io::Read as _;
+use std::path::Path;
+
+/// Largest replacement body file the editor loads into memory.
+pub const REPLAY_BODY_FILE_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
 
 /// An editable header or cookie; disabled rows are never sent.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -28,8 +34,8 @@ pub struct ReplayDraft {
     pub url: String,
     /// Editable end-to-end headers.
     pub headers: Vec<ReplayField>,
-    /// Complete replacement body.
-    pub body: Vec<u8>,
+    /// Complete replacement body, shared with the sent request without copying.
+    pub body: Bytes,
     /// Requires an explicit complete replacement before sending.
     pub body_missing: bool,
     /// Keep Host aligned with the edited URL.
@@ -68,7 +74,7 @@ impl ReplayDraft {
             method: original.request().method().to_string(),
             url: original.request().target().to_owned(),
             headers,
-            body: snapshot.map_or_else(Vec::new, |body| body.bytes().to_vec()),
+            body: snapshot.map_or_else(Bytes::new, |body| Bytes::copy_from_slice(body.bytes())),
             body_missing,
             automatic_host: true,
             original,
@@ -89,7 +95,13 @@ impl ReplayDraft {
         if method == Method::CONNECT || method == Method::TRACE {
             return Err("CONNECT and TRACE cannot be replayed".to_owned());
         }
-        let uri = self.url.parse::<Uri>().map_err(|_| "Invalid URL")?;
+        let uri = self.url.parse::<Uri>().map_err(|_| {
+            if self.url.ends_with('…') {
+                "The captured URL was truncated; enter the complete URL"
+            } else {
+                "Invalid URL"
+            }
+        })?;
         if !matches!(uri.scheme_str(), Some("http" | "https")) || uri.host().is_none() {
             return Err("Use an absolute http:// or https:// URL".to_owned());
         }
@@ -116,7 +128,7 @@ impl ReplayDraft {
         let mut request = Request::builder()
             .method(method)
             .uri(uri.clone())
-            .body(Full::new(Bytes::copy_from_slice(&self.body)))
+            .body(Full::new(self.body.clone()))
             .map_err(|e| e.to_string())?;
         for field in self.headers.iter().filter(|field| field.enabled) {
             let (name, value) = header_pair(field)?;
@@ -141,6 +153,33 @@ impl ReplayDraft {
         );
         request.extensions_mut().insert(self.original.id());
         Ok(request)
+    }
+
+    /// Replaces the body with a complete file, refusing files above
+    /// [`REPLAY_BODY_FILE_LIMIT_BYTES`] before reading them.
+    pub fn load_body_file(&mut self, path: &Path) -> Result<(), String> {
+        let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+        let too_large = || {
+            format!(
+                "Body files are limited to {} MiB",
+                REPLAY_BODY_FILE_LIMIT_BYTES / (1024 * 1024)
+            )
+        };
+        let length = file.metadata().map_err(|error| error.to_string())?.len();
+        if length > REPLAY_BODY_FILE_LIMIT_BYTES {
+            return Err(too_large());
+        }
+        let mut body = Vec::with_capacity(usize::try_from(length).unwrap_or_default());
+        // The file may grow after the size check; never read past the limit.
+        file.take(REPLAY_BODY_FILE_LIMIT_BYTES + 1)
+            .read_to_end(&mut body)
+            .map_err(|error| error.to_string())?;
+        if body.len() as u64 > REPLAY_BODY_FILE_LIMIT_BYTES {
+            return Err(too_large());
+        }
+        self.body = Bytes::from(body);
+        self.body_missing = self.original.request().headers().omitted();
+        Ok(())
     }
 
     /// Whether sending requires the user's explicit side-effect confirmation.
@@ -235,8 +274,16 @@ impl ProxyHandle {
             let request = request.map(|body| body.map_err(infallible_to_hyper).boxed());
             // Resolve before HTTPS as well, preserving the loop guard.
             let response = if source == CaptureSource::InspectedHttps {
+                let reject = |message: &str| {
+                    failed_response(
+                        &capture,
+                        FailureStage::Request,
+                        StatusCode::BAD_REQUEST,
+                        message,
+                    );
+                };
                 let Some(authority) = request.uri().authority() else {
-                    return;
+                    return reject("the replay URL has no authority");
                 };
                 if let Err(failure) =
                     resolve_within(connect_deadline(&engine), authority, 443, &engine).await
@@ -245,10 +292,10 @@ impl ProxyHandle {
                     return;
                 }
                 let Ok(destination) = Destination::from_authority(authority) else {
-                    return;
+                    return reject("the replay URL authority is not a valid destination");
                 };
                 let Some(inspector) = engine.inspector.as_ref() else {
-                    return;
+                    return reject("HTTPS inspection was disabled before the replay started");
                 };
                 forward_https(request, &engine, &capture, inspector, &destination).await
             } else {

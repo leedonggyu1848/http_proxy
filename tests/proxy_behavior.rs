@@ -735,6 +735,7 @@ async fn replays_edited_headers_and_cookie_with_link_and_redaction() -> Result<(
     );
     assert!(record.replay_of().is_none());
     assert_replay_validation(&mut draft, proxy.local_addr());
+    assert_body_file_loading(&mut draft, proxy.local_addr())?;
     task.cancel();
     proxy.stop()?;
     Ok(())
@@ -774,6 +775,38 @@ fn disable_unreproducible_header(
     Ok(())
 }
 
+/// Complete files replace the body up to the limit; larger files and truncated URLs are explained.
+fn assert_body_file_loading(
+    draft: &mut http_proxy::ReplayDraft,
+    address: std::net::SocketAddr,
+) -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let body_path = directory.path().join("body.json");
+    std::fs::write(&body_path, br#"{"edited":true}"#)?;
+    draft.body_missing = true;
+    draft.load_body_file(&body_path)?;
+    assert_eq!(draft.body.as_ref(), br#"{"edited":true}"#);
+    assert!(!draft.body_missing);
+
+    let large_path = directory.path().join("large.bin");
+    std::fs::File::create(&large_path)?.set_len(http_proxy::REPLAY_BODY_FILE_LIMIT_BYTES + 1)?;
+    let error = draft
+        .load_body_file(&large_path)
+        .err()
+        .ok_or("oversized body file must be refused")?;
+    assert!(error.contains("limited"), "{error}");
+    assert_eq!(draft.body.as_ref(), br#"{"edited":true}"#);
+
+    let url = std::mem::replace(&mut draft.url, "http://example.test/a b…".to_owned());
+    let error = draft
+        .request(address)
+        .err()
+        .ok_or("truncated URL must be refused")?;
+    assert!(error.contains("truncated"), "{error}");
+    draft.url = url;
+    Ok(())
+}
+
 fn assert_replay_validation(draft: &mut http_proxy::ReplayDraft, address: std::net::SocketAddr) {
     draft.headers.push(http_proxy::ReplayField {
         enabled: true,
@@ -785,7 +818,7 @@ fn assert_replay_validation(draft: &mut http_proxy::ReplayDraft, address: std::n
     draft.url = format!("http://{address}/");
     assert!(draft.request(address).is_err());
     draft.url = "http://example.test/".to_owned();
-    draft.body = "한글".as_bytes().to_vec();
+    draft.body = "한글".as_bytes().to_vec().into();
     let framed = draft.request(address);
     assert!(
         matches!(framed, Ok(request) if request.headers().get("content-length").is_some_and(|value| value == "6"))
