@@ -116,6 +116,17 @@ UI에 `Running`과 `127.0.0.1:8080`이 표시되면 프록시가 요청을 받�
 
 목록 단축키는 현재 정렬과 필터를 따릅니다. 검색창, 포트 입력란 또는 저장 경로 입력란에 포커스가 있으면 단축키를 처리하지 않습니다. 키보드로 다른 요청을 선택하면 **Follow newest**가 꺼지고 선택한 행이 보이도록 목록이 스크롤됩니다.
 
+### 화면 테마
+
+상단의 **Theme: System / Light / Dark**에서 테마를 고른다. 기본값은 **System**이며, 감지 가능한 환경에서는 실행 중 시스템 외관 변경도 반영한다. 감지에 실패하면 Dark를 사용하고 화면에 안내한다. Tab으로 선택 항목에 이동한 뒤 Space로 바꿀 수 있다.
+
+선택은 즉시 적용되며 포트 설정과 같은 디렉터리의 `theme` 파일에 저장된다.
+
+- Linux: `$XDG_CONFIG_HOME/http-inspector/theme`. `XDG_CONFIG_HOME`이 없으면 `~/.config/http-inspector/theme`를 사용한다.
+- macOS: `~/Library/Application Support/http-inspector/theme`.
+
+설정 파일이 없거나 값이 잘못되면 System으로 시작한다.
+
 ### 프록시 포트
 
 프록시는 항상 `127.0.0.1`에서만 연결을 받는다. 포트는 다음 순서로 정한다.
@@ -311,9 +322,3 @@ cargo test --test macos_integration -- --ignored
 ## 라이선스
 
 이 프로젝트는 [MIT License](LICENSE)를 따른다.
-
-### 화면 테마
-
-상단의 **Theme: System / Light / Dark**에서 테마를 고른다. 기본값은 **System**이며, 감지 가능한 환경에서는 실행 중 시스템 외관 변경도 반영한다. 감지에 실패하면 Dark를 사용하고 화면에 안내한다. Tab으로 선택 항목에 이동한 뒤 Space로 바꿀 수 있다.
-
-선택은 즉시 적용되며 `$XDG_CONFIG_HOME/http-inspector/theme`에 저장된다. `XDG_CONFIG_HOME`이 없으면 `~/.config/http-inspector/theme`를 사용한다. 설정 파일이 없거나 값이 잘못되면 System으로 시작한다.

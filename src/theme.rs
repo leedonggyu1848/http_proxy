@@ -82,15 +82,17 @@ fn parse(value: &str) -> egui::ThemePreference {
     }
 }
 
+const fn serialize(preference: egui::ThemePreference) -> &'static str {
+    match preference {
+        egui::ThemePreference::System => "System",
+        egui::ThemePreference::Light => "Light",
+        egui::ThemePreference::Dark => "Dark",
+    }
+}
+
 impl ThemeSettings {
     pub(crate) fn new(context: &egui::Context) -> Self {
-        let path = std::env::var_os("XDG_CONFIG_HOME")
-            .filter(|value| !value.is_empty())
-            .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config"))
-            })
-            .map(|directory| directory.join("http-inspector"))
+        let path = crate::port_settings::default_settings_directory()
             .map(|directory| directory.join("theme"));
         let preference = path
             .as_ref()
@@ -151,7 +153,7 @@ impl ThemeSettings {
             .ok_or_else(|| std::io::Error::other("invalid settings path"))?;
         std::fs::create_dir_all(parent)?;
         let mut file = tempfile::NamedTempFile::new_in(parent)?;
-        writeln!(file, "{:?}", self.preference)?;
+        writeln!(file, "{}", serialize(self.preference))?;
         file.persist(path).map_err(|error| error.error)?;
         Ok(())
     }
@@ -220,10 +222,10 @@ mod tests {
     fn selection_survives_restart() -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("theme");
-        for preference in [
-            egui::ThemePreference::System,
-            egui::ThemePreference::Light,
-            egui::ThemePreference::Dark,
+        for (preference, expected) in [
+            (egui::ThemePreference::System, "System\n"),
+            (egui::ThemePreference::Light, "Light\n"),
+            (egui::ThemePreference::Dark, "Dark\n"),
         ] {
             let settings = ThemeSettings {
                 preference,
@@ -231,7 +233,9 @@ mod tests {
                 error: None,
             };
             settings.save()?;
-            assert_eq!(parse(&std::fs::read_to_string(&path)?), preference);
+            let saved = std::fs::read_to_string(&path)?;
+            assert_eq!(saved, expected);
+            assert_eq!(parse(&saved), preference);
         }
         Ok(())
     }
