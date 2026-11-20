@@ -155,6 +155,7 @@ fn keyboard_selection(
 
 /// Sort state and scrolling preference of the request list.
 pub(crate) struct RequestTable {
+    pub(crate) replay: Option<Exchange>,
     sort: Sort,
     follow_newest: bool,
     keyboard_row: Option<usize>,
@@ -169,6 +170,7 @@ impl RequestTable {
                 descending: false,
             },
             follow_newest: true,
+            replay: None,
             keyboard_row: None,
             page_rows: 1,
         }
@@ -274,6 +276,7 @@ impl RequestTable {
                         self.keyboard_row = None;
                         changed = Some(record.id());
                     }
+                    replay_menu(&row.response(), record, &mut self.replay);
                     if row.response().clicked() {
                         self.keyboard_row = None;
                         changed = Some(record.id());
@@ -290,6 +293,21 @@ impl RequestTable {
         self.page_rows = page_rows.max(1);
         changed
     }
+}
+
+fn replay_menu(response: &egui::Response, record: &Exchange, replay: &mut Option<Exchange>) {
+    response.context_menu(|ui| {
+        if ui
+            .add_enabled(
+                record.source() != http_proxy::CaptureSource::Connect,
+                egui::Button::new("Edit and Resend"),
+            )
+            .clicked()
+        {
+            *replay = Some(record.clone());
+            ui.close();
+        }
+    });
 }
 
 fn show_cells(
@@ -326,8 +344,17 @@ fn show_cells(
         });
     });
     row.col(|ui| {
-        ui.add(egui::Label::new(RichText::new(target_text(record)).monospace()).truncate())
-            .on_hover_text(record.request().target());
+        ui.add(
+            egui::Label::new(
+                RichText::new(record.replay_of().map_or_else(
+                    || target_text(record).to_owned(),
+                    |original| format!("Replay of #{} · {}", original.value(), target_text(record)),
+                ))
+                .monospace(),
+            )
+            .truncate(),
+        )
+        .on_hover_text(record.request().target());
     });
     row.col(|ui| {
         let (text, color) = outcome_text(record.outcome());

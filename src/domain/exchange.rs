@@ -282,6 +282,7 @@ struct ExchangeInner {
     id: RecordId,
     session: SessionId,
     source: CaptureSource,
+    replay_of: OnceLock<RecordId>,
     started_at: SystemTime,
     started: Instant,
     request: CapturedRequest,
@@ -312,6 +313,7 @@ impl Exchange {
                 id,
                 session,
                 source,
+                replay_of: OnceLock::new(),
                 started_at: SystemTime::now(),
                 started: Instant::now(),
                 request,
@@ -321,6 +323,16 @@ impl Exchange {
                 settled_signal: Notify::new(),
             }),
         }
+    }
+
+    /// Returns the original record when this exchange was manually replayed.
+    #[must_use]
+    pub fn replay_of(&self) -> Option<RecordId> {
+        self.inner.replay_of.get().copied()
+    }
+
+    pub(crate) fn set_replay_of(&self, original: RecordId) {
+        let _already_set = self.inner.replay_of.set(original).is_err();
     }
 
     /// Returns the stable exchange identity.

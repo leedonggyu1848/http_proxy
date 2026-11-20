@@ -42,6 +42,8 @@ use crate::{
 };
 
 mod headers;
+mod replay;
+pub use replay::{REPLAY_BODY_FILE_LIMIT_BYTES, ReplayDraft, ReplayField, ReplayTask};
 mod status;
 mod target;
 mod tunnel;
@@ -74,6 +76,7 @@ struct Engine {
     local_addr: SocketAddr,
     connect_timeout: Duration,
     response_timeout: Duration,
+    connections: Arc<Semaphore>,
 }
 
 /// Callback run after an exchange was queued, for example to wake a UI.
@@ -114,7 +117,7 @@ struct CaptureContext {
 impl CaptureContext {
     /// Publishes a new in-flight exchange for `request`.
     fn start(
-        request: &Request<Incoming>,
+        request: &Request<impl http_body::Body>,
         source: CaptureSource,
         target: &str,
         engine: &Engine,
@@ -138,6 +141,12 @@ impl CaptureContext {
                 capture_headers(request.headers()),
             ),
         );
+        if let Some(original) = request.extensions().get::<RecordId>() {
+            exchange.set_replay_of(*original);
+            if let Some(log) = log.as_ref() {
+                log.text(format!("[{id}] Replay of #{}\n", original.value()));
+            }
+        }
         engine.events.send(exchange.clone());
         Self {
             exchange,
@@ -306,6 +315,8 @@ pub struct ProxyHandle {
     shutdown: watch::Sender<bool>,
     status: EngineStatus,
     thread: Option<JoinHandle<()>>,
+    runtime: tokio::runtime::Handle,
+    engine: Arc<Engine>,
 }
 
 impl ProxyHandle {
@@ -344,6 +355,7 @@ impl ProxyHandle {
             .enable_all()
             .build()
             .map_err(StartError::Runtime)?;
+        let runtime_handle = runtime.handle().clone();
         let (event_sender, events) = mpsc::channel(event_capacity);
         let dropped = Arc::new(AtomicU64::new(0));
         let notifier = Arc::new(OnceLock::new());
@@ -362,15 +374,17 @@ impl ProxyHandle {
             local_addr,
             connect_timeout,
             response_timeout,
+            connections: Arc::new(Semaphore::new(max_connections)),
         });
         let (shutdown, shutdown_receiver) = watch::channel(false);
         let status = EngineStatus::default();
         let engine_status = status.clone();
+        let handle_engine = Arc::clone(&engine);
         let thread = thread::Builder::new()
             .name("http-inspector-proxy".to_owned())
             .spawn(move || {
                 runtime.block_on(async move {
-                    let result = run(listener, engine, max_connections, shutdown_receiver).await;
+                    let result = run(listener, engine, shutdown_receiver).await;
                     if let Err(error) = result {
                         tracing::error!(%error, "proxy server stopped");
                         engine_status.fail(error.to_string());
@@ -390,6 +404,8 @@ impl ProxyHandle {
             shutdown,
             status,
             thread: Some(thread),
+            runtime: runtime_handle,
+            engine: handle_engine,
         })
     }
 
@@ -488,24 +504,23 @@ pub enum StopError {
 async fn run(
     listener: StdTcpListener,
     engine: Arc<Engine>,
-    max_connections: usize,
     mut shutdown: watch::Receiver<bool>,
 ) -> io::Result<()> {
     let listener = TcpListener::from_std(listener)?;
-    let connections = Arc::new(Semaphore::new(max_connections));
+    let connections = Arc::clone(&engine.connections);
     let mut failures = AcceptFailures::default();
     loop {
-        let permit = tokio::select! {
-            () = wait_for_shutdown(&mut shutdown) => return Ok(()),
-            permit = Arc::clone(&connections).acquire_owned() => match permit {
-                Ok(permit) => Arc::new(permit),
-                Err(_) => return Ok(()),
-            },
-        };
         tokio::select! {
             () = wait_for_shutdown(&mut shutdown) => return Ok(()),
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
+                    let permit = tokio::select! {
+                        () = wait_for_shutdown(&mut shutdown) => return Ok(()),
+                        permit = Arc::clone(&connections).acquire_owned() => match permit {
+                            Ok(permit) => Arc::new(permit),
+                            Err(_) => return Ok(()),
+                        },
+                    };
                     failures.reset();
                     let connection_engine = Arc::clone(&engine);
                     tokio::spawn(async move {
@@ -513,7 +528,6 @@ async fn run(
                     });
                 }
                 Err(error) => {
-                    drop(permit);
                     if accept_action(&error) == AcceptAction::Stop {
                         return Err(error);
                     }
@@ -583,7 +597,7 @@ async fn proxy_request(
         connect_tunnel(&mut request, &engine, capture, permit).await
     } else {
         let capture = CaptureContext::start(&request, CaptureSource::HttpProxy, &target, &engine);
-        forward_http(request, &engine, &capture).await
+        forward_http(request.map(BodyExt::boxed), &engine, &capture).await
     };
 
     Ok(response)
@@ -745,7 +759,16 @@ async fn proxy_https_request(
     let capture = CaptureContext::start(&request, CaptureSource::InspectedHttps, &target, &engine);
 
     let response = match validate_inner_request(&request, &destination) {
-        Ok(()) => forward_https(request, &engine, &capture, &inspector, &destination).await,
+        Ok(()) => {
+            forward_https(
+                request.map(BodyExt::boxed),
+                &engine,
+                &capture,
+                &inspector,
+                &destination,
+            )
+            .await
+        }
         Err(message) => failed_response(
             &capture,
             FailureStage::Request,
@@ -782,7 +805,7 @@ fn validate_inner_request(
 }
 
 async fn forward_http(
-    request: Request<Incoming>,
+    request: Request<ProxyBody>,
     engine: &Engine,
     capture: &CaptureContext,
 ) -> Response<ProxyBody> {
@@ -809,7 +832,7 @@ async fn forward_http(
 }
 
 async fn forward_https(
-    request: Request<Incoming>,
+    request: Request<ProxyBody>,
     engine: &Engine,
     capture: &CaptureContext,
     inspector: &TlsInspector,
@@ -820,9 +843,14 @@ async fn forward_https(
         .path_and_query()
         .map_or_else(|| Uri::from_static("/"), |value| value.clone().into());
     let connect_started = Instant::now();
-    let stream = match timeout(TLS_TIMEOUT, inspector.connect(destination)).await {
+    let stream = match timeout(
+        engine.connect_timeout,
+        TcpStream::connect(destination.socket_target()),
+    )
+    .await
+    {
         Ok(Ok(stream)) => stream,
-        Ok(Err(UpstreamTlsError::Connect(error))) => {
+        Ok(Err(error)) => {
             return failed_response(
                 capture,
                 FailureStage::Connect,
@@ -830,6 +858,10 @@ async fn forward_https(
                 &error.to_string(),
             );
         }
+        Err(_) => return UpstreamFailure::connect_timeout(engine).respond(capture),
+    };
+    let stream = match timeout(TLS_TIMEOUT, inspector.handshake(destination, stream)).await {
+        Ok(Ok(stream)) => stream,
         Ok(Err(UpstreamTlsError::Handshake(error))) => {
             return failed_response(
                 capture,
@@ -843,7 +875,7 @@ async fn forward_https(
                 capture,
                 FailureStage::UpstreamTls,
                 StatusCode::GATEWAY_TIMEOUT,
-                "upstream TLS connection timed out",
+                "upstream TLS handshake timed out",
             );
         }
     };
@@ -852,7 +884,7 @@ async fn forward_https(
 }
 
 async fn forward_over_stream<IO>(
-    mut request: Request<Incoming>,
+    mut request: Request<ProxyBody>,
     stream: IO,
     engine: &Engine,
     capture: &CaptureContext,

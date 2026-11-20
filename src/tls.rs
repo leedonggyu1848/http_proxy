@@ -139,8 +139,6 @@ pub(super) enum PrepareError {
 
 #[derive(Debug, Error)]
 pub(super) enum UpstreamTlsError {
-    #[error("failed to connect to the upstream server: {0}")]
-    Connect(std::io::Error),
     #[error("upstream TLS verification or handshake failed: {0}")]
     Handshake(std::io::Error),
 }
@@ -190,13 +188,11 @@ impl TlsInspector {
         })
     }
 
-    pub(super) async fn connect(
+    pub(super) async fn handshake(
         &self,
         destination: &Destination,
+        stream: TcpStream,
     ) -> Result<ClientTlsStream<TcpStream>, UpstreamTlsError> {
-        let stream = TcpStream::connect(destination.socket_target())
-            .await
-            .map_err(UpstreamTlsError::Connect)?;
         self.connector
             .connect(destination.server_name.clone(), stream)
             .await

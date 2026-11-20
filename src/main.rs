@@ -2,6 +2,11 @@
 
 #[allow(
     clippy::redundant_pub_crate,
+    reason = "Panel is private to the application."
+)]
+mod replay_panel;
+#[allow(
+    clippy::redundant_pub_crate,
     reason = "Save controls are visible only to the parent application module."
 )]
 mod save;
@@ -61,14 +66,19 @@ mod port_settings;
 )]
 mod request_table;
 
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "Application paths are private to the binary."
+)]
+mod app_paths;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
 use http_proxy::{
     BodyLifecycle, BodyPreview, BodyRetention, EngineState, Exchange, FullLog, HeaderPreview,
-    HttpsInspection, Outcome, ProxyConfig, ProxyHandle, RecordId, SESSION_BODY_LIMIT_BYTES,
-    TunnelPreview,
+    HttpsInspection, Outcome, ProxyConfig, ProxyHandle, RecordId, TunnelPreview,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -129,6 +139,7 @@ fn init_tracing() {
 }
 
 struct InspectorApp {
+    replay: Option<replay_panel::ReplayPanel>,
     proxy: Option<ProxyHandle>,
     records: records::RecordList<Exchange>,
     selected: Option<RecordId>,
@@ -159,7 +170,7 @@ struct PortChoice {
 
 impl PortChoice {
     fn from_launch() -> Self {
-        let settings_directory = port_settings::default_settings_directory();
+        let settings_directory = app_paths::settings_directory(|name| std::env::var_os(name));
         let saved = settings_directory
             .as_deref()
             .and_then(port_settings::load_port);
@@ -202,13 +213,14 @@ impl InspectorApp {
             ),
         };
         let mut app = Self {
+            replay: None,
             proxy: None,
             records: records::RecordList::new(MAX_RECORDS),
             selected: None,
             filter_text: String::new(),
             record_filter: RecordFilter::All,
             https_inspection: false,
-            ca_directory: default_ca_directory(),
+            ca_directory: app_paths::ca_directory(|name| std::env::var_os(name)),
             ca_panel: ca_panel::CaPanel::default(),
             browsers: browser_panel::BrowserPanel::default(),
             error: None,
@@ -400,16 +412,16 @@ impl InspectorApp {
         {
             ui.colored_label(Color32::LIGHT_RED, error);
         }
-        if self
+        if let Some(log) = self
             .full_log
             .as_ref()
-            .is_some_and(FullLog::body_limit_reached)
+            .filter(|log| log.body_limit_reached())
         {
             ui.colored_label(
                 Color32::YELLOW,
                 format!(
-                    "The full-session log reached its {} MiB body limit. Later body bytes are omitted; headers and results are still logged.",
-                    SESSION_BODY_LIMIT_BYTES / (1_024 * 1_024)
+                    "The full-session log reached its {} body limit. Later body bytes are omitted; headers and results are still logged.",
+                    log.formatted_body_limit()
                 ),
             );
         }
@@ -461,6 +473,12 @@ impl InspectorApp {
             .filter(|record| record_matches(record, self.record_filter, &query))
             .collect();
         self.table.controls(ui);
+        if let Some(original) = self.table.replay.take() {
+            match replay_panel::ReplayPanel::new(original) {
+                Ok(panel) => self.replay = Some(panel),
+                Err(error) => self.error = Some(error),
+            }
+        }
         if let Some(selected) = self.table.show(ui, rows, self.selected, shortcuts_allowed) {
             self.selected = Some(selected);
         }
@@ -491,6 +509,25 @@ impl InspectorApp {
                 DetailTab::Headers => DetailTab::Body,
                 DetailTab::Body => DetailTab::Headers,
             };
+        }
+        if ui
+            .add_enabled(
+                record.source() != http_proxy::CaptureSource::Connect,
+                egui::Button::new("Edit and Resend"),
+            )
+            .clicked()
+        {
+            match replay_panel::ReplayPanel::new(record.clone()) {
+                Ok(panel) => self.replay = Some(panel),
+                Err(error) => self.error = Some(error),
+            }
+        }
+        if let Some(original) = record.replay_of()
+            && ui
+                .link(format!("Replay of #{} — show original", original.value()))
+                .clicked()
+        {
+            self.selected = Some(original);
         }
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.detail_tab, DetailTab::Headers, "Headers");
@@ -529,6 +566,16 @@ impl eframe::App for InspectorApp {
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
         self.receive_records();
         self.release_failed_proxy();
+        if let Some(panel) = self.replay.as_mut() {
+            let latest = self
+                .records
+                .iter()
+                .rev()
+                .find(|record| record.replay_of() == Some(panel.original_id()));
+            if !panel.show(ui.ctx(), self.proxy.as_ref(), latest) {
+                self.replay = None;
+            }
+        }
         ui.heading(http_proxy::APP_NAME);
         scope_help::show(ui);
         ui.separator();
@@ -855,17 +902,4 @@ fn copy_menu(ui: &mut egui::Ui, address: std::net::SocketAddr) {
             }
         }
     });
-}
-
-#[cfg(target_os = "macos")]
-fn default_ca_directory() -> Option<PathBuf> {
-    port_settings::default_settings_directory().map(|directory| directory.join("ca"))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn default_ca_directory() -> Option<PathBuf> {
-    std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
-        .map(|directory| directory.join("http-inspector/ca"))
 }
