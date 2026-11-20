@@ -10,14 +10,6 @@ pub use exchange::{
 };
 pub use tunnel::{TunnelPreview, TunnelSnapshot, TunnelState};
 
-const STREAMING: u8 = 0;
-const COMPLETE: u8 = 1;
-const INTERRUPTED: u8 = 2;
-const CANCELLED: u8 = 3;
-const PREFIX: u8 = 0;
-const TRUNCATED: u8 = 1;
-const OMITTED: u8 = 2;
-
 /// Stable identity of one captured exchange.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct RecordId(u64);
@@ -166,9 +158,9 @@ impl BodyPreview {
             inner: Arc::new(BodyPreviewInner {
                 prefix: Mutex::new(Vec::with_capacity(limit.min(INITIAL_PREVIEW_CAPACITY))),
                 observed_bytes: AtomicU64::new(0),
-                lifecycle: AtomicU8::new(STREAMING),
+                lifecycle: AtomicU8::new(BodyLifecycle::Streaming.to_u8()),
                 ended: OnceLock::new(),
-                retention: AtomicU8::new(PREFIX),
+                retention: AtomicU8::new(BodyRetention::Prefix.to_u8()),
                 limit,
                 budget,
             }),
@@ -186,13 +178,17 @@ impl BodyPreview {
                 .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                     Some(value.saturating_add(increment))
                 });
-        if self.inner.retention.load(Ordering::Acquire) == OMITTED {
+        if BodyRetention::from_u8(self.inner.retention.load(Ordering::Acquire))
+            == BodyRetention::Omitted
+        {
             return;
         }
 
         match self.inner.prefix.try_lock() {
             Ok(mut prefix) => {
-                if self.inner.retention.load(Ordering::Acquire) != PREFIX {
+                if BodyRetention::from_u8(self.inner.retention.load(Ordering::Acquire))
+                    != BodyRetention::Prefix
+                {
                     return;
                 }
                 let remaining = self.inner.limit.saturating_sub(prefix.len());
@@ -203,32 +199,36 @@ impl BodyPreview {
                 let (retained_data, _) = data.split_at(retained);
                 prefix.extend_from_slice(retained_data);
                 if retained < data.len() {
-                    self.inner.retention.store(TRUNCATED, Ordering::Release);
+                    self.inner
+                        .retention
+                        .store(BodyRetention::Truncated.to_u8(), Ordering::Release);
                 }
             }
             Err(TryLockError::WouldBlock | TryLockError::Poisoned(_)) => {
-                self.inner.retention.store(OMITTED, Ordering::Release);
+                self.inner
+                    .retention
+                    .store(BodyRetention::Omitted.to_u8(), Ordering::Release);
             }
         }
     }
 
     pub(crate) fn complete(&self) {
-        self.end(COMPLETE);
+        self.end(BodyLifecycle::Complete);
     }
 
     pub(crate) fn interrupt(&self) {
-        self.end(INTERRUPTED);
+        self.end(BodyLifecycle::Interrupted);
     }
 
     pub(crate) fn cancel(&self) {
-        self.end(CANCELLED);
+        self.end(BodyLifecycle::Cancelled);
     }
 
     /// Records the first end of the stream and when it happened.
-    fn end(&self, lifecycle: u8) {
+    fn end(&self, lifecycle: BodyLifecycle) {
         let ended = self.inner.lifecycle.compare_exchange(
-            STREAMING,
-            lifecycle,
+            BodyLifecycle::Streaming.to_u8(),
+            lifecycle.to_u8(),
             Ordering::AcqRel,
             Ordering::Relaxed,
         );
@@ -246,7 +246,7 @@ impl BodyPreview {
     /// Returns the stream lifecycle without copying the preview.
     #[must_use]
     pub fn lifecycle(&self) -> BodyLifecycle {
-        lifecycle_from(self.inner.lifecycle.load(Ordering::Acquire))
+        BodyLifecycle::from_u8(self.inner.lifecycle.load(Ordering::Acquire))
     }
 
     /// Returns when the stream ended, or `None` while it is streaming.
@@ -257,15 +257,16 @@ impl BodyPreview {
     /// Returns a coherent snapshot, or `None` when a writer holds the preview.
     #[must_use]
     pub fn snapshot(&self) -> Option<BodySnapshot> {
-        let retention = self.inner.retention.load(Ordering::Acquire);
-        if retention == OMITTED {
-            return Some(self.snapshot_with(Vec::new(), OMITTED));
+        let retention = BodyRetention::from_u8(self.inner.retention.load(Ordering::Acquire));
+        if retention == BodyRetention::Omitted {
+            return Some(self.snapshot_with(Vec::new(), BodyRetention::Omitted));
         }
 
         match self.inner.prefix.try_lock() {
             Ok(prefix) => {
-                let retention = self.inner.retention.load(Ordering::Acquire);
-                let bytes = if retention == OMITTED {
+                let retention =
+                    BodyRetention::from_u8(self.inner.retention.load(Ordering::Acquire));
+                let bytes = if retention == BodyRetention::Omitted {
                     Vec::new()
                 } else {
                     prefix.clone()
@@ -273,30 +274,19 @@ impl BodyPreview {
                 Some(self.snapshot_with(bytes, retention))
             }
             Err(TryLockError::WouldBlock) => None,
-            Err(TryLockError::Poisoned(_)) => Some(self.snapshot_with(Vec::new(), OMITTED)),
+            Err(TryLockError::Poisoned(_)) => {
+                Some(self.snapshot_with(Vec::new(), BodyRetention::Omitted))
+            }
         }
     }
 
-    fn snapshot_with(&self, bytes: Vec<u8>, retention: u8) -> BodySnapshot {
+    fn snapshot_with(&self, bytes: Vec<u8>, retention: BodyRetention) -> BodySnapshot {
         BodySnapshot {
             bytes,
             observed_bytes: self.inner.observed_bytes.load(Ordering::Acquire),
             lifecycle: self.lifecycle(),
-            retention: match retention {
-                TRUNCATED => BodyRetention::Truncated,
-                OMITTED => BodyRetention::Omitted,
-                _ => BodyRetention::Prefix,
-            },
+            retention,
         }
-    }
-}
-
-const fn lifecycle_from(value: u8) -> BodyLifecycle {
-    match value {
-        COMPLETE => BodyLifecycle::Complete,
-        INTERRUPTED => BodyLifecycle::Interrupted,
-        CANCELLED => BodyLifecycle::Cancelled,
-        _ => BodyLifecycle::Streaming,
     }
 }
 
@@ -337,28 +327,59 @@ impl BodySnapshot {
 
 /// Lifecycle of the forwarded body stream.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
 pub enum BodyLifecycle {
     /// More frames may arrive.
-    Streaming,
+    Streaming = 0,
     /// End of stream was observed.
-    Complete,
+    Complete = 1,
     /// The sending side failed before the end, for example an upstream
     /// server that closed the connection early.
-    Interrupted,
+    Interrupted = 2,
     /// The receiving side stopped reading before the end, for example a
     /// client that disconnected or a proxy that stopped.
-    Cancelled,
+    Cancelled = 3,
+}
+
+impl BodyLifecycle {
+    const fn to_u8(self) -> u8 {
+        self as u8
+    }
+
+    const fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Complete,
+            2 => Self::Interrupted,
+            3 => Self::Cancelled,
+            _ => Self::Streaming,
+        }
+    }
 }
 
 /// Retention result for a bounded body preview.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
 pub enum BodyRetention {
     /// All observed bytes fit in the preview.
-    Prefix,
+    Prefix = 0,
     /// More bytes were observed than retained.
-    Truncated,
+    Truncated = 1,
     /// Capture was skipped to avoid blocking forwarding.
-    Omitted,
+    Omitted = 2,
+}
+
+impl BodyRetention {
+    const fn to_u8(self) -> u8 {
+        self as u8
+    }
+
+    const fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Truncated,
+            2 => Self::Omitted,
+            _ => Self::Prefix,
+        }
+    }
 }
 
 /// Stage at which a proxied request failed.
@@ -387,6 +408,31 @@ pub enum FailureStage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn body_lifecycle_round_trips_through_u8() {
+        for (encoded, state) in [
+            (0, BodyLifecycle::Streaming),
+            (1, BodyLifecycle::Complete),
+            (2, BodyLifecycle::Interrupted),
+            (3, BodyLifecycle::Cancelled),
+        ] {
+            assert_eq!(state.to_u8(), encoded);
+            assert_eq!(BodyLifecycle::from_u8(state.to_u8()), state);
+        }
+    }
+
+    #[test]
+    fn body_retention_round_trips_through_u8() {
+        for (encoded, state) in [
+            (0, BodyRetention::Prefix),
+            (1, BodyRetention::Truncated),
+            (2, BodyRetention::Omitted),
+        ] {
+            assert_eq!(state.to_u8(), encoded);
+            assert_eq!(BodyRetention::from_u8(state.to_u8()), state);
+        }
+    }
 
     #[test]
     fn budgeted_previews_share_and_return_memory() {
