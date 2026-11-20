@@ -48,7 +48,7 @@ impl Field {
         match self {
             Self::Method => Column::initial(56.0).at_least(40.0),
             Self::Target => Column::initial(170.0).at_least(60.0),
-            Self::Status => Column::initial(64.0).at_least(40.0),
+            Self::Status => Column::initial(130.0).at_least(64.0),
             Self::Type => Column::initial(44.0).at_least(32.0),
             Self::Size => Column::initial(68.0).at_least(40.0),
             Self::Duration => Column::remainder().at_least(56.0),
@@ -186,14 +186,7 @@ impl RequestTable {
         });
     }
 
-    /// Shows `rows` (oldest first) and returns a newly selected record.
-    pub(crate) fn show(
-        &mut self,
-        ui: &mut egui::Ui,
-        mut rows: Vec<&Exchange>,
-        mut selected: Option<RecordId>,
-        shortcuts_allowed: bool,
-    ) -> Option<RecordId> {
+    fn sort_rows(&self, rows: &mut [&Exchange]) {
         if let Some(field) = self.sort.field {
             rows.sort_by(|left, right| {
                 let order = field.compare(left, right);
@@ -204,6 +197,17 @@ impl RequestTable {
                 }
             });
         }
+    }
+
+    /// Shows `rows` (oldest first) and returns a newly selected record.
+    pub(crate) fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        mut rows: Vec<&Exchange>,
+        mut selected: Option<RecordId>,
+        shortcuts_allowed: bool,
+    ) -> Option<RecordId> {
+        self.sort_rows(&mut rows);
         let mut changed = None;
         let mut scroll_to = None;
         if shortcuts_allowed || self.keyboard_row.is_some() {
@@ -261,7 +265,13 @@ impl RequestTable {
                         return;
                     };
                     row.set_selected(selected == Some(record.id()));
-                    show_cells(&mut row, record);
+                    let selected_row = selected == Some(record.id());
+                    let focus_row = scroll_to == Some(row.index());
+                    if show_cells(&mut row, record, selected_row, focus_row) {
+                        self.follow_newest = false;
+                        self.keyboard_row = None;
+                        changed = Some(record.id());
+                    }
                     if row.response().clicked() {
                         self.keyboard_row = None;
                         changed = Some(record.id());
@@ -280,9 +290,39 @@ impl RequestTable {
     }
 }
 
-fn show_cells(row: &mut egui_extras::TableRow<'_, '_>, record: &Exchange) {
+fn show_cells(
+    row: &mut egui_extras::TableRow<'_, '_>,
+    record: &Exchange,
+    selected: bool,
+    focus: bool,
+) -> bool {
+    let mut clicked = false;
     row.col(|ui| {
-        ui.monospace(record.request().method().as_str());
+        ui.push_id(record.id(), |ui| {
+            let response = ui.selectable_label(selected, record.request().method().as_str());
+            let status_text = outcome_text(record.outcome(), &crate::theme::Palette::of(ui)).0;
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(
+                    egui::Role::ListBoxOption,
+                    ui.is_enabled(),
+                    selected,
+                    format!(
+                        "{} {} · {}",
+                        record.request().method(),
+                        record.request().target(),
+                        status_text,
+                    ),
+                )
+            });
+            ui.ctx().accesskit_node_builder(response.id, |node| {
+                node.clear_toggled();
+                node.set_selected(selected);
+            });
+            if focus && !response.has_focus() {
+                response.request_focus();
+            }
+            clicked = response.clicked();
+        });
     });
     row.col(|ui| {
         ui.add(egui::Label::new(RichText::new(target_text(record)).monospace()).truncate())
@@ -304,6 +344,7 @@ fn show_cells(row: &mut egui_extras::TableRow<'_, '_>, record: &Exchange) {
     row.col(|ui| {
         ui.monospace(duration_text(record));
     });
+    clicked
 }
 
 /// Target without the `http://` or `https://` prefix.
@@ -402,7 +443,14 @@ pub(crate) fn outcome_text(
             } else {
                 palette.error
             };
-            (status.as_str().to_owned(), color)
+            (
+                format!(
+                    "{} {}",
+                    status.as_str(),
+                    status.canonical_reason().unwrap_or("Unknown status")
+                ),
+                color,
+            )
         }
         Outcome::Tunnel(tunnel) => tunnel_summary(tunnel, palette),
         Outcome::InspectionEstablished => ("HTTPS".to_owned(), palette.info),
@@ -474,6 +522,7 @@ mod tests {
                 .map(Exchange::id)
         };
         let ctx = egui::Context::default();
+        ctx.enable_accesskit();
         let mut table = RequestTable::new();
         table.sort = table.sort.toggled(Field::Target);
         let mut selected = id_for("/hidden");
@@ -521,8 +570,29 @@ mod tests {
             output.textures_delta.clear();
             assert_eq!(selected, Some(expected));
             assert!(!table.follow_newest);
+            assert_accessible_requests(&output)?;
         }
         proxy.stop()?;
+        Ok(())
+    }
+
+    fn assert_accessible_requests(
+        output: &egui::FullOutput,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tree = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .ok_or("missing accessibility tree")?;
+        assert!(tree.nodes.iter().any(|(_, node)| {
+            node.role() == egui::Role::ListBoxOption
+                && node
+                    .label()
+                    .is_some_and(|label| label.contains("GET http://"))
+        }));
+        assert!(tree.nodes.iter().any(|(_, node)| {
+            node.role() == egui::Role::ListBoxOption && node.is_selected() == Some(true)
+        }));
         Ok(())
     }
 
