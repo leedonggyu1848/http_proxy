@@ -830,9 +830,14 @@ async fn forward_https(
         .path_and_query()
         .map_or_else(|| Uri::from_static("/"), |value| value.clone().into());
     let connect_started = Instant::now();
-    let stream = match timeout(TLS_TIMEOUT, inspector.connect(destination)).await {
+    let stream = match timeout(
+        engine.connect_timeout,
+        TcpStream::connect(destination.socket_target()),
+    )
+    .await
+    {
         Ok(Ok(stream)) => stream,
-        Ok(Err(UpstreamTlsError::Connect(error))) => {
+        Ok(Err(error)) => {
             return failed_response(
                 capture,
                 FailureStage::Connect,
@@ -840,6 +845,10 @@ async fn forward_https(
                 &error.to_string(),
             );
         }
+        Err(_) => return UpstreamFailure::connect_timeout(engine).respond(capture),
+    };
+    let stream = match timeout(TLS_TIMEOUT, inspector.handshake(destination, stream)).await {
+        Ok(Ok(stream)) => stream,
         Ok(Err(UpstreamTlsError::Handshake(error))) => {
             return failed_response(
                 capture,
@@ -853,7 +862,7 @@ async fn forward_https(
                 capture,
                 FailureStage::UpstreamTls,
                 StatusCode::GATEWAY_TIMEOUT,
-                "upstream TLS connection timed out",
+                "upstream TLS handshake timed out",
             );
         }
     };
