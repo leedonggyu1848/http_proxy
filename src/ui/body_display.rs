@@ -1,6 +1,7 @@
 //! Decoded, formatted, and highlighted body text for the detail panel,
 //! rebuilt only when the shown body or the way it is shown changes.
 
+use crate::ui::body_format::json_tree::Tree;
 use crate::ui::body_format::xml::tree::XmlTree;
 use crate::ui::body_format::{self, BodyFormat, ViewMode, highlight};
 use crate::ui::body_view::{self, BodyText};
@@ -8,6 +9,7 @@ use crate::ui::theme::{Palette, Theme};
 use crate::ui::xml_tree_view::XmlTreeView;
 use eframe::egui::{self, Galley, text::LayoutJob};
 use std::sync::Arc;
+use std::{cell::RefCell, rc::Rc};
 
 /// Height of the numbered line view before it scrolls.
 const LINE_VIEW_HEIGHT: f32 = 480.0;
@@ -48,7 +50,7 @@ enum Content {
     Unavailable(String),
     Tree {
         notice: Option<String>,
-        view: XmlTreeView,
+        view: TreeView,
     },
     Ready {
         format: BodyFormat,
@@ -64,12 +66,72 @@ enum Content {
     },
 }
 
+enum TreeView {
+    Xml(XmlTreeView),
+    Json(Rc<RefCell<Tree>>),
+}
+
+impl TreeView {
+    fn show(&mut self, ui: &mut egui::Ui, key: &Key) {
+        match self {
+            Self::Json(tree) => {
+                if !key.complete {
+                    ui.weak("Incomplete body capture; tree contains only retained data.");
+                }
+                ui.push_id(("json-tree", key.record, key.side), |ui| {
+                    tree.borrow_mut().show(ui);
+                });
+            }
+            Self::Xml(view) => {
+                ui.weak(format!(
+                    "Format: {} · {}",
+                    BodyFormat::Xml.label(),
+                    key.mode.label()
+                ));
+                if let Some(incomplete) = view.incomplete() {
+                    ui.colored_label(Palette::of(ui).warning, incomplete);
+                }
+                view.show(ui, ("xml-tree", key.record, key.side));
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct JsonCache {
+    entry: Option<JsonEntry>,
+}
+
+struct JsonEntry {
+    key: (u64, usize, bool),
+    tree: Result<Rc<RefCell<Tree>>, String>,
+}
+
+impl JsonCache {
+    fn get(&mut self, source: &BodySource<'_>, text: &str) -> Result<Rc<RefCell<Tree>>, String> {
+        let key = (source.record, source.bytes.len(), source.complete);
+        if self.entry.as_ref().is_none_or(|entry| entry.key != key) {
+            self.entry = Some(JsonEntry {
+                key,
+                tree: Tree::parse(text).map(|tree| Rc::new(RefCell::new(tree))),
+            });
+        }
+        self.entry
+            .as_ref()
+            .ok_or("missing JSON cache entry")?
+            .tree
+            .clone()
+    }
+}
+
 /// Highlighted text of the request and response bodies last shown.
 #[derive(Default)]
 pub(in crate::ui) struct BodyViewCache {
     request: Option<(Key, Content)>,
     response: Option<(Key, Content)>,
     builds: u64,
+    request_json: JsonCache,
+    response_json: JsonCache,
 }
 
 impl BodyViewCache {
@@ -90,16 +152,16 @@ impl BodyViewCache {
             theme: ui.ctx().theme(),
             font: egui::TextStyle::Monospace.resolve(ui.style()),
         };
-        let slot = match source.side {
-            BodySide::Request => &mut self.request,
-            BodySide::Response => &mut self.response,
+        let (slot, json) = match source.side {
+            BodySide::Request => (&mut self.request, &mut self.request_json),
+            BodySide::Response => (&mut self.response, &mut self.response_json),
         };
         if slot.as_ref().is_none_or(|(cached, _)| *cached != key) {
             self.builds += 1;
             // Use the keyed theme's style: after a theme switch this frame's
             // style still belongs to the previous theme.
             let text_color = ui.ctx().style_of(key.theme).visuals.text_color();
-            let content = build(source, &key, text_color);
+            let content = build(source, &key, text_color, json);
             *slot = Some((key, content));
         }
         if let Some((key, content)) = slot {
@@ -113,7 +175,12 @@ impl BodyViewCache {
     }
 }
 
-fn build(source: &BodySource<'_>, key: &Key, text_color: egui::Color32) -> Content {
+fn build(
+    source: &BodySource<'_>,
+    key: &Key,
+    text_color: egui::Color32,
+    json: &mut JsonCache,
+) -> Content {
     let (text, notice) = match body_view::decode(source.bytes, source.encodings, source.complete) {
         BodyText::Ready { text, notice } => (text, notice),
         BodyText::Unavailable(message) => return Content::Unavailable(message),
@@ -126,7 +193,23 @@ fn build(source: &BodySource<'_>, key: &Key, text_color: egui::Color32) -> Conte
             match XmlTree::build(&text) {
                 Ok(tree) => {
                     let view = XmlTreeView::new(tree, &palette, text_color, &key.font);
-                    return Content::Tree { notice, view };
+                    return Content::Tree {
+                        notice,
+                        view: TreeView::Xml(view),
+                    };
+                }
+                Err(reason) => {
+                    tree_fallback =
+                        Some(format!("Showing Pretty: could not read a tree: {reason}."));
+                }
+            }
+        } else if format == BodyFormat::Json {
+            match json.get(source, &text) {
+                Ok(tree) => {
+                    return Content::Tree {
+                        notice,
+                        view: TreeView::Json(tree),
+                    };
                 }
                 Err(reason) => {
                     tree_fallback =
@@ -169,18 +252,10 @@ fn render(ui: &mut egui::Ui, content: &mut Content, key: &Key) {
             return;
         }
         Content::Tree { notice, view } => {
-            ui.weak(format!(
-                "Format: {} · {}",
-                BodyFormat::Xml.label(),
-                key.mode.label()
-            ));
             if let Some(notice) = notice {
                 ui.weak(notice.as_str());
             }
-            if let Some(incomplete) = view.incomplete() {
-                ui.colored_label(Palette::of(ui).warning, incomplete);
-            }
-            view.show(ui, ("xml-tree", key.record, key.side));
+            view.show(ui, key);
             return;
         }
         Content::Ready {
@@ -443,6 +518,46 @@ mod tests {
     }
 
     #[test]
+    fn json_tree_uses_shared_content_path_and_keeps_its_parse_cache() -> Result<(), String> {
+        let ctx = egui::Context::default();
+        let mut cache = BodyViewCache::default();
+        let body = source(1, br#"{"b":1,"a":2,"b":1e2}"#);
+        run(&mut cache, &ctx, &body, ViewMode::Tree);
+        let first = match &cache.response {
+            Some((
+                _,
+                Content::Tree {
+                    view: TreeView::Json(tree),
+                    ..
+                },
+            )) => Rc::clone(tree),
+            _ => return Err("JSON did not use the shared Tree content path".into()),
+        };
+        run(&mut cache, &ctx, &body, ViewMode::Raw);
+        ctx.set_theme(Theme::Light);
+        run(&mut cache, &ctx, &body, ViewMode::Tree);
+        assert!(
+            matches!(&cache.response, Some((_, Content::Tree { view: TreeView::Json(tree), .. })) if Rc::ptr_eq(&first, tree))
+        );
+        run(&mut cache, &ctx, &source(2, body.bytes), ViewMode::Tree);
+        assert!(
+            matches!(&cache.response, Some((_, Content::Tree { view: TreeView::Json(tree), .. })) if !Rc::ptr_eq(&first, tree))
+        );
+        run(&mut cache, &ctx, &source(3, b"[1,"), ViewMode::Tree);
+        assert!(matches!(
+            &cache.response,
+            Some((
+                _,
+                Content::Ready {
+                    fallback: Some(_),
+                    ..
+                }
+            ))
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn tree_mode_builds_an_xml_tree_and_falls_back_for_other_formats() {
         let ctx = egui::Context::default();
         let mut cache = BodyViewCache::default();
@@ -452,7 +567,11 @@ mod tests {
         };
         run(&mut cache, &ctx, &xml, ViewMode::Tree);
         assert!(matches!(&cache.response, Some((_, Content::Tree { .. }))));
-        run(&mut cache, &ctx, &source(2, br#"{"a":1}"#), ViewMode::Tree);
+        let text = BodySource {
+            content_type: Some("text/plain"),
+            ..source(2, b"plain text")
+        };
+        run(&mut cache, &ctx, &text, ViewMode::Tree);
         let fallback = match &cache.response {
             Some((_, Content::Ready { fallback, job, .. })) => {
                 Some((fallback.clone(), job.text.clone()))
@@ -462,8 +581,8 @@ mod tests {
         assert_eq!(
             fallback,
             Some((
-                Some("Tree view is not available for JSON; showing Pretty.".to_owned()),
-                "{\n  \"a\": 1\n}".to_owned()
+                Some("Tree view is not available for Text; showing Pretty.".to_owned()),
+                "plain text".to_owned()
             ))
         );
     }
