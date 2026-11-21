@@ -14,6 +14,7 @@ mod replay_panel;
 mod request_table;
 mod save;
 mod scope_help;
+mod theme;
 mod toolbar;
 
 use self::detail_tabs::DetailTab;
@@ -61,6 +62,7 @@ fn init_tracing() {
 }
 
 struct InspectorApp {
+    theme: theme::ThemeSettings,
     replay: Option<replay_panel::ReplayPanel>,
     proxy: Option<ProxyHandle>,
     records: records::RecordList<Exchange>,
@@ -84,6 +86,7 @@ struct InspectorApp {
 
 impl InspectorApp {
     fn new(context: egui::Context) -> Self {
+        let theme = theme::ThemeSettings::new(&context);
         let (full_log, log_init_error) = match FullLog::new() {
             Ok(log) => (Some(log), None),
             Err(error) => (
@@ -110,6 +113,7 @@ impl InspectorApp {
             table: request_table::RequestTable::new(),
             detail_tab: DetailTab::Headers,
             image: image_view::ImagePanel::default(),
+            theme,
             context,
         };
         app.start_proxy();
@@ -234,6 +238,7 @@ impl eframe::App for InspectorApp {
         ui.heading(http_proxy::APP_NAME);
         scope_help::show(ui, self.proxy.as_ref().map(ProxyHandle::local_addr));
         ui.separator();
+        self.theme.show(ui);
         self.toolbar(ui);
         ui.separator();
         self.filters(ui);

@@ -357,7 +357,7 @@ fn show_cells(
         .on_hover_text(record.request().target());
     });
     row.col(|ui| {
-        let (text, color) = outcome_text(record.outcome());
+        let (text, color) = outcome_text(record.outcome(), &crate::ui::theme::Palette::of(ui));
         let status = ui.add(egui::Label::new(RichText::new(text).color(color)).truncate());
         if matches!(record.outcome(), Outcome::Tunnel(_)) {
             status.on_hover_text(super::scope_help::TUNNEL_NOTE);

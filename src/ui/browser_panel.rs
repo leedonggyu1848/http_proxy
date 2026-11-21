@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
 
-use eframe::egui::{self, Color32};
+use eframe::egui;
 use http_proxy::{Browser, BrowserEvent, BrowserSession};
 
 pub(in crate::ui) struct BrowserPanel {
@@ -99,7 +99,7 @@ impl BrowserPanel {
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
         if let Some(error) = &self.error {
-            ui.colored_label(Color32::LIGHT_RED, error);
+            ui.colored_label(crate::ui::theme::Palette::of(ui).error, error);
         }
         if decrypt
             && self

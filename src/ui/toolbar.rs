@@ -1,8 +1,9 @@
 //! Toolbar controls, launch port choice, and clipboard actions.
 
+use crate::ui::theme::Palette;
 use crate::ui::{InspectorApp, MAX_RECORDS};
 use crate::ui::{app_paths, port_settings};
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 use http_proxy::{FullLog, ProxyHandle};
 use std::path::PathBuf;
 
@@ -53,14 +54,14 @@ impl InspectorApp {
         ui.horizontal(|ui| {
             if let Some(proxy) = self.proxy.as_ref() {
                 let address = proxy.local_addr();
-                ui.label(RichText::new("Running").color(Color32::LIGHT_GREEN));
+                ui.label(RichText::new("Running").color(Palette::of(ui).success));
                 ui.monospace(address.to_string());
                 copy_menu(ui, address);
                 if ui.button("Stop").clicked() {
                     self.stop_proxy();
                 }
             } else {
-                ui.label(RichText::new("Stopped").color(Color32::LIGHT_RED));
+                ui.label(RichText::new("Stopped").color(Palette::of(ui).error));
                 ui.label("Port");
                 let edited = ui
                     .add(egui::TextEdit::singleline(&mut self.port.text).desired_width(56.0))
@@ -80,7 +81,7 @@ impl InspectorApp {
             ui.label(format!("{} requests", self.records.len()));
             let dropped = self.records.dropped(self.engine_dropped());
             if dropped > 0 {
-                ui.colored_label(Color32::LIGHT_RED, format!("{dropped} records dropped"))
+                ui.colored_label(Palette::of(ui).error, format!("{dropped} records dropped"))
                     .on_hover_text(
                         "The capture queue was full, so these exchanges were forwarded but not shown.",
                     );
@@ -88,7 +89,7 @@ impl InspectorApp {
             let evicted = self.records.evicted();
             if evicted > 0 {
                 ui.colored_label(
-                    Color32::YELLOW,
+                    Palette::of(ui).warning,
                     format!("{evicted} older records removed"),
                 )
                 .on_hover_text(format!(
@@ -125,17 +126,17 @@ impl InspectorApp {
     /// Shows launch warnings, errors, and full-session log notices.
     fn status_messages(&self, ui: &mut egui::Ui) {
         if let Some(warning) = self.port.launch_warning.as_ref() {
-            ui.colored_label(Color32::YELLOW, warning);
+            ui.colored_label(Palette::of(ui).warning, warning);
         }
         if let Some(error) = self.error.as_ref() {
-            ui.colored_label(Color32::LIGHT_RED, error);
+            ui.colored_label(Palette::of(ui).error, error);
         }
         if let Some(error) = self
             .log_init_error
             .clone()
             .or_else(|| self.full_log.as_ref().and_then(FullLog::error))
         {
-            ui.colored_label(Color32::LIGHT_RED, error);
+            ui.colored_label(Palette::of(ui).error, error);
         }
         if let Some(log) = self
             .full_log
@@ -143,7 +144,7 @@ impl InspectorApp {
             .filter(|log| log.body_limit_reached())
         {
             ui.colored_label(
-                Color32::YELLOW,
+                Palette::of(ui).warning,
                 format!(
                     "The full-session log reached its {} body limit. Later body bytes are omitted; headers and results are still logged.",
                     log.formatted_body_limit()
@@ -167,7 +168,7 @@ impl InspectorApp {
         if self.https_inspection {
             self.ca_panel.show(ui, self.ca_directory.as_deref());
             ui.colored_label(
-                Color32::YELLOW,
+                Palette::of(ui).warning,
                 "Only enable inspection for traffic that you are authorized to inspect.",
             );
         }

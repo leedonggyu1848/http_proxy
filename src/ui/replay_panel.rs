@@ -1,5 +1,5 @@
 //! Manual replay editor. Sensitive inputs live only as long as the editor.
-use eframe::egui::{self, Color32};
+use eframe::egui;
 use http_proxy::{Exchange, ProxyHandle, RecordId, ReplayDraft, ReplayField, ReplayTask};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -141,7 +141,7 @@ impl ReplayPanel {
                     ui.label("Valid JSON");
                 }
                 Some(error) => {
-                    ui.colored_label(Color32::YELLOW, error);
+                    ui.colored_label(crate::ui::theme::Palette::of(ui).warning, error);
                 }
             }
         }
@@ -190,7 +190,7 @@ impl ReplayPanel {
             }
         });
         if self.draft.body_missing {
-            ui.colored_label(Color32::YELLOW, "Capture is incomplete. Load the full body; omitted headers require another complete capture.");
+            ui.colored_label(crate::ui::theme::Palette::of(ui).warning, "Capture is incomplete. Load the full body; omitted headers require another complete capture.");
         }
     }
     fn send_ui(&mut self, ui: &mut egui::Ui, proxy: Option<&ProxyHandle>) {
@@ -246,7 +246,7 @@ impl ReplayPanel {
             ui.checkbox(&mut self.compare, "Compare with original");
         });
         if let Some(error) = &self.error {
-            ui.colored_label(Color32::LIGHT_RED, error);
+            ui.colored_label(crate::ui::theme::Palette::of(ui).error, error);
         }
     }
     fn comparison_ui(&self, ui: &mut egui::Ui, latest: Option<&Exchange>) {
@@ -270,11 +270,7 @@ impl ReplayPanel {
                             let changed = original_text.lines().nth(index) != Some(line);
                             column.colored_label(
                                 if changed {
-                                    if column.visuals().dark_mode {
-                                        Color32::LIGHT_YELLOW
-                                    } else {
-                                        Color32::from_rgb(140, 80, 0)
-                                    }
+                                    crate::ui::theme::Palette::of(column).warning
                                 } else {
                                     column.visuals().text_color()
                                 },

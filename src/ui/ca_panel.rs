@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::time::Duration;
 
-use eframe::egui::{self, Color32};
+use eframe::egui;
 use http_proxy::{CaInfo, CaTrustStatus, CaTrustStore};
 
 #[derive(Default)]
@@ -42,7 +42,7 @@ impl CaPanel {
         self.receive();
         let Some(directory) = directory else {
             ui.colored_label(
-                Color32::LIGHT_RED,
+                crate::ui::theme::Palette::of(ui).error,
                 "CA storage is unavailable; check HOME and platform storage settings.",
             );
             return;
@@ -72,7 +72,7 @@ impl CaPanel {
             });
         }
         if let Some(error) = &self.error {
-            ui.colored_label(Color32::LIGHT_RED, error);
+            ui.colored_label(crate::ui::theme::Palette::of(ui).error, error);
         }
         if let Some(notice) = self.notice {
             ui.label(notice);

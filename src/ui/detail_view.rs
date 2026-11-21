@@ -2,8 +2,9 @@
 
 use crate::ui::InspectorApp;
 use crate::ui::detail_tabs::{self, DetailTab};
+use crate::ui::theme::Palette;
 use crate::ui::{body_view, image_view, outcome_view, replay_panel, scope_help};
-use eframe::egui::{self, Color32};
+use eframe::egui;
 use http_proxy::{
     BodyLifecycle, BodyPreview, BodyRetention, Exchange, HeaderPreview, Outcome, RecordId,
     TunnelPreview,
@@ -82,7 +83,7 @@ fn render_headers(ui: &mut egui::Ui, id: &str, headers: &HeaderPreview) {
         ui.weak("No headers captured.");
     }
     if headers.omitted() {
-        ui.colored_label(Color32::YELLOW, "Additional headers were omitted.");
+        ui.colored_label(Palette::of(ui).warning, "Additional headers were omitted.");
     }
 }
 
@@ -114,7 +115,7 @@ fn render_body(
     ));
     if snapshot.retention() == BodyRetention::Omitted {
         ui.colored_label(
-            Color32::YELLOW,
+            Palette::of(ui).warning,
             "Preview was omitted to keep forwarding nonblocking.",
         );
         return;
@@ -143,7 +144,7 @@ fn render_body(
             text
         }
         body_view::BodyText::Unavailable(message) => {
-            ui.colored_label(Color32::YELLOW, message);
+            ui.colored_label(Palette::of(ui).warning, message);
             return;
         }
     };
@@ -205,7 +206,7 @@ fn render_outcome(
             render_tunnel(ui, tunnel);
         }
         outcome => {
-            let (text, color) = outcome_view::detail_text(outcome);
+            let (text, color) = outcome_view::detail_text(outcome, &Palette::of(ui));
             if outcome.is_in_flight() {
                 ui.weak(text);
             } else if matches!(outcome, Outcome::InspectionEstablished) {

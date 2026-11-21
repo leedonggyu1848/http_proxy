@@ -3,6 +3,8 @@
 use eframe::egui::Color32;
 use http_proxy::{Outcome, TunnelPreview, TunnelState};
 
+use crate::ui::theme::Palette;
+
 /// Orders responses by status code, then every other outcome after them.
 pub(in crate::ui) const fn status_rank(outcome: &Outcome) -> (u8, u16) {
     match outcome {
@@ -17,30 +19,43 @@ pub(in crate::ui) const fn status_rank(outcome: &Outcome) -> (u8, u16) {
 }
 
 /// Short status text and color for one outcome.
-pub(in crate::ui) fn outcome_text(outcome: &Outcome) -> (String, Color32) {
+pub(in crate::ui) fn outcome_text(outcome: &Outcome, palette: &Palette) -> (String, Color32) {
+    (short_text(outcome), outcome_color(outcome, palette))
+}
+
+/// Short status text for one outcome, independent of the theme.
+fn short_text(outcome: &Outcome) -> String {
     match outcome {
-        Outcome::InFlight => ("Pending".to_owned(), Color32::GRAY),
+        Outcome::InFlight => "Pending".to_owned(),
         Outcome::Response(response) => {
             let status = response.status();
-            let color = if status.as_u16() < 400 {
-                Color32::LIGHT_GREEN
-            } else {
-                Color32::LIGHT_RED
-            };
-            (
-                format!(
-                    "{} {}",
-                    status.as_str(),
-                    status.canonical_reason().unwrap_or("Unknown status")
-                ),
-                color,
+            format!(
+                "{} {}",
+                status.as_str(),
+                status.canonical_reason().unwrap_or("Unknown status")
             )
         }
         Outcome::Tunnel(tunnel) => tunnel_summary(tunnel),
-        Outcome::InspectionEstablished => ("HTTPS".to_owned(), Color32::LIGHT_BLUE),
-        Outcome::Failed { stage, message } => (format!("{stage}: {message}"), Color32::LIGHT_RED),
-        Outcome::Cancelled => ("Cancelled by client".to_owned(), Color32::YELLOW),
-        Outcome::Incomplete => ("Incomplete (proxy stopped)".to_owned(), Color32::YELLOW),
+        Outcome::InspectionEstablished => "HTTPS".to_owned(),
+        Outcome::Failed { stage, message } => format!("{stage}: {message}"),
+        Outcome::Cancelled => "Cancelled by client".to_owned(),
+        Outcome::Incomplete => "Incomplete (proxy stopped)".to_owned(),
+    }
+}
+
+/// Status color for one outcome in the current theme's palette.
+fn outcome_color(outcome: &Outcome, palette: &Palette) -> Color32 {
+    match outcome {
+        Outcome::InFlight => palette.muted,
+        Outcome::Response(response) if response.status().as_u16() < 400 => palette.success,
+        Outcome::Response(_) | Outcome::Failed { .. } => palette.error,
+        Outcome::Tunnel(tunnel) => match tunnel.snapshot().state() {
+            TunnelState::Open | TunnelState::Closed => palette.info,
+            TunnelState::Failed { .. } => palette.error,
+            TunnelState::Incomplete => palette.warning,
+        },
+        Outcome::InspectionEstablished => palette.info,
+        Outcome::Cancelled | Outcome::Incomplete => palette.warning,
     }
 }
 
@@ -60,7 +75,7 @@ pub(in crate::ui) const fn status_class(code: u16) -> &'static str {
 /// Status text with the response class appended, for tooltips and screen
 /// readers. Other outcomes already name their state in the text.
 pub(in crate::ui) fn outcome_summary(outcome: &Outcome) -> String {
-    let (text, _) = outcome_text(outcome);
+    let text = short_text(outcome);
     match outcome {
         Outcome::Response(response) => {
             format!("{text} ({})", status_class(response.status().as_u16()))
@@ -69,14 +84,12 @@ pub(in crate::ui) fn outcome_summary(outcome: &Outcome) -> String {
     }
 }
 
-fn tunnel_summary(tunnel: &TunnelPreview) -> (String, Color32) {
+fn tunnel_summary(tunnel: &TunnelPreview) -> String {
     match tunnel.snapshot().state() {
-        TunnelState::Open => ("Tunnel · open".to_owned(), Color32::LIGHT_BLUE),
-        TunnelState::Closed => ("Tunnel · closed".to_owned(), Color32::LIGHT_BLUE),
-        TunnelState::Failed { stage, .. } => {
-            (format!("Tunnel · failed ({stage})"), Color32::LIGHT_RED)
-        }
-        TunnelState::Incomplete => ("Tunnel · incomplete".to_owned(), Color32::YELLOW),
+        TunnelState::Open => "Tunnel · open".to_owned(),
+        TunnelState::Closed => "Tunnel · closed".to_owned(),
+        TunnelState::Failed { stage, .. } => format!("Tunnel · failed ({stage})"),
+        TunnelState::Incomplete => "Tunnel · incomplete".to_owned(),
     }
 }
 
@@ -111,15 +124,15 @@ const fn outcome_label(outcome: &Outcome) -> &'static str {
     }
 }
 
-pub(in crate::ui) fn detail_text(outcome: &Outcome) -> (String, Color32) {
+pub(in crate::ui) fn detail_text(outcome: &Outcome, palette: &Palette) -> (String, Color32) {
     let text = match outcome {
         Outcome::InFlight => "Waiting for the upstream server.",
         Outcome::InspectionEstablished => "HTTPS inspection session established.",
         Outcome::Cancelled => "The client closed the connection before a response arrived.",
         Outcome::Incomplete => "The proxy stopped before a response arrived.",
-        _ => return outcome_text(outcome),
+        _ => return outcome_text(outcome, palette),
     };
-    (text.to_owned(), outcome_text(outcome).1)
+    (text.to_owned(), outcome_text(outcome, palette).1)
 }
 
 pub(in crate::ui) const fn timing_label(outcome: &Outcome) -> &'static str {
@@ -173,8 +186,17 @@ mod tests {
             stage: FailureStage::UpstreamTls,
             message: "certificate rejected".to_owned(),
         };
-        assert_eq!(outcome_text(&outcome), detail_text(&outcome));
-        assert_eq!(outcome_text(&outcome).1, Color32::LIGHT_RED);
+        for theme in [
+            crate::ui::theme::Theme::Light,
+            crate::ui::theme::Theme::Dark,
+        ] {
+            let palette = Palette::for_theme(theme);
+            assert_eq!(
+                outcome_text(&outcome, &palette),
+                detail_text(&outcome, &palette)
+            );
+            assert_eq!(outcome_text(&outcome, &palette).1, palette.error);
+        }
         assert!(outcome_matches_query(&outcome, "upstream tls handshake"));
         assert!(outcome_matches_query(&outcome, "certificate rejected"));
         assert!(!outcome_matches_query(&outcome, "response timeout"));
