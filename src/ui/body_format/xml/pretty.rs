@@ -3,20 +3,27 @@
 
 use super::{Document, Element, NodeKind};
 use crate::ui::body_format::tag::{Dialect, Spacing, push_tag};
-use crate::ui::body_format::{Styled, TokenKind};
+use crate::ui::body_format::{Formatted, Notice, Styled, TokenKind};
 
 /// Indents element-only content two spaces per level. Elements that hold
 /// text, entity references, or `CDATA`, and elements under
-/// `xml:space="preserve"`, keep their content exactly as written. Returns
-/// the text and a notice when the document was not read to its end.
-pub(in crate::ui::body_format) fn pretty(text: &str) -> Result<(Styled, Option<String>), String> {
+/// `xml:space="preserve"`, keep their content exactly as written. Warns
+/// when the document was not read to its end.
+pub(in crate::ui::body_format) fn pretty(text: &str) -> Result<Formatted, String> {
     let document = Document::parse(text)?;
     let mut printer = Printer {
         document: &document,
         out: Styled::default(),
     };
     printer.nodes(&document.roots, 0);
-    Ok((printer.out, document.incomplete_notice()))
+    Ok(Formatted {
+        styled: printer.out,
+        notices: document
+            .incomplete_notice()
+            .map(Notice::warning)
+            .into_iter()
+            .collect(),
+    })
 }
 
 struct Printer<'d, 'a> {
@@ -128,7 +135,7 @@ mod tests {
     use super::*;
 
     fn text(input: &str) -> Result<String, String> {
-        Ok(pretty(input)?.0.text().to_owned())
+        Ok(pretty(input)?.styled.text().to_owned())
     }
 
     fn kinds(styled: &Styled, kind: TokenKind) -> Vec<&str> {
@@ -193,8 +200,8 @@ mod tests {
             "<?xml version=\"1.0\"?><soap:Envelope xmlns:soap=\"urn:s\" a=\"x &lt; y\">",
             "<soap:Body><!--c--><m>&#65;<![CDATA[d]]></m></soap:Body></soap:Envelope>"
         );
-        let (styled, notice) = pretty(soap)?;
-        assert_eq!(notice, None);
+        let Formatted { styled, notices } = pretty(soap)?;
+        assert_eq!(notices, []);
         assert_eq!(
             kinds(&styled, TokenKind::Instruction),
             ["<?xml version=\"1.0\"?>"]
@@ -241,15 +248,17 @@ mod tests {
 
     #[test]
     fn shows_truncated_and_malformed_xml_as_far_as_read() -> Result<(), String> {
-        let (styled, notice) = pretty("<feed><entry><id>1</id></entry><entry><id>2")?;
+        let Formatted { styled, notices } = pretty("<feed><entry><id>1</id></entry><entry><id>2")?;
         assert_eq!(
             styled.text(),
             "<feed>\n  <entry>\n    <id>1</id>\n  </entry>\n  <entry>\n    <id>2"
         );
-        assert!(notice.is_some_and(|notice| notice.contains("<id> is not closed")));
-        let (styled, notice) = pretty("<a><b>1</b><c></a><d/>")?;
+        assert!(
+            matches!(notices.as_slice(), [notice] if notice.text.contains("<id> is not closed"))
+        );
+        let Formatted { styled, notices } = pretty("<a><b>1</b><c></a><d/>")?;
         assert_eq!(styled.text(), "<a>\n  <b>1</b>\n  <c>");
-        assert!(notice.is_some_and(|notice| notice.contains("incomplete")));
+        assert!(matches!(notices.as_slice(), [notice] if notice.text.contains("incomplete")));
         assert!(pretty("{\"json\": true}").is_err());
         Ok(())
     }
@@ -257,8 +266,8 @@ mod tests {
     #[test]
     fn leaves_entities_of_a_dtd_unexpanded() -> Result<(), String> {
         let input = "<!DOCTYPE r [<!ENTITY e SYSTEM \"file:///etc/passwd\">]><r>&e;</r>";
-        let (styled, notice) = pretty(input)?;
-        assert_eq!(notice, None);
+        let Formatted { styled, notices } = pretty(input)?;
+        assert_eq!(notices, []);
         assert_eq!(
             styled.text(),
             "<!DOCTYPE r [<!ENTITY e SYSTEM \"file:///etc/passwd\">]>\n<r>&e;</r>"

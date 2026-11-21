@@ -9,7 +9,7 @@
 
 mod lexer;
 
-use super::{Styled, TokenKind};
+use super::{Formatted, Notice, Styled, TokenKind};
 use lexer::{Kind, Token};
 
 /// Words shown as keywords.
@@ -71,29 +71,21 @@ const CONTINUATIONS: [&str; 7] = [
 /// Longest source map URL shown in the notice.
 const SOURCE_MAP_URL_CHARS: usize = 120;
 
-/// A formatted script and what the reader should know about it.
-#[derive(Debug, Eq, PartialEq)]
-pub(super) struct Pretty {
-    pub(super) styled: Styled,
-    /// What the script leaves unfinished when the preview was cut.
-    pub(super) warning: Option<String>,
-    /// The source map the script points to; it is never fetched.
-    pub(super) note: Option<String>,
-}
-
 /// Formats `text`, or fails when it cannot be tokenized without guessing.
-pub(super) fn pretty(text: &str) -> Result<Pretty, String> {
+/// Notices say what the script leaves unfinished where the preview was cut
+/// and which source map it points to; the source map is never fetched.
+pub(super) fn pretty(text: &str) -> Result<Formatted, String> {
     let lexed = lexer::lex(text)?;
-    let warning = lexed.unfinished.map(|unfinished| {
-        format!(
+    let unfinished = lexed.unfinished.map(|unfinished| {
+        Notice::warning(format!(
             "The script preview is incomplete: it ends inside an unfinished {unfinished}. Formatted up to where it ends."
-        )
+        ))
     });
-    let note = source_map_url(&lexed.tokens).map(|url| format!("Source map: {url} (not fetched)."));
-    Ok(Pretty {
+    let source_map = source_map_url(&lexed.tokens)
+        .map(|url| Notice::info(format!("Source map: {url} (not fetched).")));
+    Ok(Formatted {
         styled: Printer::default().print(&lexed.tokens),
-        warning,
-        note,
+        notices: unfinished.into_iter().chain(source_map).collect(),
     })
 }
 
@@ -255,6 +247,7 @@ fn source_map_url(tokens: &[Token<'_>]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::body_format::NoticeLevel;
 
     fn pieces(styled: &Styled, kind: TokenKind) -> Vec<&str> {
         styled
@@ -317,20 +310,17 @@ mod tests {
             result.styled.text(),
             "(function(){\n  var a={\n    b:\"unfinish"
         );
-        assert!(
-            result
-                .warning
-                .is_some_and(|warning| warning.contains("string"))
-        );
-        assert_eq!(result.note, None);
+        assert!(matches!(
+            result.notices.as_slice(),
+            [Notice { level: NoticeLevel::Warning, text }] if text.contains("string")
+        ));
         let result = pretty("f(function(){a;b")?;
         assert_eq!(result.styled.text(), "f(function(){\n  a;\n  b");
-        assert!(
-            result
-                .warning
-                .is_some_and(|warning| warning.contains("block"))
-        );
-        assert_eq!(pretty("a=1;")?.warning, None);
+        assert!(matches!(
+            result.notices.as_slice(),
+            [Notice { level: NoticeLevel::Warning, text }] if text.contains("block")
+        ));
+        assert_eq!(pretty("a=1;")?.notices, []);
         Ok(())
     }
 
@@ -338,8 +328,8 @@ mod tests {
     fn shows_the_source_map_url_without_fetching_it() -> Result<(), String> {
         let result = pretty("a();\n//# sourceMappingURL=app.min.js.map")?;
         assert_eq!(
-            result.note.as_deref(),
-            Some("Source map: app.min.js.map (not fetched).")
+            result.notices,
+            [Notice::info("Source map: app.min.js.map (not fetched).")]
         );
         assert!(
             pieces(&result.styled, TokenKind::Comment)
@@ -347,8 +337,8 @@ mod tests {
         );
         let inline = pretty("a()\n/*# sourceMappingURL=data:application/json;base64,e30= */")?;
         assert_eq!(
-            inline.note.as_deref(),
-            Some("Source map: inline data: URL (not fetched).")
+            inline.notices,
+            [Notice::info("Source map: inline data: URL (not fetched).")]
         );
         Ok(())
     }

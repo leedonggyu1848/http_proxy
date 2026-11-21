@@ -1,7 +1,7 @@
 //! Selected request details and body previews.
 
 use crate::ui::InspectorApp;
-use crate::ui::body_display::{BodySide, BodySource, BodyViewCache};
+use crate::ui::body_display::{BodySide, BodySource, BodyViewCache, Capture};
 use crate::ui::body_format::{BodyFormat, ViewMode, form, highlight::SyntaxPalette};
 use crate::ui::detail_tabs::{self, DetailTab};
 use crate::ui::theme::Palette;
@@ -215,15 +215,13 @@ fn render_body(
         image.show(ui, panel.record, &snapshot, &encodings, format);
         return;
     }
-    let complete = snapshot.lifecycle() == BodyLifecycle::Complete
-        && snapshot.retention() == BodyRetention::Prefix;
     let source = BodySource {
         record: panel.record.value(),
         side,
         bytes: snapshot.bytes(),
         encodings: &encodings,
         content_type,
-        complete,
+        capture: Capture::of(snapshot.lifecycle(), snapshot.retention()),
     };
     panel.cache.show(ui, &source, panel.mode);
 }

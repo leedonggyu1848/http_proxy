@@ -1,7 +1,7 @@
 //! Lossless CSS token slices with display-only structural whitespace.
 use cssparser::{Parser, Token};
 
-use super::{Formatted, Styled, TokenKind};
+use super::{Formatted, Notice, Styled, TokenKind};
 
 struct Piece<'a> {
     raw: &'a str,
@@ -25,7 +25,13 @@ fn lex(mut text: &str) -> Vec<Piece<'_>> {
 
 /// Keeps lexical spelling, including escapes and unterminated tokens. Only
 /// whitespace immediately around rule/declaration boundaries is inserted.
-pub(super) fn pretty(text: &str) -> Formatted {
+/// Never fails: unbalanced or invalid structure is formatted as far as it
+/// goes and reported in a notice.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "every pretty printer shares one signature"
+)]
+pub(super) fn pretty(text: &str) -> Result<Formatted, String> {
     let pieces = lex(text);
     let mut out = Styled::default();
     let mut stack = Vec::new();
@@ -95,12 +101,13 @@ pub(super) fn pretty(text: &str) -> Formatted {
         }
     }
     invalid |= !stack.is_empty();
-    Formatted {
+    Ok(Formatted {
         styled: out,
-        warning: None,
-        note: None,
-        fallback: invalid.then(|| "Incomplete or invalid CSS; showing the available prefix. CSS property values are not validated.".to_owned()),
-    }
+        notices: invalid
+            .then(|| Notice::warning("Incomplete or invalid CSS; showing the available prefix. CSS property values are not validated."))
+            .into_iter()
+            .collect(),
+    })
 }
 
 fn emit(out: &mut Styled, piece: &Piece<'_>, value: bool, declaration: bool) {
@@ -195,19 +202,20 @@ fn kind(token: &Token<'_>, value: bool, declaration: bool) -> TokenKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::body_format::NoticeLevel;
 
     #[test]
-    fn nested_rules_and_declarations_have_indented_lines() {
+    fn nested_rules_and_declarations_have_indented_lines() -> Result<(), String> {
         let out = pretty(
             "@media screen{a:hover{color:#fff;width:2px;display:block;&:focus{color: red}}}",
-        );
+        )?;
         assert!(
             out.styled
                 .text()
                 .contains("    color:#fff;\n    width:2px;")
         );
         assert!(out.styled.text().contains("    &:focus{\n      color: red"));
-        assert_eq!(out.fallback, None);
+        assert_eq!(out.notices, []);
         for kind in [
             TokenKind::Tag,
             TokenKind::Literal,
@@ -217,14 +225,15 @@ mod tests {
         ] {
             assert!(out.styled.pieces().any(|(_, k)| k == kind));
         }
+        Ok(())
     }
 
     #[test]
-    fn preserves_strings_urls_comments_and_escapes() {
+    fn preserves_strings_urls_comments_and_escapes() -> Result<(), String> {
         let text = r#"a{content:"a;{}\"b";background:url(data:image/svg+xml;a{b});x:url( "a;b" );}/*# sourceMappingURL=a.map */"#;
         let pieces = lex(text);
         assert_eq!(pieces.iter().map(|p| p.raw).collect::<String>(), text);
-        let out = pretty(text);
+        let out = pretty(text)?;
         for protected in [
             r#""a;{}\"b""#,
             "url(data:image/svg+xml;a{b})",
@@ -233,12 +242,13 @@ mod tests {
         ] {
             assert!(out.styled.text().contains(protected), "{protected}");
         }
+        Ok(())
     }
 
     #[test]
-    fn multiline_comments_and_escaped_identifiers_keep_their_spelling() {
+    fn multiline_comments_and_escaped_identifiers_keep_their_spelling() -> Result<(), String> {
         let text = "/* first\n second */a\\:b{content:\"한글\";color:rebeccapurple!important}";
-        let out = pretty(text);
+        let out = pretty(text)?;
         assert!(out.styled.text().contains("/* first\n second */"));
         assert!(out.styled.text().contains("a\\:b"));
         assert!(
@@ -246,18 +256,20 @@ mod tests {
                 .pieces()
                 .any(|(s, k)| s.contains("rebeccapurple") && k == TokenKind::Literal)
         );
-        assert_eq!(out.fallback, None);
+        assert_eq!(out.notices, []);
+        Ok(())
     }
 
     #[test]
-    fn custom_property_blocks_keep_internal_whitespace() {
-        let out = pretty("a{--theme:{a:b;c:d};color:var(--theme)}");
+    fn custom_property_blocks_keep_internal_whitespace() -> Result<(), String> {
+        let out = pretty("a{--theme:{a:b;c:d};color:var(--theme)}")?;
         assert!(out.styled.text().contains("--theme:{a:b;c:d};"));
-        assert_eq!(out.fallback, None);
+        assert_eq!(out.notices, []);
+        Ok(())
     }
 
     #[test]
-    fn partial_and_bad_input_keeps_available_text() {
+    fn partial_and_bad_input_keeps_available_text() -> Result<(), String> {
         for text in [
             "a{color:red",
             "a{content:\"abc",
@@ -265,9 +277,13 @@ mod tests {
             "a{color:red)}",
             "a{color red;}",
         ] {
-            let out = pretty(text);
-            assert!(out.fallback.is_some(), "{text}");
+            let out = pretty(text)?;
+            assert!(
+                matches!(out.notices.as_slice(), [notice] if notice.level == NoticeLevel::Warning),
+                "{text}"
+            );
             assert_ne!(out.styled.text(), "");
         }
+        Ok(())
     }
 }
