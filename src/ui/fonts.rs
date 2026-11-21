@@ -51,11 +51,18 @@ fn font_definitions(system_candidates: &[&Path]) -> FontDefinitions {
         font = EMBEDDED_KOREAN_NAME,
         "registered embedded Korean font"
     );
+    append_system_cjk(&mut fonts, system_candidates);
+    fonts
+}
+
+/// Appends the first usable system CJK font after the embedded font, or logs
+/// that only the embedded font is available.
+fn append_system_cjk(fonts: &mut FontDefinitions, system_candidates: &[&Path]) {
     let Some(system) = find_system_cjk(system_candidates) else {
         tracing::info!(
             "no usable system CJK font found; Hangul uses the embedded font, Hanja and kana may not render"
         );
-        return fonts;
+        return;
     };
     tracing::debug!(
         path = %system.path.display(),
@@ -64,8 +71,7 @@ fn font_definitions(system_candidates: &[&Path]) -> FontDefinitions {
     );
     let mut data = FontData::from_owned(system.data);
     data.index = system.face_index;
-    append_fallback(&mut fonts, SYSTEM_CJK_NAME, data);
-    fonts
+    append_fallback(fonts, SYSTEM_CJK_NAME, data);
 }
 
 fn append_fallback(fonts: &mut FontDefinitions, name: &str, data: FontData) {
