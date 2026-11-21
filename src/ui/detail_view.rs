@@ -69,10 +69,10 @@ impl InspectorApp {
                         render_headers(ui, "request-headers", request.headers());
                     }
                     DetailTab::Body => {
-                        let has_json = json_headers(request.headers())
+                        let has_tree = tree_headers(request.headers())
                             || matches!(record.outcome(),
-                            Outcome::Response(response) if json_headers(response.headers()));
-                        body.mode = view_mode_bar(ui, &mut self.body_mode, has_json);
+                            Outcome::Response(response) if tree_headers(response.headers()));
+                        body.mode = view_mode_bar(ui, &mut self.body_mode, has_tree);
                         ui.strong("Request body");
                         render_optional_body(ui, request.body(), request.headers(), &mut body);
                     }
@@ -90,23 +90,26 @@ struct BodyPanel<'a> {
     cache: &'a mut BodyViewCache,
 }
 
-fn json_headers(headers: &HeaderPreview) -> bool {
-    BodyFormat::from_content_type(headers.get("content-type").next()) == BodyFormat::Json
+fn tree_headers(headers: &HeaderPreview) -> bool {
+    matches!(
+        BodyFormat::from_content_type(headers.get("content-type").next()),
+        BodyFormat::Json | BodyFormat::Xml
+    )
 }
 
-/// Shows Tree only as an enabled option when either body has JSON content type.
-fn view_mode_bar(ui: &mut egui::Ui, mode: &mut ViewMode, has_json: bool) -> ViewMode {
-    if !has_json && *mode == ViewMode::Tree {
+/// Shows Tree only as an enabled option when either body has JSON or XML content type.
+fn view_mode_bar(ui: &mut egui::Ui, mode: &mut ViewMode, has_tree: bool) -> ViewMode {
+    if !has_tree && *mode == ViewMode::Tree {
         *mode = ViewMode::Pretty;
     }
     ui.horizontal(|ui| {
         ui.label("View:");
         for option in ViewMode::ALL {
-            ui.add_enabled_ui(option != ViewMode::Tree || has_json, |ui| {
+            ui.add_enabled_ui(option != ViewMode::Tree || has_tree, |ui| {
                 ui.selectable_value(mode, option, option.label())
             })
             .inner
-            .on_disabled_hover_text("Tree requires a JSON request or response body");
+            .on_disabled_hover_text("Tree requires a JSON or XML request or response body");
         }
     });
     *mode
