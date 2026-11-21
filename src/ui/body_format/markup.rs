@@ -1,6 +1,7 @@
 //! Token-based HTML and XML pretty printer that tolerates truncated and
 //! unbalanced markup.
 
+use super::tag::{Dialect, Spacing, push_tag};
 use super::{Styled, TokenKind, split_while};
 
 /// HTML elements that never have a closing tag.
@@ -69,12 +70,12 @@ pub(super) fn pretty(text: &str) -> Result<Styled, String> {
                 has_content,
             } => {
                 line(&mut out, depth);
-                styled_tag(&mut out, tag);
+                push_tag(&mut out, tag, Dialect::Html, Spacing::Normalize);
                 if has_content {
                     let inline = inline_content(&nodes, index, name);
                     if let Some((consumed, text, close)) = inline {
                         out.push(text, TokenKind::Text);
-                        styled_tag(&mut out, close);
+                        push_tag(&mut out, close, Dialect::Html, Spacing::Normalize);
                         index += consumed;
                     } else {
                         depth += 1;
@@ -84,7 +85,7 @@ pub(super) fn pretty(text: &str) -> Result<Styled, String> {
             Node::Close { tag, .. } => {
                 depth = depth.saturating_sub(1);
                 line(&mut out, depth);
-                styled_tag(&mut out, tag);
+                push_tag(&mut out, tag, Dialect::Html, Spacing::Normalize);
             }
         }
     }
@@ -228,64 +229,6 @@ fn tag_name(tag: &str) -> &str {
     split_while(inner, |c| !c.is_whitespace() && !matches!(c, '/' | '>')).0
 }
 
-/// Appends a tag with its name, attribute names, and attribute values as
-/// separate tokens, separating attributes by single spaces.
-fn styled_tag(out: &mut Styled, tag: &str) {
-    let prefix = if tag.starts_with("</") { "</" } else { "<" };
-    let rest = tag.get(prefix.len()..).unwrap_or_default();
-    let (name, mut rest) = split_while(rest, |c| !c.is_whitespace() && !matches!(c, '/' | '>'));
-    out.push(prefix, TokenKind::Tag);
-    out.push(name, TokenKind::Tag);
-    loop {
-        rest = rest.trim_start();
-        if rest.is_empty() || rest.starts_with('>') || rest.starts_with("/>") {
-            break;
-        }
-        let (attribute, after) =
-            split_while(rest, |c| !c.is_whitespace() && !matches!(c, '=' | '>'));
-        let (attribute, after) = if attribute.is_empty() {
-            // A stray character such as `=` without a name.
-            rest.split_at(rest.chars().next().map_or(0, char::len_utf8))
-        } else {
-            (attribute, after)
-        };
-        out.push(" ", TokenKind::Text);
-        out.push(attribute, TokenKind::AttributeName);
-        rest = after.trim_start();
-        if let Some(after_equals) = rest.strip_prefix('=') {
-            out.push("=", TokenKind::Punctuation);
-            let (value, after) = attribute_value(after_equals.trim_start());
-            out.push(value, TokenKind::AttributeValue);
-            rest = after;
-        }
-    }
-    let end = rest.trim();
-    if !end.is_empty() {
-        out.push(
-            if prefix == "<" && end == "/>" {
-                " />"
-            } else {
-                end
-            },
-            TokenKind::Tag,
-        );
-    }
-}
-
-fn attribute_value(text: &str) -> (&str, &str) {
-    match text.chars().next() {
-        Some(quote @ ('"' | '\'')) => {
-            let end = text
-                .char_indices()
-                .skip(1)
-                .find(|(_, c)| *c == quote)
-                .map_or(text.len(), |(index, _)| index + 1);
-            text.split_at(end)
-        }
-        _ => split_while(text, |c| !c.is_whitespace() && c != '>'),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,6 +306,22 @@ mod tests {
     fn formats_truncated_and_unbalanced_markup() -> Result<(), String> {
         assert_eq!(pretty("<div><a href=\"/x")?.text(), "<div>\n  <a href=\"/x");
         assert_eq!(pretty("</p></p><!-- cut")?.text(), "</p>\n</p>\n<!-- cut");
+        Ok(())
+    }
+
+    #[test]
+    fn keeps_stray_characters_in_tags_as_written() -> Result<(), String> {
+        let styled = pretty("<p =x a=\"1\"b=2 'c'>t</p>")?;
+        assert_eq!(styled.text(), "<p =x a=\"1\"b=2 'c'>t</p>");
+        assert_eq!(
+            kinds(&styled, TokenKind::AttributeName),
+            ["x", "a", "b", "c"]
+        );
+        assert_eq!(kinds(&styled, TokenKind::AttributeValue), ["\"1\"", "2"]);
+        assert_eq!(
+            kinds(&styled, TokenKind::Punctuation),
+            ["=", "=", "=", "'", "'"]
+        );
         Ok(())
     }
 

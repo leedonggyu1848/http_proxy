@@ -13,6 +13,7 @@ mod javascript;
 mod json;
 mod json_tree;
 mod markup;
+mod tag;
 pub(in crate::ui) mod tree;
 pub(in crate::ui) mod xml;
 
