@@ -577,7 +577,7 @@ impl eframe::App for InspectorApp {
             }
         }
         ui.heading(http_proxy::APP_NAME);
-        scope_help::show(ui);
+        scope_help::show(ui, self.proxy.as_ref().map(ProxyHandle::local_addr));
         ui.separator();
         self.toolbar(ui);
         ui.separator();
@@ -721,11 +721,12 @@ fn render_body(
         ui.weak("Empty body.");
         return;
     }
-    let encodings = header_values(headers, "content-encoding");
+    let encodings = headers.get("content-encoding").collect::<Vec<_>>();
     if let Some((panel, record)) = image
-        && header_values(headers, "content-type")
-            .first()
-            .is_some_and(|value| http_proxy::is_png_media_type(value))
+        && headers
+            .get("content-type")
+            .next()
+            .is_some_and(http_proxy::is_png_media_type)
     {
         panel.show(ui, record, &snapshot, &encodings);
         return;
@@ -750,15 +751,6 @@ fn render_body(
             .desired_rows(8)
             .interactive(false),
     );
-}
-
-fn header_values<'a>(headers: &'a HeaderPreview, name: &str) -> Vec<&'a str> {
-    headers
-        .entries()
-        .iter()
-        .filter(|header| header.name() == name)
-        .map(http_proxy::CapturedHeader::value)
-        .collect()
 }
 
 const fn lifecycle_text(lifecycle: BodyLifecycle) -> &'static str {
@@ -832,7 +824,7 @@ fn render_timing(ui: &mut egui::Ui, record: &Exchange) {
     };
     let total = timing.complete().map_or_else(
         || "in progress".to_owned(),
-        |duration| format!("{:.1} ms", elapsed_millis(duration)),
+        |duration| format!("{:.1} ms", outcome_view::elapsed_millis(duration)),
     );
     let rows = [
         ("Connect", optional_millis(timing.connect())),
@@ -854,12 +846,12 @@ fn render_timing(ui: &mut egui::Ui, record: &Exchange) {
 fn optional_millis(duration: Option<Duration>) -> String {
     duration.map_or_else(
         || "not observed".to_owned(),
-        |duration| format!("{:.1} ms", elapsed_millis(duration)),
+        |duration| format!("{:.1} ms", outcome_view::elapsed_millis(duration)),
     )
 }
 
 fn elapsed_text(record: &Exchange) -> String {
-    let millis = elapsed_millis(record.elapsed());
+    let millis = outcome_view::elapsed_millis(record.elapsed());
     if record.outcome().is_in_flight() {
         format!("{millis:.0} ms…")
     } else {
@@ -883,13 +875,12 @@ fn render_tunnel(ui: &mut egui::Ui, tunnel: &TunnelPreview) {
             ui.monospace(format!("{} bytes", snapshot.upstream_to_client()));
             ui.end_row();
             ui.label("Duration");
-            ui.monospace(format!("{:.1} ms", elapsed_millis(snapshot.duration())));
+            ui.monospace(format!(
+                "{:.1} ms",
+                outcome_view::elapsed_millis(snapshot.duration())
+            ));
             ui.end_row();
         });
-}
-
-fn elapsed_millis(duration: Duration) -> f64 {
-    duration.as_secs_f64() * 1_000.0
 }
 
 fn copy_menu(ui: &mut egui::Ui, address: std::net::SocketAddr) {

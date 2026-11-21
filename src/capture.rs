@@ -25,11 +25,7 @@ pub(super) fn capture_headers(headers: &HeaderMap) -> HeaderPreview {
     let mut omitted = false;
 
     for (name, value) in headers {
-        let value = if is_sensitive(name.as_str()) {
-            "[REDACTED]".to_owned()
-        } else {
-            String::from_utf8_lossy(value.as_bytes()).into_owned()
-        };
+        let value = String::from_utf8_lossy(redacted_value(name, value)).into_owned();
         let field_bytes = name.as_str().len().saturating_add(value.len());
         if entries.len() == HEADER_PREVIEW_FIELDS
             || retained_bytes.saturating_add(field_bytes) > HEADER_PREVIEW_BYTES
@@ -79,22 +75,22 @@ pub(super) fn bounded_text(value: &str, max_bytes: usize) -> String {
     format!("{prefix}…")
 }
 
-fn is_sensitive(name: &str) -> bool {
-    matches!(
-        name,
+fn redacted_value<'a>(name: &http::HeaderName, value: &'a http::HeaderValue) -> &'a [u8] {
+    if matches!(
+        name.as_str(),
         "authorization" | "proxy-authorization" | "cookie" | "set-cookie"
-    )
+    ) {
+        b"[REDACTED]"
+    } else {
+        value.as_bytes()
+    }
 }
 
 pub(super) fn full_headers(headers: &HeaderMap) -> String {
     headers
         .iter()
         .fold(String::new(), |mut text, (name, value)| {
-            let value = if is_sensitive(name.as_str()) {
-                "[REDACTED]".to_owned()
-            } else {
-                value.as_bytes().escape_ascii().to_string()
-            };
+            let value = redacted_value(name, value).escape_ascii().to_string();
             text.push_str(name.as_str());
             text.push_str(": ");
             text.push_str(&value);
@@ -241,6 +237,39 @@ mod tests {
     use std::io;
 
     use super::*;
+
+    #[test]
+    fn previews_and_full_logs_share_redaction_without_changing_byte_display()
+    -> Result<(), http::header::InvalidHeaderValue> {
+        let mut headers = HeaderMap::new();
+        for name in [
+            "authorization",
+            "proxy-authorization",
+            "cookie",
+            "set-cookie",
+        ] {
+            headers.insert(
+                http::HeaderName::from_static(name),
+                http::HeaderValue::from_static("secret"),
+            );
+        }
+        headers.insert("x-bytes", http::HeaderValue::from_bytes(b"\xff")?);
+        let preview = capture_headers(&headers);
+        let full = full_headers(&headers);
+        for name in [
+            "authorization",
+            "proxy-authorization",
+            "cookie",
+            "set-cookie",
+        ] {
+            assert_eq!(preview.get(name).next(), Some("[REDACTED]"));
+            assert!(full.contains(&format!("{name}: [REDACTED]\n")));
+        }
+        assert!(!full.contains("secret"));
+        assert_eq!(preview.get("x-bytes").next(), Some("\u{fffd}"));
+        assert!(full.contains("x-bytes: \\xff\n"));
+        Ok(())
+    }
 
     #[test]
     fn recognizes_png_media_types() {

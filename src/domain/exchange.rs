@@ -138,6 +138,15 @@ impl CapturedResponse {
         &self.headers
     }
 
+    /// Returns the first retained Content-Type without parameters or surrounding whitespace.
+    #[must_use]
+    pub fn media_type(&self) -> Option<&str> {
+        self.headers
+            .get("content-type")
+            .next()
+            .map(|value| value.split(';').next().unwrap_or(value).trim())
+    }
+
     /// Returns the live response-body preview.
     #[must_use]
     pub const fn body(&self) -> &BodyPreview {
@@ -503,6 +512,34 @@ mod tests {
                 HeaderPreview::default(),
             ),
         )
+    }
+
+    #[test]
+    fn response_media_type_uses_first_retained_value_without_parameters() {
+        let response = |headers| {
+            CapturedResponse::new(
+                StatusCode::OK,
+                Version::HTTP_11,
+                "OK".into(),
+                headers,
+                BodyPreview::new(16),
+            )
+        };
+        assert_eq!(response(HeaderPreview::default()).media_type(), None);
+        let headers = HeaderPreview::new(
+            vec![
+                crate::CapturedHeader::new(
+                    "Content-Type".into(),
+                    " application/problem+json ; charset=utf-8".into(),
+                ),
+                crate::CapturedHeader::new("content-type".into(), "text/plain".into()),
+            ],
+            false,
+        );
+        assert_eq!(
+            response(headers).media_type(),
+            Some("application/problem+json")
+        );
     }
 
     #[test]

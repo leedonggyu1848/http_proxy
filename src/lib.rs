@@ -39,3 +39,6 @@ pub use trust::{CaTrustError, CaTrustStatus, CaTrustStore};
 
 /// Application display name.
 pub const APP_NAME: &str = "HTTP Inspector";
+
+/// Default loopback proxy listener port.
+pub const DEFAULT_PORT: u16 = 8080;
