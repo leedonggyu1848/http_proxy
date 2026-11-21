@@ -1,5 +1,7 @@
 //! Image formats whose response bodies can be drawn as images.
 
+use super::MediaType;
+
 /// How far into a body an SVG root element is searched for.
 const SVG_SNIFF_BYTES: usize = 4 * 1024;
 
@@ -27,17 +29,13 @@ impl ImageFormat {
         Self::Ico,
     ];
 
-    /// Names the format of a `Content-Type` value, ignoring case and
-    /// media-type parameters, or `None` when it cannot be drawn.
+    /// Names the format of a media type, or `None` when it cannot be drawn.
     #[must_use]
-    pub fn from_media_type(content_type: &str) -> Option<Self> {
-        let essence = content_type.split(';').next()?.trim();
-        Self::ALL.into_iter().find(|format| {
-            format
-                .media_types()
-                .iter()
-                .any(|media_type| essence.eq_ignore_ascii_case(media_type))
-        })
+    pub fn from_media_type(media_type: &MediaType) -> Option<Self> {
+        let essence = media_type.essence();
+        Self::ALL
+            .into_iter()
+            .find(|format| format.media_types().contains(&essence))
     }
 
     /// Recognizes the format from the leading bytes of a decoded body.
@@ -80,7 +78,7 @@ impl ImageFormat {
         }
     }
 
-    /// `Content-Type` values that name this format.
+    /// Lowercase media type essences that name this format.
     #[must_use]
     pub const fn media_types(self) -> &'static [&'static str] {
         match self {
@@ -105,7 +103,13 @@ fn looks_like_svg(bytes: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::ImageFormat;
+    use super::{ImageFormat, MediaType};
+
+    fn from_media_type(value: &str) -> Option<ImageFormat> {
+        MediaType::parse(value)
+            .as_ref()
+            .and_then(ImageFormat::from_media_type)
+    }
 
     #[test]
     fn names_formats_from_media_types() {
@@ -119,10 +123,10 @@ mod tests {
             ("image/x-icon", ImageFormat::Ico),
             ("image/vnd.microsoft.icon", ImageFormat::Ico),
         ] {
-            assert_eq!(ImageFormat::from_media_type(value), Some(format), "{value}");
+            assert_eq!(from_media_type(value), Some(format), "{value}");
         }
         for value in ["image/avif", "image/svg", "text/plain; type=image/png", ""] {
-            assert_eq!(ImageFormat::from_media_type(value), None, "{value}");
+            assert_eq!(from_media_type(value), None, "{value}");
         }
     }
 

@@ -395,8 +395,8 @@ fn content_type(record: &Exchange) -> Option<&str> {
     let Outcome::Response(response) = record.outcome() else {
         return None;
     };
-    let essence = response.media_type()?;
-    let subtype = essence.rsplit('/').next().unwrap_or(essence);
+    let media_type = response.media_type()?;
+    let subtype = media_type.subtype();
     let subtype = subtype.rsplit('+').next().unwrap_or(subtype);
     Some(subtype.strip_prefix("x-").unwrap_or(subtype))
 }

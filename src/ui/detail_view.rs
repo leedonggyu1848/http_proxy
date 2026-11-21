@@ -8,8 +8,8 @@ use crate::ui::theme::Palette;
 use crate::ui::{image_view, outcome_view, replay_panel, scope_help};
 use eframe::egui;
 use http_proxy::{
-    BodyLifecycle, BodyPreview, BodyRetention, Exchange, HeaderPreview, Outcome, RecordId,
-    TunnelPreview,
+    BodyLifecycle, BodyPreview, BodyRetention, CapturedRequest, Exchange, HeaderPreview, MediaType,
+    Outcome, RecordId, TunnelPreview,
 };
 use std::time::Duration;
 
@@ -69,12 +69,12 @@ impl InspectorApp {
                         render_headers(ui, "request-headers", request.headers());
                     }
                     DetailTab::Body => {
-                        let has_tree = tree_headers(request.headers())
+                        let has_tree = has_tree(request.media_type())
                             || matches!(record.outcome(),
-                            Outcome::Response(response) if tree_headers(response.headers()));
+                            Outcome::Response(response) if has_tree(response.media_type()));
                         body.mode = view_mode_bar(ui, &mut self.body_mode, has_tree);
                         ui.strong("Request body");
-                        render_optional_body(ui, request.body(), request.headers(), &mut body);
+                        render_optional_body(ui, request, &mut body);
                     }
                 }
                 ui.separator();
@@ -90,9 +90,9 @@ struct BodyPanel<'a> {
     cache: &'a mut BodyViewCache,
 }
 
-fn tree_headers(headers: &HeaderPreview) -> bool {
+fn has_tree(media_type: Option<&MediaType>) -> bool {
     matches!(
-        BodyFormat::from_content_type(headers.get("content-type").next()),
+        BodyFormat::from_media_type(media_type),
         BodyFormat::Json | BodyFormat::Xml
     )
 }
@@ -164,14 +164,12 @@ fn render_headers(ui: &mut egui::Ui, id: &str, headers: &HeaderPreview) {
     }
 }
 
-fn render_optional_body(
-    ui: &mut egui::Ui,
-    body: Option<&BodyPreview>,
-    headers: &HeaderPreview,
-    panel: &mut BodyPanel<'_>,
-) {
-    match body {
-        Some(body) => render_body(ui, body, headers, (panel, BodySide::Request), None),
+fn render_optional_body(ui: &mut egui::Ui, request: &CapturedRequest, panel: &mut BodyPanel<'_>) {
+    match request.body() {
+        Some(body) => {
+            let message = (request.headers(), request.media_type());
+            render_body(ui, body, message, (panel, BodySide::Request), None);
+        }
         None => {
             ui.weak("Body was not observed.");
         }
@@ -182,7 +180,7 @@ fn render_optional_body(
 fn render_body(
     ui: &mut egui::Ui,
     body: &BodyPreview,
-    headers: &HeaderPreview,
+    (headers, media_type): (&HeaderPreview, Option<&MediaType>),
     (panel, side): (&mut BodyPanel<'_>, BodySide),
     image: Option<&mut image_view::ImagePanel>,
 ) {
@@ -208,9 +206,8 @@ fn render_body(
         return;
     }
     let encodings = headers.get("content-encoding").collect::<Vec<_>>();
-    let content_type = headers.get("content-type").next();
     if let Some(image) = image
-        && let Some(format) = content_type.and_then(http_proxy::ImageFormat::from_media_type)
+        && let Some(format) = media_type.and_then(http_proxy::ImageFormat::from_media_type)
     {
         image.show(ui, panel.record, &snapshot, &encodings, format);
         return;
@@ -220,7 +217,7 @@ fn render_body(
         side,
         bytes: snapshot.bytes(),
         encodings: &encodings,
-        content_type,
+        media_type,
         capture: Capture::of(snapshot.lifecycle(), snapshot.retention()),
     };
     panel.cache.show(ui, &source, panel.mode);
@@ -267,7 +264,7 @@ fn render_outcome(
                 render_body(
                     ui,
                     response.body(),
-                    response.headers(),
+                    (response.headers(), response.media_type()),
                     (body, BodySide::Response),
                     Some(image),
                 );

@@ -17,6 +17,8 @@ mod tag;
 pub(in crate::ui) mod tree;
 pub(in crate::ui) mod xml;
 
+use http_proxy::MediaType;
+
 /// Body syntax detected from `Content-Type`.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(in crate::ui) enum BodyFormat {
@@ -30,42 +32,25 @@ pub(in crate::ui) enum BodyFormat {
 }
 
 impl BodyFormat {
-    /// Detects the format from a `Content-Type` value, ignoring parameters
-    /// and case. Unknown or missing types are plain text.
-    pub(in crate::ui) fn from_content_type(content_type: Option<&str>) -> Self {
-        let Some(value) = content_type else {
+    /// Detects the format from the body's media type. Unknown or missing
+    /// types are plain text.
+    pub(in crate::ui) fn from_media_type(media_type: Option<&MediaType>) -> Self {
+        let Some(media_type) = media_type else {
             return Self::Text;
         };
-        let essence = value
-            .split(';')
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase();
-        let subtype = essence.split_once('/').map_or("", |(_, subtype)| subtype);
-        if subtype == "json" || subtype.ends_with("+json") {
-            Self::Json
-        } else if essence == "text/css" {
-            Self::Css
-        } else if essence == "application/x-www-form-urlencoded" {
-            Self::Form
-        } else if matches!(essence.as_str(), "text/html" | "application/xhtml+xml") {
-            Self::Markup
-        } else if matches!(essence.as_str(), "application/xml" | "text/xml")
-            || subtype.ends_with("+xml")
-        {
-            Self::Xml
-        } else if matches!(
-            essence.as_str(),
+        match media_type.essence() {
+            _ if media_type.is_json() => Self::Json,
+            "text/css" => Self::Css,
+            "application/x-www-form-urlencoded" => Self::Form,
+            "text/html" | "application/xhtml+xml" => Self::Markup,
+            "application/xml" | "text/xml" => Self::Xml,
+            _ if media_type.has_xml_suffix() => Self::Xml,
             "text/javascript"
-                | "application/javascript"
-                | "application/x-javascript"
-                | "application/ecmascript"
-                | "text/ecmascript"
-        ) {
-            Self::JavaScript
-        } else {
-            Self::Text
+            | "application/javascript"
+            | "application/x-javascript"
+            | "application/ecmascript"
+            | "text/ecmascript" => Self::JavaScript,
+            _ => Self::Text,
         }
     }
 
@@ -310,7 +295,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detects_formats_from_content_type() {
+    fn detects_formats_from_media_type() {
         for (value, expected) in [
             (Some("application/json"), BodyFormat::Json),
             (Some("Text/CSS; charset=utf-8"), BodyFormat::Css),
@@ -336,7 +321,12 @@ mod tests {
             (Some("jsonish"), BodyFormat::Text),
             (None, BodyFormat::Text),
         ] {
-            assert_eq!(BodyFormat::from_content_type(value), expected, "{value:?}");
+            let media_type = value.and_then(MediaType::parse);
+            assert_eq!(
+                BodyFormat::from_media_type(media_type.as_ref()),
+                expected,
+                "{value:?}"
+            );
         }
     }
 

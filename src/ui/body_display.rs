@@ -6,7 +6,7 @@ use crate::ui::body_view::{self, BodyText};
 use crate::ui::theme::{Palette, Theme};
 use crate::ui::tree_view::TreeView;
 use eframe::egui::{self, Galley, text::LayoutJob};
-use http_proxy::{BodyLifecycle, BodyRetention};
+use http_proxy::{BodyLifecycle, BodyRetention, MediaType};
 use std::sync::Arc;
 
 /// Height of the numbered line view before it scrolls.
@@ -26,7 +26,7 @@ pub(in crate::ui) struct BodySource<'a> {
     pub(in crate::ui) side: BodySide,
     pub(in crate::ui) bytes: &'a [u8],
     pub(in crate::ui) encodings: &'a [&'a str],
-    pub(in crate::ui) content_type: Option<&'a str>,
+    pub(in crate::ui) media_type: Option<&'a MediaType>,
     /// How much of the body the retained bytes cover.
     pub(in crate::ui) capture: Capture,
 }
@@ -236,7 +236,7 @@ fn build(
             BodyText::Ready { text, notice } => (text, notice),
             BodyText::Unavailable(message) => return Content::Unavailable(message),
         };
-    let format = BodyFormat::from_content_type(source.content_type);
+    let format = BodyFormat::from_media_type(source.media_type);
     let mut notices = capture_notices(decoding, source.capture);
     if key.mode == ViewMode::Tree {
         match trees.get(source, format, &text) {
@@ -410,13 +410,18 @@ mod tests {
         }
     }
 
+    /// Parses a test media type that lives for the whole test run.
+    fn media(value: &str) -> Option<&'static MediaType> {
+        MediaType::parse(value).map(|media_type| &*Box::leak(Box::new(media_type)))
+    }
+
     fn source(record: u64, bytes: &[u8]) -> BodySource<'_> {
         BodySource {
             record,
             side: BodySide::Response,
             bytes,
             encodings: &[],
-            content_type: Some("application/json"),
+            media_type: media("application/json"),
             capture: Capture::Whole,
         }
     }
@@ -426,7 +431,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut cache = BodyViewCache::default();
         let css = BodySource {
-            content_type: Some("text/css"),
+            media_type: media("text/css"),
             capture: Capture::Truncated,
             ..source(1, b"a{color:red}")
         };
@@ -478,7 +483,7 @@ mod tests {
         encoder.write_all(text.as_bytes())?;
         let compressed = encoder.finish()?;
         let css = BodySource {
-            content_type: Some("text/css"),
+            media_type: media("text/css"),
             encodings: &["gzip"],
             ..source(1, &compressed)
         };
@@ -565,7 +570,7 @@ mod tests {
             ctx.set_theme(Theme::Dark);
             let mut cache = BodyViewCache::default();
             let body = BodySource {
-                content_type: Some(content_type),
+                media_type: media(content_type),
                 ..source(1, body)
             };
             run(&mut cache, &ctx, &body, ViewMode::Tree);
@@ -622,7 +627,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut cache = BodyViewCache::default();
         let xml = BodySource {
-            content_type: Some("application/rss+xml"),
+            media_type: media("application/rss+xml"),
             ..source(1, b"<rss><channel><title>A</title></channel></rss>")
         };
         run(&mut cache, &ctx, &xml, ViewMode::Tree);
@@ -631,7 +636,7 @@ mod tests {
             Some((_, Content::Tree { .. }))
         ));
         let text = BodySource {
-            content_type: Some("text/plain"),
+            media_type: media("text/plain"),
             ..source(2, b"plain text")
         };
         run(&mut cache, &ctx, &text, ViewMode::Tree);
@@ -657,7 +662,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut cache = BodyViewCache::default();
         let script = BodySource {
-            content_type: Some("application/javascript"),
+            media_type: media("application/javascript"),
             capture: Capture::Truncated,
             ..source(1, b"f(function(){a();b()}); x()")
         };
@@ -705,7 +710,7 @@ mod tests {
                 let ctx = egui::Context::default();
                 let mut cache = BodyViewCache::default();
                 let partial = BodySource {
-                    content_type: Some(content_type),
+                    media_type: media(content_type),
                     capture: Capture::Truncated,
                     ..source(1, body)
                 };
@@ -737,7 +742,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut cache = BodyViewCache::default();
         let script = BodySource {
-            content_type: Some("application/javascript"),
+            media_type: media("application/javascript"),
             capture: Capture::Truncated,
             ..source(1, b"f(\"unfinished")
         };
@@ -759,7 +764,7 @@ mod tests {
         );
 
         let xml = BodySource {
-            content_type: Some("application/xml"),
+            media_type: media("application/xml"),
             capture: Capture::Truncated,
             ..source(2, b"<a><b>1</b>")
         };
