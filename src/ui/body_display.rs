@@ -1,15 +1,12 @@
 //! Decoded, formatted, and highlighted body text for the detail panel,
 //! rebuilt only when the shown body or the way it is shown changes.
 
-use crate::ui::body_format::json_tree::Tree;
-use crate::ui::body_format::xml::tree::XmlTree;
-use crate::ui::body_format::{self, BodyFormat, ViewMode, highlight};
+use crate::ui::body_format::{self, BodyFormat, ViewMode, highlight, tree};
 use crate::ui::body_view::{self, BodyText};
 use crate::ui::theme::{Palette, Theme};
-use crate::ui::xml_tree_view::XmlTreeView;
+use crate::ui::tree_view::TreeView;
 use eframe::egui::{self, Galley, text::LayoutJob};
 use std::sync::Arc;
-use std::{cell::RefCell, rc::Rc};
 
 /// Height of the numbered line view before it scrolls.
 const LINE_VIEW_HEIGHT: f32 = 480.0;
@@ -48,9 +45,10 @@ struct Key {
 
 enum Content {
     Unavailable(String),
+    /// The side's [`TreeCache`] holds the tree to show.
     Tree {
+        format: BodyFormat,
         notice: Option<String>,
-        view: TreeView,
     },
     Ready {
         format: BodyFormat,
@@ -66,72 +64,71 @@ enum Content {
     },
 }
 
-enum TreeView {
-    Xml(XmlTreeView),
-    Json(Rc<RefCell<Tree>>),
-}
-
-impl TreeView {
-    fn show(&mut self, ui: &mut egui::Ui, key: &Key) {
-        match self {
-            Self::Json(tree) => {
-                if !key.complete {
-                    ui.weak("Incomplete body capture; tree contains only retained data.");
-                }
-                ui.push_id(("json-tree", key.record, key.side), |ui| {
-                    tree.borrow_mut().show(ui);
-                });
-            }
-            Self::Xml(view) => {
-                ui.weak(format!(
-                    "Format: {} · {}",
-                    BodyFormat::Xml.label(),
-                    key.mode.label()
-                ));
-                if let Some(incomplete) = view.incomplete() {
-                    ui.colored_label(Palette::of(ui).warning, incomplete);
-                }
-                view.show(ui, ("xml-tree", key.record, key.side));
-            }
-        }
-    }
-}
-
+/// The tree of one side's body with its open rows and search. It is kept
+/// across view mode, theme, and font changes and rebuilt only for other
+/// bytes: a different record or a longer retained preview.
 #[derive(Default)]
-struct JsonCache {
-    entry: Option<JsonEntry>,
+struct TreeCache {
+    entry: Option<TreeEntry>,
+    #[cfg(test)]
+    builds: u64,
 }
 
-struct JsonEntry {
-    key: (u64, usize, bool),
-    tree: Result<Rc<RefCell<Tree>>, String>,
+struct TreeEntry {
+    record: u64,
+    retained: usize,
+    complete: bool,
+    tree: Result<TreeView, String>,
 }
 
-impl JsonCache {
-    fn get(&mut self, source: &BodySource<'_>, text: &str) -> Result<Rc<RefCell<Tree>>, String> {
-        let key = (source.record, source.bytes.len(), source.complete);
-        if self.entry.as_ref().is_none_or(|entry| entry.key != key) {
-            self.entry = Some(JsonEntry {
-                key,
-                tree: Tree::parse(text).map(|tree| Rc::new(RefCell::new(tree))),
+impl TreeCache {
+    /// The tree of `text`, read as `format`; `None` when the format has
+    /// none, and the reason when `text` could not be read as one.
+    fn get(
+        &mut self,
+        source: &BodySource<'_>,
+        format: BodyFormat,
+        text: &str,
+    ) -> Option<Result<(), String>> {
+        let current = self.entry.as_ref().is_some_and(|entry| {
+            (entry.record, entry.retained, entry.complete)
+                == (source.record, source.bytes.len(), source.complete)
+        });
+        if !current {
+            let tree = tree::build(format, text)?;
+            #[cfg(test)]
+            {
+                self.builds += 1;
+            }
+            self.entry = Some(TreeEntry {
+                record: source.record,
+                retained: source.bytes.len(),
+                complete: source.complete,
+                tree: tree.map(TreeView::new),
             });
         }
-        self.entry
-            .as_ref()
-            .ok_or("missing JSON cache entry")?
-            .tree
-            .clone()
+        let entry = self.entry.as_ref()?;
+        Some(entry.tree.as_ref().map(|_| ()).map_err(Clone::clone))
     }
+
+    fn view(&mut self) -> Option<&mut TreeView> {
+        self.entry.as_mut()?.tree.as_mut().ok()
+    }
+}
+
+/// What one side showed last.
+#[derive(Default)]
+struct SideCache {
+    shown: Option<(Key, Content)>,
+    tree: TreeCache,
 }
 
 /// Highlighted text of the request and response bodies last shown.
 #[derive(Default)]
 pub(in crate::ui) struct BodyViewCache {
-    request: Option<(Key, Content)>,
-    response: Option<(Key, Content)>,
+    request: SideCache,
+    response: SideCache,
     builds: u64,
-    request_json: JsonCache,
-    response_json: JsonCache,
 }
 
 impl BodyViewCache {
@@ -152,20 +149,20 @@ impl BodyViewCache {
             theme: ui.ctx().theme(),
             font: egui::TextStyle::Monospace.resolve(ui.style()),
         };
-        let (slot, json) = match source.side {
-            BodySide::Request => (&mut self.request, &mut self.request_json),
-            BodySide::Response => (&mut self.response, &mut self.response_json),
+        let side = match source.side {
+            BodySide::Request => &mut self.request,
+            BodySide::Response => &mut self.response,
         };
-        if slot.as_ref().is_none_or(|(cached, _)| *cached != key) {
+        if side.shown.as_ref().is_none_or(|(cached, _)| *cached != key) {
             self.builds += 1;
             // Use the keyed theme's style: after a theme switch this frame's
             // style still belongs to the previous theme.
             let text_color = ui.ctx().style_of(key.theme).visuals.text_color();
-            let content = build(source, &key, text_color, json);
-            *slot = Some((key, content));
+            let content = build(source, &key, text_color, &mut side.tree);
+            side.shown = Some((key, content));
         }
-        if let Some((key, content)) = slot {
-            render(ui, content, key);
+        if let Some((key, content)) = &mut side.shown {
+            render(ui, content, key, &mut side.tree);
         }
     }
 
@@ -179,7 +176,7 @@ fn build(
     source: &BodySource<'_>,
     key: &Key,
     text_color: egui::Color32,
-    json: &mut JsonCache,
+    trees: &mut TreeCache,
 ) -> Content {
     let (text, notice) = match body_view::decode(source.bytes, source.encodings, source.complete) {
         BodyText::Ready { text, notice } => (text, notice),
@@ -189,38 +186,17 @@ fn build(
     let palette = highlight::SyntaxPalette::for_theme(key.theme);
     let mut tree_fallback = None;
     if key.mode == ViewMode::Tree {
-        if format == BodyFormat::Xml {
-            match XmlTree::build(&text) {
-                Ok(tree) => {
-                    let view = XmlTreeView::new(tree, &palette, text_color, &key.font);
-                    return Content::Tree {
-                        notice,
-                        view: TreeView::Xml(view),
-                    };
-                }
-                Err(reason) => {
-                    tree_fallback =
-                        Some(format!("Showing Pretty: could not read a tree: {reason}."));
-                }
+        match trees.get(source, format, &text) {
+            Some(Ok(())) => return Content::Tree { format, notice },
+            Some(Err(reason)) => {
+                tree_fallback = Some(format!("Showing Pretty: could not read a tree: {reason}."));
             }
-        } else if format == BodyFormat::Json {
-            match json.get(source, &text) {
-                Ok(tree) => {
-                    return Content::Tree {
-                        notice,
-                        view: TreeView::Json(tree),
-                    };
-                }
-                Err(reason) => {
-                    tree_fallback =
-                        Some(format!("Showing Pretty: could not read a tree: {reason}."));
-                }
+            None => {
+                tree_fallback = Some(format!(
+                    "Tree view is not available for {}; showing Pretty.",
+                    format.label()
+                ));
             }
-        } else {
-            tree_fallback = Some(format!(
-                "Tree view is not available for {}; showing Pretty.",
-                format.label()
-            ));
         }
     }
     let mut formatted = body_format::format(format, key.mode, &text);
@@ -245,17 +221,20 @@ fn build(
     }
 }
 
-fn render(ui: &mut egui::Ui, content: &mut Content, key: &Key) {
+fn render(ui: &mut egui::Ui, content: &mut Content, key: &Key, trees: &mut TreeCache) {
     let (format, notice, warnings, note, job, lines, galley) = match content {
         Content::Unavailable(message) => {
             ui.colored_label(Palette::of(ui).warning, message.as_str());
             return;
         }
-        Content::Tree { notice, view } => {
+        Content::Tree { format, notice } => {
+            ui.weak(format!("Format: {} · {}", format.label(), key.mode.label()));
             if let Some(notice) = notice {
                 ui.weak(notice.as_str());
             }
-            view.show(ui, key);
+            if let Some(view) = trees.view() {
+                render_tree(ui, view, key);
+            }
             return;
         }
         Content::Ready {
@@ -312,6 +291,17 @@ fn render(ui: &mut egui::Ui, content: &mut Content, key: &Key) {
             .interactive(false)
             .layouter(&mut layouter),
     );
+}
+
+fn render_tree(ui: &mut egui::Ui, view: &mut TreeView, key: &Key) {
+    if let Some(incomplete) = view.incomplete() {
+        ui.colored_label(Palette::of(ui).warning, incomplete);
+    } else if !key.complete {
+        ui.weak("Incomplete body capture; tree contains only retained data.");
+    }
+    ui.push_id(("body-tree", key.side), |ui| {
+        view.show(ui, key.theme, &key.font);
+    });
 }
 
 /// Draws `lines` with a line number gutter, laying out only the rows that
@@ -394,7 +384,7 @@ mod tests {
                 fallback,
                 ..
             },
-        )) = &cache.response
+        )) = &cache.response.shown
         {
             assert_eq!(job.text, "a{\n  color:red\n}");
             let texts: Vec<_> = lines
@@ -413,7 +403,7 @@ mod tests {
             assert_eq!(cache.builds(), 0, "expected prepared CSS content");
         }
         run(&mut cache, &ctx, &css, ViewMode::Raw);
-        if let Some((_, Content::Ready { job, lines, .. })) = &cache.response {
+        if let Some((_, Content::Ready { job, lines, .. })) = &cache.response.shown {
             assert_eq!(job.text.as_bytes(), css.bytes);
             let texts: Vec<_> = lines
                 .as_deref()
@@ -450,7 +440,7 @@ mod tests {
                 job,
                 ..
             },
-        )) = &cache.response
+        )) = &cache.response.shown
         else {
             return Err("expected prepared CSS content".into());
         };
@@ -491,7 +481,7 @@ mod tests {
         });
         output.textures_delta.clear();
         assert_eq!(cache.builds(), 5);
-        let text_color = match &cache.response {
+        let text_color = match &cache.response.shown {
             Some((_, Content::Ready { job, .. })) => job.sections.first().map(|s| s.format.color),
             _ => None,
         };
@@ -507,7 +497,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut cache = BodyViewCache::default();
         let body = br#"{"a":true}"#;
-        let shown = |cache: &BodyViewCache| match &cache.response {
+        let shown = |cache: &BodyViewCache| match &cache.response.shown {
             Some((_, Content::Ready { job, .. })) => job.text.clone(),
             _ => String::new(),
         };
@@ -517,35 +507,66 @@ mod tests {
         assert_eq!(shown(&cache).as_bytes(), body);
     }
 
+    fn tree_builds(cache: &BodyViewCache) -> u64 {
+        cache.response.tree.builds
+    }
+
     #[test]
-    fn json_tree_uses_shared_content_path_and_keeps_its_parse_cache() -> Result<(), String> {
+    fn trees_keep_parse_and_open_rows_across_modes_and_themes() -> Result<(), String> {
+        for (content_type, body) in [
+            ("application/json", &br#"{"b":{"c":1},"a":2,"b":1e2}"#[..]),
+            ("application/xml", b"<a><b><c>1</c></b><d/></a>"),
+        ] {
+            let ctx = egui::Context::default();
+            ctx.set_theme(Theme::Dark);
+            let mut cache = BodyViewCache::default();
+            let body = BodySource {
+                content_type: Some(content_type),
+                ..source(1, body)
+            };
+            run(&mut cache, &ctx, &body, ViewMode::Tree);
+            assert!(matches!(
+                &cache.response.shown,
+                Some((_, Content::Tree { .. }))
+            ));
+            let open = |cache: &mut BodyViewCache| {
+                cache
+                    .response
+                    .tree
+                    .view()
+                    .map_or_else(Vec::new, |view| view.open_rows())
+            };
+            let initial = open(&mut cache);
+            cache
+                .response
+                .tree
+                .view()
+                .ok_or("missing tree")?
+                .collapse_all();
+            run(&mut cache, &ctx, &body, ViewMode::Raw);
+            ctx.set_theme(Theme::Light);
+            run(&mut cache, &ctx, &body, ViewMode::Tree);
+            assert_eq!(tree_builds(&cache), 1, "{content_type} parsed once");
+            assert_eq!(cache.builds(), 3, "the text view still follows the theme");
+            assert!(open(&mut cache).iter().all(|open| !open));
+            assert_ne!(
+                open(&mut cache),
+                initial,
+                "{content_type} kept its rows closed"
+            );
+            let longer = BodySource {
+                complete: false,
+                ..body
+            };
+            run(&mut cache, &ctx, &longer, ViewMode::Tree);
+            run(&mut cache, &ctx, &source(2, body.bytes), ViewMode::Tree);
+            assert_eq!(tree_builds(&cache), 3, "other bytes build a new tree");
+        }
         let ctx = egui::Context::default();
         let mut cache = BodyViewCache::default();
-        let body = source(1, br#"{"b":1,"a":2,"b":1e2}"#);
-        run(&mut cache, &ctx, &body, ViewMode::Tree);
-        let first = match &cache.response {
-            Some((
-                _,
-                Content::Tree {
-                    view: TreeView::Json(tree),
-                    ..
-                },
-            )) => Rc::clone(tree),
-            _ => return Err("JSON did not use the shared Tree content path".into()),
-        };
-        run(&mut cache, &ctx, &body, ViewMode::Raw);
-        ctx.set_theme(Theme::Light);
-        run(&mut cache, &ctx, &body, ViewMode::Tree);
-        assert!(
-            matches!(&cache.response, Some((_, Content::Tree { view: TreeView::Json(tree), .. })) if Rc::ptr_eq(&first, tree))
-        );
-        run(&mut cache, &ctx, &source(2, body.bytes), ViewMode::Tree);
-        assert!(
-            matches!(&cache.response, Some((_, Content::Tree { view: TreeView::Json(tree), .. })) if !Rc::ptr_eq(&first, tree))
-        );
         run(&mut cache, &ctx, &source(3, b"[1,"), ViewMode::Tree);
         assert!(matches!(
-            &cache.response,
+            &cache.response.shown,
             Some((
                 _,
                 Content::Ready {
@@ -566,13 +587,16 @@ mod tests {
             ..source(1, b"<rss><channel><title>A</title></channel></rss>")
         };
         run(&mut cache, &ctx, &xml, ViewMode::Tree);
-        assert!(matches!(&cache.response, Some((_, Content::Tree { .. }))));
+        assert!(matches!(
+            &cache.response.shown,
+            Some((_, Content::Tree { .. }))
+        ));
         let text = BodySource {
             content_type: Some("text/plain"),
             ..source(2, b"plain text")
         };
         run(&mut cache, &ctx, &text, ViewMode::Tree);
-        let fallback = match &cache.response {
+        let fallback = match &cache.response.shown {
             Some((_, Content::Ready { fallback, job, .. })) => {
                 Some((fallback.clone(), job.text.clone()))
             }
@@ -597,7 +621,7 @@ mod tests {
             ..source(1, b"f(function(){a();b()}); x()")
         };
         run(&mut cache, &ctx, &script, ViewMode::Pretty);
-        let (lines, warning) = match &cache.response {
+        let (lines, warning) = match &cache.response.shown {
             Some((_, Content::Ready { lines, warning, .. })) => (lines.as_deref(), warning.clone()),
             _ => (None, None),
         };
@@ -610,7 +634,7 @@ mod tests {
         assert!(warning.is_some_and(|warning| warning.contains("Only part")));
         run(&mut cache, &ctx, &script, ViewMode::Raw);
         assert!(matches!(
-            &cache.response,
+            &cache.response.shown,
             Some((_, Content::Ready { lines: Some(lines), .. })) if lines.len() == 1
         ));
         run(
@@ -620,7 +644,7 @@ mod tests {
             ViewMode::Pretty,
         );
         assert!(matches!(
-            &cache.response,
+            &cache.response.shown,
             Some((_, Content::Ready { lines: None, .. }))
         ));
     }

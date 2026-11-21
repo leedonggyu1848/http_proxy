@@ -19,7 +19,7 @@ mod save;
 mod scope_help;
 mod theme;
 mod toolbar;
-mod xml_tree_view;
+mod tree_view;
 
 use self::detail_tabs::DetailTab;
 use self::filter::RecordFilter;
