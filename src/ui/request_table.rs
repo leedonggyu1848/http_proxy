@@ -7,7 +7,7 @@ use eframe::egui::{self, Key, RichText};
 use egui_extras::{Column, TableBuilder};
 use http_proxy::{Exchange, Outcome, RecordId};
 
-use crate::ui::outcome_view::{outcome_text, status_rank};
+use crate::ui::outcome_view::{outcome_summary, outcome_text, status_rank};
 
 const ROW_HEIGHT: f32 = 20.0;
 const HEADER_HEIGHT: f32 = 22.0;
@@ -329,7 +329,7 @@ fn show_cells(
                         "{} {} · {}",
                         record.request().method(),
                         record.request().target(),
-                        outcome_text(record.outcome()).0,
+                        outcome_summary(record.outcome()),
                     ),
                 )
             });
@@ -361,6 +361,8 @@ fn show_cells(
         let status = ui.add(egui::Label::new(RichText::new(text).color(color)).truncate());
         if matches!(record.outcome(), Outcome::Tunnel(_)) {
             status.on_hover_text(super::scope_help::TUNNEL_NOTE);
+        } else {
+            status.on_hover_text(outcome_summary(record.outcome()));
         }
     });
     row.col(|ui| {

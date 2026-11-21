@@ -1,0 +1,240 @@
+//! Headers and Body tabs of the detail panel: keyboard switching and an
+//! accessible tab list.
+
+use eframe::egui::{self, Key, Modifiers};
+
+/// Section of the selected request shown in the detail panel.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(in crate::ui) enum DetailTab {
+    Headers,
+    Body,
+}
+
+/// Direction of a keyboard tab switch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TabStep {
+    Next,
+    Previous,
+}
+
+impl DetailTab {
+    const ALL: [Self; 2] = [Self::Headers, Self::Body];
+
+    const fn title(self) -> &'static str {
+        match self {
+            Self::Headers => "Headers",
+            Self::Body => "Body",
+        }
+    }
+
+    /// Moves to the neighbouring tab, wrapping around at either end.
+    fn stepped(self, step: TabStep) -> Self {
+        let count = Self::ALL.len();
+        let index = Self::ALL.iter().position(|&tab| tab == self).unwrap_or(0);
+        let next = match step {
+            TabStep::Next => (index + 1) % count,
+            TabStep::Previous => (index + count - 1) % count,
+        };
+        Self::ALL.get(next).copied().unwrap_or(self)
+    }
+}
+
+/// Maps a key press to a tab switch: `F6` and `Ctrl+PageDown` go to the next
+/// tab and `Ctrl+PageUp` to the previous one.
+///
+/// Modifiers are compared with [`Modifiers::matches_exact`] because egui-winit
+/// reports Ctrl as both `ctrl` and `command` outside macOS.
+fn tab_step(key: Key, modifiers: Modifiers) -> Option<TabStep> {
+    match key {
+        Key::F6 if modifiers.matches_exact(Modifiers::NONE) => Some(TabStep::Next),
+        Key::PageDown if modifiers.matches_exact(Modifiers::CTRL) => Some(TabStep::Next),
+        Key::PageUp if modifiers.matches_exact(Modifiers::CTRL) => Some(TabStep::Previous),
+        _ => None,
+    }
+}
+
+/// Applies and consumes the tab shortcuts pressed this frame.
+pub(in crate::ui) fn apply_shortcuts(ui: &egui::Ui, tab: &mut DetailTab) {
+    ui.input_mut(|input| {
+        input.events.retain(|event| {
+            if let egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } = *event
+                && let Some(step) = tab_step(key, modifiers)
+            {
+                *tab = tab.stepped(step);
+                return false;
+            }
+            true
+        });
+    });
+}
+
+/// Shows the tabs as an accessibility tab list whose items report selection
+/// instead of a toggle-button state, and returns the area the bar occupies.
+///
+/// The tab list scope sits inside `horizontal` so the bar stays one row tall;
+/// a scope with its own horizontal layout would claim the rest of the panel.
+pub(in crate::ui) fn show(ui: &mut egui::Ui, current: &mut DetailTab) -> egui::Rect {
+    ui.horizontal(|ui| {
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .accessibility_role(egui::accesskit::Role::TabList)
+                .accessibility_label("Request details"),
+            |ui| {
+                for tab in DetailTab::ALL {
+                    show_tab(ui, current, tab);
+                }
+            },
+        );
+    })
+    .response
+    .rect
+}
+
+fn show_tab(ui: &mut egui::Ui, current: &mut DetailTab, tab: DetailTab) {
+    let selected = *current == tab;
+    let response = ui.selectable_label(selected, tab.title());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::Role::Tab, ui.is_enabled(), selected, tab.title())
+    });
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.clear_toggled();
+        node.set_selected(selected);
+    });
+    if response.clicked() {
+        *current = tab;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn steps_wrap_around_both_ends() {
+        assert_eq!(DetailTab::Headers.stepped(TabStep::Next), DetailTab::Body);
+        assert_eq!(DetailTab::Body.stepped(TabStep::Next), DetailTab::Headers);
+        assert_eq!(
+            DetailTab::Headers.stepped(TabStep::Previous),
+            DetailTab::Body
+        );
+        assert_eq!(
+            DetailTab::Body.stepped(TabStep::Previous),
+            DetailTab::Headers
+        );
+    }
+
+    #[test]
+    fn maps_only_exact_tab_shortcuts() {
+        assert_eq!(tab_step(Key::F6, Modifiers::NONE), Some(TabStep::Next));
+        assert_eq!(
+            tab_step(Key::PageDown, Modifiers::CTRL),
+            Some(TabStep::Next)
+        );
+        assert_eq!(
+            tab_step(Key::PageUp, Modifiers::CTRL),
+            Some(TabStep::Previous)
+        );
+        // Linux and Windows deliver Ctrl as both `ctrl` and `command`.
+        let linux_ctrl = Modifiers::CTRL | Modifiers::COMMAND;
+        assert_eq!(tab_step(Key::PageDown, linux_ctrl), Some(TabStep::Next));
+        assert_eq!(tab_step(Key::PageUp, linux_ctrl), Some(TabStep::Previous));
+        // Plain paging belongs to the request list, and other modifier
+        // combinations stay available to egui and the platform.
+        assert_eq!(tab_step(Key::PageDown, Modifiers::NONE), None);
+        assert_eq!(tab_step(Key::PageUp, Modifiers::NONE), None);
+        assert_eq!(tab_step(Key::F6, Modifiers::SHIFT), None);
+        assert_eq!(
+            tab_step(Key::PageDown, Modifiers::CTRL | Modifiers::SHIFT),
+            None
+        );
+        assert_eq!(tab_step(Key::Tab, Modifiers::CTRL), None);
+    }
+
+    fn key_press(key: Key, modifiers: Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn exposes_tabs_and_consumes_only_tab_shortcuts() -> Result<(), Box<dyn std::error::Error>> {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut tab = DetailTab::Headers;
+        let input = egui::RawInput {
+            events: vec![
+                key_press(Key::PageDown, Modifiers::CTRL | Modifiers::COMMAND),
+                key_press(Key::PageDown, Modifiers::NONE),
+            ],
+            ..Default::default()
+        };
+        let mut remaining = Vec::new();
+        let mut bar = egui::Rect::NOTHING;
+        let mut row_height = 0.0;
+        let mut output = ctx.run_ui(input, |ui| {
+            apply_shortcuts(ui, &mut tab);
+            remaining = ui.input(|input| input.events.clone());
+            row_height = ui.spacing().interact_size.y;
+            bar = show(ui, &mut tab);
+        });
+        // The bar must leave the rest of the panel to the details below it.
+        assert!(bar.height() <= row_height + 1.0, "tab bar is {bar:?}");
+        assert_eq!(tab, DetailTab::Body);
+        output.textures_delta.clear();
+        assert!(matches!(
+            remaining.as_slice(),
+            [egui::Event::Key {
+                key: Key::PageDown,
+                modifiers: Modifiers::NONE,
+                ..
+            }]
+        ));
+
+        let tree = output
+            .platform_output
+            .accesskit_update
+            .ok_or("missing accessibility tree")?;
+        let node = |id| {
+            tree.nodes
+                .iter()
+                .find(|(node_id, _)| *node_id == id)
+                .map(|(_, node)| node)
+        };
+        let (_, list) = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == egui::Role::TabList)
+            .ok_or("missing tab list")?;
+        assert_eq!(list.label(), Some("Request details"));
+        let tabs: Vec<_> = list
+            .children()
+            .iter()
+            .filter_map(|&id| node(id))
+            .map(|tab| {
+                (
+                    tab.role(),
+                    tab.label().unwrap_or_default().to_owned(),
+                    tab.is_selected(),
+                    tab.toggled(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            tabs,
+            vec![
+                (egui::Role::Tab, "Headers".to_owned(), Some(false), None),
+                (egui::Role::Tab, "Body".to_owned(), Some(true), None),
+            ]
+        );
+        Ok(())
+    }
+}

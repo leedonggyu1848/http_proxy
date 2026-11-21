@@ -44,6 +44,31 @@ pub(in crate::ui) fn outcome_text(outcome: &Outcome) -> (String, Color32) {
     }
 }
 
+/// Plain-language class of an HTTP status code, so that success and error do
+/// not depend on the status color alone.
+pub(in crate::ui) const fn status_class(code: u16) -> &'static str {
+    match code {
+        100..=199 => "informational",
+        200..=299 => "success",
+        300..=399 => "redirect",
+        400..=499 => "client error",
+        500..=599 => "server error",
+        _ => "nonstandard status",
+    }
+}
+
+/// Status text with the response class appended, for tooltips and screen
+/// readers. Other outcomes already name their state in the text.
+pub(in crate::ui) fn outcome_summary(outcome: &Outcome) -> String {
+    let (text, _) = outcome_text(outcome);
+    match outcome {
+        Outcome::Response(response) => {
+            format!("{text} ({})", status_class(response.status().as_u16()))
+        }
+        _ => text,
+    }
+}
+
 fn tunnel_summary(tunnel: &TunnelPreview) -> (String, Color32) {
     match tunnel.snapshot().state() {
         TunnelState::Open => ("Tunnel · open".to_owned(), Color32::LIGHT_BLUE),
@@ -124,6 +149,23 @@ pub(in crate::ui) fn elapsed_millis(duration: std::time::Duration) -> f64 {
 mod tests {
     use super::*;
     use http_proxy::FailureStage;
+
+    #[test]
+    fn names_every_status_class() {
+        assert_eq!(status_class(101), "informational");
+        assert_eq!(status_class(200), "success");
+        assert_eq!(status_class(204), "success");
+        assert_eq!(status_class(304), "redirect");
+        assert_eq!(status_class(404), "client error");
+        assert_eq!(status_class(503), "server error");
+        assert_eq!(status_class(999), "nonstandard status");
+    }
+
+    #[test]
+    fn summary_keeps_non_response_text() {
+        assert_eq!(outcome_summary(&Outcome::InFlight), "Pending");
+        assert_eq!(outcome_summary(&Outcome::Cancelled), "Cancelled by client");
+    }
 
     #[test]
     fn failure_stage_is_shared_by_list_details_and_search() {

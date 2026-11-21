@@ -2,6 +2,7 @@ mod app_paths;
 mod body_view;
 mod browser_panel;
 mod ca_panel;
+mod detail_tabs;
 mod detail_view;
 mod filter;
 mod image_view;
@@ -14,7 +15,7 @@ mod save;
 mod scope_help;
 mod toolbar;
 
-use self::detail_view::DetailTab;
+use self::detail_tabs::DetailTab;
 use self::filter::RecordFilter;
 use self::toolbar::PortChoice;
 
