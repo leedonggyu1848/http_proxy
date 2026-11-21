@@ -5,7 +5,9 @@ use bytes::Bytes;
 use http::HeaderMap;
 use http_body::{Body, Frame, SizeHint};
 
+use crate::BodyLifecycle;
 use crate::domain::RetentionBudget;
+use crate::journal::BodySide;
 use crate::{BodyPreview, CapturedHeader, FullLog, HeaderPreview};
 
 pub(super) const BODY_PREVIEW_BYTES: usize = 8 * 1024;
@@ -75,7 +77,10 @@ pub(super) fn bounded_text(value: &str, max_bytes: usize) -> String {
     format!("{prefix}…")
 }
 
-fn redacted_value<'a>(name: &http::HeaderName, value: &'a http::HeaderValue) -> &'a [u8] {
+pub(super) fn redacted_value<'a>(
+    name: &http::HeaderName,
+    value: &'a http::HeaderValue,
+) -> &'a [u8] {
     if matches!(
         name.as_str(),
         "authorization" | "proxy-authorization" | "cookie" | "set-cookie"
@@ -86,29 +91,16 @@ fn redacted_value<'a>(name: &http::HeaderName, value: &'a http::HeaderValue) -> 
     }
 }
 
-pub(super) fn full_headers(headers: &HeaderMap) -> String {
-    headers
-        .iter()
-        .fold(String::new(), |mut text, (name, value)| {
-            let value = redacted_value(name, value).escape_ascii().to_string();
-            text.push_str(name.as_str());
-            text.push_str(": ");
-            text.push_str(&value);
-            text.push('\n');
-            text
-        })
-}
-
 pub(super) struct BodyLog {
     log: FullLog,
     id: u64,
-    side: &'static str,
+    side: BodySide,
     ended: bool,
     limited: bool,
 }
 
 impl BodyLog {
-    pub(super) const fn new(log: FullLog, id: u64, side: &'static str) -> Self {
+    pub(super) const fn new(log: FullLog, id: u64, side: BodySide) -> Self {
         Self {
             log,
             id,
@@ -130,7 +122,7 @@ impl BodyLog {
         }
     }
 
-    fn end(&mut self, state: &str) {
+    fn end(&mut self, state: BodyLifecycle) {
         if !self.ended {
             self.log.body_end(self.id, self.side, state);
             self.ended = true;
@@ -152,7 +144,7 @@ where
         if body.is_end_stream() {
             preview.complete();
             if let Some(log) = log.as_mut() {
-                log.end("complete");
+                log.end(BodyLifecycle::Complete);
             }
         }
         Self { body, preview, log }
@@ -183,30 +175,25 @@ where
                 if let Some(trailers) = frame.trailers_ref()
                     && let Some(log) = this.log.as_ref()
                 {
-                    log.log.text(format!(
-                        "[{}] {} trailers\n{}",
-                        log.id,
-                        log.side,
-                        full_headers(trailers)
-                    ));
+                    log.log.trailers(log.id, log.side, trailers);
                 }
                 if this.body.is_end_stream() {
                     this.preview.complete();
                     if let Some(log) = this.log.as_mut() {
-                        log.end("complete");
+                        log.end(BodyLifecycle::Complete);
                     }
                 }
             }
             Poll::Ready(Some(Err(_))) => {
                 this.preview.interrupt();
                 if let Some(log) = this.log.as_mut() {
-                    log.end("interrupted");
+                    log.end(BodyLifecycle::Interrupted);
                 }
             }
             Poll::Ready(None) => {
                 this.preview.complete();
                 if let Some(log) = this.log.as_mut() {
-                    log.end("complete");
+                    log.end(BodyLifecycle::Complete);
                 }
             }
             Poll::Pending => {}
@@ -227,7 +214,7 @@ impl<B> Drop for ObservedBody<B> {
     fn drop(&mut self) {
         self.preview.cancel();
         if let Some(log) = self.log.as_mut() {
-            log.end("cancelled");
+            log.end(BodyLifecycle::Cancelled);
         }
     }
 }
@@ -237,39 +224,6 @@ mod tests {
     use std::io;
 
     use super::*;
-
-    #[test]
-    fn previews_and_full_logs_share_redaction_without_changing_byte_display()
-    -> Result<(), http::header::InvalidHeaderValue> {
-        let mut headers = HeaderMap::new();
-        for name in [
-            "authorization",
-            "proxy-authorization",
-            "cookie",
-            "set-cookie",
-        ] {
-            headers.insert(
-                http::HeaderName::from_static(name),
-                http::HeaderValue::from_static("secret"),
-            );
-        }
-        headers.insert("x-bytes", http::HeaderValue::from_bytes(b"\xff")?);
-        let preview = capture_headers(&headers);
-        let full = full_headers(&headers);
-        for name in [
-            "authorization",
-            "proxy-authorization",
-            "cookie",
-            "set-cookie",
-        ] {
-            assert_eq!(preview.get(name).next(), Some("[REDACTED]"));
-            assert!(full.contains(&format!("{name}: [REDACTED]\n")));
-        }
-        assert!(!full.contains("secret"));
-        assert_eq!(preview.get("x-bytes").next(), Some("\u{fffd}"));
-        assert!(full.contains("x-bytes: \\xff\n"));
-        Ok(())
-    }
 
     #[test]
     fn recognizes_png_media_types() {
@@ -320,10 +274,10 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("limited.log");
         let log = FullLog::with_body_limit(3)?;
-        let mut body = BodyLog::new(log.clone(), 9, "Response");
+        let mut body = BodyLog::new(log.clone(), 9, BodySide::Response);
         body.observe(b"abcd");
         body.observe(b"ef");
-        body.end("complete");
+        body.end(BodyLifecycle::Complete);
         log.export(path.clone())?
             .recv()
             .map_err(io::Error::other)??;

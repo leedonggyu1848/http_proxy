@@ -1,3 +1,4 @@
+use std::fmt;
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -5,8 +6,45 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
+use http::{HeaderMap, Method};
 use tempfile::NamedTempFile;
+
+use crate::capture::redacted_value;
+use crate::{BodyLifecycle, FailureStage, Outcome, RecordId, TunnelSnapshot};
+
+#[derive(Clone, Copy, Debug)]
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "Body direction is an internal journal API, not a public crate API"
+)]
+pub(crate) enum BodySide {
+    Request,
+    Response,
+}
+
+impl fmt::Display for BodySide {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Request => "Request",
+            Self::Response => "Response",
+        })
+    }
+}
+
+fn full_headers(headers: &HeaderMap) -> String {
+    headers
+        .iter()
+        .fold(String::new(), |mut text, (name, value)| {
+            let value = redacted_value(name, value).escape_ascii().to_string();
+            text.push_str(name.as_str());
+            text.push_str(": ");
+            text.push_str(&value);
+            text.push('\n');
+            text
+        })
+}
 
 const QUEUE_CAPACITY: usize = 1_024;
 const EVENT_BYTES: usize = 8 * 1_024;
@@ -96,7 +134,7 @@ impl FullLog {
         )
     }
 
-    pub(crate) fn text(&self, mut text: String) {
+    fn text(&self, mut text: String) {
         if !text.ends_with('\n') {
             text.push('\n');
         }
@@ -113,10 +151,55 @@ impl FullLog {
         }
     }
 
+    pub(crate) fn request_head(&self, id: u64, method: &Method, target: &str, headers: &HeaderMap) {
+        self.text(format!(
+            "[{id}] Request {method} {target}\n{}",
+            full_headers(headers)
+        ));
+    }
+
+    pub(crate) fn replay_of(&self, id: u64, original: RecordId) {
+        self.text(format!("[{id}] Replay of #{}\n", original.value()));
+    }
+
+    pub(crate) fn response_head(&self, id: u64, headers: &HeaderMap) {
+        self.text(format!(
+            "[{id}] Response headers\n{}",
+            full_headers(headers)
+        ));
+    }
+
+    pub(crate) fn failure(&self, id: u64, stage: FailureStage, message: &str) {
+        self.text(format!(
+            "[{id}] Failure {stage}: {}\n",
+            message.escape_debug()
+        ));
+    }
+
+    pub(crate) fn settled(&self, id: u64, outcome: &Outcome, elapsed: Duration) {
+        let timing_label = if matches!(outcome, Outcome::Response(_)) {
+            "Response headers in"
+        } else {
+            "Settled after"
+        };
+        self.text(format!(
+            "[{id}] {outcome} · {timing_label} {:.1} ms\n",
+            elapsed.as_secs_f64() * 1000.0
+        ));
+    }
+
+    pub(crate) fn tunnel_ended(&self, id: u64, tunnel: &TunnelSnapshot) {
+        self.text(format!("[{id}] Tunnel ended {:?} · {} bytes client→upstream · {} bytes upstream→client · {:.1} ms\n", tunnel.state(), tunnel.client_to_upstream(), tunnel.upstream_to_client(), tunnel.duration().as_secs_f64() * 1000.0));
+    }
+
+    pub(crate) fn trailers(&self, id: u64, side: BodySide, headers: &HeaderMap) {
+        self.text(format!("[{id}] {side} trailers\n{}", full_headers(headers)));
+    }
+
     /// Writes body bytes while the session body budget lasts.
     ///
     /// Returns `false` when some of `bytes` were not written.
-    pub(crate) fn body(&self, id: u64, side: &str, bytes: &[u8]) -> bool {
+    pub(crate) fn body(&self, id: u64, side: BodySide, bytes: &[u8]) -> bool {
         let allowed = self.reserve_body(bytes.len());
         let written = bytes.get(..allowed).unwrap_or_default();
         for chunk in written.chunks(BODY_CHUNK_BYTES) {
@@ -128,7 +211,7 @@ impl FullLog {
         allowed == bytes.len()
     }
 
-    pub(crate) fn body_omitted(&self, id: u64, side: &str) {
+    pub(crate) fn body_omitted(&self, id: u64, side: BodySide) {
         self.text(format!(
             "[{id}] {side} body: later bytes omitted because the session body limit of {} was reached",
             self.formatted_body_limit()
@@ -147,7 +230,13 @@ impl FullLog {
         usize::try_from(remaining.min(wanted)).unwrap_or(length)
     }
 
-    pub(crate) fn body_end(&self, id: u64, side: &str, state: &str) {
+    pub(crate) fn body_end(&self, id: u64, side: BodySide, state: BodyLifecycle) {
+        let state = match state {
+            BodyLifecycle::Streaming => "streaming",
+            BodyLifecycle::Complete => "complete",
+            BodyLifecycle::Interrupted => "interrupted",
+            BodyLifecycle::Cancelled => "cancelled",
+        };
         self.text(format!("[{id}] {side} body: {state}"));
     }
 
@@ -292,12 +381,161 @@ mod tests {
     }
 
     #[test]
+    fn previews_and_full_logs_share_redaction_without_changing_byte_display()
+    -> Result<(), http::header::InvalidHeaderValue> {
+        let mut headers = HeaderMap::new();
+        for name in [
+            "authorization",
+            "proxy-authorization",
+            "cookie",
+            "set-cookie",
+        ] {
+            headers.insert(
+                http::HeaderName::from_static(name),
+                http::HeaderValue::from_static("secret"),
+            );
+        }
+        headers.insert("x-bytes", http::HeaderValue::from_bytes(b"\xff")?);
+        let preview = crate::capture_headers(&headers);
+        let full = full_headers(&headers);
+        for name in [
+            "authorization",
+            "proxy-authorization",
+            "cookie",
+            "set-cookie",
+        ] {
+            assert_eq!(preview.get(name).next(), Some("[REDACTED]"));
+            assert!(full.contains(&format!("{name}: [REDACTED]\n")));
+        }
+        assert!(!full.contains("secret"));
+        assert_eq!(preview.get("x-bytes").next(), Some("\u{fffd}"));
+        assert!(full.contains("x-bytes: \\xff\n"));
+        Ok(())
+    }
+
+    fn assert_output(write: impl FnOnce(&FullLog), expected: &str) -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let log = FullLog::new()?;
+        write(&log);
+        assert_eq!(exported(&log, directory.path().join("log.txt"))?, expected);
+        Ok(())
+    }
+
+    fn headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("cookie", http::HeaderValue::from_static("secret"));
+        headers.insert("x-test", http::HeaderValue::from_static("value"));
+        headers
+    }
+
+    #[test]
+    fn request_head_format() -> io::Result<()> {
+        assert_output(
+            |log| log.request_head(1, &Method::GET, "http://example.test/", &headers()),
+            "[1] Request GET http://example.test/\ncookie: [REDACTED]\nx-test: value\n",
+        )
+    }
+
+    #[test]
+    fn response_head_format() -> io::Result<()> {
+        assert_output(
+            |log| log.response_head(2, &headers()),
+            "[2] Response headers\ncookie: [REDACTED]\nx-test: value\n",
+        )
+    }
+
+    #[test]
+    fn replay_format() -> io::Result<()> {
+        assert_output(
+            |log| log.replay_of(2, RecordId::new(1)),
+            "[2] Replay of #1\n",
+        )
+    }
+
+    #[test]
+    fn failure_format() -> io::Result<()> {
+        assert_output(
+            |log| log.failure(3, FailureStage::Request, "bad\ninput"),
+            "[3] Failure Request: bad\\ninput\n",
+        )
+    }
+
+    #[test]
+    fn settled_format() -> io::Result<()> {
+        assert_output(
+            |log| log.settled(4, &Outcome::Cancelled, Duration::from_micros(1250)),
+            "[4] Cancelled by the client · Settled after 1.2 ms\n",
+        )
+    }
+
+    #[test]
+    fn response_settled_format() -> io::Result<()> {
+        let response = crate::CapturedResponse::new(
+            http::StatusCode::OK,
+            http::Version::HTTP_11,
+            "OK".to_owned(),
+            crate::capture_headers(&HeaderMap::new()),
+            crate::BodyPreview::new(0),
+        );
+        assert_output(
+            |log| log.settled(4, &Outcome::Response(response), Duration::from_millis(2)),
+            "[4] Response 200 · Response headers in 2.0 ms\n",
+        )
+    }
+
+    #[test]
+    fn tunnel_ended_format() -> io::Result<()> {
+        let tunnel = crate::TunnelPreview::new();
+        tunnel.add_client_to_upstream(12);
+        tunnel.add_upstream_to_client(34);
+        tunnel.close();
+        let snapshot = tunnel.snapshot();
+        assert_output(
+            |log| log.tunnel_ended(5, &snapshot),
+            &format!(
+                "[5] Tunnel ended Closed · 12 bytes client→upstream · 34 bytes upstream→client · {:.1} ms\n",
+                snapshot.duration().as_secs_f64() * 1000.0
+            ),
+        )
+    }
+
+    #[test]
+    fn trailers_format() -> io::Result<()> {
+        for (side, label) in [
+            (BodySide::Request, "Request"),
+            (BodySide::Response, "Response"),
+        ] {
+            assert_output(
+                |log| log.trailers(6, side, &headers()),
+                &format!("[6] {label} trailers\ncookie: [REDACTED]\nx-test: value\n"),
+            )?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn body_lifecycle_format() -> io::Result<()> {
+        for (state, label) in [
+            (BodyLifecycle::Streaming, "streaming"),
+            (BodyLifecycle::Complete, "complete"),
+            (BodyLifecycle::Interrupted, "interrupted"),
+            (BodyLifecycle::Cancelled, "cancelled"),
+        ] {
+            assert_output(
+                |log| log.body_end(7, BodySide::Response, state),
+                &format!("[7] Response body: {label}\n"),
+            )?;
+        }
+        Ok(())
+    }
+
+    #[test]
     fn omission_uses_the_configured_limit() -> io::Result<()> {
         let directory = tempfile::tempdir()?;
         for (limit, expected) in [(3, "3 bytes"), (SESSION_BODY_LIMIT_BYTES, "512 MiB")] {
             let log = FullLog::with_body_limit(limit)?;
             assert_eq!(log.body_limit(), limit);
-            log.body_omitted(1, "Request");
+            log.body_omitted(1, BodySide::Request);
             let text = exported(&log, directory.path().join(format!("{limit}.txt")))?;
             assert_eq!(
                 text,
@@ -330,8 +568,8 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let log = FullLog::new()?;
         let body: Vec<u8> = (0..=255).cycle().take(20_000).collect();
-        assert!(log.body(7, "Request", &body));
-        log.body_end(7, "Request", "complete");
+        assert!(log.body(7, BodySide::Request, &body));
+        log.body_end(7, BodySide::Request, BodyLifecycle::Complete);
         let text = exported(&log, directory.path().join("session.txt"))?;
         let mut expected = String::new();
         for chunk in body.chunks(BODY_CHUNK_BYTES) {
@@ -347,12 +585,12 @@ mod tests {
     fn body_limit_writes_a_prefix_and_reports_the_omission() -> io::Result<()> {
         let directory = tempfile::tempdir()?;
         let log = FullLog::with_body_limit(5)?;
-        assert!(log.body(1, "Request", b"abc"));
+        assert!(log.body(1, BodySide::Request, b"abc"));
         assert!(!log.body_limit_reached());
-        assert!(!log.body(1, "Request", b"defg"));
+        assert!(!log.body(1, BodySide::Request, b"defg"));
         assert!(log.body_limit_reached());
-        assert!(!log.body(2, "Response", b"h"));
-        assert!(log.body(2, "Response", b""));
+        assert!(!log.body(2, BodySide::Response, b"h"));
+        assert!(log.body(2, BodySide::Response, b""));
         let text = exported(&log, directory.path().join("limited.txt"))?;
         assert_eq!(
             text,

@@ -270,7 +270,14 @@ impl ProxyHandle {
             } else {
                 CaptureSource::HttpProxy
             };
-            let capture = CaptureContext::start(&request, source, &target, &engine);
+            let capture = CaptureContext::start(
+                request.method(),
+                request.headers(),
+                request.extensions().get::<crate::RecordId>().copied(),
+                source,
+                &target,
+                &engine,
+            );
             let request = request.map(|body| body.map_err(infallible_to_hyper).boxed());
             // Resolve before HTTPS as well, preserving the loop guard.
             let response = if source == CaptureSource::InspectedHttps {
