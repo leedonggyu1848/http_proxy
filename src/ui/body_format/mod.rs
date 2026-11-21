@@ -8,6 +8,7 @@
 
 pub(in crate::ui) mod form;
 pub(in crate::ui) mod highlight;
+mod javascript;
 mod json;
 mod markup;
 pub(in crate::ui) mod xml;
@@ -19,6 +20,7 @@ pub(in crate::ui) enum BodyFormat {
     Form,
     Markup,
     Xml,
+    JavaScript,
     Text,
 }
 
@@ -46,6 +48,15 @@ impl BodyFormat {
             || subtype.ends_with("+xml")
         {
             Self::Xml
+        } else if matches!(
+            essence.as_str(),
+            "text/javascript"
+                | "application/javascript"
+                | "application/x-javascript"
+                | "application/ecmascript"
+                | "text/ecmascript"
+        ) {
+            Self::JavaScript
         } else {
             Self::Text
         }
@@ -57,6 +68,7 @@ impl BodyFormat {
             Self::Form => "Form",
             Self::Markup => "HTML",
             Self::Xml => "XML",
+            Self::JavaScript => "JavaScript",
             Self::Text => "Text",
         }
     }
@@ -159,6 +171,9 @@ pub(in crate::ui) struct Formatted {
     pub(in crate::ui) fallback: Option<String>,
     /// What the shown text leaves out, such as the rest of malformed XML.
     pub(in crate::ui) warning: Option<String>,
+    /// Neutral information about the shown text, such as the source map a
+    /// script points to.
+    pub(in crate::ui) note: Option<String>,
 }
 
 /// Formats `text` for `mode`. Pretty falls back to the original text with a
@@ -176,25 +191,46 @@ pub(in crate::ui) fn format(format: BodyFormat, mode: ViewMode, text: &str) -> F
             markup::pretty(text).map(complete)
         }
         (ViewMode::Pretty | ViewMode::Tree, BodyFormat::Xml) => xml::pretty(text),
+        (ViewMode::Pretty | ViewMode::Tree, BodyFormat::JavaScript) => {
+            return javascript_pretty(text);
+        }
     };
     match pretty {
         Ok((styled, warning)) => Formatted {
             styled,
             fallback: None,
             warning,
+            note: None,
         },
-        Err(reason) => raw(
-            text,
-            Some(format!(
-                "Showing raw text: could not format as {}: {reason}.",
-                format.label()
-            )),
-        ),
+        Err(reason) => unformatted(format, text, &reason),
     }
+}
+
+/// The original text with the reason Pretty could not format it.
+fn unformatted(format: BodyFormat, text: &str, reason: &str) -> Formatted {
+    raw(
+        text,
+        Some(format!(
+            "Showing raw text: could not format as {}: {reason}.",
+            format.label()
+        )),
+    )
 }
 
 const fn complete(styled: Styled) -> (Styled, Option<String>) {
     (styled, None)
+}
+
+fn javascript_pretty(text: &str) -> Formatted {
+    match javascript::pretty(text) {
+        Ok(pretty) => Formatted {
+            styled: pretty.styled,
+            fallback: None,
+            warning: pretty.warning,
+            note: pretty.note,
+        },
+        Err(reason) => unformatted(BodyFormat::JavaScript, text, &reason),
+    }
 }
 
 fn raw(text: &str, fallback: Option<String>) -> Formatted {
@@ -202,6 +238,7 @@ fn raw(text: &str, fallback: Option<String>) -> Formatted {
         styled: Styled::plain(text),
         fallback,
         warning: None,
+        note: None,
     }
 }
 
@@ -229,7 +266,14 @@ mod tests {
             (Some("application/soap+xml"), BodyFormat::Xml),
             (Some("image/svg+xml"), BodyFormat::Xml),
             (Some("text/plain"), BodyFormat::Text),
-            (Some("application/javascript"), BodyFormat::Text),
+            (Some("application/javascript"), BodyFormat::JavaScript),
+            (
+                Some("text/javascript; charset=utf-8"),
+                BodyFormat::JavaScript,
+            ),
+            (Some("application/x-javascript"), BodyFormat::JavaScript),
+            (Some("application/ecmascript"), BodyFormat::JavaScript),
+            (Some("Text/ECMAScript"), BodyFormat::JavaScript),
             (Some("jsonish"), BodyFormat::Text),
             (None, BodyFormat::Text),
         ] {

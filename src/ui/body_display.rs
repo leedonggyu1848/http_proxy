@@ -9,6 +9,9 @@ use crate::ui::xml_tree_view::XmlTreeView;
 use eframe::egui::{self, Galley, text::LayoutJob};
 use std::sync::Arc;
 
+/// Height of the numbered line view before it scrolls.
+const LINE_VIEW_HEIGHT: f32 = 480.0;
+
 /// Which body of an exchange is shown; both can be on screen at once.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(in crate::ui) enum BodySide {
@@ -52,7 +55,10 @@ enum Content {
         notice: Option<String>,
         fallback: Option<String>,
         warning: Option<String>,
+        note: Option<String>,
         job: LayoutJob,
+        /// One layout per line for formats shown with line numbers.
+        lines: Option<Vec<LayoutJob>>,
         /// The last laid-out galley and the wrap width it was laid out for.
         galley: Option<(u32, Arc<Galley>)>,
     },
@@ -135,18 +141,25 @@ fn build(source: &BodySource<'_>, key: &Key, text_color: egui::Color32) -> Conte
         }
     }
     let formatted = body_format::format(format, key.mode, &text);
+    let numbered = format == BodyFormat::JavaScript;
+    let partial = (numbered && !source.complete).then(|| {
+        "Only part of the script was captured; the view ends where the preview ends.".to_owned()
+    });
     Content::Ready {
         format,
         notice,
         fallback: formatted.fallback.or(tree_fallback),
-        warning: formatted.warning,
+        warning: formatted.warning.or(partial),
+        note: formatted.note,
         job: highlight::layout_job(&formatted.styled, &palette, text_color, &key.font),
+        lines: numbered
+            .then(|| highlight::line_jobs(&formatted.styled, &palette, text_color, &key.font)),
         galley: None,
     }
 }
 
 fn render(ui: &mut egui::Ui, content: &mut Content, key: &Key) {
-    let (format, notice, warnings, job, galley) = match content {
+    let (format, notice, warnings, note, job, lines, galley) = match content {
         Content::Unavailable(message) => {
             ui.colored_label(Palette::of(ui).warning, message.as_str());
             return;
@@ -171,9 +184,19 @@ fn render(ui: &mut egui::Ui, content: &mut Content, key: &Key) {
             notice,
             fallback,
             warning,
+            note,
             job,
+            lines,
             galley,
-        } => (*format, notice, [&*fallback, &*warning], &*job, galley),
+        } => (
+            *format,
+            notice,
+            [&*fallback, &*warning],
+            &*note,
+            &*job,
+            lines.as_deref(),
+            galley,
+        ),
     };
     ui.weak(format!("Format: {} · {}", format.label(), key.mode.label()));
     if let Some(notice) = notice {
@@ -181,6 +204,13 @@ fn render(ui: &mut egui::Ui, content: &mut Content, key: &Key) {
     }
     for warning in warnings.into_iter().flatten() {
         ui.colored_label(Palette::of(ui).warning, warning.as_str());
+    }
+    if let Some(note) = note {
+        ui.weak(note.as_str());
+    }
+    if let Some(lines) = lines {
+        render_numbered_lines(ui, lines, key.side);
+        return;
     }
     let mut text = job.text.as_str();
     let mut layouter = |ui: &egui::Ui, _: &dyn egui::TextBuffer, wrap_width: f32| {
@@ -203,6 +233,41 @@ fn render(ui: &mut egui::Ui, content: &mut Content, key: &Key) {
             .interactive(false)
             .layouter(&mut layouter),
     );
+}
+
+/// Draws `lines` with a line number gutter, laying out only the rows that
+/// are scrolled into view. Long lines scroll sideways instead of wrapping so
+/// each row is one source line.
+fn render_numbered_lines(ui: &mut egui::Ui, lines: &[LayoutJob], side: BodySide) {
+    let font = egui::TextStyle::Monospace.resolve(ui.style());
+    let row_height = ui.fonts_mut(|fonts| fonts.row_height(&font));
+    let digits = lines.len().to_string().len();
+    egui::ScrollArea::both()
+        .id_salt(("body-lines", side))
+        .max_height(LINE_VIEW_HEIGHT)
+        .auto_shrink([false, true])
+        .show_rows(ui, row_height, lines.len(), |ui, rows| {
+            for number in rows {
+                let Some(line) = lines.get(number) else {
+                    break;
+                };
+                // `horizontal` would pad rows to the button height and break
+                // the fixed row height `show_rows` relies on.
+                let row_size = egui::vec2(ui.available_width(), row_height);
+                let layout = egui::Layout::left_to_right(egui::Align::Min);
+                ui.allocate_ui_with_layout(row_size, layout, |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(format!("{:>digits$}", number + 1))
+                                .font(font.clone())
+                                .weak(),
+                        )
+                        .selectable(false),
+                    );
+                    ui.add(egui::Label::new(line.clone()).wrap_mode(egui::TextWrapMode::Extend));
+                });
+            }
+        });
 }
 
 #[cfg(test)]
@@ -307,5 +372,43 @@ mod tests {
                 "{\n  \"a\": 1\n}".to_owned()
             ))
         );
+    }
+
+    #[test]
+    fn numbers_script_lines_and_warns_about_partial_capture() {
+        let ctx = egui::Context::default();
+        let mut cache = BodyViewCache::default();
+        let script = BodySource {
+            content_type: Some("application/javascript"),
+            complete: false,
+            ..source(1, b"f(function(){a();b()}); x()")
+        };
+        run(&mut cache, &ctx, &script, ViewMode::Pretty);
+        let (lines, warning) = match &cache.response {
+            Some((_, Content::Ready { lines, warning, .. })) => (lines.as_deref(), warning.clone()),
+            _ => (None, None),
+        };
+        let texts: Vec<_> = lines
+            .unwrap_or_default()
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect();
+        assert_eq!(texts, ["f(function(){", "  a();", "  b()", "});", "x()"]);
+        assert!(warning.is_some_and(|warning| warning.contains("Only part")));
+        run(&mut cache, &ctx, &script, ViewMode::Raw);
+        assert!(matches!(
+            &cache.response,
+            Some((_, Content::Ready { lines: Some(lines), .. })) if lines.len() == 1
+        ));
+        run(
+            &mut cache,
+            &ctx,
+            &source(2, br#"{"a":1}"#),
+            ViewMode::Pretty,
+        );
+        assert!(matches!(
+            &cache.response,
+            Some((_, Content::Ready { lines: None, .. }))
+        ));
     }
 }
