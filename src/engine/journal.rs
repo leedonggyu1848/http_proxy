@@ -4,7 +4,7 @@ use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, TryLockError};
 use std::thread;
 use std::time::Duration;
 
@@ -56,6 +56,9 @@ pub const SESSION_BODY_LIMIT_BYTES: u64 = 512 * 1_024 * 1_024;
 type ExportResult = io::Result<PathBuf>;
 type Failure = Arc<Mutex<Option<String>>>;
 
+const DISCONNECTED: &str =
+    "Session logging stopped because its writer disconnected; the log is incomplete";
+
 #[derive(Debug)]
 enum Event {
     Append(Vec<u8>),
@@ -63,9 +66,15 @@ enum Event {
 }
 
 /// A disk-backed session journal whose size is independent of UI retention.
+///
+/// The journal never drops an event to keep up with traffic. When its
+/// bounded queue is full, recording waits for the writer thread, which
+/// slows forwarding during a burst instead of losing log records.
 #[derive(Clone, Debug)]
 pub struct FullLog {
-    sender: SyncSender<Event>,
+    /// Serialises submissions so the chunks of one entry stay contiguous and
+    /// an export sees every entry accepted before it.
+    sender: Arc<Mutex<SyncSender<Event>>>,
     failure: Failure,
     body_budget: Arc<AtomicU64>,
     body_limit: u64,
@@ -86,12 +95,16 @@ impl FullLog {
         thread::Builder::new()
             .name("session-journal".to_owned())
             .spawn(move || run(&journal, writer, &receiver, &worker_failure))?;
-        Ok(Self {
-            sender,
+        Ok(Self::from_parts(sender, failure, body_limit))
+    }
+
+    fn from_parts(sender: SyncSender<Event>, failure: Failure, body_limit: u64) -> Self {
+        Self {
+            sender: Arc::new(Mutex::new(sender)),
             failure,
             body_budget: Arc::new(AtomicU64::new(body_limit)),
             body_limit,
-        })
+        }
     }
 
     /// Returns the configured session body limit in bytes.
@@ -134,16 +147,24 @@ impl FullLog {
         if !text.ends_with('\n') {
             text.push('\n');
         }
-        let Ok(mut failure) = self.failure.lock() else {
+        let Ok(sender) = self.sender.lock() else {
+            self.record_failure("The session journal queue is unavailable; the log is incomplete");
             return;
         };
+        if self.error().is_some() {
+            return;
+        }
         for chunk in text.as_bytes().chunks(EVENT_BYTES) {
-            if self
-                .submit_locked(Event::Append(chunk.to_vec()), &mut failure)
-                .is_err()
-            {
+            if send_waiting(&sender, Event::Append(chunk.to_vec())).is_err() {
+                self.record_failure(DISCONNECTED);
                 break;
             }
+        }
+    }
+
+    fn record_failure(&self, message: &str) {
+        if let Ok(mut failure) = self.failure.lock() {
+            failure.get_or_insert_with(|| message.to_owned());
         }
     }
 
@@ -253,39 +274,53 @@ impl FullLog {
     }
 
     fn submit(&self, event: Event) -> io::Result<()> {
-        let mut failure = self
-            .failure
-            .lock()
-            .map_err(|_| io::Error::other("The session journal error state is unavailable"))?;
-        self.submit_locked(event, &mut failure)
-    }
-
-    fn submit_locked(&self, event: Event, failure: &mut Option<String>) -> io::Result<()> {
-        if let Some(message) = failure.as_ref() {
-            return Err(io::Error::other(message.clone()));
-        }
-        let is_export = matches!(&event, Event::Export(..));
-        match self.sender.try_send(event) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) if is_export => Err(io::Error::new(
+        let busy = || {
+            io::Error::new(
                 io::ErrorKind::WouldBlock,
                 "Session logging is busy; retry saving the log shortly",
-            )),
-            Err(error) => {
-                let message = match error {
-                    TrySendError::Full(_) => {
-                        "Session logging stopped because its queue filled; the log is incomplete"
-                    }
-                    TrySendError::Disconnected(_) => {
-                        "Session logging stopped because its writer disconnected; the log is incomplete"
-                    }
-                }
-                .to_owned();
-                *failure = Some(message.clone());
-                Err(io::Error::other(message))
+            )
+        };
+        let sender = match self.sender.try_lock() {
+            Ok(sender) => sender,
+            Err(TryLockError::WouldBlock) => return Err(busy()),
+            Err(TryLockError::Poisoned(_)) => {
+                return Err(io::Error::other("The session journal queue is unavailable"));
+            }
+        };
+        if let Some(message) = self.error() {
+            return Err(io::Error::other(message));
+        }
+        match sender.try_send(event) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => Err(busy()),
+            Err(TrySendError::Disconnected(_)) => {
+                self.record_failure(DISCONNECTED);
+                Err(io::Error::other(DISCONNECTED))
             }
         }
     }
+}
+
+/// Sends `event`, waiting for queue space instead of dropping it.
+///
+/// On a multi-threaded Tokio worker the wait goes through `block_in_place`
+/// so other proxy tasks keep running while this one waits for the disk.
+fn send_waiting(sender: &SyncSender<Event>, event: Event) -> Result<(), ()> {
+    use tokio::runtime::{Handle, RuntimeFlavor};
+
+    let event = match sender.try_send(event) {
+        Ok(()) => return Ok(()),
+        Err(TrySendError::Disconnected(_)) => return Err(()),
+        Err(TrySendError::Full(event)) => event,
+    };
+    let on_multi_thread_worker = Handle::try_current()
+        .is_ok_and(|handle| handle.runtime_flavor() == RuntimeFlavor::MultiThread);
+    let sent = if on_multi_thread_worker {
+        tokio::task::block_in_place(|| sender.send(event))
+    } else {
+        sender.send(event)
+    };
+    sent.map_err(|_| ())
 }
 
 fn run(
@@ -380,6 +415,16 @@ mod tests {
             .recv()
             .map_err(io::Error::other)??;
         std::fs::read_to_string(path)
+    }
+
+    /// Exports like the UI does: a busy queue is retried, not treated as loss.
+    fn exported_when_idle(log: &FullLog, path: &Path) -> io::Result<String> {
+        loop {
+            match exported(log, path.to_path_buf()) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => thread::yield_now(),
+                result => return result,
+            }
+        }
     }
 
     #[test]
@@ -628,32 +673,79 @@ mod tests {
     }
 
     #[test]
-    fn queue_overflow_is_reported_and_blocks_export() {
-        let (sender, _receiver) = mpsc::sync_channel(1);
-        let log = FullLog {
-            sender,
-            failure: Arc::new(Mutex::new(None)),
-            body_budget: Arc::new(AtomicU64::new(SESSION_BODY_LIMIT_BYTES)),
-            body_limit: SESSION_BODY_LIMIT_BYTES,
+    fn full_queue_waits_for_the_writer_instead_of_dropping() -> io::Result<()> {
+        const EVENTS: usize = 64;
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let log = FullLog::from_parts(sender, Arc::new(Mutex::new(None)), SESSION_BODY_LIMIT_BYTES);
+        let producer = {
+            let log = log.clone();
+            thread::spawn(move || {
+                for index in 0..EVENTS {
+                    log.text(format!("event {index}"));
+                }
+            })
         };
-        log.text("first".to_owned());
-        log.text("lost".to_owned());
-        assert!(
-            log.error()
-                .is_some_and(|error| error.contains("queue filled"))
-        );
-        assert!(log.export(PathBuf::from("unused.txt")).is_err());
+        // The queue holds one event, so the producer can only finish if every
+        // send waits for this consumer instead of failing.
+        for index in 0..EVENTS {
+            let event = receiver
+                .recv_timeout(Duration::from_secs(10))
+                .map_err(io::Error::other)?;
+            assert!(
+                matches!(event, Event::Append(bytes) if bytes == format!("event {index}\n").into_bytes())
+            );
+        }
+        producer
+            .join()
+            .map_err(|_| io::Error::other("producer panicked"))?;
+        assert!(log.error().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn multi_chunk_entries_stay_contiguous_under_contention() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let journal = NamedTempFile::new()?;
+        let writer = BufWriter::new(journal.reopen()?);
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let failure = Arc::new(Mutex::new(None));
+        let log = FullLog::from_parts(sender, Arc::clone(&failure), SESSION_BODY_LIMIT_BYTES);
+        let writer_thread = thread::spawn(move || run(&journal, writer, &receiver, &failure));
+        let producers: Vec<_> = (b'a'..=b'd')
+            .map(|letter| {
+                let log = log.clone();
+                thread::spawn(move || {
+                    let entry = char::from(letter).to_string().repeat(EVENT_BYTES * 3);
+                    for _ in 0..4 {
+                        log.text(entry.clone());
+                    }
+                })
+            })
+            .collect();
+        for producer in producers {
+            producer
+                .join()
+                .map_err(|_| io::Error::other("producer panicked"))?;
+        }
+        let text = exported_when_idle(&log, &directory.path().join("contiguous.txt"))?;
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines.len(), 16);
+        for line in lines {
+            assert_eq!(line.len(), EVENT_BYTES * 3);
+            let first = line.as_bytes().first().copied();
+            assert!(line.bytes().all(|byte| Some(byte) == first));
+        }
+        drop(log);
+        writer_thread
+            .join()
+            .map_err(|_| io::Error::other("writer panicked"))?;
+        Ok(())
     }
 
     #[test]
     fn export_queue_overflow_is_retryable_without_invalidating_log() {
         let (sender, receiver) = mpsc::sync_channel(1);
-        let log = FullLog {
-            sender,
-            failure: Arc::new(Mutex::new(None)),
-            body_budget: Arc::new(AtomicU64::new(SESSION_BODY_LIMIT_BYTES)),
-            body_limit: SESSION_BODY_LIMIT_BYTES,
-        };
+        let log = FullLog::from_parts(sender, Arc::new(Mutex::new(None)), SESSION_BODY_LIMIT_BYTES);
         log.text("first".to_owned());
         let error = log.export(PathBuf::from("unused.txt"));
         assert!(matches!(error, Err(error) if error.kind() == io::ErrorKind::WouldBlock));
@@ -663,27 +755,16 @@ mod tests {
     }
 
     #[test]
-    fn later_queue_overflow_preserves_an_accepted_export() -> io::Result<()> {
-        let directory = tempfile::tempdir()?;
-        let journal = NamedTempFile::new()?;
-        let writer = BufWriter::new(journal.reopen()?);
+    fn disconnected_writer_is_reported_and_blocks_export() {
         let (sender, receiver) = mpsc::sync_channel(1);
-        let failure = Arc::new(Mutex::new(None));
-        let log = FullLog {
-            sender,
-            failure: Arc::clone(&failure),
-            body_budget: Arc::new(AtomicU64::new(SESSION_BODY_LIMIT_BYTES)),
-            body_limit: SESSION_BODY_LIMIT_BYTES,
-        };
-        let destination = directory.path().join("snapshot.txt");
-        let saved = log.export(destination.clone())?;
-        log.text("later event exceeds queue capacity".to_owned());
-        assert!(log.error().is_some());
-        drop(log);
-        run(&journal, writer, &receiver, &failure);
-        saved.recv().map_err(io::Error::other)??;
-        assert_eq!(std::fs::read(destination)?, b"");
-        Ok(())
+        drop(receiver);
+        let log = FullLog::from_parts(sender, Arc::new(Mutex::new(None)), SESSION_BODY_LIMIT_BYTES);
+        log.text("lost".to_owned());
+        assert!(
+            log.error()
+                .is_some_and(|error| error.contains("writer disconnected"))
+        );
+        assert!(log.export(PathBuf::from("unused.txt")).is_err());
     }
 
     #[test]
@@ -693,12 +774,7 @@ mod tests {
         let writer = BufWriter::new(File::open(journal.path())?);
         let (sender, receiver) = mpsc::sync_channel(4);
         let failure = Arc::new(Mutex::new(None));
-        let log = FullLog {
-            sender,
-            failure: Arc::clone(&failure),
-            body_budget: Arc::new(AtomicU64::new(SESSION_BODY_LIMIT_BYTES)),
-            body_limit: SESSION_BODY_LIMIT_BYTES,
-        };
+        let log = FullLog::from_parts(sender, Arc::clone(&failure), SESSION_BODY_LIMIT_BYTES);
         log.text("cannot write to read-only journal".to_owned());
         let destination = directory.path().join("snapshot.txt");
         let saved = log.export(destination.clone())?;

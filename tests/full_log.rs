@@ -12,9 +12,16 @@ use tokio::time::timeout;
 const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 const BODY_SIZE: usize = 20_000;
 
+/// Saves the log like the UI does: a busy queue is retried, never treated as
+/// a lost record.
 fn export(log: &FullLog, path: &Path) -> Result<String, Box<dyn Error>> {
-    log.export(path.to_path_buf())?
-        .recv_timeout(TEST_TIMEOUT)??;
+    let saved = loop {
+        match log.export(path.to_path_buf()) {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => std::thread::yield_now(),
+            result => break result?,
+        }
+    };
+    saved.recv_timeout(TEST_TIMEOUT)??;
     Ok(std::fs::read_to_string(path)?)
 }
 
