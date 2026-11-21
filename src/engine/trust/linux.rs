@@ -13,6 +13,12 @@ use tokio::process::Command;
 use super::{CaTrustError, CaTrustStatus};
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long `lock` keeps retrying a contended lock before reporting another registration.
+///
+/// A child process spawned by any thread of this process briefly holds a copy of every open
+/// descriptor until it execs, so a lock released here can stay held for a few milliseconds.
+const LOCK_WAIT: Duration = Duration::from_millis(500);
+const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 #[cfg(target_os = "linux")]
 const TOOL_HELP: &str = "Install NSS certutil: Ubuntu/Debian: sudo apt install libnss3-tools; Fedora: sudo dnf install nss-tools";
 
@@ -106,7 +112,7 @@ impl PlatformStore {
         certificate: &CertificateDer<'_>,
     ) -> Result<CaTrustStatus, CaTrustError> {
         fs::create_dir_all(&self.database)?;
-        let _lock = self.lock()?;
+        let _lock = self.lock().await?;
         if !self.has_database()? {
             self.run(&["-N", "--empty-password"], None).await?;
         }
@@ -141,7 +147,7 @@ impl PlatformStore {
         if !self.has_database()? {
             return Ok(CaTrustStatus::NotInstalled);
         }
-        let _lock = self.lock()?;
+        let _lock = self.lock().await?;
         if self.status(certificate).await? != CaTrustStatus::NotInstalled {
             self.run(&["-D", "-n", &nickname(certificate)], None)
                 .await?;
@@ -169,7 +175,7 @@ impl PlatformStore {
         Ok(false)
     }
 
-    fn lock(&self) -> Result<File, CaTrustError> {
+    async fn lock(&self) -> Result<File, CaTrustError> {
         let lock = OpenOptions::new()
             .read(true)
             .write(true)
@@ -177,9 +183,7 @@ impl PlatformStore {
             .truncate(false)
             .mode(0o600)
             .open(self.database.join(".http-inspector.lock"))?;
-        FileExt::try_lock_exclusive(&lock).map_err(|error| {
-            CaTrustError::Store(format!("Another CA registration may be running: {error}"))
-        })?;
+        lock_exclusive_within(&lock, LOCK_WAIT).await?;
         Ok(lock)
     }
 
@@ -234,6 +238,30 @@ impl PlatformStore {
     }
 }
 
+/// Takes an exclusive lock, retrying while it is contended for at most `wait`.
+///
+/// Retrying absorbs the short window in which a just-spawned child still holds an inherited
+/// copy of a released lock; a registration that keeps the lock longer is still reported.
+async fn lock_exclusive_within(lock: &File, wait: Duration) -> Result<(), CaTrustError> {
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        match FileExt::try_lock_exclusive(lock) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(LOCK_RETRY_INTERVAL).await;
+            }
+            Err(error) => {
+                return Err(CaTrustError::Store(format!(
+                    "Another CA registration may be running: {error}"
+                )));
+            }
+        }
+    }
+}
+
 fn nickname(certificate: &CertificateDer<'_>) -> String {
     format!(
         "HTTP Inspector {}",
@@ -250,6 +278,82 @@ fn certutil() -> std::path::PathBuf {
         }
     }
     "certutil".into()
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use std::error::Error;
+    use std::fs::{File, OpenOptions};
+    use std::path::Path;
+    use std::process::Command;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    use fs2::FileExt;
+
+    use super::{LOCK_WAIT, lock_exclusive_within};
+
+    fn open(path: &Path) -> std::io::Result<File> {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+    }
+
+    /// Regression for #101: children spawned by other threads inherit the released lock
+    /// until they exec, which made an immediate relock fail with `EWOULDBLOCK`.
+    #[tokio::test]
+    async fn relocks_while_other_threads_spawn_children() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join(".http-inspector.lock");
+        let stop = Arc::new(AtomicBool::new(false));
+        let spawners: Vec<_> = (0..4)
+            .map(|_| {
+                let stop = Arc::clone(&stop);
+                std::thread::spawn(move || -> std::io::Result<()> {
+                    while !stop.load(Ordering::Relaxed) {
+                        Command::new("true").status()?;
+                    }
+                    Ok(())
+                })
+            })
+            .collect();
+        let result = async {
+            for _ in 0..300 {
+                let lock = open(&path)?;
+                lock_exclusive_within(&lock, LOCK_WAIT).await?;
+            }
+            Ok::<_, Box<dyn Error>>(())
+        }
+        .await;
+        stop.store(true, Ordering::Relaxed);
+        for spawner in spawners {
+            spawner.join().map_err(|_| "spawner panicked")??;
+        }
+        result
+    }
+
+    #[tokio::test]
+    async fn reports_a_lock_held_by_another_registration() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join(".http-inspector.lock");
+        let held = open(&path)?;
+        FileExt::try_lock_exclusive(&held)?;
+        let contender = open(&path)?;
+        let error = lock_exclusive_within(&contender, Duration::from_millis(50))
+            .await
+            .err()
+            .ok_or("a held lock must not be acquired")?;
+        assert!(
+            error
+                .to_string()
+                .contains("Another CA registration may be running")
+        );
+        Ok(())
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]
