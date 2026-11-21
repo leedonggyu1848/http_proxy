@@ -1,4 +1,4 @@
-//! PNG response bodies drawn as images, with a hexadecimal fallback.
+//! Image response bodies drawn as images, with a hexadecimal fallback.
 
 use std::fmt::Write as _;
 use std::io::Cursor;
@@ -22,26 +22,27 @@ const HEX_BYTES: usize = 8 * 1024;
 /// Height at which drawn images are scaled down to keep the panel readable.
 const MAX_DISPLAY_HEIGHT: f32 = 480.0;
 
-/// A decoded PNG frame as unmultiplied 8-bit RGBA pixels.
+/// A decoded image frame as unmultiplied 8-bit RGBA pixels.
 #[derive(Debug)]
-pub(in crate::ui) struct PngImage {
+pub(in crate::ui) struct PreviewImage {
     width: u32,
     height: u32,
     rgba: Vec<u8>,
-    /// Length of the PNG file after `Content-Encoding` was removed.
+    /// Length of the image file after `Content-Encoding` was removed.
     file_bytes: usize,
+    format: &'static str,
 }
 
-/// Why a PNG body could not be drawn.
+/// Why an image body could not be drawn.
 #[derive(Debug, thiserror::Error)]
-pub(in crate::ui) enum PngError {
+pub(in crate::ui) enum ImageError {
     #[error("{0}")]
     Encoding(String),
     #[error(
         "The image is {width}×{height} px, larger than the {MAX_IMAGE_SIDE} px per side or 16 megapixel preview limit."
     )]
     TooLarge { width: u32, height: u32 },
-    #[error("The body is not a valid PNG image: {0}")]
+    #[error("The body is not a valid preview image: {0}")]
     Invalid(String),
 }
 
@@ -49,10 +50,13 @@ pub(in crate::ui) enum PngError {
 ///
 /// The image size is read from the header and checked before any pixel
 /// memory is allocated.
-pub(in crate::ui) fn decode_png(bytes: &[u8], encodings: &[&str]) -> Result<PngImage, PngError> {
+pub(in crate::ui) fn decode_png(
+    bytes: &[u8],
+    encodings: &[&str],
+) -> Result<PreviewImage, ImageError> {
     let png_bytes = body_view::decode_complete(bytes, encodings, IMAGE_PREVIEW_BYTES)
-        .map_err(PngError::Encoding)?;
-    let invalid = |error: png::DecodingError| PngError::Invalid(error.to_string());
+        .map_err(ImageError::Encoding)?;
+    let invalid = |error: png::DecodingError| ImageError::Invalid(error.to_string());
     let mut decoder = png::Decoder::new_with_limits(
         Cursor::new(png_bytes.as_slice()),
         png::Limits {
@@ -64,7 +68,7 @@ pub(in crate::ui) fn decode_png(bytes: &[u8], encodings: &[&str]) -> Result<PngI
         || height > MAX_IMAGE_SIDE
         || u64::from(width) * u64::from(height) > MAX_IMAGE_PIXELS
     {
-        return Err(PngError::TooLarge { width, height });
+        return Err(ImageError::TooLarge { width, height });
     }
     // ALPHA expands palettes and low bit depths and always adds an alpha
     // channel, so the output is 8-bit gray+alpha or RGBA.
@@ -72,7 +76,7 @@ pub(in crate::ui) fn decode_png(bytes: &[u8], encodings: &[&str]) -> Result<PngI
     let mut reader = decoder.read_info().map_err(invalid)?;
     let size = reader
         .output_buffer_size()
-        .ok_or(PngError::TooLarge { width, height })?;
+        .ok_or(ImageError::TooLarge { width, height })?;
     let mut buffer = vec![0; size];
     let frame = reader.next_frame(&mut buffer).map_err(invalid)?;
     buffer.truncate(frame.buffer_size());
@@ -85,16 +89,81 @@ pub(in crate::ui) fn decode_png(bytes: &[u8], encodings: &[&str]) -> Result<PngI
             .flat_map(|&[gray, alpha]| [gray, gray, gray, alpha])
             .collect(),
         other => {
-            return Err(PngError::Invalid(format!(
+            return Err(ImageError::Invalid(format!(
                 "unexpected decoded color type {other:?}"
             )));
         }
     };
-    Ok(PngImage {
+    Ok(PreviewImage {
         width,
         height,
         rgba,
         file_bytes: png_bytes.len(),
+        format: "PNG",
+    })
+}
+
+/// Dispatches supported image signatures after removing transfer compression.
+fn decode_image(bytes: &[u8], encodings: &[&str]) -> Result<PreviewImage, ImageError> {
+    let bytes = body_view::decode_complete(bytes, encodings, IMAGE_PREVIEW_BYTES)
+        .map_err(ImageError::Encoding)?;
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        decode_png(&bytes, &[])
+    } else {
+        decode_jpeg(&bytes)
+    }
+}
+
+fn decode_jpeg(bytes: &[u8]) -> Result<PreviewImage, ImageError> {
+    let invalid = |error: jpeg_decoder::Error| ImageError::Invalid(error.to_string());
+    let mut decoder = jpeg_decoder::Decoder::new(Cursor::new(bytes));
+    decoder.set_max_decoding_buffer_size(DECODER_MEMORY_BYTES);
+    decoder.read_info().map_err(invalid)?;
+    let info = decoder
+        .info()
+        .ok_or_else(|| ImageError::Invalid("missing JPEG header".into()))?;
+    let (width, height) = (u32::from(info.width), u32::from(info.height));
+    if width > MAX_IMAGE_SIDE
+        || height > MAX_IMAGE_SIDE
+        || u64::from(width) * u64::from(height) > MAX_IMAGE_PIXELS
+    {
+        return Err(ImageError::TooLarge { width, height });
+    }
+    let pixels = decoder.decode().map_err(invalid)?;
+    let rgba = match info.pixel_format {
+        jpeg_decoder::PixelFormat::RGB24 => pixels
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|&[r, g, b]| [r, g, b, 255])
+            .collect(),
+        jpeg_decoder::PixelFormat::L8 => pixels
+            .iter()
+            .flat_map(|&gray| [gray, gray, gray, 255])
+            .collect(),
+        jpeg_decoder::PixelFormat::CMYK32 => pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|&[c, m, y, k]| {
+                let channel = |ink: u8| {
+                    u8::try_from((255 - u16::from(ink)) * (255 - u16::from(k)) / 255).unwrap_or(0)
+                };
+                [channel(c), channel(m), channel(y), 255]
+            })
+            .collect(),
+        other @ jpeg_decoder::PixelFormat::L16 => {
+            return Err(ImageError::Invalid(format!(
+                "unsupported JPEG pixel format {other:?}"
+            )));
+        }
+    };
+    Ok(PreviewImage {
+        width,
+        height,
+        rgba,
+        file_bytes: bytes.len(),
+        format: "JPEG",
     })
 }
 
@@ -137,9 +206,10 @@ struct Drawn {
     width: u32,
     height: u32,
     file_bytes: usize,
+    format: &'static str,
 }
 
-/// Image or hexadecimal view of the selected PNG response body, with the
+/// Image or hexadecimal view of the selected image response body, with the
 /// last decoded texture kept so it is not decoded again every frame.
 #[derive(Default)]
 pub(in crate::ui) struct ImagePanel {
@@ -214,7 +284,7 @@ impl ImagePanel {
     }
 }
 
-/// Describes the image size, the PNG file size, and, when `Content-Encoding`
+/// Describes the image size, the image file size, and, when `Content-Encoding`
 /// changed it, the number of bytes received.
 fn size_text(drawn: &Drawn, received_bytes: u64) -> String {
     let file_bytes = u64::try_from(drawn.file_bytes).unwrap_or(u64::MAX);
@@ -224,8 +294,8 @@ fn size_text(drawn: &Drawn, received_bytes: u64) -> String {
         format!(" · {received_bytes} bytes received with Content-Encoding")
     };
     format!(
-        "PNG · {}×{} px · {file_bytes} bytes{received}",
-        drawn.width, drawn.height
+        "{} · {}×{} px · {file_bytes} bytes{received}",
+        drawn.format, drawn.width, drawn.height
     )
 }
 
@@ -239,7 +309,7 @@ fn unavailable_reason(snapshot: &BodySnapshot) -> Option<String> {
     }
     (snapshot.retention() != BodyRetention::Prefix).then(|| {
         format!(
-            "The image cannot be drawn because only {} of {} bytes were kept. PNG previews keep up to {} MiB per response and {} MiB across all responses; use Hex to inspect the kept bytes.",
+            "The image cannot be drawn because only {} of {} bytes were kept. Image previews keep up to {} MiB per response and {} MiB across all responses; use Hex to inspect the kept bytes.",
             snapshot.bytes().len(),
             snapshot.observed_bytes(),
             IMAGE_PREVIEW_BYTES / (1024 * 1024),
@@ -254,7 +324,7 @@ fn draw(
     bytes: &[u8],
     encodings: &[&str],
 ) -> Result<Drawn, String> {
-    let image = decode_png(bytes, encodings).map_err(|error| error.to_string())?;
+    let image = decode_image(bytes, encodings).map_err(|error| error.to_string())?;
     let max_side = context.input(|input| input.max_texture_side);
     let (width, height) = (image.width, image.height);
     let pixels = [width, height].map(|side| usize::try_from(side).unwrap_or(usize::MAX));
@@ -265,7 +335,7 @@ fn draw(
     }
     let color = egui::ColorImage::from_rgba_unmultiplied(pixels, &image.rgba);
     let texture = context.load_texture(
-        format!("png-body-{record:?}"),
+        format!("image-body-{record:?}"),
         color,
         TextureOptions::LINEAR,
     );
@@ -274,6 +344,7 @@ fn draw(
         width,
         height,
         file_bytes: image.file_bytes,
+        format: image.format,
     })
 }
 
@@ -287,7 +358,7 @@ fn show_hex(ui: &mut egui::Ui, snapshot: &BodySnapshot) {
     ));
     let mut text = hex_dump(shown);
     egui::ScrollArea::vertical()
-        .id_salt("png-body-hex")
+        .id_salt("image-body-hex")
         .max_height(MAX_DISPLAY_HEIGHT)
         .show(ui, |ui| {
             ui.add(
@@ -335,7 +406,7 @@ mod tests {
     use std::error::Error;
     use std::io::Write;
 
-    use super::{PngError, decode_png, hex_dump};
+    use super::{ImageError, decode_png, hex_dump};
 
     fn png(width: u32, height: u32, color: png::ColorType, pixels: &[u8]) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -378,11 +449,11 @@ mod tests {
         let (truncated, _) = original.split_at(original.len() / 2);
         assert!(matches!(
             decode_png(truncated, &[]),
-            Err(PngError::Invalid(_))
+            Err(ImageError::Invalid(_))
         ));
         assert!(matches!(
             decode_png(b"not an image", &[]),
-            Err(PngError::Invalid(_))
+            Err(ImageError::Invalid(_))
         ));
         let mut corrupt = original;
         if let Some(byte) = corrupt.get_mut(40) {
@@ -391,7 +462,7 @@ mod tests {
         assert!(decode_png(&corrupt, &[]).is_err());
         assert!(matches!(
             decode_png(b"\x1f\x8b broken", &["gzip"]),
-            Err(PngError::Encoding(_))
+            Err(ImageError::Encoding(_))
         ));
     }
 
@@ -411,11 +482,77 @@ mod tests {
         header.extend_from_slice(&crc32(&chunk).to_be_bytes());
         assert!(matches!(
             decode_png(&header, &[]),
-            Err(PngError::TooLarge {
+            Err(ImageError::TooLarge {
                 width: 100_000,
                 height: 100_000
             })
         ));
+    }
+
+    #[test]
+    fn decodes_jpeg_color_models_and_progressive() -> Result<(), Box<dyn Error>> {
+        for (bytes, expected) in [
+            (
+                include_bytes!("../../tests/fixtures/jpeg/rgb.jpg").as_slice(),
+                [240_u8, 20, 10, 255],
+            ),
+            (
+                include_bytes!("../../tests/fixtures/jpeg/progressive.jpg").as_slice(),
+                [240, 20, 10, 255],
+            ),
+            (
+                include_bytes!("../../tests/fixtures/jpeg/gray.jpg").as_slice(),
+                [120, 120, 120, 255],
+            ),
+            (
+                include_bytes!("../../tests/fixtures/jpeg/cmyk.jpg").as_slice(),
+                [255, 0, 0, 255],
+            ),
+        ] {
+            let image = super::decode_image(bytes, &[])?;
+            assert_eq!((image.width, image.height), (16, 12));
+            assert_eq!(image.format, "JPEG");
+            assert_eq!(image.file_bytes, bytes.len());
+            for pixel in image.rgba.as_chunks::<4>().0 {
+                assert!(
+                    pixel
+                        .iter()
+                        .zip(expected)
+                        .all(|(&actual, wanted)| actual.abs_diff(wanted) <= 3),
+                    "{pixel:?}"
+                );
+            }
+            let mut gzip =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            gzip.write_all(bytes)?;
+            assert_eq!(
+                super::decode_image(&gzip.finish()?, &["gzip"])?.rgba,
+                image.rgba
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_invalid_and_oversized_jpeg() {
+        let original = include_bytes!("../../tests/fixtures/jpeg/rgb.jpg");
+        assert!(super::decode_image(b"broken JPEG", &[]).is_err());
+        let (truncated, _) = original.split_at(original.len() / 2);
+        assert!(super::decode_image(truncated, &[]).is_err());
+        for (width, height) in [(8193_u16, 12_u16), (8192, 8192)] {
+            let mut bytes = original.to_vec();
+            let offset = bytes.windows(2).position(|pair| pair == [0xff, 0xc0]);
+            assert!(offset.is_some());
+            if let Some(offset) = offset
+                && let Some(fields) = bytes.get_mut(offset + 5..offset + 9)
+            {
+                fields.copy_from_slice(&[height.to_be_bytes(), width.to_be_bytes()].concat());
+            }
+            assert!(matches!(
+                super::decode_image(&bytes, &[]),
+                Err(ImageError::TooLarge { .. })
+            ));
+        }
     }
 
     fn crc32(bytes: &[u8]) -> u32 {

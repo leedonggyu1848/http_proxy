@@ -12,9 +12,9 @@ use crate::engine::journal::BodySide;
 use crate::engine::journal::FullLog;
 
 pub(in crate::engine) const BODY_PREVIEW_BYTES: usize = 8 * 1024;
-/// Most bytes one PNG response keeps in memory so it can be drawn.
+/// Most bytes one image response keeps in memory so it can be drawn.
 pub const IMAGE_PREVIEW_BYTES: usize = 8 * 1024 * 1024;
-/// Most bytes all PNG responses keep in memory together, across proxy runs.
+/// Most bytes all image responses keep in memory together, across proxy runs.
 pub const IMAGE_PREVIEW_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 static IMAGE_PREVIEW_BUDGET: RetentionBudget = RetentionBudget::new(IMAGE_PREVIEW_BUDGET_BYTES);
 const HEADER_PREVIEW_BYTES: usize = 16 * 1024;
@@ -43,27 +43,28 @@ pub(in crate::engine) fn capture_headers(headers: &HeaderMap) -> HeaderPreview {
     HeaderPreview::new(entries, omitted)
 }
 
-/// Reports whether a `Content-Type` value names a PNG image, ignoring case
+/// Reports whether a `Content-Type` value names a supported image, ignoring case
 /// and media-type parameters.
 #[must_use]
-pub fn is_png_media_type(content_type: &str) -> bool {
-    content_type
-        .split(';')
-        .next()
-        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("image/png"))
+pub fn is_previewable_image_media_type(content_type: &str) -> bool {
+    content_type.split(';').next().is_some_and(|media_type| {
+        ["image/png", "image/jpeg"]
+            .iter()
+            .any(|supported| media_type.trim().eq_ignore_ascii_case(supported))
+    })
 }
 
-/// Creates the response-body preview: PNG responses keep enough bytes to be
+/// Creates the response-body preview: image responses keep enough bytes to be
 /// drawn, within the shared image budget; others keep the default prefix.
-/// A PNG whose declared length already exceeds the per-image limit could
+/// An image whose declared length already exceeds the per-image limit could
 /// never be drawn, so it keeps the default prefix without using the budget.
 pub(in crate::engine) fn response_body_preview(headers: &HeaderMap) -> BodyPreview {
     let header = |name| headers.get(name).and_then(|value| value.to_str().ok());
-    let png = header(http::header::CONTENT_TYPE).is_some_and(is_png_media_type);
+    let image = header(http::header::CONTENT_TYPE).is_some_and(is_previewable_image_media_type);
     let fits = header(http::header::CONTENT_LENGTH)
         .and_then(|value| value.trim().parse::<u64>().ok())
         .is_none_or(|length| length <= IMAGE_PREVIEW_BYTES as u64);
-    if png && fits {
+    if image && fits {
         BodyPreview::with_budget(IMAGE_PREVIEW_BYTES, Some(&IMAGE_PREVIEW_BUDGET))
     } else {
         BodyPreview::new(BODY_PREVIEW_BYTES)
@@ -227,17 +228,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn recognizes_png_media_types() {
-        for value in ["image/png", "IMAGE/PNG", " image/png ; charset=binary"] {
-            assert!(is_png_media_type(value), "{value}");
+    fn recognizes_previewable_image_media_types() {
+        for value in [
+            "image/png",
+            "IMAGE/PNG",
+            " image/png ; charset=binary",
+            "image/jpeg",
+            " IMAGE/JPEG ; q=1",
+        ] {
+            assert!(is_previewable_image_media_type(value), "{value}");
         }
-        for value in ["image/pngx", "image/jpeg", "text/plain; type=image/png", ""] {
-            assert!(!is_png_media_type(value), "{value}");
+        for value in ["image/pngx", "image/webp", "text/plain; type=image/png", ""] {
+            assert!(!is_previewable_image_media_type(value), "{value}");
         }
     }
 
     #[test]
-    fn retains_png_bodies_that_can_be_drawn() {
+    fn retains_image_bodies_that_can_be_drawn() {
         let headers = |pairs: &[(&'static str, &str)]| {
             let mut map = HeaderMap::new();
             for &(name, value) in pairs {
@@ -264,6 +271,19 @@ mod tests {
             ])),
             Some(BODY_PREVIEW_BYTES)
         );
+        for media_type in ["image/jpeg", "IMAGE/JPEG; charset=binary"] {
+            assert_eq!(
+                retained(&headers(&[("content-type", media_type)])),
+                Some(BODY_PREVIEW_BYTES + 1)
+            );
+            assert_eq!(
+                retained(&headers(&[
+                    ("content-type", media_type),
+                    ("content-length", &too_large)
+                ])),
+                Some(BODY_PREVIEW_BYTES)
+            );
+        }
         assert_eq!(
             retained(&headers(&[("content-type", "text/plain")])),
             Some(BODY_PREVIEW_BYTES)

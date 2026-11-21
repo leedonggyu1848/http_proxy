@@ -15,7 +15,9 @@ pub use engine::{
     ReplayTask, StartError, StopError,
 };
 pub use engine::{FullLog, SESSION_BODY_LIMIT_BYTES};
-pub use engine::{IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES, is_png_media_type};
+pub use engine::{
+    IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES, is_previewable_image_media_type,
+};
 
 /// Application display name.
 pub const APP_NAME: &str = "HTTP Inspector";
