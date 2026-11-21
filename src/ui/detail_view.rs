@@ -161,7 +161,7 @@ fn render_optional_body(
     }
 }
 
-/// Draws a body preview; `image` draws PNG bodies of the record as images.
+/// Draws a body preview; `image` draws image bodies of that record as images.
 fn render_body(
     ui: &mut egui::Ui,
     body: &BodyPreview,
@@ -193,9 +193,9 @@ fn render_body(
     let encodings = headers.get("content-encoding").collect::<Vec<_>>();
     let content_type = headers.get("content-type").next();
     if let Some(image) = image
-        && content_type.is_some_and(http_proxy::is_previewable_image_media_type)
+        && let Some(format) = content_type.and_then(http_proxy::ImageFormat::from_media_type)
     {
-        image.show(ui, panel.record, &snapshot, &encodings);
+        image.show(ui, panel.record, &snapshot, &encodings, format);
         return;
     }
     let complete = snapshot.lifecycle() == BodyLifecycle::Complete

@@ -8,6 +8,7 @@ mod detail_tabs;
 mod detail_view;
 mod filter;
 mod fonts;
+mod image_decode;
 mod image_view;
 mod outcome_view;
 mod port_settings;

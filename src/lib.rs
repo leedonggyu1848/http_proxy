@@ -4,8 +4,8 @@ mod engine;
 
 pub use engine::{
     BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, CaptureSource, CapturedHeader,
-    CapturedRequest, CapturedResponse, Exchange, FailureStage, HeaderPreview, Outcome, RecordId,
-    SessionId, Timing, TunnelPreview, TunnelSnapshot, TunnelState,
+    CapturedRequest, CapturedResponse, Exchange, FailureStage, HeaderPreview, ImageFormat, Outcome,
+    RecordId, SessionId, Timing, TunnelPreview, TunnelSnapshot, TunnelState,
 };
 pub use engine::{Browser, BrowserEvent, BrowserSession};
 pub use engine::{CaInfo, HttpsInspection, HttpsSetupError};

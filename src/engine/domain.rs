@@ -3,11 +3,13 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError, TryLockError};
 use std::time::Instant;
 
 mod exchange;
+mod image_format;
 mod tunnel;
 
 pub use exchange::{
     CaptureSource, CapturedRequest, CapturedResponse, Exchange, Outcome, SessionId, Timing,
 };
+pub use image_format::ImageFormat;
 pub use tunnel::{TunnelPreview, TunnelSnapshot, TunnelState};
 
 /// Stable identity of one captured exchange.
