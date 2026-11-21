@@ -71,6 +71,32 @@ enum TreeView {
     Json(Rc<RefCell<Tree>>),
 }
 
+impl TreeView {
+    fn show(&mut self, ui: &mut egui::Ui, key: &Key) {
+        match self {
+            Self::Json(tree) => {
+                if !key.complete {
+                    ui.weak("Incomplete body capture; tree contains only retained data.");
+                }
+                ui.push_id(("json-tree", key.record, key.side), |ui| {
+                    tree.borrow_mut().show(ui);
+                });
+            }
+            Self::Xml(view) => {
+                ui.weak(format!(
+                    "Format: {} · {}",
+                    BodyFormat::Xml.label(),
+                    key.mode.label()
+                ));
+                if let Some(incomplete) = view.incomplete() {
+                    ui.colored_label(Palette::of(ui).warning, incomplete);
+                }
+                view.show(ui, ("xml-tree", key.record, key.side));
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct JsonCache {
     entry: Option<JsonEntry>,
@@ -225,37 +251,11 @@ fn render(ui: &mut egui::Ui, content: &mut Content, key: &Key) {
             ui.colored_label(Palette::of(ui).warning, message.as_str());
             return;
         }
-        Content::Tree {
-            notice,
-            view: TreeView::Json(tree),
-        } => {
+        Content::Tree { notice, view } => {
             if let Some(notice) = notice {
                 ui.weak(notice.as_str());
             }
-            if !key.complete {
-                ui.weak("Incomplete body capture; tree contains only retained data.");
-            }
-            ui.push_id(("json-tree", key.record, key.side), |ui| {
-                tree.borrow_mut().show(ui);
-            });
-            return;
-        }
-        Content::Tree {
-            notice,
-            view: TreeView::Xml(view),
-        } => {
-            ui.weak(format!(
-                "Format: {} · {}",
-                BodyFormat::Xml.label(),
-                key.mode.label()
-            ));
-            if let Some(notice) = notice {
-                ui.weak(notice.as_str());
-            }
-            if let Some(incomplete) = view.incomplete() {
-                ui.colored_label(Palette::of(ui).warning, incomplete);
-            }
-            view.show(ui, ("xml-tree", key.record, key.side));
+            view.show(ui, key);
             return;
         }
         Content::Ready {
