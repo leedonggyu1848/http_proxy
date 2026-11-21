@@ -159,10 +159,10 @@ impl ThemeSettings {
     }
 }
 
+/// Asserts WCAG AA contrast (4.5:1) of `foreground` on every background a
+/// text widget of `theme` can have.
 #[cfg(test)]
-mod tests {
-    use super::*;
-
+pub(in crate::ui) fn assert_readable(theme: Theme, foreground: Color32) {
     fn luminance(color: Color32) -> f64 {
         let linear = |channel: u8| {
             let value = f64::from(channel) / 255.0;
@@ -177,36 +177,42 @@ mod tests {
             0.7152_f64.mul_add(linear(color.g()), 0.2126 * linear(color.r())),
         )
     }
+    let visuals = visuals(theme);
+    for background in [
+        visuals.panel_fill,
+        visuals.window_fill,
+        visuals.extreme_bg_color,
+        visuals.faint_bg_color,
+        visuals.widgets.hovered.bg_fill,
+        visuals.selection.bg_fill,
+    ] {
+        let a = luminance(foreground);
+        let b = luminance(background);
+        let contrast = (a.max(b) + 0.05) / (a.min(b) + 0.05);
+        assert!(
+            contrast >= 4.5,
+            "{theme:?}: {foreground:?} on {background:?}: {contrast}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
 
     #[test]
     fn status_text_meets_aa_on_all_widget_backgrounds() {
         for theme in [Theme::Light, Theme::Dark] {
             let palette = Palette::for_theme(theme);
-            let visuals = visuals(theme);
             for foreground in [
                 palette.success,
                 palette.error,
                 palette.warning,
                 palette.info,
                 palette.muted,
-                visuals.text_color(),
+                visuals(theme).text_color(),
             ] {
-                for background in [
-                    visuals.panel_fill,
-                    visuals.window_fill,
-                    visuals.extreme_bg_color,
-                    visuals.faint_bg_color,
-                    visuals.widgets.hovered.bg_fill,
-                    visuals.selection.bg_fill,
-                ] {
-                    let a = luminance(foreground);
-                    let b = luminance(background);
-                    let contrast = (a.max(b) + 0.05) / (a.min(b) + 0.05);
-                    assert!(
-                        contrast >= 4.5,
-                        "{theme:?}: {foreground:?} on {background:?}: {contrast}"
-                    );
-                }
+                assert_readable(theme, foreground);
             }
         }
     }

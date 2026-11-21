@@ -1,4 +1,6 @@
 mod app_paths;
+mod body_display;
+mod body_format;
 mod body_view;
 mod browser_panel;
 mod ca_panel;
@@ -80,6 +82,8 @@ struct InspectorApp {
     port: PortChoice,
     table: request_table::RequestTable,
     detail_tab: DetailTab,
+    body_mode: body_format::ViewMode,
+    body_cache: body_display::BodyViewCache,
     image: image_view::ImagePanel,
     context: egui::Context,
 }
@@ -112,6 +116,8 @@ impl InspectorApp {
             port: PortChoice::from_launch(),
             table: request_table::RequestTable::new(),
             detail_tab: DetailTab::Headers,
+            body_mode: body_format::ViewMode::default(),
+            body_cache: body_display::BodyViewCache::default(),
             image: image_view::ImagePanel::default(),
             theme,
             context,

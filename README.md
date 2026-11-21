@@ -17,6 +17,7 @@ HTTP Inspector는 로컬 HTTP 프록시를 통해 요청 기록을 보여주는 
 - 메서드, 대상, 결과, 응답 헤더 도착 시간 표시
 - 요청과 응답 헤더 상세 보기
 - 방향별 최대 8KiB의 실시간 본문 미리보기
+- JSON·form·HTML·XML 본문의 Pretty/Raw 보기와 구문 강조, 헤더·쿼리 매개변수 강조
 - `Content-Type: image/png` 또는 `image/jpeg` 응답 본문의 이미지 미리보기와 16진수 보기
 - 문자열 검색과 응답, 실패, 터널 결과 필터
 - 선택한 요청의 Headers와 Body 상세 패널
@@ -54,6 +55,35 @@ HTTPS 복호화는 기본으로 꺼져 있다. 이 상태에서 앱은 `CONNECT`
 다음은 Chrome으로 접속한 HTTPS 응답의 `Content-Encoding: br` 헤더와 압축을 푼 HTML 본문이다.
 
 ![HTTPS 응답의 Brotli 압축 해제와 HTML 본문 표시](docs/screenshots/decoded-https-body.png)
+
+### 본문 정리와 구문 강조
+
+**Body** 탭 위쪽의 **View: Pretty / Raw**로 본문 보기 방식을 고른다. 기본값은 Pretty이며, 고른 방식은 다른 요청을 선택해도 유지된다. `Content-Type`으로 형식을 판별해 본문 위에 `Format: JSON · Pretty`처럼 표시한다.
+
+| 형식 | 판별하는 `Content-Type` | Pretty 보기 |
+| --- | --- | --- |
+| JSON | `application/json`, `*/*+json` | 2칸 들여쓰기, 키·문자열·숫자·`true`/`false`/`null`·괄호를 다른 색으로 표시 |
+| Form | `application/x-www-form-urlencoded` | 키와 값을 퍼센트 디코딩해 한 줄에 `key = value` 하나씩 표시 |
+| HTML·XML | `text/html`, `application/xml`, `text/xml`, `application/xhtml+xml`, `*/*+xml` | 태그마다 줄을 나누고 들여쓰기, 태그·속성 이름·속성 값·주석을 구분. 공백이 의미를 갖는 `pre`·`textarea`와 `script`·`style`의 내용은 원문 그대로 |
+
+- 미리보기는 8KiB에서 잘릴 수 있으므로 문법 분석 대신 토큰 단위로 정리한다. 잘린 문자열, 닫히지 않은 괄호·태그도 있는 데까지 정리해 보여 준다.
+- 형식에 맞지 않는 글자가 있어 정리할 수 없으면(예: JSON으로 표시된 HTML 오류 페이지) 원문을 그대로 보여 주고 `Showing raw text: …` 안내에 이유와 위치를 적는다. 그 밖의 형식은 Pretty에서도 원문 그대로다.
+- **Raw**는 압축만 푼 원문을 정리 없이 보여 준다.
+- 색은 글자 자체의 구분(키 뒤의 `:`, 따옴표, 꺾쇠괄호, 주석의 기울임)을 보조할 뿐이며, 밝은·어두운 테마의 모든 배경에서 4.5:1 이상 대비를 테스트로 확인한다.
+- **Headers** 탭은 헤더 이름을 `name:` 형태의 다른 색으로, 값은 기본 색으로 표시한다. 요청 URL에 쿼리가 있으면 **Query parameters**에 퍼센트 디코딩한 키와 값을 나눠 보여 준다.
+- 정리와 강조는 화면 표시에만 쓰며 프록시 전달 바이트와 전체 로그는 바꾸지 않는다. 강조 결과는 선택한 기록, 본문 길이, 보기 방식, 테마가 바뀔 때만 다시 계산한다.
+
+다음은 로컬 테스트 서버의 minified JSON 응답을 Pretty와 Raw로 본 실제 화면이다.
+
+![minified JSON 응답의 Pretty 보기](docs/screenshots/body-pretty-json.png)
+
+![같은 JSON 응답의 Raw 보기](docs/screenshots/body-raw-json.png)
+
+다음은 어두운 테마에서 minified HTML 응답을 Pretty로 본 화면과, 쿼리 매개변수·헤더 강조를 보여 주는 **Headers** 탭이다.
+
+![어두운 테마의 minified HTML Pretty 보기](docs/screenshots/body-pretty-html-dark.png)
+
+![쿼리 매개변수와 헤더 이름 강조](docs/screenshots/headers-query-highlight.png)
 
 ### PNG·JPEG 응답 미리보기
 
