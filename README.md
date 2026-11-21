@@ -17,7 +17,7 @@ HTTP Inspector는 로컬 HTTP 프록시를 통해 요청 기록을 보여주는 
 - 메서드, 대상, 결과, 응답 헤더 도착 시간 표시
 - 요청과 응답 헤더 상세 보기
 - 방향별 최대 8KiB의 실시간 본문 미리보기
-- JSON·form·HTML·XML 본문의 Pretty/Raw 보기와 구문 강조, 헤더·쿼리 매개변수 강조
+- JSON·form·HTML·XML 본문의 Pretty/Raw 보기와 구문 강조, XML 트리 보기, 헤더·쿼리 매개변수 강조
 - `Content-Type: image/png` 또는 `image/jpeg` 응답 본문의 이미지 미리보기와 16진수 보기
 - 문자열 검색과 응답, 실패, 터널 결과 필터
 - 선택한 요청의 Headers와 Body 상세 패널
@@ -58,20 +58,32 @@ HTTPS 복호화는 기본으로 꺼져 있다. 이 상태에서 앱은 `CONNECT`
 
 ### 본문 정리와 구문 강조
 
-**Body** 탭 위쪽의 **View: Pretty / Raw**로 본문 보기 방식을 고른다. 기본값은 Pretty이며, 고른 방식은 다른 요청을 선택해도 유지된다. `Content-Type`으로 형식을 판별해 본문 위에 `Format: JSON · Pretty`처럼 표시한다.
+**Body** 탭 위쪽의 **View: Pretty / Raw / Tree**로 본문 보기 방식을 고른다. 기본값은 Pretty이며, 고른 방식은 다른 요청을 선택해도 유지된다. `Content-Type`으로 형식을 판별해 본문 위에 `Format: JSON · Pretty`처럼 표시한다.
 
 | 형식 | 판별하는 `Content-Type` | Pretty 보기 |
 | --- | --- | --- |
 | JSON | `application/json`, `*/*+json` | 2칸 들여쓰기, 키·문자열·숫자·`true`/`false`/`null`·괄호를 다른 색으로 표시 |
 | Form | `application/x-www-form-urlencoded` | 키와 값을 퍼센트 디코딩해 한 줄에 `key = value` 하나씩 표시 |
-| HTML·XML | `text/html`, `application/xml`, `text/xml`, `application/xhtml+xml`, `*/*+xml` | 태그마다 줄을 나누고 들여쓰기, 태그·속성 이름·속성 값·주석을 구분. 공백이 의미를 갖는 `pre`·`textarea`와 `script`·`style`의 내용은 원문 그대로 |
+| HTML | `text/html`, `application/xhtml+xml` | 태그마다 줄을 나누고 들여쓰기, 태그·속성 이름·속성 값·주석을 구분. 공백이 의미를 갖는 `pre`·`textarea`와 `script`·`style`의 내용은 원문 그대로 |
+| XML | `application/xml`, `text/xml`, `*/*+xml`(Atom·RSS·SOAP·SVG 소스 등) | 요소만 담은 내용을 2칸 들여쓰기. 태그·네임스페이스 접두사·속성 이름·속성 값·주석·`CDATA`·처리 명령·엔티티를 구분. 텍스트·`CDATA`·주석의 내용과 `xml:space="preserve"` 요소는 원문 그대로 |
 
 - 미리보기는 8KiB에서 잘릴 수 있으므로 문법 분석 대신 토큰 단위로 정리한다. 잘린 문자열, 닫히지 않은 괄호·태그도 있는 데까지 정리해 보여 준다.
 - 형식에 맞지 않는 글자가 있어 정리할 수 없으면(예: JSON으로 표시된 HTML 오류 페이지) 원문을 그대로 보여 주고 `Showing raw text: …` 안내에 이유와 위치를 적는다. 그 밖의 형식은 Pretty에서도 원문 그대로다.
 - **Raw**는 압축만 푼 원문을 정리 없이 보여 준다.
+- **Tree**는 XML에서만 쓸 수 있으며, 다른 형식은 Pretty로 보여 주고 그 사실을 안내한다.
 - 색은 글자 자체의 구분(키 뒤의 `:`, 따옴표, 꺾쇠괄호, 주석의 기울임)을 보조할 뿐이며, 밝은·어두운 테마의 모든 배경에서 4.5:1 이상 대비를 테스트로 확인한다.
 - **Headers** 탭은 헤더 이름을 `name:` 형태의 다른 색으로, 값은 기본 색으로 표시한다. 요청 URL에 쿼리가 있으면 **Query parameters**에 퍼센트 디코딩한 키와 값을 나눠 보여 준다.
 - 정리와 강조는 화면 표시에만 쓰며 프록시 전달 바이트와 전체 로그는 바꾸지 않는다. 강조 결과는 선택한 기록, 본문 길이, 보기 방식, 테마가 바뀔 때만 다시 계산한다.
+
+### XML 보기
+
+XML 본문은 [quick-xml](https://crates.io/crates/quick-xml)로 읽어 Pretty와 Tree가 같은 결과를 쓴다.
+
+- **Pretty:** 요소만 담은 내용은 줄을 나누고 들여쓴다. 텍스트·엔티티·`CDATA`가 섞인 요소는 공백이 의미를 가질 수 있으므로 내용을 원문 그대로 한 덩어리로 둔다. 태그 안 속성 사이 공백만 한 칸으로 정리하고 속성 값은 바꾸지 않는다.
+- **Tree:** 요소를 접고 펼칠 수 있다. 처음에는 두 단계까지 펼쳐 두고, 접힌 요소 옆에 `… 3 children`처럼 자식 수를 표시한다. `<title>News</title>`처럼 텍스트 하나만 가진 요소는 한 줄로 보여 준다. 요소를 오른쪽 클릭하면 `/rss/channel/item[2]/title` 같은 XPath를 보고 **Copy XPath**로 복사할 수 있다. 같은 이름의 형제가 여럿이면 1부터 세는 위치를 붙인다. 긴 줄은 200자에서 줄이고, 마우스를 올리면 전체를 보여 준다.
+- 미리보기가 8KiB에서 잘렸거나 문법이 틀리면 읽은 데까지 보여 주고 `XML is incomplete (… at byte N); showing the part read so far.`처럼 이유와 위치를 안내한다. 나머지는 **Raw**에서 볼 수 있다.
+- **보안:** DTD와 엔티티 정의를 해석하지 않는다. `&xxe;` 같은 외부 엔티티나 엔티티 확장 공격은 원문 표기 그대로 보여 줄 뿐 파일·네트워크를 읽거나 펼치지 않는다. 요소 중첩 256단계, 노드 10,000개를 넘으면 그 앞까지만 보여 주고 안내한다.
+- `image/svg+xml`도 텍스트로 보여 줄 때는 같은 XML 보기를 쓴다.
 
 다음은 로컬 테스트 서버의 minified JSON 응답을 Pretty와 Raw로 본 실제 화면이다.
 

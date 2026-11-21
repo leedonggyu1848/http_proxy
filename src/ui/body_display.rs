@@ -1,14 +1,16 @@
 //! Decoded, formatted, and highlighted body text for the detail panel,
 //! rebuilt only when the shown body or the way it is shown changes.
 
+use crate::ui::body_format::xml::tree::XmlTree;
 use crate::ui::body_format::{self, BodyFormat, ViewMode, highlight};
 use crate::ui::body_view::{self, BodyText};
 use crate::ui::theme::{Palette, Theme};
+use crate::ui::xml_tree_view::XmlTreeView;
 use eframe::egui::{self, Galley, text::LayoutJob};
 use std::sync::Arc;
 
 /// Which body of an exchange is shown; both can be on screen at once.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(in crate::ui) enum BodySide {
     Request,
     Response,
@@ -41,10 +43,15 @@ struct Key {
 
 enum Content {
     Unavailable(String),
+    Tree {
+        notice: Option<String>,
+        view: XmlTreeView,
+    },
     Ready {
         format: BodyFormat,
         notice: Option<String>,
         fallback: Option<String>,
+        warning: Option<String>,
         job: LayoutJob,
         /// The last laid-out galley and the wrap width it was laid out for.
         galley: Option<(u32, Arc<Galley>)>,
@@ -89,8 +96,8 @@ impl BodyViewCache {
             let content = build(source, &key, text_color);
             *slot = Some((key, content));
         }
-        if let Some((_, content)) = slot {
-            render(ui, content, mode);
+        if let Some((key, content)) = slot {
+            render(ui, content, key);
         }
     }
 
@@ -106,37 +113,74 @@ fn build(source: &BodySource<'_>, key: &Key, text_color: egui::Color32) -> Conte
         BodyText::Unavailable(message) => return Content::Unavailable(message),
     };
     let format = BodyFormat::from_content_type(source.content_type);
-    let formatted = body_format::format(format, key.mode, &text);
     let palette = highlight::SyntaxPalette::for_theme(key.theme);
+    let mut tree_fallback = None;
+    if key.mode == ViewMode::Tree {
+        if format == BodyFormat::Xml {
+            match XmlTree::build(&text) {
+                Ok(tree) => {
+                    let view = XmlTreeView::new(tree, &palette, text_color, &key.font);
+                    return Content::Tree { notice, view };
+                }
+                Err(reason) => {
+                    tree_fallback =
+                        Some(format!("Showing Pretty: could not read a tree: {reason}."));
+                }
+            }
+        } else {
+            tree_fallback = Some(format!(
+                "Tree view is not available for {}; showing Pretty.",
+                format.label()
+            ));
+        }
+    }
+    let formatted = body_format::format(format, key.mode, &text);
     Content::Ready {
         format,
         notice,
-        fallback: formatted.fallback,
+        fallback: formatted.fallback.or(tree_fallback),
+        warning: formatted.warning,
         job: highlight::layout_job(&formatted.styled, &palette, text_color, &key.font),
         galley: None,
     }
 }
 
-fn render(ui: &mut egui::Ui, content: &mut Content, mode: ViewMode) {
-    let (format, notice, fallback, job, galley) = match content {
+fn render(ui: &mut egui::Ui, content: &mut Content, key: &Key) {
+    let (format, notice, warnings, job, galley) = match content {
         Content::Unavailable(message) => {
             ui.colored_label(Palette::of(ui).warning, message.as_str());
+            return;
+        }
+        Content::Tree { notice, view } => {
+            ui.weak(format!(
+                "Format: {} · {}",
+                BodyFormat::Xml.label(),
+                key.mode.label()
+            ));
+            if let Some(notice) = notice {
+                ui.weak(notice.as_str());
+            }
+            if let Some(incomplete) = view.incomplete() {
+                ui.colored_label(Palette::of(ui).warning, incomplete);
+            }
+            view.show(ui, ("xml-tree", key.record, key.side));
             return;
         }
         Content::Ready {
             format,
             notice,
             fallback,
+            warning,
             job,
             galley,
-        } => (*format, notice, fallback, &*job, galley),
+        } => (*format, notice, [&*fallback, &*warning], &*job, galley),
     };
-    ui.weak(format!("Format: {} · {}", format.label(), mode.label()));
+    ui.weak(format!("Format: {} · {}", format.label(), key.mode.label()));
     if let Some(notice) = notice {
         ui.weak(notice.as_str());
     }
-    if let Some(fallback) = fallback {
-        ui.colored_label(Palette::of(ui).warning, fallback.as_str());
+    for warning in warnings.into_iter().flatten() {
+        ui.colored_label(Palette::of(ui).warning, warning.as_str());
     }
     let mut text = job.text.as_str();
     let mut layouter = |ui: &egui::Ui, _: &dyn egui::TextBuffer, wrap_width: f32| {
@@ -237,5 +281,31 @@ mod tests {
         assert_eq!(shown(&cache), "{\n  \"a\": true\n}");
         run(&mut cache, &ctx, &source(1, body), ViewMode::Raw);
         assert_eq!(shown(&cache).as_bytes(), body);
+    }
+
+    #[test]
+    fn tree_mode_builds_an_xml_tree_and_falls_back_for_other_formats() {
+        let ctx = egui::Context::default();
+        let mut cache = BodyViewCache::default();
+        let xml = BodySource {
+            content_type: Some("application/rss+xml"),
+            ..source(1, b"<rss><channel><title>A</title></channel></rss>")
+        };
+        run(&mut cache, &ctx, &xml, ViewMode::Tree);
+        assert!(matches!(&cache.response, Some((_, Content::Tree { .. }))));
+        run(&mut cache, &ctx, &source(2, br#"{"a":1}"#), ViewMode::Tree);
+        let fallback = match &cache.response {
+            Some((_, Content::Ready { fallback, job, .. })) => {
+                Some((fallback.clone(), job.text.clone()))
+            }
+            _ => None,
+        };
+        assert_eq!(
+            fallback,
+            Some((
+                Some("Tree view is not available for JSON; showing Pretty.".to_owned()),
+                "{\n  \"a\": 1\n}".to_owned()
+            ))
+        );
     }
 }

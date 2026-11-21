@@ -10,6 +10,7 @@ pub(in crate::ui) mod form;
 pub(in crate::ui) mod highlight;
 mod json;
 mod markup;
+pub(in crate::ui) mod xml;
 
 /// Body syntax detected from `Content-Type`.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -17,6 +18,7 @@ pub(in crate::ui) enum BodyFormat {
     Json,
     Form,
     Markup,
+    Xml,
     Text,
 }
 
@@ -38,12 +40,12 @@ impl BodyFormat {
             Self::Json
         } else if essence == "application/x-www-form-urlencoded" {
             Self::Form
-        } else if matches!(
-            essence.as_str(),
-            "text/html" | "application/xhtml+xml" | "application/xml" | "text/xml"
-        ) || subtype.ends_with("+xml")
-        {
+        } else if matches!(essence.as_str(), "text/html" | "application/xhtml+xml") {
             Self::Markup
+        } else if matches!(essence.as_str(), "application/xml" | "text/xml")
+            || subtype.ends_with("+xml")
+        {
+            Self::Xml
         } else {
             Self::Text
         }
@@ -53,27 +55,30 @@ impl BodyFormat {
         match self {
             Self::Json => "JSON",
             Self::Form => "Form",
-            Self::Markup => "HTML/XML",
+            Self::Markup => "HTML",
+            Self::Xml => "XML",
             Self::Text => "Text",
         }
     }
 }
 
-/// How a body preview is shown. New views (such as a tree) are added here.
+/// How a body preview is shown. Formats without a tree show Tree as Pretty.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub(in crate::ui) enum ViewMode {
     #[default]
     Pretty,
     Raw,
+    Tree,
 }
 
 impl ViewMode {
-    pub(in crate::ui) const ALL: [Self; 2] = [Self::Pretty, Self::Raw];
+    pub(in crate::ui) const ALL: [Self; 3] = [Self::Pretty, Self::Raw, Self::Tree];
 
     pub(in crate::ui) const fn label(self) -> &'static str {
         match self {
             Self::Pretty => "Pretty",
             Self::Raw => "Raw",
+            Self::Tree => "Tree",
         }
     }
 }
@@ -91,6 +96,14 @@ pub(in crate::ui) enum TokenKind {
     AttributeName,
     AttributeValue,
     Comment,
+    /// XML namespace prefix, such as `soap` in `soap:Body`.
+    Namespace,
+    /// XML entity or character reference, such as `&amp;`.
+    Entity,
+    /// XML `CDATA` section with its delimiters.
+    CData,
+    /// XML declaration, processing instruction, or `DOCTYPE`.
+    Instruction,
 }
 
 /// Text with every byte assigned to a [`TokenKind`]; adjacent pieces of the
@@ -144,22 +157,31 @@ pub(in crate::ui) struct Formatted {
     pub(in crate::ui) styled: Styled,
     /// Why Pretty fell back to the original text, if it did.
     pub(in crate::ui) fallback: Option<String>,
+    /// What the shown text leaves out, such as the rest of malformed XML.
+    pub(in crate::ui) warning: Option<String>,
 }
 
 /// Formats `text` for `mode`. Pretty falls back to the original text with a
 /// reason when the format has no pretty printer or the text cannot be read
 /// as that format; truncated input is formatted as far as it goes.
+/// Tree has no text of its own, so it is formatted as Pretty here.
 pub(in crate::ui) fn format(format: BodyFormat, mode: ViewMode, text: &str) -> Formatted {
     let pretty = match (mode, format) {
-        (ViewMode::Raw, _) | (ViewMode::Pretty, BodyFormat::Text) => return raw(text, None),
-        (ViewMode::Pretty, BodyFormat::Json) => json::pretty(text),
-        (ViewMode::Pretty, BodyFormat::Form) => Ok(form::pretty(text)),
-        (ViewMode::Pretty, BodyFormat::Markup) => markup::pretty(text),
+        (ViewMode::Raw, _) | (ViewMode::Pretty | ViewMode::Tree, BodyFormat::Text) => {
+            return raw(text, None);
+        }
+        (ViewMode::Pretty | ViewMode::Tree, BodyFormat::Json) => json::pretty(text).map(complete),
+        (ViewMode::Pretty | ViewMode::Tree, BodyFormat::Form) => Ok(complete(form::pretty(text))),
+        (ViewMode::Pretty | ViewMode::Tree, BodyFormat::Markup) => {
+            markup::pretty(text).map(complete)
+        }
+        (ViewMode::Pretty | ViewMode::Tree, BodyFormat::Xml) => xml::pretty(text),
     };
     match pretty {
-        Ok(styled) => Formatted {
+        Ok((styled, warning)) => Formatted {
             styled,
             fallback: None,
+            warning,
         },
         Err(reason) => raw(
             text,
@@ -171,10 +193,15 @@ pub(in crate::ui) fn format(format: BodyFormat, mode: ViewMode, text: &str) -> F
     }
 }
 
+const fn complete(styled: Styled) -> (Styled, Option<String>) {
+    (styled, None)
+}
+
 fn raw(text: &str, fallback: Option<String>) -> Formatted {
     Formatted {
         styled: Styled::plain(text),
         fallback,
+        warning: None,
     }
 }
 
@@ -195,9 +222,12 @@ mod tests {
             (Some("application/problem+json"), BodyFormat::Json),
             (Some("application/x-www-form-urlencoded"), BodyFormat::Form),
             (Some("text/html; charset=UTF-8"), BodyFormat::Markup),
-            (Some("application/xml"), BodyFormat::Markup),
-            (Some("text/xml"), BodyFormat::Markup),
-            (Some("application/atom+xml"), BodyFormat::Markup),
+            (Some("application/xhtml+xml"), BodyFormat::Markup),
+            (Some("application/xml"), BodyFormat::Xml),
+            (Some("text/xml; charset=utf-8"), BodyFormat::Xml),
+            (Some("application/atom+xml"), BodyFormat::Xml),
+            (Some("application/soap+xml"), BodyFormat::Xml),
+            (Some("image/svg+xml"), BodyFormat::Xml),
             (Some("text/plain"), BodyFormat::Text),
             (Some("application/javascript"), BodyFormat::Text),
             (Some("jsonish"), BodyFormat::Text),
