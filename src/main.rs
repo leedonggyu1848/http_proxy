@@ -2,7 +2,12 @@
 
 #[allow(
     clippy::redundant_pub_crate,
-    reason = "Save controls are private to the application module."
+    reason = "Panel is private to the application."
+)]
+mod replay_panel;
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "Save controls are visible only to the parent application module."
 )]
 mod save;
 #[allow(
@@ -10,6 +15,13 @@ mod save;
     reason = "Theme settings are private to the application module."
 )]
 mod theme;
+
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "Shared presentation within the application."
+)]
+mod outcome_view;
+use outcome_view::outcome_matches_query;
 
 #[allow(
     clippy::redundant_pub_crate,
@@ -59,14 +71,19 @@ mod port_settings;
 )]
 mod request_table;
 
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "Application paths are private to the binary."
+)]
+mod app_paths;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
 use eframe::egui::{self, RichText};
 use http_proxy::{
     BodyLifecycle, BodyPreview, BodyRetention, EngineState, Exchange, FullLog, HeaderPreview,
-    HttpsInspection, Outcome, ProxyConfig, ProxyHandle, RecordId, SESSION_BODY_LIMIT_BYTES,
-    TunnelPreview, TunnelState,
+    HttpsInspection, Outcome, ProxyConfig, ProxyHandle, RecordId, TunnelPreview,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -128,6 +145,7 @@ fn init_tracing() {
 
 struct InspectorApp {
     theme: theme::ThemeSettings,
+    replay: Option<replay_panel::ReplayPanel>,
     proxy: Option<ProxyHandle>,
     records: records::RecordList<Exchange>,
     selected: Option<RecordId>,
@@ -158,7 +176,7 @@ struct PortChoice {
 
 impl PortChoice {
     fn from_launch() -> Self {
-        let settings_directory = port_settings::default_settings_directory();
+        let settings_directory = app_paths::settings_directory(|name| std::env::var_os(name));
         let saved = settings_directory
             .as_deref()
             .and_then(port_settings::load_port);
@@ -202,13 +220,14 @@ impl InspectorApp {
             ),
         };
         let mut app = Self {
+            replay: None,
             proxy: None,
             records: records::RecordList::new(MAX_RECORDS),
             selected: None,
             filter_text: String::new(),
             record_filter: RecordFilter::All,
             https_inspection: false,
-            ca_directory: default_ca_directory(),
+            ca_directory: app_paths::ca_directory(|name| std::env::var_os(name)),
             ca_panel: ca_panel::CaPanel::default(),
             browsers: browser_panel::BrowserPanel::default(),
             error: None,
@@ -401,16 +420,16 @@ impl InspectorApp {
         {
             ui.colored_label(crate::theme::Palette::of(ui).error, error);
         }
-        if self
+        if let Some(log) = self
             .full_log
             .as_ref()
-            .is_some_and(FullLog::body_limit_reached)
+            .filter(|log| log.body_limit_reached())
         {
             ui.colored_label(
                 crate::theme::Palette::of(ui).warning,
                 format!(
-                    "The full-session log reached its {} MiB body limit. Later body bytes are omitted; headers and results are still logged.",
-                    SESSION_BODY_LIMIT_BYTES / (1_024 * 1_024)
+                    "The full-session log reached its {} body limit. Later body bytes are omitted; headers and results are still logged.",
+                    log.formatted_body_limit()
                 ),
             );
         }
@@ -462,6 +481,12 @@ impl InspectorApp {
             .filter(|record| record_matches(record, self.record_filter, &query))
             .collect();
         self.table.controls(ui);
+        if let Some(original) = self.table.replay.take() {
+            match replay_panel::ReplayPanel::new(original) {
+                Ok(panel) => self.replay = Some(panel),
+                Err(error) => self.error = Some(error),
+            }
+        }
         if let Some(selected) = self.table.show(ui, rows, self.selected, shortcuts_allowed) {
             self.selected = Some(selected);
         }
@@ -469,15 +494,7 @@ impl InspectorApp {
 
     /// Reports whether any displayed value still changes over time.
     fn has_live_records(&self) -> bool {
-        self.records.iter().any(|record| match record.outcome() {
-            Outcome::InFlight => true,
-            Outcome::Response(response) => response.body().lifecycle() == BodyLifecycle::Streaming,
-            Outcome::Tunnel(tunnel) => tunnel.snapshot().state() == &TunnelState::Open,
-            Outcome::InspectionEstablished
-            | Outcome::Failed { .. }
-            | Outcome::Cancelled
-            | Outcome::Incomplete => false,
-        })
+        self.records.iter().any(Exchange::is_live)
     }
 
     fn detail_panel(&mut self, ui: &mut egui::Ui, shortcuts_allowed: bool) {
@@ -500,6 +517,25 @@ impl InspectorApp {
                 DetailTab::Headers => DetailTab::Body,
                 DetailTab::Body => DetailTab::Headers,
             };
+        }
+        if ui
+            .add_enabled(
+                record.source() != http_proxy::CaptureSource::Connect,
+                egui::Button::new("Edit and Resend"),
+            )
+            .clicked()
+        {
+            match replay_panel::ReplayPanel::new(record.clone()) {
+                Ok(panel) => self.replay = Some(panel),
+                Err(error) => self.error = Some(error),
+            }
+        }
+        if let Some(original) = record.replay_of()
+            && ui
+                .link(format!("Replay of #{} — show original", original.value()))
+                .clicked()
+        {
+            self.selected = Some(original);
         }
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.detail_tab, DetailTab::Headers, "Headers");
@@ -538,6 +574,16 @@ impl eframe::App for InspectorApp {
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
         self.receive_records();
         self.release_failed_proxy();
+        if let Some(panel) = self.replay.as_mut() {
+            let latest = self
+                .records
+                .iter()
+                .rev()
+                .find(|record| record.replay_of() == Some(panel.original_id()));
+            if !panel.show(ui.ctx(), self.proxy.as_ref(), latest) {
+                self.replay = None;
+            }
+        }
         ui.heading(http_proxy::APP_NAME);
         scope_help::show(ui);
         ui.separator();
@@ -606,14 +652,7 @@ fn record_matches(record: &Exchange, filter: RecordFilter, query: &str) -> bool 
     let outcome_matches = match filter {
         RecordFilter::All => true,
         RecordFilter::Responses => matches!(outcome, Outcome::Response(_)),
-        RecordFilter::Failures => match outcome {
-            Outcome::Failed { .. } | Outcome::Cancelled | Outcome::Incomplete => true,
-            Outcome::Tunnel(tunnel) => matches!(
-                tunnel.snapshot().state(),
-                TunnelState::Failed { .. } | TunnelState::Incomplete
-            ),
-            Outcome::InFlight | Outcome::Response(_) | Outcome::InspectionEstablished => false,
-        },
+        RecordFilter::Failures => outcome.is_failure(),
         RecordFilter::Tunnels => {
             matches!(outcome, Outcome::Tunnel(_) | Outcome::InspectionEstablished)
         }
@@ -625,35 +664,6 @@ fn record_matches(record: &Exchange, filter: RecordFilter, query: &str) -> bool 
             || text_matches(request.target(), query)
             || headers_match(request.headers(), query)
             || outcome_matches_query(outcome, query))
-}
-
-fn outcome_matches_query(outcome: &Outcome, query: &str) -> bool {
-    match outcome {
-        Outcome::Response(response) => {
-            response.status().as_str().contains(query) || headers_match(response.headers(), query)
-        }
-        Outcome::Failed { stage, message } => {
-            text_matches(&format!("{stage:?}"), query) || text_matches(message, query)
-        }
-        Outcome::InFlight
-        | Outcome::Tunnel(_)
-        | Outcome::InspectionEstablished
-        | Outcome::Cancelled
-        | Outcome::Incomplete => outcome_label(outcome).contains(query),
-    }
-}
-
-/// Lowercase search keyword for outcomes that carry no searchable text.
-const fn outcome_label(outcome: &Outcome) -> &'static str {
-    match outcome {
-        Outcome::InFlight => "pending",
-        Outcome::Response(_) => "response",
-        Outcome::Tunnel(_) => "tunnel",
-        Outcome::InspectionEstablished => "https inspection",
-        Outcome::Failed { .. } => "failed",
-        Outcome::Cancelled => "cancelled",
-        Outcome::Incomplete => "incomplete",
-    }
 }
 
 fn headers_match(headers: &HeaderPreview, query: &str) -> bool {
@@ -787,9 +797,6 @@ fn render_outcome(
     image: &mut image_view::ImagePanel,
 ) {
     match record.outcome() {
-        Outcome::InFlight => {
-            ui.weak("Waiting for the upstream server.");
-        }
         Outcome::Response(response) => match tab {
             DetailTab::Headers => {
                 ui.strong(format!(
@@ -814,41 +821,26 @@ fn render_outcome(
             ui.label(scope_help::TUNNEL_NOTE);
             render_tunnel(ui, tunnel);
         }
-        Outcome::InspectionEstablished => {
-            ui.label("HTTPS inspection session established.");
-        }
-        Outcome::Failed { stage, message } => {
-            ui.colored_label(
-                crate::theme::Palette::of(ui).error,
-                format!("{stage:?}: {message}"),
-            );
-        }
-        Outcome::Cancelled => {
-            ui.colored_label(
-                crate::theme::Palette::of(ui).warning,
-                "The client closed the connection before a response arrived.",
-            );
-        }
-        Outcome::Incomplete => {
-            ui.colored_label(
-                crate::theme::Palette::of(ui).warning,
-                "The proxy stopped before a response arrived.",
-            );
+        outcome => {
+            let (text, color) = outcome_view::detail_text(outcome, &crate::theme::Palette::of(ui));
+            if outcome.is_in_flight() {
+                ui.weak(text);
+            } else if matches!(outcome, Outcome::InspectionEstablished) {
+                ui.label(text);
+            } else {
+                ui.colored_label(color, text);
+            }
         }
     }
 }
 
 fn render_timing(ui: &mut egui::Ui, record: &Exchange) {
     let timing = record.timing();
-    let (settled_label, settled_value) = match record.outcome() {
-        Outcome::InFlight => ("Waiting", elapsed_text(record)),
-        Outcome::Response(_) => ("Response headers", optional_millis(timing.settled())),
-        Outcome::Tunnel(_) | Outcome::InspectionEstablished => {
-            ("Established", optional_millis(timing.settled()))
-        }
-        Outcome::Failed { .. } | Outcome::Cancelled | Outcome::Incomplete => {
-            ("Ended", optional_millis(timing.settled()))
-        }
+    let settled_label = outcome_view::timing_label(record.outcome());
+    let settled_value = if record.outcome().is_in_flight() {
+        elapsed_text(record)
+    } else {
+        optional_millis(timing.settled())
     };
     let total = timing.complete().map_or_else(
         || "in progress".to_owned(),
@@ -889,12 +881,7 @@ fn elapsed_text(record: &Exchange) -> String {
 
 fn render_tunnel(ui: &mut egui::Ui, tunnel: &TunnelPreview) {
     let snapshot = tunnel.snapshot();
-    let state = match snapshot.state() {
-        TunnelState::Open => "Open".to_owned(),
-        TunnelState::Closed => "Closed".to_owned(),
-        TunnelState::Failed { stage, message } => format!("Failed at {stage:?}: {message}"),
-        TunnelState::Incomplete => "Incomplete: the proxy stopped while it was open".to_owned(),
-    };
+    let state = outcome_view::tunnel_detail(snapshot.state());
     egui::Grid::new("tunnel-details")
         .num_columns(2)
         .show(ui, |ui| {
@@ -927,17 +914,4 @@ fn copy_menu(ui: &mut egui::Ui, address: std::net::SocketAddr) {
             }
         }
     });
-}
-
-#[cfg(target_os = "macos")]
-fn default_ca_directory() -> Option<PathBuf> {
-    port_settings::default_settings_directory().map(|directory| directory.join("ca"))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn default_ca_directory() -> Option<PathBuf> {
-    std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
-        .map(|directory| directory.join("http-inspector/ca"))
 }

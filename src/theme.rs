@@ -15,7 +15,7 @@ impl Palette {
         Self::for_theme(ui.ctx().theme())
     }
 
-    const fn for_theme(theme: Theme) -> Self {
+    pub(crate) const fn for_theme(theme: Theme) -> Self {
         match theme {
             Theme::Light => Self {
                 success: Color32::from_rgb(0, 90, 40),
@@ -92,7 +92,7 @@ const fn serialize(preference: egui::ThemePreference) -> &'static str {
 
 impl ThemeSettings {
     pub(crate) fn new(context: &egui::Context) -> Self {
-        let path = crate::port_settings::default_settings_directory()
+        let path = crate::app_paths::settings_directory(|name| std::env::var_os(name))
             .map(|directory| directory.join("theme"));
         let preference = path
             .as_ref()

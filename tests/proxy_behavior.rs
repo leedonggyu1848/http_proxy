@@ -653,3 +653,186 @@ where
     }
     Ok(data)
 }
+
+#[tokio::test]
+async fn replays_edited_headers_and_cookie_with_link_and_redaction() -> Result<(), Box<dyn Error>> {
+    let upstream = TcpListener::bind("127.0.0.1:0").await?;
+    let upstream_addr = upstream.local_addr()?;
+    let (request_sender, request_receiver) = tokio::sync::oneshot::channel();
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let request = read_headers(&mut stream).await?;
+        let _send_result = request_sender.send(request);
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello")
+            .await?;
+        Ok::<_, std::io::Error>(())
+    });
+
+    let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0).with_max_connections(1))?;
+    assert_eq!(proxy.state(), http_proxy::EngineState::Running);
+    let mut client = TcpStream::connect(proxy.local_addr()).await?;
+    let mut request = format!(
+        "GET http://{upstream_addr}/hello?name=rust HTTP/1.1\r\nHost: {upstream_addr}\r\nX-File-Name: 한글.txt\r\nX-Raw: "
+    )
+    .into_bytes();
+    request.extend_from_slice(b"\xff\r\nConnection: close\r\n\r\n");
+    client.write_all(&request).await?;
+
+    let mut response = Vec::new();
+    timeout(TEST_TIMEOUT, client.read_to_end(&mut response)).await??;
+    let response = String::from_utf8(response)?;
+    assert!(response.starts_with("HTTP/1.1 200 OK"));
+    assert!(response.ends_with("hello"));
+
+    let upstream_request = timeout(TEST_TIMEOUT, request_receiver).await??;
+    let upstream_request = String::from_utf8_lossy(&upstream_request);
+    assert!(upstream_request.starts_with("GET /hello?name=rust HTTP/1.1\r\n"));
+
+    let record = timeout(TEST_TIMEOUT, proxy.receive())
+        .await?
+        .ok_or("capture channel closed")?;
+    assert_eq!(record.request().method(), http::Method::GET);
+    assert!(matches!(
+        settled(&record).await?,
+        Outcome::Response(response) if response.status() == 200
+    ));
+
+    timeout(TEST_TIMEOUT, upstream_task).await???;
+    assert_eq!(proxy.state(), http_proxy::EngineState::Running);
+
+    let mut draft = http_proxy::ReplayDraft::new(record.clone())?;
+    disable_unreproducible_header(&mut draft, proxy.local_addr())?;
+    add_edited_headers(&mut draft);
+    let replay_server = TcpListener::bind("127.0.0.1:0").await?;
+    draft.url = format!("http://{}/edited", replay_server.local_addr()?);
+    let task = proxy.replay(&draft)?;
+    let (mut replay_stream, _) = timeout(TEST_TIMEOUT, replay_server.accept()).await??;
+    let replay_headers = String::from_utf8(read_headers(&mut replay_stream).await?)?;
+    assert!(replay_headers.contains("x-edited: changed"));
+    assert!(replay_headers.contains("x-file-name: 한글.txt"));
+    assert!(!replay_headers.contains("x-raw"));
+    assert!(replay_headers.contains("cookie: session=changed"));
+    assert!(replay_headers.contains("content-length: 0"));
+    replay_stream
+        .write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n")
+        .await?;
+    let replay_record = timeout(TEST_TIMEOUT, proxy.receive())
+        .await?
+        .ok_or("missing replay")?;
+    assert_eq!(replay_record.replay_of(), Some(record.id()));
+    assert_ne!(replay_record.id(), record.id());
+    assert!(
+        replay_record
+            .request()
+            .headers()
+            .entries()
+            .iter()
+            .any(|field| field.name() == "cookie" && field.value() == "[REDACTED]")
+    );
+    assert!(
+        matches!(settled(&replay_record).await?, Outcome::Response(response) if response.status() == 201)
+    );
+    assert!(record.replay_of().is_none());
+    assert_replay_validation(&mut draft, proxy.local_addr());
+    assert_body_file_loading(&mut draft, proxy.local_addr())?;
+    task.cancel();
+    proxy.stop()?;
+    Ok(())
+}
+
+fn add_edited_headers(draft: &mut http_proxy::ReplayDraft) {
+    draft.headers.push(http_proxy::ReplayField {
+        enabled: true,
+        name: "x-edited".to_owned(),
+        value: "changed".to_owned(),
+    });
+    draft.headers.push(http_proxy::ReplayField {
+        enabled: true,
+        name: "cookie".to_owned(),
+        value: "session=changed".to_owned(),
+    });
+}
+
+/// UTF-8 values survive as captured; lossy non-UTF-8 values block sending until disabled.
+fn disable_unreproducible_header(
+    draft: &mut http_proxy::ReplayDraft,
+    address: std::net::SocketAddr,
+) -> Result<(), Box<dyn Error>> {
+    assert!(draft.headers.iter().any(|field| {
+        field.name.eq_ignore_ascii_case("x-file-name") && field.value == "한글.txt"
+    }));
+    let raw_error = draft
+        .request(address)
+        .err()
+        .ok_or("non-UTF-8 header must block replay")?;
+    assert!(raw_error.contains("x-raw"), "{raw_error}");
+    for field in &mut draft.headers {
+        if field.name.eq_ignore_ascii_case("x-raw") {
+            field.enabled = false;
+        }
+    }
+    Ok(())
+}
+
+/// Complete files replace the body up to the limit; larger files and truncated URLs are explained.
+fn assert_body_file_loading(
+    draft: &mut http_proxy::ReplayDraft,
+    address: std::net::SocketAddr,
+) -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let body_path = directory.path().join("body.json");
+    std::fs::write(&body_path, br#"{"edited":true}"#)?;
+    draft.body_missing = true;
+    draft.load_body_file(&body_path)?;
+    assert_eq!(draft.body.as_ref(), br#"{"edited":true}"#);
+    assert!(!draft.body_missing);
+
+    let large_path = directory.path().join("large.bin");
+    std::fs::File::create(&large_path)?.set_len(http_proxy::REPLAY_BODY_FILE_LIMIT_BYTES + 1)?;
+    let error = draft
+        .load_body_file(&large_path)
+        .err()
+        .ok_or("oversized body file must be refused")?;
+    assert!(error.contains("limited"), "{error}");
+    assert_eq!(draft.body.as_ref(), br#"{"edited":true}"#);
+
+    let url = std::mem::replace(&mut draft.url, "http://example.test/a b…".to_owned());
+    let error = draft
+        .request(address)
+        .err()
+        .ok_or("truncated URL must be refused")?;
+    assert!(error.contains("truncated"), "{error}");
+    draft.url = url;
+    Ok(())
+}
+
+fn assert_replay_validation(draft: &mut http_proxy::ReplayDraft, address: std::net::SocketAddr) {
+    draft.headers.push(http_proxy::ReplayField {
+        enabled: true,
+        name: "bad name".to_owned(),
+        value: "x".to_owned(),
+    });
+    assert!(draft.request(address).is_err());
+    draft.headers.pop();
+    draft.url = format!("http://{address}/");
+    assert!(draft.request(address).is_err());
+    draft.url = "http://example.test/".to_owned();
+    draft.body = "한글".as_bytes().to_vec().into();
+    let framed = draft.request(address);
+    assert!(
+        matches!(framed, Ok(request) if request.headers().get("content-length").is_some_and(|value| value == "6"))
+    );
+    assert!(!draft.needs_confirmation());
+    draft.method = "POST".to_owned();
+    assert!(draft.needs_confirmation());
+    draft.body_missing = true;
+    assert!(draft.request(address).is_err());
+    draft.body_missing = false;
+    draft.headers.push(http_proxy::ReplayField {
+        enabled: true,
+        name: "authorization".to_owned(),
+        value: String::new(),
+    });
+    assert!(draft.request(address).is_err());
+}

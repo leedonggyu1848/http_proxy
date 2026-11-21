@@ -36,6 +36,88 @@ const LARGE_BODY_BYTES: u64 = (CHUNK_BYTES * CHUNK_COUNT) as u64;
 type TestBody = BoxBody<Bytes, Infallible>;
 type TestError = Box<dyn Error + Send + Sync>;
 
+// Linux drops SYNs when the accept queue is full; macOS resets the connection.
+#[cfg(target_os = "linux")]
+async fn fill_accept_queue(address: SocketAddr) -> Result<Vec<TcpStream>, TestError> {
+    let mut connections = Vec::new();
+    for _ in 0..4096 {
+        match timeout(Duration::from_millis(100), TcpStream::connect(address)).await {
+            Ok(Ok(stream)) => connections.push(stream),
+            Ok(Err(error)) => return Err(error.into()),
+            Err(_) => return Ok(connections),
+        }
+    }
+    Err("could not fill the listener accept queue".into())
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn https_inspection_uses_the_configured_connect_timeout() -> Result<(), TestError> {
+    let socket = tokio::net::TcpSocket::new_v4()?;
+    socket.bind("127.0.0.1:0".parse()?)?;
+    let upstream = socket.listen(1)?;
+    let port = upstream.local_addr()?.port();
+    let directory = tempfile::tempdir()?;
+    let _queued_connections = fill_accept_queue(upstream.local_addr()?).await?;
+    let limit = Duration::from_millis(50);
+    let inspection = http_proxy::HttpsInspection::new(directory.path().join("ca"));
+    let mut proxy = ProxyHandle::start(
+        ProxyConfig::loopback(0)
+            .with_connect_timeout(limit)
+            .with_https_inspection(inspection),
+    )?;
+    let mut roots = rustls::RootCertStore::empty();
+    let ca_path = proxy.ca_info().ok_or("missing CA")?.certificate_path();
+    let certificates = <rustls::pki_types::CertificateDer<'_> as
+        rustls::pki_types::pem::PemObject>::pem_file_iter(ca_path)?;
+    for certificate in certificates {
+        roots.add(certificate?)?;
+    }
+    let config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
+    let mut client = TcpStream::connect(proxy.local_addr()).await?;
+    client
+        .write_all(
+            format!("CONNECT 127.0.0.1:{port} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n")
+                .as_bytes(),
+        )
+        .await?;
+    assert!(
+        read_headers(&mut client)
+            .await?
+            .starts_with(b"HTTP/1.1 200")
+    );
+    let name = rustls::pki_types::ServerName::try_from("127.0.0.1")?;
+    let mut client = timeout(TEST_TIMEOUT, connector.connect(name, client)).await??;
+    let started = std::time::Instant::now();
+    client
+        .write_all(
+            format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+        .await?;
+    let response = timeout(Duration::from_secs(1), read_headers(&mut client)).await??;
+    assert!(response.starts_with(b"HTTP/1.1 504"));
+    assert!(started.elapsed() < Duration::from_secs(1));
+    let setup = next_record(&mut proxy).await?;
+    assert!(matches!(
+        settled(&setup).await?,
+        Outcome::InspectionEstablished
+    ));
+    let exchange = next_record(&mut proxy).await?;
+    assert!(matches!(
+        settled(&exchange).await?,
+        Outcome::Failed {
+            stage: FailureStage::ConnectTimeout,
+            ..
+        }
+    ));
+    proxy.stop()?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn preserves_the_order_of_repeated_header_fields() -> Result<(), TestError> {
     let upstream = TcpListener::bind("127.0.0.1:0").await?;

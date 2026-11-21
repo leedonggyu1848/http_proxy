@@ -29,7 +29,10 @@ pub use domain::{
     SessionId, Timing, TunnelPreview, TunnelSnapshot, TunnelState,
 };
 pub use journal::{FullLog, SESSION_BODY_LIMIT_BYTES};
-pub use proxy::{EngineState, ProxyConfig, ProxyHandle, StartError, StopError};
+pub use proxy::{
+    EngineState, ProxyConfig, ProxyHandle, REPLAY_BODY_FILE_LIMIT_BYTES, ReplayDraft, ReplayField,
+    ReplayTask, StartError, StopError,
+};
 pub use tls::{CaInfo, HttpsInspection, HttpsSetupError};
 pub(crate) use tls::{Destination, PreparedInspection, TlsInspector, UpstreamTlsError};
 pub use trust::{CaTrustError, CaTrustStatus, CaTrustStore};
