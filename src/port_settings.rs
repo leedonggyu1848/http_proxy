@@ -146,6 +146,17 @@ pub(crate) fn load_port(directory: &Path) -> Option<ProxyPort> {
         .and_then(|(_, value)| ProxyPort::parse(value).ok())
 }
 
+/// Reason a user-selected port could not be remembered.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum PortSaveError {
+    #[error(
+        "The port could not be saved because the application settings directory is unavailable."
+    )]
+    SettingsDirectoryUnavailable,
+    #[error("The proxy started, but the port could not be saved: {0}")]
+    Save(#[source] io::Error),
+}
+
 /// Saves `port` so the next launch starts with it.
 pub(crate) fn save_port(directory: &Path, port: ProxyPort) -> io::Result<()> {
     fs::create_dir_all(directory)?;

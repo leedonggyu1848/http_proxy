@@ -14,12 +14,23 @@ pub(super) struct UpstreamTarget {
     pub(super) path: Uri,
 }
 
+/// Reason a plain HTTP request has no usable upstream target.
+#[derive(Debug, Eq, PartialEq, thiserror::Error)]
+pub(super) enum TargetError {
+    #[error("only http:// requests are supported without CONNECT")]
+    UnsupportedScheme,
+    #[error("the request has no upstream authority")]
+    MissingAuthority,
+    #[error("the request path is invalid")]
+    InvalidPath,
+}
+
 /// Reads the upstream authority and origin-form path from a proxied request.
-pub(super) fn upstream_target<B>(request: &Request<B>) -> Result<UpstreamTarget, &'static str> {
+pub(super) fn upstream_target<B>(request: &Request<B>) -> Result<UpstreamTarget, TargetError> {
     if let Some(scheme) = request.uri().scheme_str()
         && scheme != "http"
     {
-        return Err("only http:// requests are supported without CONNECT");
+        return Err(TargetError::UnsupportedScheme);
     }
 
     let authority = request
@@ -33,12 +44,12 @@ pub(super) fn upstream_target<B>(request: &Request<B>) -> Result<UpstreamTarget,
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.parse::<Authority>().ok())
         })
-        .ok_or("the request has no upstream authority")?;
+        .ok_or(TargetError::MissingAuthority)?;
     let path = match request.uri().path_and_query() {
         Some(value) => value
             .as_str()
             .parse()
-            .map_err(|_| "the request path is invalid")?,
+            .map_err(|_| TargetError::InvalidPath)?,
         None => Uri::from_static("/"),
     };
     Ok(UpstreamTarget { authority, path })
@@ -95,6 +106,26 @@ mod tests {
     use super::*;
 
     const PROXY: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080);
+
+    #[test]
+    fn rejects_unusable_targets_by_kind() -> Result<(), http::Error> {
+        let request = Request::builder().uri("https://example.com/").body(())?;
+        assert!(matches!(
+            upstream_target(&request),
+            Err(TargetError::UnsupportedScheme)
+        ));
+        let request = Request::builder().uri("/").body(())?;
+        assert!(matches!(
+            upstream_target(&request),
+            Err(TargetError::MissingAuthority)
+        ));
+        let request = Request::builder()
+            .uri("/path?q=1")
+            .header(HOST, "example.com")
+            .body(())?;
+        assert!(upstream_target(&request).is_ok());
+        Ok(())
+    }
 
     #[test]
     fn detects_the_proxy_listener_and_unspecified_addresses() {
