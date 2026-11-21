@@ -1,13 +1,19 @@
 //! Explicit, validated manual replay using the normal forwarding path.
-use super::{
-    Arc, BodyExt, BodyPreview, Bytes, CaptureContext, CaptureSource, Destination, EngineState,
-    Exchange, FailureStage, Full, HOST, IpAddr, Method, ProxyHandle, Request, SocketAddr,
-    StatusCode, Uri, connect_deadline, failed_response, forward_http, forward_https,
-    infallible_to_hyper, remove_hop_by_hop_headers, resolve_within,
-};
+use super::capture_context::CaptureContext;
+use super::forward::forward_http;
+use super::headers::remove_hop_by_hop_headers;
+use super::inspect::forward_https;
+use super::upstream::{connect_deadline, resolve_within};
+use super::{EngineState, ProxyHandle, failed_response, infallible_to_hyper};
+use crate::{BodyPreview, CaptureSource, Destination, Exchange, FailureStage};
+use bytes::Bytes;
 use http::HeaderMap;
+use http::{Method, Request, StatusCode, Uri, header::HOST};
+use http_body_util::{BodyExt, Full};
 use std::io::Read as _;
+use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
+use std::sync::Arc;
 
 /// Largest replacement body file the editor loads into memory.
 pub const REPLAY_BODY_FILE_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
