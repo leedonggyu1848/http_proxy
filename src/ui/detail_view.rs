@@ -1,9 +1,11 @@
 //! Selected request details and body previews.
 
 use crate::ui::InspectorApp;
+use crate::ui::body_display::{BodySide, BodySource, BodyViewCache};
+use crate::ui::body_format::{ViewMode, form, highlight::SyntaxPalette};
 use crate::ui::detail_tabs::{self, DetailTab};
 use crate::ui::theme::Palette;
-use crate::ui::{body_view, image_view, outcome_view, replay_panel, scope_help};
+use crate::ui::{image_view, outcome_view, replay_panel, scope_help};
 use eframe::egui;
 use http_proxy::{
     BodyLifecycle, BodyPreview, BodyRetention, Exchange, HeaderPreview, Outcome, RecordId,
@@ -55,26 +57,84 @@ impl InspectorApp {
                 ui.heading(format!("{} {}", request.method(), request.target()));
                 render_timing(ui, record);
                 ui.separator();
+                let mut body = BodyPanel {
+                    record: record.id(),
+                    mode: self.body_mode,
+                    cache: &mut self.body_cache,
+                };
                 match self.detail_tab {
                     DetailTab::Headers => {
+                        render_query(ui, request.target());
                         ui.strong("Request headers");
                         render_headers(ui, "request-headers", request.headers());
                     }
                     DetailTab::Body => {
+                        body.mode = view_mode_bar(ui, &mut self.body_mode);
                         ui.strong("Request body");
-                        render_optional_body(ui, request.body(), request.headers());
+                        render_optional_body(ui, request.body(), request.headers(), &mut body);
                     }
                 }
                 ui.separator();
-                render_outcome(ui, record, self.detail_tab, &mut self.image);
+                render_outcome(ui, record, self.detail_tab, &mut body, &mut self.image);
             });
     }
 }
 
+/// Where and how the bodies of the selected exchange are shown.
+struct BodyPanel<'a> {
+    record: RecordId,
+    mode: ViewMode,
+    cache: &'a mut BodyViewCache,
+}
+
+/// Shows the Pretty / Raw switch and returns the mode to draw this frame.
+fn view_mode_bar(ui: &mut egui::Ui, mode: &mut ViewMode) -> ViewMode {
+    ui.horizontal(|ui| {
+        ui.label("View:");
+        for option in ViewMode::ALL {
+            ui.selectable_value(mode, option, option.label());
+        }
+    });
+    *mode
+}
+
+/// Lists decoded query parameters of the request target, if it has any.
+fn render_query(ui: &mut egui::Ui, target: &str) {
+    let Some((_, query)) = target.split_once('?') else {
+        return;
+    };
+    let query = query.split_once('#').map_or(query, |(query, _)| query);
+    let pairs = form::pairs(query);
+    if pairs.is_empty() {
+        return;
+    }
+    ui.strong("Query parameters");
+    let key_color = SyntaxPalette::for_theme(ui.ctx().theme()).key;
+    egui::Grid::new("query-parameters")
+        .striped(true)
+        .show(ui, |ui| {
+            for (key, value) in pairs {
+                ui.label(
+                    egui::RichText::new(form::visible(&key))
+                        .monospace()
+                        .color(key_color),
+                );
+                ui.monospace(form::visible(&value));
+                ui.end_row();
+            }
+        });
+    ui.separator();
+}
+
 fn render_headers(ui: &mut egui::Ui, id: &str, headers: &HeaderPreview) {
+    let name_color = SyntaxPalette::for_theme(ui.ctx().theme()).key;
     egui::Grid::new(id).striped(true).show(ui, |ui| {
         for header in headers.entries() {
-            ui.monospace(header.name());
+            ui.label(
+                egui::RichText::new(format!("{}:", header.name()))
+                    .monospace()
+                    .color(name_color),
+            );
             ui.monospace(header.value());
             ui.end_row();
         }
@@ -87,21 +147,27 @@ fn render_headers(ui: &mut egui::Ui, id: &str, headers: &HeaderPreview) {
     }
 }
 
-fn render_optional_body(ui: &mut egui::Ui, body: Option<&BodyPreview>, headers: &HeaderPreview) {
+fn render_optional_body(
+    ui: &mut egui::Ui,
+    body: Option<&BodyPreview>,
+    headers: &HeaderPreview,
+    panel: &mut BodyPanel<'_>,
+) {
     match body {
-        Some(body) => render_body(ui, body, headers, None),
+        Some(body) => render_body(ui, body, headers, (panel, BodySide::Request), None),
         None => {
             ui.weak("Body was not observed.");
         }
     }
 }
 
-/// Draws a body preview; `image` draws PNG bodies of that record as images.
+/// Draws a body preview; `image` draws PNG bodies of the record as images.
 fn render_body(
     ui: &mut egui::Ui,
     body: &BodyPreview,
     headers: &HeaderPreview,
-    image: Option<(&mut image_view::ImagePanel, RecordId)>,
+    (panel, side): (&mut BodyPanel<'_>, BodySide),
+    image: Option<&mut image_view::ImagePanel>,
 ) {
     let Some(snapshot) = body.snapshot() else {
         ui.weak("Preview is updating.");
@@ -125,35 +191,24 @@ fn render_body(
         return;
     }
     let encodings = headers.get("content-encoding").collect::<Vec<_>>();
-    if let Some((panel, record)) = image
-        && headers
-            .get("content-type")
-            .next()
-            .is_some_and(http_proxy::is_previewable_image_media_type)
+    let content_type = headers.get("content-type").next();
+    if let Some(image) = image
+        && content_type.is_some_and(http_proxy::is_previewable_image_media_type)
     {
-        panel.show(ui, record, &snapshot, &encodings);
+        image.show(ui, panel.record, &snapshot, &encodings);
         return;
     }
     let complete = snapshot.lifecycle() == BodyLifecycle::Complete
         && snapshot.retention() == BodyRetention::Prefix;
-    let mut preview = match body_view::decode(snapshot.bytes(), &encodings, complete) {
-        body_view::BodyText::Ready { text, notice } => {
-            if let Some(notice) = notice {
-                ui.weak(notice);
-            }
-            text
-        }
-        body_view::BodyText::Unavailable(message) => {
-            ui.colored_label(Palette::of(ui).warning, message);
-            return;
-        }
+    let source = BodySource {
+        record: panel.record.value(),
+        side,
+        bytes: snapshot.bytes(),
+        encodings: &encodings,
+        content_type,
+        complete,
     };
-    ui.add(
-        egui::TextEdit::multiline(&mut preview)
-            .font(egui::TextStyle::Monospace)
-            .desired_rows(8)
-            .interactive(false),
-    );
+    panel.cache.show(ui, &source, panel.mode);
 }
 
 const fn lifecycle_text(lifecycle: BodyLifecycle) -> &'static str {
@@ -177,6 +232,7 @@ fn render_outcome(
     ui: &mut egui::Ui,
     record: &Exchange,
     tab: DetailTab,
+    body: &mut BodyPanel<'_>,
     image: &mut image_view::ImagePanel,
 ) {
     match record.outcome() {
@@ -197,7 +253,8 @@ fn render_outcome(
                     ui,
                     response.body(),
                     response.headers(),
-                    Some((image, record.id())),
+                    (body, BodySide::Response),
+                    Some(image),
                 );
             }
         },
