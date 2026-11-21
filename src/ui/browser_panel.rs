@@ -7,7 +7,6 @@ use http_proxy::{Browser, BrowserEvent, BrowserSession};
 
 pub(in crate::ui) struct BrowserPanel {
     installed: Vec<Browser>,
-    selected: Option<Browser>,
     session: Option<BrowserSession>,
     opened: bool,
     error: Option<String>,
@@ -17,7 +16,6 @@ impl Default for BrowserPanel {
     fn default() -> Self {
         Self {
             installed: Browser::installed(),
-            selected: None,
             session: None,
             opened: false,
             error: None,
@@ -25,93 +23,80 @@ impl Default for BrowserPanel {
     }
 }
 
+const PROFILE_NOTE: &str = "Opens a separate private profile. Inspector logs are still recorded. \
+     Stopping the proxy closes this browser.";
+
 impl BrowserPanel {
-    pub(in crate::ui) fn show(
+    /// Shows the `Open Browser` menu, or the open session with a close
+    /// button, inline in the toolbar. Returns whether a session ended.
+    pub(in crate::ui) fn toolbar(
         &mut self,
         ui: &mut egui::Ui,
         proxy: Option<SocketAddr>,
         ca: Option<&Path>,
     ) -> bool {
         let mut changed = self.receive();
-        ui.horizontal(|ui| {
-            ui.label("Browser");
-            ui.add_enabled_ui(self.session.is_none(), |ui| {
-                self.chooser(ui);
-                if ui.button("Refresh browsers").clicked() {
-                    self.installed = Browser::installed();
-                    if !self
-                        .selected
-                        .as_ref()
-                        .is_some_and(|browser| self.installed.contains(browser))
-                    {
-                        self.selected = None;
-                    }
-                }
-                if ui
-                    .add_enabled(
-                        proxy.is_some() && self.selected.is_some(),
-                        egui::Button::new("Open Browser"),
-                    )
-                    .clicked()
-                    && let (Some(browser), Some(address)) = (&self.selected, proxy)
-                {
-                    self.error = None;
-                    self.opened = false;
-                    match browser.open(address, ca.map(Path::to_owned)) {
-                        Ok(session) => self.session = Some(session),
-                        Err(error) => self.error = Some(error.to_string()),
-                    }
-                }
-            });
-            if self.session.is_some() && ui.button("Close browser").clicked() {
+        if self.session.is_some() {
+            if self.opened {
+                ui.label("Browser open");
+            } else {
+                ui.spinner();
+                ui.label("Opening browser…");
+            }
+            ui.ctx().request_repaint_after(Duration::from_millis(100));
+            if ui
+                .button("Close browser")
+                .on_hover_text(PROFILE_NOTE)
+                .clicked()
+            {
                 self.close();
                 changed = true;
             }
-        });
-        self.status(ui, ca.is_some());
+            return changed;
+        }
+        let Some(address) = proxy else {
+            ui.add_enabled(false, egui::Button::new("Open Browser ▼"))
+                .on_disabled_hover_text("Start the proxy to open an inspection browser.");
+            return changed;
+        };
+        ui.menu_button("Open Browser ▼", |ui| self.menu(ui, address, ca))
+            .response
+            .on_hover_text(PROFILE_NOTE);
         changed
     }
 
-    fn chooser(&mut self, ui: &mut egui::Ui) {
-        egui::ComboBox::from_id_salt("inspection-browser")
-            .selected_text(
-                self.selected
-                    .as_ref()
-                    .map_or("Choose a browser", Browser::name),
-            )
-            .show_ui(ui, |ui| {
-                for browser in &self.installed {
-                    ui.selectable_value(&mut self.selected, Some(browser.clone()), browser.name());
-                }
-            });
-    }
-
-    fn status(&self, ui: &mut egui::Ui, decrypt: bool) {
+    fn menu(&mut self, ui: &mut egui::Ui, address: SocketAddr, ca: Option<&Path>) {
         if self.installed.is_empty() {
             ui.weak("No supported browser found on PATH. Install Firefox or Google Chrome, then refresh.");
         }
-        if self.session.is_some() {
-            ui.label(if self.opened {
-                "Private inspection browser is open."
-            } else {
-                "Preparing private browser..."
-            });
-            ui.ctx().request_repaint_after(Duration::from_millis(100));
+        let mut chosen = None;
+        for browser in &self.installed {
+            if ui
+                .button(browser.name())
+                .on_hover_text(ca_note(browser, ca.is_some()))
+                .clicked()
+            {
+                chosen = Some(browser.clone());
+            }
         }
-        if let Some(error) = &self.error {
-            ui.colored_label(crate::ui::theme::Palette::of(ui).error, error);
+        if let Some(browser) = chosen {
+            self.error = None;
+            self.opened = false;
+            match browser.open(address, ca.map(Path::to_owned)) {
+                Ok(session) => self.session = Some(session),
+                Err(error) => self.error = Some(error.to_string()),
+            }
+            ui.close();
         }
-        if decrypt
-            && self
-                .selected
-                .as_ref()
-                .is_some_and(Browser::uses_shared_ca_store)
-        {
-            ui.weak("Open Browser registers the CA in your user's shared Chrome/Chromium store. Remove it with Remove CA.");
-        } else if decrypt && self.selected.is_some() {
-            ui.weak("Firefox trusts the CA only in the temporary inspection profile.");
+        ui.separator();
+        if ui.button("Refresh browsers").clicked() {
+            self.installed = Browser::installed();
         }
-        ui.weak("Uses a separate private profile. Inspector logs are still recorded. Stopping the proxy closes this browser.");
+    }
+
+    /// The last browser error, shown below the toolbar.
+    pub(in crate::ui) fn error(&self) -> Option<&str> {
+        self.error.as_deref()
     }
 
     fn receive(&mut self) -> bool {
@@ -133,5 +118,16 @@ impl BrowserPanel {
     pub(in crate::ui) fn close(&mut self) {
         self.session = None;
         self.opened = false;
+    }
+}
+
+/// How the chosen browser trusts the CA while HTTPS is decrypted.
+const fn ca_note(browser: &Browser, decrypt: bool) -> &'static str {
+    if !decrypt {
+        PROFILE_NOTE
+    } else if browser.uses_shared_ca_store() {
+        "Registers the CA in your user's shared Chrome/Chromium store. Remove it with Remove CA."
+    } else {
+        "Firefox trusts the CA only in the temporary inspection profile."
     }
 }

@@ -27,56 +27,61 @@ impl SaveControls {
         }
     }
 
-    pub(in crate::ui) fn ui(&mut self, ui: &mut egui::Ui, log: Option<&FullLog>) {
+    /// Shows the `Save` menu in the toolbar.
+    pub(in crate::ui) fn menu(&mut self, ui: &mut egui::Ui, log: Option<&FullLog>) {
         self.poll();
-        ui.horizontal(|ui| {
-            ui.label("Save directory");
-            ui.add_enabled(
-                self.pending.is_none(),
-                egui::TextEdit::singleline(&mut self.directory)
-                    .desired_width(260.0)
-                    .hint_text("Existing directory"),
-            );
-            if ui
-                .add_enabled(self.pending.is_none(), egui::Button::new("Save window PNG"))
-                .on_hover_text("Save the visible app content, without the OS window border.")
-                .clicked()
-            {
-                self.start_screenshot(ui.ctx());
-            }
-            if ui
-                .add_enabled(
-                    self.pending.is_none() && log.is_some(),
-                    egui::Button::new("Save all logs"),
-                )
-                .on_hover_text(
-                    "Save all captured records and full bodies, regardless of the filter.",
-                )
-                .clicked()
-                && let Some(log) = log
-            {
-                self.status = None;
-                match self.destination("log").and_then(|path| log.export(path)) {
-                    Ok(receiver) => self.pending = Some(receiver),
-                    Err(error) => self.status = Some(Err(error)),
-                }
-            }
+        if self.pending.is_some() {
+            ui.spinner();
+            ui.ctx().request_repaint_after(Duration::from_millis(100));
+        }
+        ui.add_enabled_ui(self.pending.is_none(), |ui| {
+            ui.menu_button("Save ▼", |ui| self.menu_items(ui, log));
         });
-        if let Some(status) = &self.status {
-            match status {
-                Ok(path) => {
-                    ui.label(format!("Saved: {}", path.display()));
-                }
-                Err(error) => {
-                    ui.colored_label(
-                        crate::ui::theme::Palette::of(ui).error,
-                        format!("Save failed: {error}"),
-                    );
-                }
+    }
+
+    fn menu_items(&mut self, ui: &mut egui::Ui, log: Option<&FullLog>) {
+        ui.label("Save directory");
+        ui.add(
+            egui::TextEdit::singleline(&mut self.directory)
+                .desired_width(320.0)
+                .hint_text("Existing directory"),
+        );
+        if ui
+            .button("Save window PNG")
+            .on_hover_text("Save the visible app content, without the OS window border.")
+            .clicked()
+        {
+            ui.close();
+            self.start_screenshot(ui.ctx());
+        }
+        if ui
+            .add_enabled(log.is_some(), egui::Button::new("Save all logs"))
+            .on_hover_text("Save all captured records and full bodies, regardless of the filter.")
+            .clicked()
+            && let Some(log) = log
+        {
+            ui.close();
+            self.status = None;
+            match self.destination("log").and_then(|path| log.export(path)) {
+                Ok(receiver) => self.pending = Some(receiver),
+                Err(error) => self.status = Some(Err(error)),
             }
         }
-        if self.pending.is_some() {
-            ui.ctx().request_repaint_after(Duration::from_millis(100));
+    }
+
+    /// Shows the result of the last save in the status bar.
+    pub(in crate::ui) fn status(&self, ui: &mut egui::Ui) {
+        match &self.status {
+            Some(Ok(path)) => {
+                ui.label(format!("Saved: {}", path.display()));
+            }
+            Some(Err(error)) => {
+                ui.colored_label(
+                    crate::ui::theme::Palette::of(ui).error,
+                    format!("Save failed: {error}"),
+                );
+            }
+            None => {}
         }
     }
 

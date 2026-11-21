@@ -28,33 +28,44 @@ impl InspectorApp {
         if shortcuts_allowed {
             detail_tabs::apply_shortcuts(ui, &mut self.detail_tab);
         }
-        if ui
-            .add_enabled(
-                record.source() != http_proxy::CaptureSource::Connect,
-                egui::Button::new("Edit and Resend"),
+        let request = record.request();
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(format!("{} {}", request.method(), request.target()))
+                    .strong()
+                    .monospace(),
             )
-            .clicked()
-        {
-            match replay_panel::ReplayPanel::new(record.clone()) {
-                Ok(panel) => self.replay = Some(panel),
-                Err(error) => self.error = Some(error),
-            }
-        }
-        if let Some(original) = record.replay_of()
-            && ui
-                .link(format!("Replay of #{} — show original", original.value()))
+            .wrap(),
+        );
+        ui.horizontal_wrapped(|ui| {
+            let (status, color) = outcome_view::outcome_text(record.outcome(), &Palette::of(ui));
+            ui.colored_label(color, status);
+            if ui
+                .add_enabled(
+                    record.source() != http_proxy::CaptureSource::Connect,
+                    egui::Button::new("Edit and Resend"),
+                )
                 .clicked()
-        {
-            self.selected = Some(original);
-        }
+            {
+                match replay_panel::ReplayPanel::new(record.clone()) {
+                    Ok(panel) => self.replay = Some(panel),
+                    Err(error) => self.error = Some(error),
+                }
+            }
+            if let Some(original) = record.replay_of()
+                && ui
+                    .link(format!("Replay of #{} — show original", original.value()))
+                    .clicked()
+            {
+                self.selected = Some(original);
+            }
+        });
         detail_tabs::show(ui, &mut self.detail_tab);
 
         egui::ScrollArea::vertical()
             .id_salt(("details-scroll", self.detail_tab))
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                let request = record.request();
-                ui.heading(format!("{} {}", request.method(), request.target()));
                 render_timing(ui, record);
                 ui.separator();
                 let mut body = BodyPanel {

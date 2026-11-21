@@ -38,11 +38,23 @@ const MAX_RECORDS: usize = 2_000;
 const LIVE_REPAINT: Duration = Duration::from_millis(250);
 /// Repaint interval otherwise, to notice an engine that stopped on its own.
 const IDLE_REPAINT: Duration = Duration::from_secs(1);
+/// Default window size, large enough for the list and details side by side.
+const DEFAULT_WINDOW: [f32; 2] = [1_280.0, 820.0];
+const MIN_WINDOW: [f32; 2] = [640.0, 420.0];
+/// Height kept for the request list and details even in a short window,
+/// about ten table rows; the window scrolls instead of shrinking it further.
+const MIN_MAIN_HEIGHT: f32 = 280.0;
+const MIN_TABLE_WIDTH: f32 = 320.0;
+const MIN_DETAIL_WIDTH: f32 = 280.0;
+/// Share of the main area the details panel takes before the user drags it.
+const DEFAULT_DETAIL_SHARE: f32 = 0.4;
 
 pub fn main() -> eframe::Result {
     init_tracing();
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1_100.0, 700.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size(DEFAULT_WINDOW)
+            .with_min_inner_size(MIN_WINDOW),
         ..eframe::NativeOptions::default()
     };
     eframe::run_native(
@@ -74,6 +86,7 @@ struct InspectorApp {
     filter_text: String,
     record_filter: RecordFilter,
     https_inspection: bool,
+    authorization_notice: toolbar::AuthorizationNotice,
     ca_directory: Option<PathBuf>,
     ca_panel: ca_panel::CaPanel,
     browsers: browser_panel::BrowserPanel,
@@ -87,6 +100,9 @@ struct InspectorApp {
     body_mode: body_format::ViewMode,
     body_cache: body_display::BodyViewCache,
     image: image_view::ImagePanel,
+    /// Height of the status bar in the previous frame, reserved below the
+    /// main area so that it fits in the window without scrolling.
+    status_bar_height: f32,
     context: egui::Context,
 }
 
@@ -108,6 +124,7 @@ impl InspectorApp {
             filter_text: String::new(),
             record_filter: RecordFilter::All,
             https_inspection: false,
+            authorization_notice: toolbar::AuthorizationNotice::default(),
             ca_directory: app_paths::ca_directory(|name| std::env::var_os(name)),
             ca_panel: ca_panel::CaPanel::default(),
             browsers: browser_panel::BrowserPanel::default(),
@@ -121,6 +138,7 @@ impl InspectorApp {
             body_mode: body_format::ViewMode::default(),
             body_cache: body_display::BodyViewCache::default(),
             image: image_view::ImagePanel::default(),
+            status_bar_height: 0.0,
             theme,
             context,
         };
@@ -243,24 +261,25 @@ impl eframe::App for InspectorApp {
                 self.replay = None;
             }
         }
-        ui.heading(http_proxy::APP_NAME);
-        scope_help::show(ui, self.proxy.as_ref().map(ProxyHandle::local_addr));
-        ui.separator();
-        self.theme.show(ui);
-        self.toolbar(ui);
-        ui.separator();
-        self.filters(ui);
-        ui.separator();
         let shortcuts_allowed = request_shortcuts_allowed(ui.ctx());
-        ui.columns(2, |columns| {
-            let [requests, details] = columns else {
-                return;
-            };
-            requests.heading("Requests");
-            self.request_table(requests, shortcuts_allowed);
-            details.heading("Details");
-            self.detail_panel(details, shortcuts_allowed);
-        });
+        let viewport_height = ui.available_height();
+        egui::ScrollArea::vertical()
+            .id_salt("window-scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let top = ui.cursor().top();
+                self.toolbar(ui);
+                self.notices(ui);
+                ui.separator();
+                self.filters(ui);
+                let used = ui.cursor().top() - top + ui.spacing().item_spacing.y;
+                let height = main_height(viewport_height, used, self.status_bar_height);
+                self.main_area(ui, height, shortcuts_allowed);
+                let status_top = ui.cursor().top();
+                ui.separator();
+                self.status_bar(ui);
+                self.status_bar_height = ui.min_rect().bottom() - status_top;
+            });
 
         // New exchanges wake the UI through the proxy's notifier. Periodic
         // repaints are needed only for values that change without an event
@@ -273,8 +292,51 @@ impl eframe::App for InspectorApp {
     }
 }
 
+impl InspectorApp {
+    /// Requests on the left and details on the right, split by a draggable
+    /// divider. Both are clipped to `height` so neither draws over the other.
+    fn main_area(&mut self, ui: &mut egui::Ui, height: f32, shortcuts_allowed: bool) {
+        let size = egui::vec2(ui.available_width(), height);
+        let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+        let mut main = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("main-area")
+                .max_rect(rect)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        main.shrink_clip_rect(rect);
+        let width = rect.width();
+        let max_detail = (width - MIN_TABLE_WIDTH).max(MIN_DETAIL_WIDTH);
+        egui::Panel::right("details-panel")
+            .resizable(true)
+            .default_size((width * DEFAULT_DETAIL_SHARE).clamp(MIN_DETAIL_WIDTH, max_detail))
+            .size_range(MIN_DETAIL_WIDTH..=max_detail)
+            .show(&mut main, |ui| self.detail_panel(ui, shortcuts_allowed));
+        egui::CentralPanel::no_frame().show(&mut main, |ui| {
+            self.request_table(ui, shortcuts_allowed);
+        });
+    }
+}
+
+/// Height left for the request list and details once the controls above and
+/// the status bar below are placed, but never less than [`MIN_MAIN_HEIGHT`].
+fn main_height(viewport: f32, above: f32, below: f32) -> f32 {
+    (viewport - above - below).floor().max(MIN_MAIN_HEIGHT)
+}
+
 fn request_shortcuts_allowed(ctx: &egui::Context) -> bool {
     let focused = ctx.memory(egui::Memory::focused);
     !egui::Popup::is_any_open(ctx)
         && focused.is_none_or(|id| egui::TextEdit::load_state(ctx, id).is_none())
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::{MIN_MAIN_HEIGHT, main_height};
+
+    #[test]
+    fn main_area_fills_the_rest_but_keeps_a_minimum() {
+        assert!((main_height(700.0, 90.0, 30.0) - 580.0).abs() < f32::EPSILON);
+        assert!((main_height(300.0, 90.0, 30.0) - MIN_MAIN_HEIGHT).abs() < f32::EPSILON);
+    }
 }

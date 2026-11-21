@@ -111,18 +111,17 @@ impl ThemeSettings {
         }
     }
 
-    pub(in crate::ui) fn show(&mut self, ui: &mut egui::Ui) {
+    /// Shows the theme choice inside the settings menu.
+    pub(in crate::ui) fn menu(&mut self, ui: &mut egui::Ui) {
         let previous = self.preference;
-        ui.horizontal(|ui| {
-            ui.label("Theme:");
-            for (value, label) in [
-                (egui::ThemePreference::System, "System"),
-                (egui::ThemePreference::Light, "Light"),
-                (egui::ThemePreference::Dark, "Dark"),
-            ] {
-                ui.selectable_value(&mut self.preference, value, label);
-            }
-        });
+        ui.label("Theme");
+        for (value, label) in [
+            (egui::ThemePreference::System, "System"),
+            (egui::ThemePreference::Light, "Light"),
+            (egui::ThemePreference::Dark, "Dark"),
+        ] {
+            ui.radio_value(&mut self.preference, value, label);
+        }
         if previous != self.preference {
             ui.ctx().set_theme(self.preference);
             ui.ctx().request_repaint();
@@ -137,6 +136,10 @@ impl ThemeSettings {
                 "System appearance unavailable; using Dark.",
             );
         }
+    }
+
+    /// Shows a theme save error in the status bar.
+    pub(in crate::ui) fn status(&self, ui: &mut egui::Ui) {
         if let Some(error) = &self.error {
             ui.colored_label(Palette::of(ui).error, error);
         }

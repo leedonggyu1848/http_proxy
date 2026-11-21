@@ -49,129 +49,171 @@ impl PortChoice {
     }
 }
 
-impl InspectorApp {
-    pub(in crate::ui) fn toolbar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            if let Some(proxy) = self.proxy.as_ref() {
-                let address = proxy.local_addr();
-                ui.label(RichText::new("Running").color(Palette::of(ui).success));
-                ui.monospace(address.to_string());
-                copy_menu(ui, address);
-                if ui.button("Stop").clicked() {
-                    self.stop_proxy();
-                }
-            } else {
-                ui.label(RichText::new("Stopped").color(Palette::of(ui).error));
-                ui.label("Port");
-                let edited = ui
-                    .add(egui::TextEdit::singleline(&mut self.port.text).desired_width(56.0))
-                    .on_hover_text(
-                        "Loopback port for the proxy. 0 picks a free port. A port you type is remembered.",
-                    )
-                    .changed();
-                if edited {
-                    self.port.origin = port_settings::PortOrigin::User;
-                }
-                if ui.button("Start").clicked() {
-                    self.start_proxy();
-                }
-            }
+const AUTHORIZATION_WARNING: &str =
+    "Only enable inspection for traffic that you are authorized to inspect.";
 
+/// Whether the one-time authorization warning for HTTPS inspection shows.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(in crate::ui) enum AuthorizationNotice {
+    #[default]
+    NotShown,
+    Showing,
+    Dismissed,
+}
+
+impl AuthorizationNotice {
+    /// Shows the warning the first time inspection is turned on.
+    const fn inspection_enabled(self) -> Self {
+        match self {
+            Self::NotShown => Self::Showing,
+            Self::Showing | Self::Dismissed => self,
+        }
+    }
+}
+
+impl InspectorApp {
+    /// One toolbar row with the controls used while watching requests.
+    pub(in crate::ui) fn toolbar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            self.proxy_controls(ui);
             ui.separator();
+            self.https_controls(ui);
+            ui.separator();
+            if self.browsers.toolbar(
+                ui,
+                self.proxy.as_ref().map(ProxyHandle::local_addr),
+                self.ca_directory
+                    .as_deref()
+                    .filter(|_| self.https_inspection),
+            ) {
+                self.ca_panel.refresh();
+            }
+            self.save.menu(ui, self.full_log.as_ref());
+            ui.menu_button("Settings", |ui| self.theme.menu(ui));
+            crate::ui::scope_help::button(ui, self.proxy.as_ref().map(ProxyHandle::local_addr));
+        });
+    }
+
+    fn proxy_controls(&mut self, ui: &mut egui::Ui) {
+        if let Some(proxy) = self.proxy.as_ref() {
+            let address = proxy.local_addr();
+            ui.label(RichText::new("● Running").color(Palette::of(ui).success));
+            ui.monospace(address.to_string());
+            copy_menu(ui, address);
+            if ui.button("Stop").clicked() {
+                self.stop_proxy();
+            }
+        } else {
+            ui.label(RichText::new("● Stopped").color(Palette::of(ui).error));
+            ui.label("Port");
+            let edited = ui
+                .add(egui::TextEdit::singleline(&mut self.port.text).desired_width(56.0))
+                .on_hover_text(
+                    "Loopback port for the proxy. 0 picks a free port. A port you type is remembered.",
+                )
+                .changed();
+            if edited {
+                self.port.origin = port_settings::PortOrigin::User;
+            }
+            if ui.button("Start").clicked() {
+                self.start_proxy();
+            }
+        }
+    }
+
+    fn https_controls(&mut self, ui: &mut egui::Ui) {
+        let hover = if self.proxy.is_some() {
+            format!("Stop the proxy to change this setting. {AUTHORIZATION_WARNING}")
+        } else {
+            format!("Decrypt HTTPS in new connections with the app CA. {AUTHORIZATION_WARNING}")
+        };
+        let toggled = ui
+            .add_enabled(
+                self.proxy.is_none(),
+                egui::Checkbox::new(&mut self.https_inspection, "Decrypt HTTPS"),
+            )
+            .on_hover_text(&hover)
+            .on_disabled_hover_text(&hover)
+            .changed();
+        if toggled && self.https_inspection {
+            self.authorization_notice = self.authorization_notice.inspection_enabled();
+        }
+        if self.https_inspection {
+            self.ca_panel.summary(ui, self.ca_directory.as_deref());
+        }
+    }
+
+    /// Errors and warnings that need attention, shown right below the toolbar.
+    pub(in crate::ui) fn notices(&mut self, ui: &mut egui::Ui) {
+        let palette = Palette::of(ui);
+        if let Some(warning) = self.port.launch_warning.as_ref() {
+            ui.colored_label(palette.warning, warning);
+        }
+        if let Some(error) = self.error.as_ref() {
+            ui.colored_label(palette.error, error);
+        }
+        if let Some(error) = self.browsers.error() {
+            ui.colored_label(palette.error, error);
+        }
+        if self.https_inspection {
+            self.ca_panel.messages(ui);
+            if self.authorization_notice == AuthorizationNotice::Showing {
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(palette.warning, AUTHORIZATION_WARNING);
+                    if ui.small_button("Dismiss").clicked() {
+                        self.authorization_notice = AuthorizationNotice::Dismissed;
+                    }
+                });
+            }
+        }
+    }
+
+    /// Counters and full-session log state below the request list.
+    pub(in crate::ui) fn status_bar(&self, ui: &mut egui::Ui) {
+        let palette = Palette::of(ui);
+        ui.horizontal_wrapped(|ui| {
             ui.label(format!("{} requests", self.records.len()));
             let dropped = self.records.dropped(self.engine_dropped());
             if dropped > 0 {
-                ui.colored_label(Palette::of(ui).error, format!("{dropped} records dropped"))
+                ui.separator();
+                ui.colored_label(palette.error, format!("{dropped} records dropped"))
                     .on_hover_text(
                         "The capture queue was full, so these exchanges were forwarded but not shown.",
                     );
             }
             let evicted = self.records.evicted();
             if evicted > 0 {
-                ui.colored_label(
-                    Palette::of(ui).warning,
-                    format!("{evicted} older records removed"),
-                )
-                .on_hover_text(format!(
-                    "Only the newest {MAX_RECORDS} requests are kept on screen. The full-session log keeps every record."
-                ));
+                ui.separator();
+                ui.colored_label(palette.warning, format!("{evicted} older records removed"))
+                    .on_hover_text(format!(
+                        "Only the newest {MAX_RECORDS} requests are kept on screen. The full-session log keeps every record."
+                    ));
             }
-            if ui
-                .button("Clear")
-                .on_hover_text("Clear the displayed requests. The full-session log is retained.")
-                .clicked()
+            if let Some(error) = self
+                .log_init_error
+                .clone()
+                .or_else(|| self.full_log.as_ref().and_then(FullLog::error))
             {
-                self.records.clear(self.engine_dropped());
-                self.selected = None;
+                ui.separator();
+                ui.colored_label(palette.error, error);
             }
-        });
-
-        self.status_messages(ui);
-
-        self.save.ui(ui, self.full_log.as_ref());
-
-        self.https_controls(ui);
-        ui.separator();
-        if self.browsers.show(
-            ui,
-            self.proxy.as_ref().map(ProxyHandle::local_addr),
-            self.ca_directory
-                .as_deref()
-                .filter(|_| self.https_inspection),
-        ) {
-            self.ca_panel.refresh();
-        }
-    }
-
-    /// Shows launch warnings, errors, and full-session log notices.
-    fn status_messages(&self, ui: &mut egui::Ui) {
-        if let Some(warning) = self.port.launch_warning.as_ref() {
-            ui.colored_label(Palette::of(ui).warning, warning);
-        }
-        if let Some(error) = self.error.as_ref() {
-            ui.colored_label(Palette::of(ui).error, error);
-        }
-        if let Some(error) = self
-            .log_init_error
-            .clone()
-            .or_else(|| self.full_log.as_ref().and_then(FullLog::error))
-        {
-            ui.colored_label(Palette::of(ui).error, error);
-        }
-        if let Some(log) = self
-            .full_log
-            .as_ref()
-            .filter(|log| log.body_limit_reached())
-        {
-            ui.colored_label(
-                Palette::of(ui).warning,
-                format!(
-                    "The full-session log reached its {} body limit. Later body bytes are omitted; headers and results are still logged.",
-                    log.formatted_body_limit()
-                ),
-            );
-        }
-    }
-
-    fn https_controls(&mut self, ui: &mut egui::Ui) {
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.label("HTTPS inspection");
-            ui.add_enabled(
-                self.proxy.is_none(),
-                egui::Checkbox::new(&mut self.https_inspection, "Decrypt HTTPS"),
-            );
-            if self.proxy.is_some() {
-                ui.weak("Stop the proxy to change this setting.");
+            if let Some(log) = self
+                .full_log
+                .as_ref()
+                .filter(|log| log.body_limit_reached())
+            {
+                ui.separator();
+                ui.colored_label(
+                    palette.warning,
+                    format!(
+                        "The full-session log reached its {} body limit. Later body bytes are omitted; headers and results are still logged.",
+                        log.formatted_body_limit()
+                    ),
+                );
             }
+            self.save.status(ui);
+            self.theme.status(ui);
         });
-        if self.https_inspection {
-            self.ca_panel.show(ui, self.ca_directory.as_deref());
-            ui.colored_label(
-                Palette::of(ui).warning,
-                "Only enable inspection for traffic that you are authorized to inspect.",
-            );
-        }
     }
 }
 
@@ -205,7 +247,7 @@ impl CopyTarget {
 }
 
 fn copy_menu(ui: &mut egui::Ui, address: std::net::SocketAddr) {
-    ui.menu_button("Copy", |ui| {
+    ui.menu_button("Copy ▼", |ui| {
         for target in CopyTarget::ALL {
             let text = target.text(address);
             if ui.button(target.label()).on_hover_text(&text).clicked() {
@@ -261,6 +303,21 @@ mod copy_tests {
         assert_eq!(
             CopyTarget::Environment.text(address),
             "HTTP_PROXY=http://127.0.0.1:18080 HTTPS_PROXY=http://127.0.0.1:18080"
+        );
+    }
+}
+
+#[cfg(test)]
+mod authorization_tests {
+    use super::AuthorizationNotice;
+
+    #[test]
+    fn warning_shows_only_the_first_time() {
+        let shown = AuthorizationNotice::NotShown.inspection_enabled();
+        assert_eq!(shown, AuthorizationNotice::Showing);
+        assert_eq!(
+            AuthorizationNotice::Dismissed.inspection_enabled(),
+            AuthorizationNotice::Dismissed
         );
     }
 }
