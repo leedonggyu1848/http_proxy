@@ -1566,6 +1566,7 @@ dependencies = [
  "hyper-util",
  "jpeg-decoder",
  "png",
+ "quick-xml",
  "rcgen",
  "rustls",
  "rustls-native-certs",

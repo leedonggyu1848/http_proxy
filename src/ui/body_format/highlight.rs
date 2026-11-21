@@ -8,8 +8,10 @@ use eframe::egui::{Color32, FontId, TextFormat, text::LayoutJob};
 /// Syntax colors that keep at least 4.5:1 contrast on the panel, text field,
 /// stripe, hover, and selection backgrounds of their theme. Color only adds
 /// to cues already in the text: keys end with `:` or `=`, strings and
-/// attribute values keep their quotes, tags keep their angle brackets, and
-/// comments are also italic.
+/// attribute values keep their quotes, tags keep their angle brackets,
+/// namespace prefixes end with `:`, entities keep `&` and `;`, `CDATA` and
+/// instructions keep their `<![CDATA[` and `<?` delimiters, and comments are
+/// also italic.
 #[derive(Clone, Copy, Debug)]
 pub(in crate::ui) struct SyntaxPalette {
     pub(in crate::ui) key: Color32,
@@ -49,12 +51,12 @@ impl SyntaxPalette {
         match kind {
             TokenKind::Text => text,
             TokenKind::Key | TokenKind::AttributeName => self.key,
-            TokenKind::String | TokenKind::AttributeValue => self.string,
-            TokenKind::Number => self.number,
-            TokenKind::Literal => self.literal,
+            TokenKind::String | TokenKind::AttributeValue | TokenKind::CData => self.string,
+            TokenKind::Number | TokenKind::Entity => self.number,
+            TokenKind::Literal | TokenKind::Namespace => self.literal,
             TokenKind::Punctuation => self.punctuation,
             TokenKind::Tag => self.tag,
-            TokenKind::Comment => self.comment,
+            TokenKind::Comment | TokenKind::Instruction => self.comment,
         }
     }
 }
