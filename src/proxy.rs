@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use http::header::{HOST, UPGRADE};
 use http::uri::Authority;
-use http::{Method, Request, Response, StatusCode, Uri};
+use http::{HeaderMap, Method, Request, Response, StatusCode, Uri};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::Incoming;
@@ -26,7 +26,8 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch};
 use tokio::time::{timeout, timeout_at};
 
 use crate::FullLog;
-use crate::capture::{BodyLog, full_headers};
+use crate::capture::BodyLog;
+use crate::journal::BodySide;
 use crate::{
     BODY_PREVIEW_BYTES, ERROR_BYTES, ObservedBody, TARGET_BYTES, bounded_text, capture_headers,
     response_body_preview,
@@ -115,9 +116,11 @@ struct CaptureContext {
 }
 
 impl CaptureContext {
-    /// Publishes a new in-flight exchange for `request`.
+    /// Publishes a new in-flight exchange from request metadata.
     fn start(
-        request: &Request<impl http_body::Body>,
+        method: &Method,
+        headers: &HeaderMap,
+        replay_of: Option<RecordId>,
         source: CaptureSource,
         target: &str,
         engine: &Engine,
@@ -125,26 +128,22 @@ impl CaptureContext {
         let id = NEXT_RECORD_ID.fetch_add(1, Ordering::Relaxed);
         let log = engine.events.log.clone();
         if let Some(log) = log.as_ref() {
-            log.text(format!(
-                "[{id}] Request {} {target}\n{}",
-                request.method(),
-                full_headers(request.headers())
-            ));
+            log.request_head(id, method, target, headers);
         }
         let exchange = Exchange::new(
             RecordId::new(id),
             engine.session,
             source,
             CapturedRequest::new(
-                request.method().clone(),
+                method.clone(),
                 bounded_text(target, TARGET_BYTES),
-                capture_headers(request.headers()),
+                capture_headers(headers),
             ),
         );
-        if let Some(original) = request.extensions().get::<RecordId>() {
-            exchange.set_replay_of(*original);
+        if let Some(original) = replay_of {
+            exchange.set_replay_of(original);
             if let Some(log) = log.as_ref() {
-                log.text(format!("[{id}] Replay of #{}\n", original.value()));
+                log.replay_of(id, original);
             }
         }
         engine.events.send(exchange.clone());
@@ -159,7 +158,7 @@ impl CaptureContext {
         self.exchange.id().value()
     }
 
-    fn body_log(&self, side: &'static str) -> Option<BodyLog> {
+    fn body_log(&self, side: BodySide) -> Option<BodyLog> {
         self.log
             .as_ref()
             .map(|log| BodyLog::new(log.clone(), self.id(), side))
@@ -168,11 +167,7 @@ impl CaptureContext {
     /// Records a failure and returns the bounded message shown to the client.
     fn fail(&self, stage: FailureStage, message: &str) -> String {
         if let Some(log) = self.log.as_ref() {
-            log.text(format!(
-                "[{}] Failure {stage}: {}\n",
-                self.id(),
-                message.escape_debug()
-            ));
+            log.failure(self.id(), stage, message);
         }
         let message = bounded_text(message, ERROR_BYTES);
         self.settle(Outcome::Failed {
@@ -183,33 +178,17 @@ impl CaptureContext {
     }
 
     fn settle(&self, outcome: Outcome) {
-        let summary = outcome_summary(&outcome);
-        let timing_label = if matches!(outcome, Outcome::Response(_)) {
-            "Response headers in"
-        } else {
-            "Settled after"
-        };
+        let logged_outcome = outcome.clone();
         if self.exchange.settle(outcome)
             && let Some(log) = self.log.as_ref()
         {
-            log.text(format!(
-                "[{}] {summary} · {timing_label} {:.1} ms\n",
-                self.id(),
-                self.exchange.elapsed().as_secs_f64() * 1000.0
-            ));
+            log.settled(self.id(), &logged_outcome, self.exchange.elapsed());
         }
     }
 
     fn tunnel_ended(&self, tunnel: &TunnelSnapshot) {
         if let Some(log) = self.log.as_ref() {
-            log.text(format!(
-                "[{}] Tunnel ended {:?} · {} bytes client→upstream · {} bytes upstream→client · {:.1} ms\n",
-                self.id(),
-                tunnel.state(),
-                tunnel.client_to_upstream(),
-                tunnel.upstream_to_client(),
-                tunnel.duration().as_secs_f64() * 1000.0
-            ));
+            log.tunnel_ended(self.id(), tunnel);
         }
     }
 }
@@ -227,10 +206,6 @@ impl Drop for CaptureContext {
             }
         }
     }
-}
-
-fn outcome_summary(outcome: &Outcome) -> String {
-    outcome.to_string()
 }
 
 /// Settings used to start the local proxy.
@@ -593,10 +568,24 @@ async fn proxy_request(
 ) -> Result<Response<ProxyBody>, Infallible> {
     let target = request.uri().to_string();
     let response = if request.method() == Method::CONNECT {
-        let capture = CaptureContext::start(&request, CaptureSource::Connect, &target, &engine);
+        let capture = CaptureContext::start(
+            request.method(),
+            request.headers(),
+            request.extensions().get::<RecordId>().copied(),
+            CaptureSource::Connect,
+            &target,
+            &engine,
+        );
         connect_tunnel(&mut request, &engine, capture, permit).await
     } else {
-        let capture = CaptureContext::start(&request, CaptureSource::HttpProxy, &target, &engine);
+        let capture = CaptureContext::start(
+            request.method(),
+            request.headers(),
+            request.extensions().get::<RecordId>().copied(),
+            CaptureSource::HttpProxy,
+            &target,
+            &engine,
+        );
         forward_http(request.map(BodyExt::boxed), &engine, &capture).await
     };
 
@@ -756,7 +745,14 @@ async fn proxy_https_request(
         .path_and_query()
         .map_or("/", http::uri::PathAndQuery::as_str);
     let target = destination.absolute_target(path);
-    let capture = CaptureContext::start(&request, CaptureSource::InspectedHttps, &target, &engine);
+    let capture = CaptureContext::start(
+        request.method(),
+        request.headers(),
+        request.extensions().get::<RecordId>().copied(),
+        CaptureSource::InspectedHttps,
+        &target,
+        &engine,
+    );
 
     let response = match validate_inner_request(&request, &destination) {
         Ok(()) => {
@@ -931,8 +927,8 @@ where
     remove_hop_by_hop_headers(request.headers_mut());
     let request_body = BodyPreview::new(BODY_PREVIEW_BYTES);
     capture.exchange.attach_request_body(request_body.clone());
-    let request =
-        request.map(|body| ObservedBody::new(body, request_body, capture.body_log("Request")));
+    let request = request
+        .map(|body| ObservedBody::new(body, request_body, capture.body_log(BodySide::Request)));
 
     let Ok(response) = timeout(engine.response_timeout, sender.send_request(request)).await else {
         return failed_response(
@@ -948,11 +944,7 @@ where
     match response {
         Ok(mut response) => {
             if let Some(log) = capture.log.as_ref() {
-                log.text(format!(
-                    "[{}] Response headers\n{}",
-                    capture.id(),
-                    full_headers(response.headers())
-                ));
+                log.response_head(capture.id(), response.headers());
             }
             let response_body = response_body_preview(response.headers());
             capture.settle(Outcome::Response(captured_response(
@@ -961,7 +953,9 @@ where
             )));
             remove_hop_by_hop_headers(response.headers_mut());
             response
-                .map(|body| ObservedBody::new(body, response_body, capture.body_log("Response")))
+                .map(|body| {
+                    ObservedBody::new(body, response_body, capture.body_log(BodySide::Response))
+                })
                 .map(BodyExt::boxed)
         }
         Err(error) => failed_response(
