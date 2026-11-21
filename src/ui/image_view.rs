@@ -1,169 +1,55 @@
-//! Image response bodies drawn as images, with a hexadecimal fallback.
+//! Image response bodies drawn as images, with source and hexadecimal views.
 
 use std::fmt::Write as _;
-use std::io::Cursor;
 
 use eframe::egui::{self, TextureHandle, TextureOptions};
 use http_proxy::{
     BodyLifecycle, BodyRetention, BodySnapshot, IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES,
-    RecordId,
+    ImageFormat, RecordId,
 };
 
 use crate::ui::body_view;
+use crate::ui::image_decode::{self, PreviewImage};
+use crate::ui::theme::Palette;
 
-/// Widest or tallest image the decoder accepts.
-const MAX_IMAGE_SIDE: u32 = 8_192;
-/// Most pixels the decoder accepts, which bounds the RGBA buffer to 64 MiB.
-const MAX_IMAGE_PIXELS: u64 = 4_096 * 4_096;
-/// Allocation ceiling handed to the PNG decoder: the RGBA frame plus row buffers.
-const DECODER_MEMORY_BYTES: usize = 80 * 1024 * 1024;
 /// Raw bytes shown in the hexadecimal view.
 const HEX_BYTES: usize = 8 * 1024;
+/// SVG source bytes shown in the source view.
+const SOURCE_BYTES: usize = 256 * 1024;
 /// Height at which drawn images are scaled down to keep the panel readable.
 const MAX_DISPLAY_HEIGHT: f32 = 480.0;
 
-/// A decoded image frame as unmultiplied 8-bit RGBA pixels.
-#[derive(Debug)]
-pub(in crate::ui) struct PreviewImage {
-    width: u32,
-    height: u32,
-    rgba: Vec<u8>,
-    /// Length of the image file after `Content-Encoding` was removed.
-    file_bytes: usize,
-    format: &'static str,
+/// The image file a body holds once `Content-Encoding` is removed.
+struct ImageFile {
+    bytes: Vec<u8>,
+    /// The format named by the leading bytes, or by `Content-Type` when the
+    /// bytes have no known signature.
+    format: ImageFormat,
 }
 
-/// Why an image body could not be drawn.
-#[derive(Debug, thiserror::Error)]
-pub(in crate::ui) enum ImageError {
-    #[error("{0}")]
-    Encoding(String),
-    #[error(
-        "The image is {width}×{height} px, larger than the {MAX_IMAGE_SIDE} px per side or 16 megapixel preview limit."
-    )]
-    TooLarge { width: u32, height: u32 },
-    #[error("The body is not a valid preview image: {0}")]
-    Invalid(String),
-}
-
-/// Decodes the first frame of a PNG body after removing `Content-Encoding`.
-///
-/// The image size is read from the header and checked before any pixel
-/// memory is allocated.
-pub(in crate::ui) fn decode_png(
-    bytes: &[u8],
-    encodings: &[&str],
-) -> Result<PreviewImage, ImageError> {
-    let png_bytes = body_view::decode_complete(bytes, encodings, IMAGE_PREVIEW_BYTES)
-        .map_err(ImageError::Encoding)?;
-    let invalid = |error: png::DecodingError| ImageError::Invalid(error.to_string());
-    let mut decoder = png::Decoder::new_with_limits(
-        Cursor::new(png_bytes.as_slice()),
-        png::Limits {
-            bytes: DECODER_MEMORY_BYTES,
-        },
-    );
-    let (width, height) = decoder.read_header_info().map_err(invalid)?.size();
-    if width > MAX_IMAGE_SIDE
-        || height > MAX_IMAGE_SIDE
-        || u64::from(width) * u64::from(height) > MAX_IMAGE_PIXELS
-    {
-        return Err(ImageError::TooLarge { width, height });
-    }
-    // ALPHA expands palettes and low bit depths and always adds an alpha
-    // channel, so the output is 8-bit gray+alpha or RGBA.
-    decoder.set_transformations(png::Transformations::ALPHA | png::Transformations::STRIP_16);
-    let mut reader = decoder.read_info().map_err(invalid)?;
-    let size = reader
-        .output_buffer_size()
-        .ok_or(ImageError::TooLarge { width, height })?;
-    let mut buffer = vec![0; size];
-    let frame = reader.next_frame(&mut buffer).map_err(invalid)?;
-    buffer.truncate(frame.buffer_size());
-    let rgba = match frame.color_type {
-        png::ColorType::Rgba => buffer,
-        png::ColorType::GrayscaleAlpha => buffer
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .flat_map(|&[gray, alpha]| [gray, gray, gray, alpha])
-            .collect(),
-        other => {
-            return Err(ImageError::Invalid(format!(
-                "unexpected decoded color type {other:?}"
-            )));
-        }
-    };
-    Ok(PreviewImage {
-        width,
-        height,
-        rgba,
-        file_bytes: png_bytes.len(),
-        format: "PNG",
-    })
-}
-
-/// Dispatches supported image signatures after removing transfer compression.
-fn decode_image(bytes: &[u8], encodings: &[&str]) -> Result<PreviewImage, ImageError> {
-    let bytes = body_view::decode_complete(bytes, encodings, IMAGE_PREVIEW_BYTES)
-        .map_err(ImageError::Encoding)?;
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        decode_png(&bytes, &[])
-    } else {
-        decode_jpeg(&bytes)
+impl ImageFile {
+    /// Removes `Content-Encoding` and recognizes the format.
+    fn decode_body(
+        bytes: &[u8],
+        encodings: &[&str],
+        declared: ImageFormat,
+    ) -> Result<Self, String> {
+        let bytes = body_view::decode_complete(bytes, encodings, IMAGE_PREVIEW_BYTES)?;
+        let format = ImageFormat::from_signature(&bytes).unwrap_or(declared);
+        Ok(Self { bytes, format })
     }
 }
 
-fn decode_jpeg(bytes: &[u8]) -> Result<PreviewImage, ImageError> {
-    let invalid = |error: jpeg_decoder::Error| ImageError::Invalid(error.to_string());
-    let mut decoder = jpeg_decoder::Decoder::new(Cursor::new(bytes));
-    decoder.set_max_decoding_buffer_size(DECODER_MEMORY_BYTES);
-    decoder.read_info().map_err(invalid)?;
-    let info = decoder
-        .info()
-        .ok_or_else(|| ImageError::Invalid("missing JPEG header".into()))?;
-    let (width, height) = (u32::from(info.width), u32::from(info.height));
-    if width > MAX_IMAGE_SIDE
-        || height > MAX_IMAGE_SIDE
-        || u64::from(width) * u64::from(height) > MAX_IMAGE_PIXELS
-    {
-        return Err(ImageError::TooLarge { width, height });
-    }
-    let pixels = decoder.decode().map_err(invalid)?;
-    let rgba = match info.pixel_format {
-        jpeg_decoder::PixelFormat::RGB24 => pixels
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .flat_map(|&[r, g, b]| [r, g, b, 255])
-            .collect(),
-        jpeg_decoder::PixelFormat::L8 => pixels
-            .iter()
-            .flat_map(|&gray| [gray, gray, gray, 255])
-            .collect(),
-        jpeg_decoder::PixelFormat::CMYK32 => pixels
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .flat_map(|&[c, m, y, k]| {
-                let channel = |ink: u8| {
-                    u8::try_from((255 - u16::from(ink)) * (255 - u16::from(k)) / 255).unwrap_or(0)
-                };
-                [channel(c), channel(m), channel(y), 255]
-            })
-            .collect(),
-        other @ jpeg_decoder::PixelFormat::L16 => {
-            return Err(ImageError::Invalid(format!(
-                "unsupported JPEG pixel format {other:?}"
-            )));
-        }
-    };
-    Ok(PreviewImage {
-        width,
-        height,
-        rgba,
-        file_bytes: bytes.len(),
-        format: "JPEG",
+/// Explains that the body is drawn as another format than `Content-Type`
+/// names, or `None` when they agree.
+fn mismatch_text(declared: ImageFormat, format: ImageFormat) -> Option<String> {
+    (declared != format).then(|| {
+        format!(
+            "Content-Type names {}, but the body starts like {}; it is drawn as {}.",
+            declared.name(),
+            format.name(),
+            format.name()
+        )
     })
 }
 
@@ -201,20 +87,38 @@ struct BodyKey {
     lifecycle: BodyLifecycle,
 }
 
-struct Drawn {
-    texture: TextureHandle,
-    width: u32,
-    height: u32,
-    file_bytes: usize,
-    format: &'static str,
+/// How the selected image body is shown.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum View {
+    #[default]
+    Image,
+    /// SVG markup as text.
+    Source,
+    Hex,
 }
 
-/// Image or hexadecimal view of the selected image response body, with the
-/// last decoded texture kept so it is not decoded again every frame.
+struct Drawn {
+    texture: TextureHandle,
+    image_text: String,
+}
+
+/// One decode of a body, kept so it is not repeated every frame.
+struct Loaded {
+    /// The recognized format, or `None` when `Content-Encoding` could not be
+    /// removed.
+    format: Option<ImageFormat>,
+    drawn: Result<Drawn, String>,
+    /// Lossy UTF-8 text of an SVG file, cut to [`SOURCE_BYTES`].
+    source: Option<String>,
+    file_bytes: usize,
+}
+
+/// Image, source, or hexadecimal view of the selected image response body,
+/// with the last decoded texture kept so it is not decoded again every frame.
 #[derive(Default)]
 pub(in crate::ui) struct ImagePanel {
-    cached: Option<(BodyKey, Result<Drawn, String>)>,
-    hex_record: Option<RecordId>,
+    cached: Option<(BodyKey, Loaded)>,
+    view: Option<(RecordId, View)>,
 }
 
 impl ImagePanel {
@@ -224,79 +128,159 @@ impl ImagePanel {
         record: RecordId,
         snapshot: &BodySnapshot,
         encodings: &[&str],
+        declared: ImageFormat,
     ) {
-        let mut hex = self.hex_record == Some(record);
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut hex, false, "Image");
-            ui.selectable_value(&mut hex, true, "Hex");
-        });
-        if hex {
-            self.hex_record = Some(record);
-            show_hex(ui, snapshot);
-            return;
-        }
-        self.hex_record = None;
-        if let Some(message) = unavailable_reason(snapshot) {
-            ui.colored_label(crate::ui::theme::Palette::of(ui).warning, message);
-            return;
-        }
+        let unavailable = unavailable_reason(snapshot);
         let key = BodyKey {
             record,
             observed_bytes: snapshot.observed_bytes(),
             lifecycle: snapshot.lifecycle(),
         };
-        if self
+        if unavailable.is_none()
+            && self
+                .cached
+                .as_ref()
+                .is_none_or(|(cached, _)| *cached != key)
+        {
+            let loaded = load(ui.ctx(), record, snapshot.bytes(), encodings, declared);
+            self.cached = Some((key, loaded));
+        }
+        let loaded = self
             .cached
             .as_ref()
-            .is_none_or(|(cached, _)| *cached != key)
+            .filter(|(cached, _)| unavailable.is_none() && *cached == key)
+            .map(|(_, loaded)| loaded);
+        let svg = loaded.and_then(|loaded| loaded.format).unwrap_or(declared) == ImageFormat::Svg;
+
+        let mut view = self
+            .view
+            .filter(|(selected, _)| *selected == record)
+            .map_or(View::Image, |(_, view)| view);
+        if view == View::Source && !svg {
+            view = View::Image;
+        }
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut view, View::Image, "Image");
+            if svg {
+                ui.selectable_value(&mut view, View::Source, "Source");
+            }
+            ui.selectable_value(&mut view, View::Hex, "Hex");
+        });
+        if let Some(format) = loaded.and_then(|loaded| loaded.format)
+            && let Some(text) = mismatch_text(declared, format)
         {
-            let drawn = draw(ui.ctx(), record, snapshot.bytes(), encodings);
-            self.cached = Some((key, drawn));
+            ui.colored_label(Palette::of(ui).warning, text);
         }
-        let mut switch_to_hex = false;
-        match self.cached.as_ref().map(|(_, drawn)| drawn) {
-            Some(Ok(drawn)) => {
-                ui.label(size_text(drawn, snapshot.observed_bytes()));
-                let size = egui::vec2(ui.available_width(), MAX_DISPLAY_HEIGHT);
-                let image = egui::Image::from_texture(&drawn.texture).max_size(size);
-                let image_size = image.calc_size(size, Some(drawn.texture.size_vec2()));
-                let (rect, _) = ui.allocate_exact_size(image_size, egui::Sense::hover());
-                checkerboard(ui, rect);
-                image.paint_at(ui, rect);
-                ui.painter().rect_stroke(
-                    rect,
-                    0.0,
-                    ui.visuals().window_stroke,
-                    egui::StrokeKind::Outside,
-                );
+        match (view, loaded) {
+            (View::Hex, _) => show_hex(ui, snapshot),
+            (_, None) => {
+                if let Some(message) = unavailable {
+                    ui.colored_label(Palette::of(ui).warning, message);
+                }
             }
-            Some(Err(message)) => {
-                ui.colored_label(crate::ui::theme::Palette::of(ui).error, message);
-                switch_to_hex = ui
-                    .horizontal(|ui| ui.button("Show bytes as hex").clicked())
-                    .inner;
+            (View::Source, Some(loaded)) => show_source(ui, loaded),
+            (View::Image, Some(loaded)) => {
+                if let Some(switch) = show_image(ui, loaded, snapshot.observed_bytes(), svg) {
+                    view = switch;
+                }
             }
-            None => {}
         }
-        if switch_to_hex {
-            self.hex_record = Some(record);
+        self.view = Some((record, view));
+    }
+}
+
+/// Draws the decoded image or its error; returns the view a button asked for.
+fn show_image(ui: &mut egui::Ui, loaded: &Loaded, received_bytes: u64, svg: bool) -> Option<View> {
+    match &loaded.drawn {
+        Ok(drawn) => {
+            ui.label(format!(
+                "{}{}",
+                drawn.image_text,
+                received_text(loaded.file_bytes, received_bytes)
+            ));
+            let size = egui::vec2(ui.available_width(), MAX_DISPLAY_HEIGHT);
+            let image = egui::Image::from_texture(&drawn.texture).max_size(size);
+            let image_size = image.calc_size(size, Some(drawn.texture.size_vec2()));
+            let (rect, _) = ui.allocate_exact_size(image_size, egui::Sense::hover());
+            checkerboard(ui, rect);
+            image.paint_at(ui, rect);
+            ui.painter().rect_stroke(
+                rect,
+                0.0,
+                ui.visuals().window_stroke,
+                egui::StrokeKind::Outside,
+            );
+            None
+        }
+        Err(message) => {
+            ui.colored_label(Palette::of(ui).error, message);
+            ui.horizontal(|ui| {
+                let source =
+                    (svg && ui.button("Show SVG source").clicked()).then_some(View::Source);
+                let hex = ui
+                    .button("Show bytes as hex")
+                    .clicked()
+                    .then_some(View::Hex);
+                source.or(hex)
+            })
+            .inner
         }
     }
 }
 
-/// Describes the image size, the image file size, and, when `Content-Encoding`
-/// changed it, the number of bytes received.
-fn size_text(drawn: &Drawn, received_bytes: u64) -> String {
-    let file_bytes = u64::try_from(drawn.file_bytes).unwrap_or(u64::MAX);
-    let received = if file_bytes == received_bytes {
+fn show_source(ui: &mut egui::Ui, loaded: &Loaded) {
+    let Some(source) = &loaded.source else {
+        if let Err(message) = &loaded.drawn {
+            ui.colored_label(Palette::of(ui).error, message);
+        }
+        return;
+    };
+    ui.weak(if loaded.file_bytes > SOURCE_BYTES {
+        format!(
+            "First {} KiB of {} bytes of SVG source, shown as text and never run.",
+            SOURCE_BYTES / 1024,
+            loaded.file_bytes
+        )
+    } else {
+        format!(
+            "{} bytes of SVG source, shown as text and never run.",
+            loaded.file_bytes
+        )
+    });
+    let mut text = source.as_str();
+    egui::ScrollArea::vertical()
+        .id_salt("image-body-source")
+        .max_height(MAX_DISPLAY_HEIGHT)
+        .show(ui, |ui| {
+            ui.add(
+                egui::TextEdit::multiline(&mut text)
+                    .font(egui::TextStyle::Monospace)
+                    .desired_width(f32::INFINITY),
+            );
+        });
+}
+
+/// Describes the format, pixel size, file size, and notes of a decoded image.
+fn image_text(format: ImageFormat, image: &PreviewImage, file_bytes: usize) -> String {
+    let mut text = format!(
+        "{} · {}×{} px · {file_bytes} bytes",
+        format.name(),
+        image.width,
+        image.height
+    );
+    for note in &image.notes {
+        let _ = write!(text, " · {note}");
+    }
+    text
+}
+
+/// Notes the number of bytes received when `Content-Encoding` changed it.
+fn received_text(file_bytes: usize, received_bytes: u64) -> String {
+    if u64::try_from(file_bytes).unwrap_or(u64::MAX) == received_bytes {
         String::new()
     } else {
         format!(" · {received_bytes} bytes received with Content-Encoding")
-    };
-    format!(
-        "{} · {}×{} px · {file_bytes} bytes{received}",
-        drawn.format, drawn.width, drawn.height
-    )
+    }
 }
 
 /// Explains why a body cannot be drawn yet, or `None` when it can be decoded.
@@ -318,13 +302,51 @@ fn unavailable_reason(snapshot: &BodySnapshot) -> Option<String> {
     })
 }
 
-fn draw(
+/// Removes `Content-Encoding`, decodes the image, and uploads it as a texture.
+fn load(
     context: &egui::Context,
     record: RecordId,
     bytes: &[u8],
     encodings: &[&str],
-) -> Result<Drawn, String> {
-    let image = decode_image(bytes, encodings).map_err(|error| error.to_string())?;
+    declared: ImageFormat,
+) -> Loaded {
+    let file = match ImageFile::decode_body(bytes, encodings, declared) {
+        Ok(file) => file,
+        Err(message) => {
+            return Loaded {
+                format: None,
+                drawn: Err(message),
+                source: None,
+                file_bytes: 0,
+            };
+        }
+    };
+    let source = (file.format == ImageFormat::Svg).then(|| {
+        let (shown, _) = file.bytes.split_at(file.bytes.len().min(SOURCE_BYTES));
+        String::from_utf8_lossy(shown).into_owned()
+    });
+    let drawn = image_decode::decode(file.format, &file.bytes)
+        .map_err(|error| error.to_string())
+        .and_then(|image| {
+            let image_text = image_text(file.format, &image, file.bytes.len());
+            texture(context, record, &image).map(|texture| Drawn {
+                texture,
+                image_text,
+            })
+        });
+    Loaded {
+        format: Some(file.format),
+        drawn,
+        source,
+        file_bytes: file.bytes.len(),
+    }
+}
+
+fn texture(
+    context: &egui::Context,
+    record: RecordId,
+    image: &PreviewImage,
+) -> Result<TextureHandle, String> {
     let max_side = context.input(|input| input.max_texture_side);
     let (width, height) = (image.width, image.height);
     let pixels = [width, height].map(|side| usize::try_from(side).unwrap_or(usize::MAX));
@@ -334,18 +356,11 @@ fn draw(
         ));
     }
     let color = egui::ColorImage::from_rgba_unmultiplied(pixels, &image.rgba);
-    let texture = context.load_texture(
+    Ok(context.load_texture(
         format!("image-body-{record:?}"),
         color,
         TextureOptions::LINEAR,
-    );
-    Ok(Drawn {
-        texture,
-        width,
-        height,
-        file_bytes: image.file_bytes,
-        format: image.format,
-    })
+    ))
 }
 
 fn show_hex(ui: &mut egui::Ui, snapshot: &BodySnapshot) {
@@ -406,168 +421,26 @@ mod tests {
     use std::error::Error;
     use std::io::Write;
 
-    use super::{ImageError, decode_png, hex_dump};
+    use http_proxy::ImageFormat;
 
-    fn png(width: u32, height: u32, color: png::ColorType, pixels: &[u8]) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        let mut encoder = png::Encoder::new(&mut bytes, width, height);
-        encoder.set_color(color);
-        encoder.set_depth(png::BitDepth::Eight);
-        let written = encoder
-            .write_header()
-            .and_then(|mut writer| writer.write_image_data(pixels));
-        assert!(written.is_ok(), "{written:?}");
-        bytes
-    }
+    use super::{ImageFile, hex_dump, mismatch_text};
 
     #[test]
-    fn decodes_rgb_and_gray_images_to_rgba() -> Result<(), Box<dyn Error>> {
-        let rgb = png(2, 1, png::ColorType::Rgb, &[255, 0, 0, 0, 0, 255]);
-        let image = decode_png(&rgb, &[])?;
-        assert_eq!((image.width, image.height), (2, 1));
-        assert_eq!(image.rgba, [255, 0, 0, 255, 0, 0, 255, 255]);
-
-        let gray = png(1, 2, png::ColorType::Grayscale, &[7, 9]);
-        assert_eq!(decode_png(&gray, &[])?.rgba, [7, 7, 7, 255, 9, 9, 9, 255]);
-        Ok(())
-    }
-
-    #[test]
-    fn removes_content_encoding_before_decoding() -> Result<(), Box<dyn Error>> {
-        let original = png(1, 1, png::ColorType::Rgba, &[1, 2, 3, 4]);
+    fn removes_content_encoding_and_prefers_the_signature() -> Result<(), Box<dyn Error>> {
+        let gif = include_bytes!("../../tests/fixtures/images/animated.gif");
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        encoder.write_all(&original)?;
-        let image = decode_png(&encoder.finish()?, &["gzip"])?;
-        assert_eq!(image.rgba, [1, 2, 3, 4]);
-        assert_eq!(image.file_bytes, original.len());
+        encoder.write_all(gif)?;
+        let file = ImageFile::decode_body(&encoder.finish()?, &["gzip"], ImageFormat::Png)?;
+        assert_eq!(file.bytes, gif);
+        assert_eq!(file.format, ImageFormat::Gif);
+        assert!(mismatch_text(ImageFormat::Png, file.format).is_some());
+
+        // Bytes without a known signature keep the declared format.
+        let file = ImageFile::decode_body(b"broken", &[], ImageFormat::WebP)?;
+        assert_eq!(file.format, ImageFormat::WebP);
+        assert_eq!(mismatch_text(ImageFormat::WebP, file.format), None);
+        assert!(ImageFile::decode_body(b"\x1f\x8b broken", &["gzip"], ImageFormat::Png).is_err());
         Ok(())
-    }
-
-    #[test]
-    fn reports_truncated_and_corrupt_images() {
-        let original = png(4, 4, png::ColorType::Rgb, &[200; 48]);
-        let (truncated, _) = original.split_at(original.len() / 2);
-        assert!(matches!(
-            decode_png(truncated, &[]),
-            Err(ImageError::Invalid(_))
-        ));
-        assert!(matches!(
-            decode_png(b"not an image", &[]),
-            Err(ImageError::Invalid(_))
-        ));
-        let mut corrupt = original;
-        if let Some(byte) = corrupt.get_mut(40) {
-            *byte ^= 0xff;
-        }
-        assert!(decode_png(&corrupt, &[]).is_err());
-        assert!(matches!(
-            decode_png(b"\x1f\x8b broken", &["gzip"]),
-            Err(ImageError::Encoding(_))
-        ));
-    }
-
-    #[test]
-    fn rejects_huge_dimensions_before_allocating_pixels() {
-        // A header that claims 100,000 × 100,000 pixels with almost no data.
-        let mut header = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
-        let fields = [
-            100_000_u32.to_be_bytes().as_slice(),
-            100_000_u32.to_be_bytes().as_slice(),
-            &[8, 6, 0, 0, 0],
-        ]
-        .concat();
-        let mut chunk = b"IHDR".to_vec();
-        chunk.extend_from_slice(&fields);
-        header.extend_from_slice(&fields);
-        header.extend_from_slice(&crc32(&chunk).to_be_bytes());
-        assert!(matches!(
-            decode_png(&header, &[]),
-            Err(ImageError::TooLarge {
-                width: 100_000,
-                height: 100_000
-            })
-        ));
-    }
-
-    #[test]
-    fn decodes_jpeg_color_models_and_progressive() -> Result<(), Box<dyn Error>> {
-        for (bytes, expected) in [
-            (
-                include_bytes!("../../tests/fixtures/jpeg/rgb.jpg").as_slice(),
-                [240_u8, 20, 10, 255],
-            ),
-            (
-                include_bytes!("../../tests/fixtures/jpeg/progressive.jpg").as_slice(),
-                [240, 20, 10, 255],
-            ),
-            (
-                include_bytes!("../../tests/fixtures/jpeg/gray.jpg").as_slice(),
-                [120, 120, 120, 255],
-            ),
-            (
-                include_bytes!("../../tests/fixtures/jpeg/cmyk.jpg").as_slice(),
-                [255, 0, 0, 255],
-            ),
-        ] {
-            let image = super::decode_image(bytes, &[])?;
-            assert_eq!((image.width, image.height), (16, 12));
-            assert_eq!(image.format, "JPEG");
-            assert_eq!(image.file_bytes, bytes.len());
-            for pixel in image.rgba.as_chunks::<4>().0 {
-                assert!(
-                    pixel
-                        .iter()
-                        .zip(expected)
-                        .all(|(&actual, wanted)| actual.abs_diff(wanted) <= 3),
-                    "{pixel:?}"
-                );
-            }
-            let mut gzip =
-                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-            gzip.write_all(bytes)?;
-            assert_eq!(
-                super::decode_image(&gzip.finish()?, &["gzip"])?.rgba,
-                image.rgba
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_invalid_and_oversized_jpeg() {
-        let original = include_bytes!("../../tests/fixtures/jpeg/rgb.jpg");
-        assert!(super::decode_image(b"broken JPEG", &[]).is_err());
-        let (truncated, _) = original.split_at(original.len() / 2);
-        assert!(super::decode_image(truncated, &[]).is_err());
-        for (width, height) in [(8193_u16, 12_u16), (8192, 8192)] {
-            let mut bytes = original.to_vec();
-            let offset = bytes.windows(2).position(|pair| pair == [0xff, 0xc0]);
-            assert!(offset.is_some());
-            if let Some(offset) = offset
-                && let Some(fields) = bytes.get_mut(offset + 5..offset + 9)
-            {
-                fields.copy_from_slice(&[height.to_be_bytes(), width.to_be_bytes()].concat());
-            }
-            assert!(matches!(
-                super::decode_image(&bytes, &[]),
-                Err(ImageError::TooLarge { .. })
-            ));
-        }
-    }
-
-    fn crc32(bytes: &[u8]) -> u32 {
-        let mut crc = !0_u32;
-        for &byte in bytes {
-            crc ^= u32::from(byte);
-            for _ in 0..8 {
-                crc = if crc & 1 == 1 {
-                    (crc >> 1) ^ 0xEDB8_8320
-                } else {
-                    crc >> 1
-                };
-            }
-        }
-        !crc
     }
 
     #[test]
