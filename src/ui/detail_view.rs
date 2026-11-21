@@ -299,29 +299,3 @@ fn render_tunnel(ui: &mut egui::Ui, tunnel: &TunnelPreview) {
             ui.end_row();
         });
 }
-
-pub(in crate::ui) fn configure_fonts(context: &egui::Context) {
-    let candidates = [
-        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
-        "/usr/share/fonts/truetype/nanum/NanumGothicCoding.ttf",
-        "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
-    ];
-    let Some(data) = candidates
-        .into_iter()
-        .find_map(|path| std::fs::read(path).ok())
-    else {
-        return;
-    };
-    let mut fonts = egui::FontDefinitions::default();
-    let name = "cjk-fallback".to_owned();
-    fonts
-        .font_data
-        .insert(name.clone(), egui::FontData::from_owned(data).into());
-    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        fonts.families.entry(family).or_default().push(name.clone());
-    }
-    context.set_fonts(fonts);
-}
