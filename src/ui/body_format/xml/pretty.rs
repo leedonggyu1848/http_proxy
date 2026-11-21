@@ -2,7 +2,8 @@
 //! written.
 
 use super::{Document, Element, NodeKind};
-use crate::ui::body_format::{Styled, TokenKind, split_while};
+use crate::ui::body_format::tag::{Dialect, Spacing, push_tag};
+use crate::ui::body_format::{Styled, TokenKind};
 
 /// Indents element-only content two spaces per level. Elements that hold
 /// text, entity references, or `CDATA`, and elements under
@@ -47,7 +48,7 @@ impl Printer<'_, '_> {
 
     fn element(&mut self, start_tag: &str, element: &Element, depth: usize) {
         self.line(depth);
-        push_tag(&mut self.out, start_tag, true);
+        push_tag(&mut self.out, start_tag, Dialect::Xml, Spacing::Normalize);
         if element.preserve || has_text(self.document, element) {
             for &child in &element.children {
                 self.verbatim(child);
@@ -59,7 +60,7 @@ impl Printer<'_, '_> {
             }
         }
         if let Some(end_tag) = &element.end_tag {
-            push_tag(&mut self.out, self.document.slice(end_tag), false);
+            push_raw_tag(&mut self.out, self.document.slice(end_tag));
         }
     }
 
@@ -119,113 +120,7 @@ pub(super) fn push_leaf(out: &mut Styled, kind: &NodeKind, raw: &str) {
 }
 
 fn push_raw_tag(out: &mut Styled, tag: &str) {
-    push_tag(out, tag, false);
-}
-
-/// Appends an opening, closing, or empty-element tag with its namespace
-/// prefixes, names, and attribute values as separate tokens. With
-/// `normalize`, whitespace between attributes becomes one space so a tag
-/// written over several lines stays on one; values are never changed.
-pub(super) fn push_tag(out: &mut Styled, tag: &str, normalize: bool) {
-    let open = if tag.starts_with("</") { "</" } else { "<" };
-    let rest = tag.get(open.len()..).unwrap_or_default();
-    let (name, mut rest) = split_while(rest, is_name_char);
-    out.push(open, TokenKind::Tag);
-    push_name(out, name, TokenKind::Tag);
-    loop {
-        let (space, after) = split_while(rest, char::is_whitespace);
-        rest = after;
-        let end = rest.is_empty() || rest.starts_with('>') || rest.starts_with("/>");
-        if normalize {
-            if !end && !space.is_empty() {
-                out.push(" ", TokenKind::Text);
-            }
-        } else {
-            out.push(space, TokenKind::Text);
-        }
-        if end {
-            break;
-        }
-        let (attribute, after) = split_while(rest, is_name_char);
-        if attribute.is_empty() {
-            // A stray character such as `=` or a quote: keep it as written.
-            let (stray, after) = rest.split_at(rest.chars().next().map_or(0, char::len_utf8));
-            out.push(stray, TokenKind::Punctuation);
-            rest = after;
-            continue;
-        }
-        push_name(out, attribute, TokenKind::AttributeName);
-        rest = after;
-        let (space, after) = split_while(rest, char::is_whitespace);
-        if let Some(value) = after.strip_prefix('=') {
-            out.push(if normalize { "" } else { space }, TokenKind::Text);
-            out.push("=", TokenKind::Punctuation);
-            let (space, value) = split_while(value, char::is_whitespace);
-            out.push(if normalize { "" } else { space }, TokenKind::Text);
-            let (value, after) = split_quoted(value);
-            push_value(out, value);
-            rest = after;
-        }
-    }
-    out.push(rest, TokenKind::Tag);
-}
-
-const fn is_name_char(c: char) -> bool {
-    !c.is_whitespace() && !matches!(c, '/' | '>' | '=' | '"' | '\'')
-}
-
-/// Appends `prefix:local` with the prefix and colon marked as a namespace.
-fn push_name(out: &mut Styled, name: &str, kind: TokenKind) {
-    match name.split_once(':') {
-        Some((prefix, local)) if !prefix.is_empty() => {
-            out.push(prefix, TokenKind::Namespace);
-            out.push(":", TokenKind::Punctuation);
-            out.push(local, kind);
-        }
-        _ => out.push(name, kind),
-    }
-}
-
-/// Splits a quoted value, including its quotes, from the rest of a tag. An
-/// unterminated value runs to the end; an unquoted one to the next space.
-fn split_quoted(text: &str) -> (&str, &str) {
-    let Some(quote) = text.chars().next().filter(|c| matches!(c, '"' | '\'')) else {
-        return split_while(text, is_name_char);
-    };
-    let end = text
-        .get(1..)
-        .and_then(|inner| inner.find(quote))
-        .map_or(text.len(), |index| index + 2);
-    text.split_at(end)
-}
-
-/// Appends an attribute value with its entity references marked.
-fn push_value(out: &mut Styled, value: &str) {
-    let mut rest = value;
-    while let Some(start) = rest.find('&') {
-        let (before, reference) = rest.split_at(start);
-        out.push(before, TokenKind::AttributeValue);
-        let end = reference
-            .find(';')
-            .filter(|&end| {
-                !reference
-                    .get(1..end)
-                    .unwrap_or_default()
-                    .contains(['"', '\''])
-            })
-            .map_or(1, |end| end + 1);
-        let (reference, after) = reference.split_at(end);
-        out.push(
-            reference,
-            if end > 1 {
-                TokenKind::Entity
-            } else {
-                TokenKind::AttributeValue
-            },
-        );
-        rest = after;
-    }
-    out.push(rest, TokenKind::AttributeValue);
+    push_tag(out, tag, Dialect::Xml, Spacing::AsWritten);
 }
 
 #[cfg(test)]

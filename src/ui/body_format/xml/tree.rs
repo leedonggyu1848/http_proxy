@@ -1,8 +1,9 @@
 //! Builds the [`TreeModel`] of an XML preview, with an `XPath` for every
 //! element. [`Document::parse`] applies the node and depth limits.
 
-use super::pretty::{push_leaf, push_tag};
+use super::pretty::push_leaf;
 use super::{Document, Element, NodeKind};
+use crate::ui::body_format::tag::{Dialect, Spacing, push_tag};
 use crate::ui::body_format::tree::{CopyLabels, TreeModel, TreeNode, elide};
 use crate::ui::body_format::{Styled, TokenKind};
 
@@ -88,11 +89,21 @@ impl Builder<'_, '_> {
             .unwrap_or_default()
             .to_owned();
         let mut label = Styled::default();
-        push_tag(&mut label, &row_text(start_tag), true);
+        push_tag(
+            &mut label,
+            &row_text(start_tag),
+            Dialect::Xml,
+            Spacing::Normalize,
+        );
         if let Some(text) = self.only_text(element) {
             label.push(&row_text(text.trim()), TokenKind::Text);
             if let Some(end_tag) = &element.end_tag {
-                push_tag(&mut label, document.slice(end_tag), true);
+                push_tag(
+                    &mut label,
+                    document.slice(end_tag),
+                    Dialect::Xml,
+                    Spacing::Normalize,
+                );
             }
             self.push(label, Some(path), value, parent, depth);
             return;
