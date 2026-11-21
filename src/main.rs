@@ -188,18 +188,14 @@ impl PortChoice {
     }
 
     /// Remembers a port the user typed once the proxy started on it.
-    fn remember(&self, port: port_settings::ProxyPort) -> Result<(), String> {
+    fn remember(&self, port: port_settings::ProxyPort) -> Result<(), port_settings::PortSaveError> {
         if self.origin != port_settings::PortOrigin::User {
             return Ok(());
         }
         let Some(directory) = self.settings_directory.as_deref() else {
-            return Err(
-                "The port could not be saved because the application settings directory is unavailable."
-                    .to_owned(),
-            );
+            return Err(port_settings::PortSaveError::SettingsDirectoryUnavailable);
         };
-        port_settings::save_port(directory, port)
-            .map_err(|error| format!("The proxy started, but the port could not be saved: {error}"))
+        port_settings::save_port(directory, port).map_err(port_settings::PortSaveError::Save)
     }
 }
 
@@ -265,7 +261,11 @@ impl InspectorApp {
                 let context = self.context.clone();
                 let _first_notifier = proxy.notify_on_event(move || context.request_repaint());
                 self.proxy = Some(proxy);
-                self.error = self.port.remember(port).err();
+                self.error = self
+                    .port
+                    .remember(port)
+                    .err()
+                    .map(|error| error.to_string());
             }
             Err(error) => {
                 self.error = Some(port_settings::start_error_text(&error, port));
@@ -902,4 +902,34 @@ fn copy_menu(ui: &mut egui::Ui, address: std::net::SocketAddr) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod port_choice_tests {
+    use super::{
+        PortChoice,
+        port_settings::{PortOrigin, PortSaveError, ProxyPort},
+    };
+
+    #[test]
+    fn remember_reports_typed_errors_and_skips_non_user_ports()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let port = ProxyPort::parse("8080").map_err(|error| error.to_string())?;
+        let mut choice = PortChoice {
+            text: port.to_string(),
+            origin: PortOrigin::User,
+            settings_directory: None,
+            launch_warning: None,
+        };
+        assert!(matches!(
+            choice.remember(port),
+            Err(PortSaveError::SettingsDirectoryUnavailable)
+        ));
+        let file = tempfile::NamedTempFile::new()?;
+        choice.settings_directory = Some(file.path().to_path_buf());
+        assert!(matches!(choice.remember(port), Err(PortSaveError::Save(_))));
+        choice.origin = PortOrigin::Environment;
+        assert!(choice.remember(port).is_ok());
+        Ok(())
+    }
 }

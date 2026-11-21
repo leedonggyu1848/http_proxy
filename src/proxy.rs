@@ -773,33 +773,48 @@ async fn proxy_https_request(
             &capture,
             FailureStage::Request,
             StatusCode::BAD_REQUEST,
-            message,
+            &message.to_string(),
         ),
     };
     Ok(response)
 }
 
-fn validate_inner_request(
-    request: &Request<Incoming>,
+/// Reason an inspected request cannot be forwarded inside its CONNECT tunnel.
+#[derive(Debug, Eq, PartialEq, thiserror::Error)]
+enum InnerRequestError {
+    #[error("nested CONNECT is not supported")]
+    NestedConnect,
+    #[error("HTTPS requests inside CONNECT must use origin-form targets")]
+    NonOriginTarget,
+    #[error("protocol upgrades inside inspected HTTPS are not supported")]
+    ProtocolUpgrade,
+    #[error("the inspected request has no valid Host header")]
+    InvalidHost,
+    #[error("the inspected Host header does not match the CONNECT authority")]
+    HostMismatch,
+}
+
+fn validate_inner_request<B>(
+    request: &Request<B>,
     destination: &Destination,
-) -> Result<(), &'static str> {
+) -> Result<(), InnerRequestError> {
     if request.method() == Method::CONNECT {
-        return Err("nested CONNECT is not supported");
+        return Err(InnerRequestError::NestedConnect);
     }
     if request.uri().scheme().is_some() || request.uri().authority().is_some() {
-        return Err("HTTPS requests inside CONNECT must use origin-form targets");
+        return Err(InnerRequestError::NonOriginTarget);
     }
     if request.headers().contains_key(UPGRADE) {
-        return Err("protocol upgrades inside inspected HTTPS are not supported");
+        return Err(InnerRequestError::ProtocolUpgrade);
     }
     let authority = request
         .headers()
         .get(HOST)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<Authority>().ok())
-        .ok_or("the inspected request has no valid Host header")?;
+        .ok_or(InnerRequestError::InvalidHost)?;
     if !destination.matches_authority(&authority) {
-        return Err("the inspected Host header does not match the CONNECT authority");
+        return Err(InnerRequestError::HostMismatch);
     }
     Ok(())
 }
@@ -816,7 +831,7 @@ async fn forward_http(
                 capture,
                 FailureStage::Request,
                 StatusCode::BAD_REQUEST,
-                message,
+                &message.to_string(),
             );
         }
     };
@@ -1099,4 +1114,70 @@ fn text_response(status: StatusCode, message: &str) -> Response<ProxyBody> {
 
 const fn infallible_to_hyper(error: Infallible) -> hyper::Error {
     match error {}
+}
+
+#[cfg(test)]
+mod inner_request_tests {
+    use super::{Destination, InnerRequestError, validate_inner_request};
+    use http::{
+        Method, Request,
+        header::{HOST, UPGRADE},
+        uri::Authority,
+    };
+
+    #[test]
+    fn rejects_invalid_tunnel_requests_by_kind() -> Result<(), Box<dyn std::error::Error>> {
+        let destination = Destination::from_authority(&Authority::from_static("example.com:443"))?;
+        for (method, uri, host, upgrade, expected) in [
+            (
+                Method::CONNECT,
+                "/",
+                Some("example.com"),
+                false,
+                Some(InnerRequestError::NestedConnect),
+            ),
+            (
+                Method::GET,
+                "https://example.com/",
+                Some("example.com"),
+                false,
+                Some(InnerRequestError::NonOriginTarget),
+            ),
+            (
+                Method::GET,
+                "/",
+                Some("example.com"),
+                true,
+                Some(InnerRequestError::ProtocolUpgrade),
+            ),
+            (
+                Method::GET,
+                "/",
+                None,
+                false,
+                Some(InnerRequestError::InvalidHost),
+            ),
+            (
+                Method::GET,
+                "/",
+                Some("other.example"),
+                false,
+                Some(InnerRequestError::HostMismatch),
+            ),
+            (Method::GET, "/", Some("example.com"), false, None),
+        ] {
+            let mut builder = Request::builder().method(method).uri(uri);
+            if let Some(host) = host {
+                builder = builder.header(HOST, host);
+            }
+            if upgrade {
+                builder = builder.header(UPGRADE, "websocket");
+            }
+            assert_eq!(
+                validate_inner_request(&builder.body(())?, &destination),
+                expected.map_or(Ok(()), Err)
+            );
+        }
+        Ok(())
+    }
 }
