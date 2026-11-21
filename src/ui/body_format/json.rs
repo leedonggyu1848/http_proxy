@@ -33,6 +33,9 @@ pub(super) fn pretty(text: &str) -> Result<Styled, String> {
                     lexemes.next();
                 } else {
                     depth += 1;
+                    if depth > 64 {
+                        return Err("JSON preview nesting exceeds 64 levels".into());
+                    }
                     if next.is_some() {
                         out.newline(depth);
                     }
@@ -171,6 +174,12 @@ mod tests {
         assert_eq!(pretty("]]")?.text(), "]\n]");
         assert_eq!(pretty("  ")?.text(), "");
         Ok(())
+    }
+
+    #[test]
+    fn bounds_indentation_for_deep_tree_fallback() {
+        let text = "[".repeat(4096);
+        assert!(pretty(&text).is_err());
     }
 
     #[test]
