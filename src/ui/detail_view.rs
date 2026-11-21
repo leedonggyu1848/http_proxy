@@ -1,6 +1,7 @@
 //! Selected request details and body previews.
 
 use crate::ui::InspectorApp;
+use crate::ui::detail_tabs::{self, DetailTab};
 use crate::ui::{body_view, image_view, outcome_view, replay_panel, scope_help};
 use eframe::egui::{self, Color32};
 use http_proxy::{
@@ -8,12 +9,6 @@ use http_proxy::{
     TunnelPreview,
 };
 use std::time::Duration;
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(in crate::ui) enum DetailTab {
-    Headers,
-    Body,
-}
 
 impl InspectorApp {
     pub(in crate::ui) fn detail_panel(&mut self, ui: &mut egui::Ui, shortcuts_allowed: bool) {
@@ -27,15 +22,8 @@ impl InspectorApp {
             return;
         };
 
-        if shortcuts_allowed
-            && ui.input_mut(|input| {
-                !input.modifiers.any() && input.consume_key(egui::Modifiers::NONE, egui::Key::F6)
-            })
-        {
-            self.detail_tab = match self.detail_tab {
-                DetailTab::Headers => DetailTab::Body,
-                DetailTab::Body => DetailTab::Headers,
-            };
+        if shortcuts_allowed {
+            detail_tabs::apply_shortcuts(ui, &mut self.detail_tab);
         }
         if ui
             .add_enabled(
@@ -56,10 +44,7 @@ impl InspectorApp {
         {
             self.selected = Some(original);
         }
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.detail_tab, DetailTab::Headers, "Headers");
-            ui.selectable_value(&mut self.detail_tab, DetailTab::Body, "Body");
-        });
+        detail_tabs::show(ui, &mut self.detail_tab);
 
         egui::ScrollArea::vertical()
             .id_salt(("details-scroll", self.detail_tab))
@@ -197,9 +182,10 @@ fn render_outcome(
         Outcome::Response(response) => match tab {
             DetailTab::Headers => {
                 ui.strong(format!(
-                    "Response headers · {} {} · {:?}",
+                    "Response headers · {} {} ({}) · {:?}",
                     response.status().as_str(),
                     response.reason(),
+                    outcome_view::status_class(response.status().as_u16()),
                     response.version()
                 ));
                 render_headers(ui, "response-headers", response.headers());
