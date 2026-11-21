@@ -69,17 +69,77 @@ impl BodyFormat {
         }
     }
 
-    pub(in crate::ui) const fn label(self) -> &'static str {
+    /// What this format supports, declared in [`FormatSpec`].
+    pub(in crate::ui) const fn spec(self) -> &'static FormatSpec {
         match self {
-            Self::Json => "JSON",
-            Self::Css => "CSS",
-            Self::Form => "Form",
-            Self::Markup => "HTML",
-            Self::Xml => "XML",
-            Self::JavaScript => "JavaScript",
-            Self::Text => "Text",
+            Self::Json => &FormatSpec {
+                label: "JSON",
+                pretty: Some(|text| json::pretty(text).map(Formatted::plain)),
+                tree: Some(json_tree::build),
+                numbered: false,
+            },
+            Self::Css => &FormatSpec {
+                label: "CSS",
+                pretty: Some(css::pretty),
+                tree: None,
+                numbered: true,
+            },
+            Self::Form => &FormatSpec {
+                label: "Form",
+                pretty: Some(|text| Ok(Formatted::plain(form::pretty(text)))),
+                tree: None,
+                numbered: false,
+            },
+            Self::Markup => &FormatSpec {
+                label: "HTML",
+                pretty: Some(|text| markup::pretty(text).map(Formatted::plain)),
+                tree: None,
+                numbered: false,
+            },
+            Self::Xml => &FormatSpec {
+                label: "XML",
+                pretty: Some(xml::pretty),
+                tree: Some(xml::tree::build),
+                numbered: false,
+            },
+            Self::JavaScript => &FormatSpec {
+                label: "JavaScript",
+                pretty: Some(javascript::pretty),
+                tree: None,
+                numbered: true,
+            },
+            Self::Text => &FormatSpec {
+                label: "Text",
+                pretty: None,
+                tree: None,
+                numbered: false,
+            },
         }
     }
+
+    pub(in crate::ui) const fn label(self) -> &'static str {
+        self.spec().label
+    }
+}
+
+/// Reads text as a format and returns it formatted, or why it could not.
+pub(in crate::ui) type PrettyFn = fn(&str) -> Result<Formatted, String>;
+
+/// Reads text as a format and returns its tree, or why it could not.
+pub(in crate::ui) type TreeFn = fn(&str) -> Result<tree::TreeModel, String>;
+
+/// Everything the body view needs to know about one format. Adding a format
+/// means adding its [`BodyFormat::spec`] entry and its formatter module.
+#[derive(Debug)]
+pub(in crate::ui) struct FormatSpec {
+    /// Name shown next to the view mode.
+    pub(in crate::ui) label: &'static str,
+    /// Pretty printer; without one Pretty shows the original text.
+    pub(in crate::ui) pretty: Option<PrettyFn>,
+    /// Tree builder; without one Tree shows Pretty with a notice.
+    pub(in crate::ui) tree: Option<TreeFn>,
+    /// Whether Pretty and Raw are shown with line numbers.
+    pub(in crate::ui) numbered: bool,
 }
 
 /// How a body preview is shown. Formats without a tree show Tree as Pretty.
@@ -171,17 +231,54 @@ impl Styled {
     }
 }
 
-/// Body text prepared for one view mode.
+/// How a [`Notice`] is shown.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::ui) enum NoticeLevel {
+    /// Neutral information, such as the decoding used or a source map URL.
+    Info,
+    /// Something the shown text leaves out or could not do.
+    Warning,
+}
+
+/// One line of information shown above a body.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::ui) struct Notice {
+    pub(in crate::ui) level: NoticeLevel,
+    pub(in crate::ui) text: String,
+}
+
+impl Notice {
+    pub(in crate::ui) fn info(text: impl Into<String>) -> Self {
+        Self {
+            level: NoticeLevel::Info,
+            text: text.into(),
+        }
+    }
+
+    pub(in crate::ui) fn warning(text: impl Into<String>) -> Self {
+        Self {
+            level: NoticeLevel::Warning,
+            text: text.into(),
+        }
+    }
+}
+
+/// Body text prepared for one view mode, with what the reader should know
+/// about it in display order.
 #[derive(Debug, Eq, PartialEq)]
 pub(in crate::ui) struct Formatted {
     pub(in crate::ui) styled: Styled,
-    /// Why Pretty fell back to the original text, if it did.
-    pub(in crate::ui) fallback: Option<String>,
-    /// What the shown text leaves out, such as the rest of malformed XML.
-    pub(in crate::ui) warning: Option<String>,
-    /// Neutral information about the shown text, such as the source map a
-    /// script points to.
-    pub(in crate::ui) note: Option<String>,
+    pub(in crate::ui) notices: Vec<Notice>,
+}
+
+impl Formatted {
+    /// Formatted text with nothing to point out.
+    pub(in crate::ui) const fn plain(styled: Styled) -> Self {
+        Self {
+            styled,
+            notices: Vec::new(),
+        }
+    }
 }
 
 /// Formats `text` for `mode`. Pretty falls back to the original text with a
@@ -189,66 +286,18 @@ pub(in crate::ui) struct Formatted {
 /// as that format; truncated input is formatted as far as it goes.
 /// Tree has no text of its own, so it is formatted as Pretty here.
 pub(in crate::ui) fn format(format: BodyFormat, mode: ViewMode, text: &str) -> Formatted {
-    let pretty = match (mode, format) {
-        (ViewMode::Raw, _) | (ViewMode::Pretty | ViewMode::Tree, BodyFormat::Text) => {
-            return raw(text, None);
-        }
-        (ViewMode::Pretty | ViewMode::Tree, BodyFormat::Json) => json::pretty(text).map(complete),
-        (ViewMode::Pretty | ViewMode::Tree, BodyFormat::Form) => Ok(complete(form::pretty(text))),
-        (ViewMode::Pretty | ViewMode::Tree, BodyFormat::Markup) => {
-            markup::pretty(text).map(complete)
-        }
-        (ViewMode::Pretty | ViewMode::Tree, BodyFormat::Css) => return css::pretty(text),
-        (ViewMode::Pretty | ViewMode::Tree, BodyFormat::Xml) => xml::pretty(text),
-        (ViewMode::Pretty | ViewMode::Tree, BodyFormat::JavaScript) => {
-            return javascript_pretty(text);
-        }
+    let spec = format.spec();
+    let pretty = match (mode, spec.pretty) {
+        (ViewMode::Raw, _) | (_, None) => return Formatted::plain(Styled::plain(text)),
+        (ViewMode::Pretty | ViewMode::Tree, Some(pretty)) => pretty,
     };
-    match pretty {
-        Ok((styled, warning)) => Formatted {
-            styled,
-            fallback: None,
-            warning,
-            note: None,
-        },
-        Err(reason) => unformatted(format, text, &reason),
-    }
-}
-
-/// The original text with the reason Pretty could not format it.
-fn unformatted(format: BodyFormat, text: &str, reason: &str) -> Formatted {
-    raw(
-        text,
-        Some(format!(
-            "Showing raw text: could not format as {}: {reason}.",
-            format.label()
-        )),
-    )
-}
-
-const fn complete(styled: Styled) -> (Styled, Option<String>) {
-    (styled, None)
-}
-
-fn javascript_pretty(text: &str) -> Formatted {
-    match javascript::pretty(text) {
-        Ok(pretty) => Formatted {
-            styled: pretty.styled,
-            fallback: None,
-            warning: pretty.warning,
-            note: pretty.note,
-        },
-        Err(reason) => unformatted(BodyFormat::JavaScript, text, &reason),
-    }
-}
-
-fn raw(text: &str, fallback: Option<String>) -> Formatted {
-    Formatted {
+    pretty(text).unwrap_or_else(|reason| Formatted {
         styled: Styled::plain(text),
-        fallback,
-        warning: None,
-        note: None,
-    }
+        notices: vec![Notice::warning(format!(
+            "Showing raw text: could not format as {}: {reason}.",
+            spec.label
+        ))],
+    })
 }
 
 /// Splits `text` after the longest prefix whose characters match `accept`.
@@ -296,7 +345,7 @@ mod tests {
         let text = "{\"a\":1}";
         let formatted = format(BodyFormat::Json, ViewMode::Raw, text);
         assert_eq!(formatted.styled.text(), text);
-        assert_eq!(formatted.fallback, None);
+        assert_eq!(formatted.notices, []);
     }
 
     #[test]
@@ -304,11 +353,10 @@ mod tests {
         let text = "not json at all";
         let formatted = format(BodyFormat::Json, ViewMode::Pretty, text);
         assert_eq!(formatted.styled.text(), text);
-        assert!(
-            formatted
-                .fallback
-                .is_some_and(|reason| reason.contains("JSON"))
-        );
+        assert!(matches!(
+            formatted.notices.as_slice(),
+            [Notice { level: NoticeLevel::Warning, text }] if text.contains("JSON")
+        ));
     }
 
     #[test]

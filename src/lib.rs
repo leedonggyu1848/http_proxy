@@ -3,6 +3,10 @@
 mod engine;
 
 pub use engine::{
+    BODY_PREVIEW_BYTES, IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES,
+    is_previewable_image_media_type,
+};
+pub use engine::{
     BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, CaptureSource, CapturedHeader,
     CapturedRequest, CapturedResponse, Exchange, FailureStage, HeaderPreview, ImageFormat, Outcome,
     RecordId, SessionId, Timing, TunnelPreview, TunnelSnapshot, TunnelState,
@@ -15,9 +19,6 @@ pub use engine::{
     ReplayTask, StartError, StopError,
 };
 pub use engine::{FullLog, SESSION_BODY_LIMIT_BYTES};
-pub use engine::{
-    IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES, is_previewable_image_media_type,
-};
 
 /// Application display name.
 pub const APP_NAME: &str = "HTTP Inspector";

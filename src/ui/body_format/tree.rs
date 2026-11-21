@@ -2,7 +2,7 @@
 //! into a [`TreeModel`]; [`crate::ui::tree_view`] draws any model the same
 //! way.
 
-use super::{BodyFormat, Styled, json_tree, xml};
+use super::{BodyFormat, Styled};
 
 /// Longest text shown on one tree row; the rest is elided.
 pub(in crate::ui) const ROW_TEXT: usize = 200;
@@ -92,15 +92,7 @@ impl TreeModel {
 /// Builds the tree of `text` for `format`; `None` when the format has no
 /// tree. The builders apply their format's node and depth limits.
 pub(in crate::ui) fn build(format: BodyFormat, text: &str) -> Option<Result<TreeModel, String>> {
-    match format {
-        BodyFormat::Json => Some(json_tree::build(text)),
-        BodyFormat::Xml => Some(xml::tree::build(text)),
-        BodyFormat::Css
-        | BodyFormat::Form
-        | BodyFormat::Markup
-        | BodyFormat::JavaScript
-        | BodyFormat::Text => None,
-    }
+    format.spec().tree.map(|build| build(text))
 }
 
 /// Cuts `text` longer than [`ROW_TEXT`] characters and marks the cut.

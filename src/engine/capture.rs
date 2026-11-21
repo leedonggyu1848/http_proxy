@@ -12,7 +12,8 @@ use crate::engine::domain::{BodyPreview, CapturedHeader, HeaderPreview};
 use crate::engine::journal::BodySide;
 use crate::engine::journal::FullLog;
 
-pub(in crate::engine) const BODY_PREVIEW_BYTES: usize = 8 * 1024;
+/// Most bytes one non-image body keeps in memory for its preview.
+pub const BODY_PREVIEW_BYTES: usize = 8 * 1024;
 /// Most bytes one image response keeps in memory so it can be drawn.
 pub const IMAGE_PREVIEW_BYTES: usize = 8 * 1024 * 1024;
 /// Most bytes all image responses keep in memory together, across proxy runs.
