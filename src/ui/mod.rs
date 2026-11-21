@@ -5,6 +5,7 @@ mod ca_panel;
 mod detail_tabs;
 mod detail_view;
 mod filter;
+mod fonts;
 mod image_view;
 mod outcome_view;
 mod port_settings;
@@ -43,7 +44,7 @@ pub fn main() -> eframe::Result {
         http_proxy::APP_NAME,
         options,
         Box::new(|context| {
-            detail_view::configure_fonts(&context.egui_ctx);
+            fonts::configure_fonts(&context.egui_ctx);
             Ok(Box::new(InspectorApp::new(context.egui_ctx.clone())))
         }),
     )

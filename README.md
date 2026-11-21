@@ -45,7 +45,7 @@ HTTPS 복호화는 기본으로 꺼져 있다. 이 상태에서 앱은 `CONNECT`
 
 요청·응답 본문의 `Content-Encoding`이 `gzip`, `deflate`, `br`, `zstd`이면 화면 미리보기에서 압축을 푼다. 압축 해제한 출력도 최대 8KiB로 제한하며, 캡처한 압축 데이터가 일부뿐이면 표시 가능한 앞부분과 불완전 상태를 보여 준다. 지원하지 않는 형식이나 손상된 압축 데이터에는 오류를 표시한다. 과도한 중첩 압축과 중간 데이터 확장은 미리보기를 거부한다. 프록시 전달과 전체 로그에는 압축된 원본 바이트를 유지한다.
 
-한글 표시는 설치된 Nanum 또는 Noto CJK 폰트를 사용한다. Ubuntu에서 글자가 네모로 보이면 `sudo apt install fonts-noto-cjk`로 폰트를 설치하고 앱을 다시 실행한다.
+한글(현대 한글 11,172자)과 ASCII는 앱 바이너리에 내장한 Noto Sans KR 서브셋으로 표시하므로 OS나 폰트 설치 여부와 관계없이 보인다. 내장 폰트에 없는 한자·가나는 시스템에 Nanum 또는 Noto CJK 폰트가 있으면 그 폰트로 보완한다. Ubuntu에서 한자·가나가 네모로 보이면 `sudo apt install fonts-noto-cjk`로 폰트를 설치하고 앱을 다시 실행한다. 시스템 폰트 파일이 손상됐거나 TTF/OTF/TTC 형식이 아니면 등록하지 않고 경고 로그를 남긴 뒤 내장 폰트만 사용한다. `RUST_LOG=http_proxy::ui::fonts=debug cargo run`으로 실행하면 어떤 폰트를 등록했는지 확인할 수 있다.
 
 다음은 Brotli로 압축한 테스트 JSON의 한글 본문을 미리보기에서 표시한 실제 화면이다.
 
@@ -78,12 +78,11 @@ HTTPS 복호화는 기본으로 꺼져 있다. 이 상태에서 앱은 `CONNECT`
 
 프로젝트는 Rust 1.100.0과 X11을 사용한다. `rustup`은 `rust-toolchain.toml`에 지정된 툴체인을 설치한다.
 
-Ubuntu 계열 배포판에서 개발과 한글 표시에 필요한 패키지를 설치하려면 다음 명령을 사용한다.
+Ubuntu 계열 배포판에서 개발에 필요한 패키지를 설치하려면 다음 명령을 사용한다. 한글은 내장 폰트로 표시하므로 폰트 패키지가 필요하지 않다.
 
 ```bash
 sudo apt-get update
 sudo apt-get install --yes \
-	fonts-noto-cjk \
 	libgl1-mesa-dev \
 	libx11-dev \
 	libxkbcommon-dev \
@@ -93,6 +92,12 @@ sudo apt-get install --yes \
 	libxrandr-dev \
 	libnss3-tools \
 	pkg-config
+```
+
+한자·가나도 표시하려면 선택 항목으로 `fonts-noto-cjk`를 설치한다.
+
+```bash
+sudo apt-get install --yes fonts-noto-cjk
 ```
 
 ## 실행
@@ -326,7 +331,7 @@ cargo build --release
 
 ## macOS에서 실행하기
 
-Apple Silicon과 Intel Mac에서 Rust 툴체인을 설치하고 다음 명령을 실행한다. X11은 필요하지 않다. 한글은 시스템의 Apple SD Gothic Neo 폰트를 사용한다.
+Apple Silicon과 Intel Mac에서 Rust 툴체인을 설치하고 다음 명령을 실행한다. X11은 필요하지 않다. 한글은 내장 폰트로 표시하고, 한자는 시스템의 Apple SD Gothic Neo 폰트로 보완한다.
 
 ```bash
 cargo run --release
@@ -358,4 +363,6 @@ cargo test --test macos_integration -- --ignored
 
 ## 라이선스
 
-이 프로젝트는 [MIT License](LICENSE)를 따른다.
+이 프로젝트의 코드는 [MIT License](LICENSE)를 따른다.
+
+앱에 내장한 한글 폰트 `assets/fonts/NotoSansKR-Regular-subset.otf`는 Noto Sans KR의 서브셋이며 코드와 별개로 [SIL Open Font License 1.1](assets/fonts/OFL.txt)을 따른다. 출처와 재생성 방법은 [assets/fonts/README.md](assets/fonts/README.md)에 있다.
