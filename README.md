@@ -18,7 +18,7 @@ HTTP Inspector는 로컬 HTTP 프록시를 통해 요청 기록을 보여주는 
 - 요청과 응답 헤더 상세 보기
 - 방향별 최대 8KiB의 실시간 본문 미리보기
 - JSON·form·HTML·XML·JavaScript 본문의 Pretty/Raw 보기와 구문 강조, XML 트리 보기, 헤더·쿼리 매개변수 강조
-- `Content-Type: image/png` 또는 `image/jpeg` 응답 본문의 이미지 미리보기와 16진수 보기
+- PNG·JPEG·GIF·WebP·SVG·BMP·ICO 응답 본문의 이미지 미리보기, SVG 소스 보기, 16진수 보기
 - 문자열 검색과 응답, 실패, 터널 결과 필터
 - 선택한 요청의 Headers와 Body 상세 패널
 - 프록시 시작, 중지, 기록 삭제
@@ -105,16 +105,63 @@ CSS 실제 화면 캡처는 macOS 접근성 권한이 없는 환경에서 추가
 
 ![쿼리 매개변수와 헤더 이름 강조](docs/screenshots/headers-query-highlight.png)
 
-### PNG·JPEG 응답 미리보기
+### 이미지 응답 미리보기
 
-`Content-Type`이 `image/png` 또는 `image/jpeg`인 응답은 **Body** 탭의 **Response body**에서 이미지로 그린다. 이미지를 그리려면 본문 전체가 필요하므로 PNG·JPEG 응답을 응답당 최대 8MiB까지 메모리에 보관한다. 모든 PNG·JPEG 응답이 함께 쓰는 보관 한도는 64MiB이며, 기록을 삭제하거나 오래된 기록이 밀려나면 그만큼 다시 쓸 수 있다. `Content-Length`가 8MiB를 넘는 PNG·JPEG 응답은 공용 한도를 쓰지 않고 다른 본문처럼 앞 8KiB만 보관한다. 한도를 넘은 응답은 이미지 대신 보관한 바이트 수와 한도를 안내한다.
+`Content-Type`이 다음 형식인 응답은 **Body** 탭의 **Response body**에서 이미지로 그린다. 이미지를 그리려면 본문 전체가 필요하므로 이미지 응답을 응답당 최대 8MiB까지 메모리에 보관한다. 모든 이미지 응답이 함께 쓰는 보관 한도는 64MiB이며, 기록을 삭제하거나 오래된 기록이 밀려나면 그만큼 다시 쓸 수 있다. `Content-Length`가 8MiB를 넘는 이미지 응답은 공용 한도를 쓰지 않고 다른 본문처럼 앞 8KiB만 보관한다. 한도를 넘은 응답은 이미지 대신 보관한 바이트 수와 한도를 안내한다.
+
+| 형식 | `Content-Type` | 표시 방식 |
+| --- | --- | --- |
+| PNG | `image/png` | 첫 프레임 |
+| JPEG | `image/jpeg` | Progressive, 그레이스케일, CMYK 지원. EXIF 방향은 적용하지 않는다 |
+| GIF | `image/gif` | 애니메이션은 첫 프레임만 그리고 프레임 수를 표시한다(1,000개까지 센다) |
+| WebP | `image/webp` | 손실·무손실·애니메이션. 애니메이션은 첫 프레임과 프레임 수를 표시한다 |
+| SVG | `image/svg+xml` | 래스터화해 그린다. **Source**로 소스를 텍스트로 볼 수 있다 |
+| BMP | `image/bmp` | |
+| ICO | `image/x-icon`, `image/vnd.microsoft.icon` | 여러 크기 중 가장 큰 이미지 |
+
+AVIF(`image/avif`)는 지원하지 않는다. Rust만으로 된 AV1 디코더(`rav1d`)는 `unsafe` C ABI만 공개하고, 그 밖의 디코더는 C 라이브러리 `dav1d`나 `libaom`이 필요하다. AVIF 응답은 일반 본문처럼 텍스트 미리보기로 표시한다.
 
 - `Content-Encoding`이 있으면 텍스트 미리보기와 같은 방식으로 압축을 푼 뒤 디코딩한다.
-- 이미지 크기(가로×세로)와 이미지 파일 바이트 수를 표시한다. 압축 전송이면 받은 바이트 수도 함께 표시한다.
-- 가로·세로 8,192px 또는 16메가픽셀을 넘는 이미지는 헤더만 읽고 픽셀 메모리를 할당하기 전에 거부한다.
+- 본문 앞부분의 시그니처가 `Content-Type`과 다른 형식이면 시그니처 기준으로 그리고, 그 사실을 경고로 표시한다. 시그니처를 알 수 없으면 `Content-Type`의 형식으로 디코딩한다.
+- 형식, 이미지 크기(가로×세로), 이미지 파일 바이트 수와 애니메이션 프레임 수를 표시한다. 압축 전송이면 받은 바이트 수도 함께 표시한다.
+- 가로·세로 8,192px 또는 16메가픽셀을 넘는 이미지는 헤더만 읽고 픽셀 메모리를 할당하기 전에 거부한다. 애니메이션은 첫 프레임만 디코딩하므로 디코딩 메모리는 한 프레임 크기를 넘지 않는다.
 - 본문이 잘렸거나 손상되어 디코딩하지 못하면 오류를 표시한다. **Hex** 또는 **Show bytes as hex**로 받은 바이트의 앞 8KiB를 16진수로 확인할 수 있다.
 
-JPEG는 Progressive, 그레이스케일, CMYK를 지원한다. EXIF 방향 정보는 적용하지 않으며 파일에 저장된 픽셀 방향으로 표시한다. PNG와 JPEG 모두 한 변 8,192px 또는 16메가픽셀을 넘으면 디코딩 전에 거부한다.
+SVG는 다음 제한으로 그린다.
+
+- 스크립트를 실행하지 않는다. 외부 CSS·글꼴·이미지를 포함해 SVG 밖의 리소스를 네트워크나 파일에서 읽지 않는다. `<image>`는 data URL도 그리지 않는다.
+- 글꼴을 읽지 않으므로 `<text>`는 그리지 않고 안내를 표시한다. 내용은 **Source**에서 확인한다.
+- `<use>`가 가리키는 대상을 복사본으로 셀 때 요소가 50,000개, 중첩이 256단계를 넘거나 `<use>` 참조가 순환하면 그리지 않는다.
+- 한 변이 2,048px를 넘으면 비율을 유지해 줄여 그린다.
+- **Source**는 압축을 푼 SVG의 앞 256KiB를 텍스트로만 보여 준다.
+
+다음은 로컬 테스트 서버의 응답을 프록시로 받아 표시한 실제 화면이다. 왼쪽 표의 일부와 툴바는 잘라냈다.
+
+애니메이션 GIF는 첫 프레임과 프레임 수를 표시한다.
+
+![애니메이션 GIF 응답의 첫 프레임과 프레임 수](docs/screenshots/image-body-gif.png)
+
+`Content-Type: image/png`로 보낸 GIF는 시그니처 기준으로 GIF로 그리고 경고를 표시한다.
+
+![Content-Type과 시그니처가 다른 응답의 경고](docs/screenshots/image-body-mismatch.png)
+
+손실 압축 WebP, BMP, ICO 응답이다.
+
+![손실 압축 WebP 응답](docs/screenshots/image-body-webp.png)
+
+![BMP 응답](docs/screenshots/image-body-bmp.png)
+
+![ICO 응답](docs/screenshots/image-body-ico.png)
+
+외부 CSS·스크립트·이미지를 참조하는 SVG는 외부 리소스 없이 그리고, 그리지 않은 요소를 안내한다. 이 화면을 만드는 동안 참조 대상 포트로 들어온 연결은 없었다. **Source**는 소스를 텍스트로만 보여 준다.
+
+![외부 리소스를 참조하는 SVG 응답](docs/screenshots/image-body-svg-external.png)
+
+![SVG 응답의 Source 보기](docs/screenshots/image-body-svg-external-source.png)
+
+앞 300바이트만 보낸 WebP 응답은 디코딩 오류와 **Show bytes as hex** 버튼을 표시한다.
+
+![잘린 WebP 응답의 디코딩 오류](docs/screenshots/image-body-webp-error.png)
 
 다음은 gzip으로 전송한 테스트 PNG 응답을 이미지로 표시한 실제 화면이다.
 

@@ -12,8 +12,8 @@ pub use capture::{
 };
 pub use domain::{
     BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, CaptureSource, CapturedHeader,
-    CapturedRequest, CapturedResponse, Exchange, FailureStage, HeaderPreview, Outcome, RecordId,
-    SessionId, Timing, TunnelPreview, TunnelSnapshot, TunnelState,
+    CapturedRequest, CapturedResponse, Exchange, FailureStage, HeaderPreview, ImageFormat, Outcome,
+    RecordId, SessionId, Timing, TunnelPreview, TunnelSnapshot, TunnelState,
 };
 pub use journal::{FullLog, SESSION_BODY_LIMIT_BYTES};
 pub use proxy::{

@@ -6,6 +6,7 @@ use http::HeaderMap;
 use http_body::{Body, Frame, SizeHint};
 
 use crate::engine::domain::BodyLifecycle;
+use crate::engine::domain::ImageFormat;
 use crate::engine::domain::RetentionBudget;
 use crate::engine::domain::{BodyPreview, CapturedHeader, HeaderPreview};
 use crate::engine::journal::BodySide;
@@ -47,11 +48,7 @@ pub(in crate::engine) fn capture_headers(headers: &HeaderMap) -> HeaderPreview {
 /// and media-type parameters.
 #[must_use]
 pub fn is_previewable_image_media_type(content_type: &str) -> bool {
-    content_type.split(';').next().is_some_and(|media_type| {
-        ["image/png", "image/jpeg"]
-            .iter()
-            .any(|supported| media_type.trim().eq_ignore_ascii_case(supported))
-    })
+    ImageFormat::from_media_type(content_type).is_some()
 }
 
 /// Creates the response-body preview: image responses keep enough bytes to be
@@ -235,10 +232,16 @@ mod tests {
             " image/png ; charset=binary",
             "image/jpeg",
             " IMAGE/JPEG ; q=1",
+            "image/gif",
+            "image/webp",
+            "image/svg+xml",
+            "image/bmp",
+            "image/x-icon",
+            "image/vnd.microsoft.icon",
         ] {
             assert!(is_previewable_image_media_type(value), "{value}");
         }
-        for value in ["image/pngx", "image/webp", "text/plain; type=image/png", ""] {
+        for value in ["image/pngx", "image/avif", "text/plain; type=image/png", ""] {
             assert!(!is_previewable_image_media_type(value), "{value}");
         }
     }
