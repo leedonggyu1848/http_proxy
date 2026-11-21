@@ -11,7 +11,7 @@ use std::time::Duration;
 use http::{HeaderMap, Method};
 use tempfile::NamedTempFile;
 
-use crate::capture::full_headers;
+use crate::capture::redacted_value;
 use crate::{BodyLifecycle, FailureStage, Outcome, RecordId, TunnelSnapshot};
 
 #[derive(Clone, Copy, Debug)]
@@ -31,6 +31,19 @@ impl fmt::Display for BodySide {
             Self::Response => "Response",
         })
     }
+}
+
+fn full_headers(headers: &HeaderMap) -> String {
+    headers
+        .iter()
+        .fold(String::new(), |mut text, (name, value)| {
+            let value = redacted_value(name, value).escape_ascii().to_string();
+            text.push_str(name.as_str());
+            text.push_str(": ");
+            text.push_str(&value);
+            text.push('\n');
+            text
+        })
 }
 
 const QUEUE_CAPACITY: usize = 1_024;
@@ -365,6 +378,39 @@ mod tests {
             .recv()
             .map_err(io::Error::other)??;
         std::fs::read_to_string(path)
+    }
+
+    #[test]
+    fn previews_and_full_logs_share_redaction_without_changing_byte_display()
+    -> Result<(), http::header::InvalidHeaderValue> {
+        let mut headers = HeaderMap::new();
+        for name in [
+            "authorization",
+            "proxy-authorization",
+            "cookie",
+            "set-cookie",
+        ] {
+            headers.insert(
+                http::HeaderName::from_static(name),
+                http::HeaderValue::from_static("secret"),
+            );
+        }
+        headers.insert("x-bytes", http::HeaderValue::from_bytes(b"\xff")?);
+        let preview = crate::capture_headers(&headers);
+        let full = full_headers(&headers);
+        for name in [
+            "authorization",
+            "proxy-authorization",
+            "cookie",
+            "set-cookie",
+        ] {
+            assert_eq!(preview.get(name).next(), Some("[REDACTED]"));
+            assert!(full.contains(&format!("{name}: [REDACTED]\n")));
+        }
+        assert!(!full.contains("secret"));
+        assert_eq!(preview.get("x-bytes").next(), Some("\u{fffd}"));
+        assert!(full.contains("x-bytes: \\xff\n"));
+        Ok(())
     }
 
     fn assert_output(write: impl FnOnce(&FullLog), expected: &str) -> io::Result<()> {

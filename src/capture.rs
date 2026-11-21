@@ -77,7 +77,10 @@ pub(super) fn bounded_text(value: &str, max_bytes: usize) -> String {
     format!("{prefix}…")
 }
 
-fn redacted_value<'a>(name: &http::HeaderName, value: &'a http::HeaderValue) -> &'a [u8] {
+pub(super) fn redacted_value<'a>(
+    name: &http::HeaderName,
+    value: &'a http::HeaderValue,
+) -> &'a [u8] {
     if matches!(
         name.as_str(),
         "authorization" | "proxy-authorization" | "cookie" | "set-cookie"
@@ -86,19 +89,6 @@ fn redacted_value<'a>(name: &http::HeaderName, value: &'a http::HeaderValue) -> 
     } else {
         value.as_bytes()
     }
-}
-
-pub(super) fn full_headers(headers: &HeaderMap) -> String {
-    headers
-        .iter()
-        .fold(String::new(), |mut text, (name, value)| {
-            let value = redacted_value(name, value).escape_ascii().to_string();
-            text.push_str(name.as_str());
-            text.push_str(": ");
-            text.push_str(&value);
-            text.push('\n');
-            text
-        })
 }
 
 pub(super) struct BodyLog {
@@ -234,39 +224,6 @@ mod tests {
     use std::io;
 
     use super::*;
-
-    #[test]
-    fn previews_and_full_logs_share_redaction_without_changing_byte_display()
-    -> Result<(), http::header::InvalidHeaderValue> {
-        let mut headers = HeaderMap::new();
-        for name in [
-            "authorization",
-            "proxy-authorization",
-            "cookie",
-            "set-cookie",
-        ] {
-            headers.insert(
-                http::HeaderName::from_static(name),
-                http::HeaderValue::from_static("secret"),
-            );
-        }
-        headers.insert("x-bytes", http::HeaderValue::from_bytes(b"\xff")?);
-        let preview = capture_headers(&headers);
-        let full = full_headers(&headers);
-        for name in [
-            "authorization",
-            "proxy-authorization",
-            "cookie",
-            "set-cookie",
-        ] {
-            assert_eq!(preview.get(name).next(), Some("[REDACTED]"));
-            assert!(full.contains(&format!("{name}: [REDACTED]\n")));
-        }
-        assert!(!full.contains("secret"));
-        assert_eq!(preview.get("x-bytes").next(), Some("\u{fffd}"));
-        assert!(full.contains("x-bytes: \\xff\n"));
-        Ok(())
-    }
 
     #[test]
     fn recognizes_png_media_types() {

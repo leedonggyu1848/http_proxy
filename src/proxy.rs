@@ -178,11 +178,11 @@ impl CaptureContext {
     }
 
     fn settle(&self, outcome: Outcome) {
-        let logged_outcome = outcome.clone();
+        let logged_outcome = self.log.as_ref().map(|log| (log, outcome.clone()));
         if self.exchange.settle(outcome)
-            && let Some(log) = self.log.as_ref()
+            && let Some((log, outcome)) = logged_outcome
         {
-            log.settled(self.id(), &logged_outcome, self.exchange.elapsed());
+            log.settled(self.id(), &outcome, self.exchange.elapsed());
         }
     }
 
