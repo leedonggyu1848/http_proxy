@@ -45,7 +45,7 @@ HTTPS 복호화는 기본으로 꺼져 있다. 이 상태에서 앱은 `CONNECT`
 
 요청·응답 본문의 `Content-Encoding`이 `gzip`, `deflate`, `br`, `zstd`이면 화면 미리보기에서 압축을 푼다. 압축 해제한 출력도 최대 8KiB로 제한하며, 캡처한 압축 데이터가 일부뿐이면 표시 가능한 앞부분과 불완전 상태를 보여 준다. 지원하지 않는 형식이나 손상된 압축 데이터에는 오류를 표시한다. 과도한 중첩 압축과 중간 데이터 확장은 미리보기를 거부한다. 프록시 전달과 전체 로그에는 압축된 원본 바이트를 유지한다.
 
-한글 표시는 설치된 Nanum 또는 Noto CJK 폰트를 사용한다. Ubuntu에서 글자가 네모로 보이면 `sudo apt install fonts-noto-cjk`로 폰트를 설치하고 앱을 다시 실행한다.
+한글(현대 한글 11,172자)과 ASCII는 앱 바이너리에 내장한 Noto Sans KR 서브셋으로 표시하므로 OS나 폰트 설치 여부와 관계없이 보인다. 내장 폰트에 없는 한자·가나는 시스템에 Nanum 또는 Noto CJK 폰트가 있으면 그 폰트로 보완한다. Ubuntu에서 한자·가나가 네모로 보이면 `sudo apt install fonts-noto-cjk`로 폰트를 설치하고 앱을 다시 실행한다. 시스템 폰트 파일이 손상됐거나 TTF/OTF/TTC 형식이 아니면 등록하지 않고 경고 로그를 남긴 뒤 내장 폰트만 사용한다. `RUST_LOG=http_proxy::ui::fonts=debug cargo run`으로 실행하면 어떤 폰트를 등록했는지 확인할 수 있다.
 
 다음은 Brotli로 압축한 테스트 JSON의 한글 본문을 미리보기에서 표시한 실제 화면이다.
 
@@ -78,12 +78,11 @@ HTTPS 복호화는 기본으로 꺼져 있다. 이 상태에서 앱은 `CONNECT`
 
 프로젝트는 Rust 1.100.0과 X11을 사용한다. `rustup`은 `rust-toolchain.toml`에 지정된 툴체인을 설치한다.
 
-Ubuntu 계열 배포판에서 개발과 한글 표시에 필요한 패키지를 설치하려면 다음 명령을 사용한다.
+Ubuntu 계열 배포판에서 개발에 필요한 패키지를 설치하려면 다음 명령을 사용한다. 한글은 내장 폰트로 표시하므로 폰트 패키지가 필요하지 않다.
 
 ```bash
 sudo apt-get update
 sudo apt-get install --yes \
-	fonts-noto-cjk \
 	libgl1-mesa-dev \
 	libx11-dev \
 	libxkbcommon-dev \
@@ -93,6 +92,12 @@ sudo apt-get install --yes \
 	libxrandr-dev \
 	libnss3-tools \
 	pkg-config
+```
+
+한자·가나도 표시하려면 선택 항목으로 `fonts-noto-cjk`를 설치한다.
+
+```bash
+sudo apt-get install --yes fonts-noto-cjk
 ```
 
 ## 실행
@@ -112,9 +117,12 @@ UI에 `Running`과 `127.0.0.1:8080`이 표시되면 프록시가 요청을 받�
 | `↑`, `↓` | 이전 요청 또는 다음 요청을 선택합니다. |
 | `Home`, `End` | 첫 요청 또는 마지막 요청을 선택합니다. |
 | `PageUp`, `PageDown` | 목록에서 한 화면 위 또는 아래의 요청을 선택합니다. |
-| `F6` | 선택한 요청의 **Headers**와 **Body** 탭을 전환합니다. |
+| `F6`, `Ctrl+PageDown` | 선택한 요청의 다음 상세 탭(**Headers** ↔ **Body**)으로 전환합니다. |
+| `Ctrl+PageUp` | 선택한 요청의 이전 상세 탭으로 전환합니다. |
+| `Tab`, `Shift+Tab` | 요청 행, 상세 탭과 다른 컨트롤 사이에서 포커스를 옮깁니다. |
+| `Enter`, `Space` | 포커스가 있는 요청 행 또는 상세 탭을 선택합니다. |
 
-목록 단축키는 현재 정렬과 필터를 따릅니다. 검색창, 포트 입력란 또는 저장 경로 입력란에 포커스가 있으면 단축키를 처리하지 않습니다. 키보드로 다른 요청을 선택하면 **Follow newest**가 꺼지고 선택한 행이 보이도록 목록이 스크롤됩니다.
+목록 단축키는 현재 정렬과 필터를 따릅니다. 검색창, 포트 입력란 또는 저장 경로 입력란에 포커스가 있으면 단축키를 처리하지 않습니다. `Esc`로 입력란의 포커스를 해제하면 다시 단축키를 사용할 수 있습니다. 키보드로 다른 요청을 선택하면 **Follow newest**가 꺼지고 선택한 행이 보이도록 목록이 스크롤됩니다.
 
 ### 화면 테마
 
@@ -129,9 +137,11 @@ UI에 `Running`과 `127.0.0.1:8080`이 표시되면 프록시가 요청을 받�
 
 ### 화면 읽기 프로그램
 
-AccessKit을 활성화해 요청 행과 기본 egui 컨트롤의 이름, 역할, 선택 상태를 접근성 트리에 제공합니다. Linux에서는 AT-SPI를 사용합니다. 요청 행은 메서드, 전체 URL, 상태를 함께 읽도록 이름을 제공합니다. HTTP 응답은 숫자와 이유 문구(예: `200 OK`, `404 Not Found`)를 표시합니다.
+AccessKit을 활성화해 요청 행과 기본 egui 컨트롤의 이름, 역할, 선택 상태를 접근성 트리에 제공합니다. Linux에서는 AT-SPI를 사용합니다. 요청 행은 메서드, 전체 URL, 상태와 상태 분류를 함께 읽도록 이름을 제공합니다(예: `GET http://… · 404 Not Found (client error)`). 상세 패널의 **Headers**와 **Body**는 `Request details` 탭 목록 안의 탭 역할과 선택 상태로 제공합니다.
 
-`Tab`과 `Shift+Tab`으로 요청 행과 상세 탭을 탐색하고 `Enter` 또는 `Space`로 선택합니다. 목록 단축키와 `F6`도 사용할 수 있습니다.
+상태는 색에만 의존하지 않습니다. HTTP 응답은 숫자와 이유 문구(예: `200 OK`, `404 Not Found`)를 표시하고, 상태 칸에 마우스를 올리거나 상세 패널의 응답 헤더 제목에서 `success`, `redirect`, `client error`, `server error` 같은 분류를 글자로 확인할 수 있습니다. 실패, 취소, 터널 상태도 글자로 표시합니다.
+
+키보드 탐색은 위의 단축키 표를 따릅니다.
 
 Linux에서 Orca를 실행한 뒤 테스트 요청을 보내고 요청 선택, 상태 읽기, **Headers**와 **Body** 전환을 점검하세요. 목록은 화면에 보이는 행만 접근성 트리에 제공하므로 화면 밖 요청은 목록 단축키로 이동하세요.
 
@@ -332,7 +342,7 @@ cargo build --release
 
 ## macOS에서 실행하기
 
-Apple Silicon과 Intel Mac에서 Rust 툴체인을 설치하고 다음 명령을 실행한다. X11은 필요하지 않다. 한글은 시스템의 Apple SD Gothic Neo 폰트를 사용한다.
+Apple Silicon과 Intel Mac에서 Rust 툴체인을 설치하고 다음 명령을 실행한다. X11은 필요하지 않다. 한글은 내장 폰트로 표시하고, 한자는 시스템의 Apple SD Gothic Neo 폰트로 보완한다.
 
 ```bash
 cargo run --release
@@ -364,4 +374,6 @@ cargo test --test macos_integration -- --ignored
 
 ## 라이선스
 
-이 프로젝트는 [MIT License](LICENSE)를 따른다.
+이 프로젝트의 코드는 [MIT License](LICENSE)를 따른다.
+
+앱에 내장한 한글 폰트 `assets/fonts/NotoSansKR-Regular-subset.otf`는 Noto Sans KR의 서브셋이며 코드와 별개로 [SIL Open Font License 1.1](assets/fonts/OFL.txt)을 따른다. 출처와 재생성 방법은 [assets/fonts/README.md](assets/fonts/README.md)에 있다.
