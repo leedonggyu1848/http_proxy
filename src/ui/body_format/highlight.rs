@@ -84,6 +84,37 @@ pub(in crate::ui) fn layout_job(
     job
 }
 
+/// Builds one layout per line of `styled`, without the line ends, so a
+/// view can lay out and draw only the visible lines.
+pub(in crate::ui) fn line_jobs(
+    styled: &Styled,
+    palette: &SyntaxPalette,
+    text_color: Color32,
+    font_id: &FontId,
+) -> Vec<LayoutJob> {
+    let mut lines = vec![LayoutJob::default()];
+    for (piece, kind) in styled.pieces() {
+        let format = TextFormat {
+            font_id: font_id.clone(),
+            color: palette.color(kind, text_color),
+            italics: kind == TokenKind::Comment,
+            ..TextFormat::default()
+        };
+        for (index, part) in piece.split('\n').enumerate() {
+            if index > 0 {
+                lines.push(LayoutJob::default());
+            }
+            let part = part.strip_suffix('\r').unwrap_or(part);
+            if let Some(line) = lines.last_mut()
+                && !part.is_empty()
+            {
+                line.append(part, 0.0, format.clone());
+            }
+        }
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,6 +136,23 @@ mod tests {
                 theme::assert_readable(theme, color);
             }
         }
+    }
+
+    #[test]
+    fn splits_layout_into_lines_with_their_colors() {
+        let mut styled = Styled::default();
+        styled.push("/* a\r\nb */", TokenKind::Comment);
+        styled.push("\n\nc", TokenKind::Text);
+        let palette = SyntaxPalette::for_theme(Theme::Light);
+        let lines = line_jobs(&styled, &palette, Color32::BLACK, &FontId::monospace(12.0));
+        let texts: Vec<_> = lines.iter().map(|line| line.text.as_str()).collect();
+        assert_eq!(texts, ["/* a", "b */", "", "c"]);
+        assert!(
+            lines
+                .get(1)
+                .and_then(|line| line.sections.first())
+                .is_some_and(|section| section.format.italics)
+        );
     }
 
     #[test]
