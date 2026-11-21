@@ -8,7 +8,8 @@ use http::{Method, StatusCode, Version};
 use tokio::sync::Notify;
 
 use super::{
-    BodyLifecycle, BodyPreview, FailureStage, HeaderPreview, RecordId, TunnelPreview, TunnelState,
+    BodyLifecycle, BodyPreview, FailureStage, HeaderPreview, MediaType, RecordId, TunnelPreview,
+    TunnelState,
 };
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
@@ -47,18 +48,16 @@ pub struct CapturedRequest {
     method: Method,
     target: String,
     headers: HeaderPreview,
+    media_type: Option<MediaType>,
     body: OnceLock<BodyPreview>,
 }
 
 impl CapturedRequest {
-    pub(in crate::engine) const fn new(
-        method: Method,
-        target: String,
-        headers: HeaderPreview,
-    ) -> Self {
+    pub(in crate::engine) fn new(method: Method, target: String, headers: HeaderPreview) -> Self {
         Self {
             method,
             target,
+            media_type: content_media_type(&headers),
             headers,
             body: OnceLock::new(),
         }
@@ -82,12 +81,27 @@ impl CapturedRequest {
         &self.headers
     }
 
+    /// Returns the media type of the first retained `Content-Type`, or
+    /// `None` when it is missing or not a valid media type.
+    #[must_use]
+    pub const fn media_type(&self) -> Option<&MediaType> {
+        self.media_type.as_ref()
+    }
+
     /// Returns the body preview once forwarding began, or `None` when the
     /// proxy never read the request body.
     #[must_use]
     pub fn body(&self) -> Option<&BodyPreview> {
         self.body.get()
     }
+}
+
+/// Parses the first retained `Content-Type` once, where headers are captured.
+fn content_media_type(headers: &HeaderPreview) -> Option<MediaType> {
+    headers
+        .get("content-type")
+        .next()
+        .and_then(MediaType::parse)
 }
 
 /// Response head received from the upstream server and its streamed body.
@@ -97,11 +111,12 @@ pub struct CapturedResponse {
     version: Version,
     reason: String,
     headers: HeaderPreview,
+    media_type: Option<MediaType>,
     body: BodyPreview,
 }
 
 impl CapturedResponse {
-    pub(in crate::engine) const fn new(
+    pub(in crate::engine) fn new(
         status: StatusCode,
         version: Version,
         reason: String,
@@ -112,6 +127,7 @@ impl CapturedResponse {
             status,
             version,
             reason,
+            media_type: content_media_type(&headers),
             headers,
             body,
         }
@@ -142,13 +158,11 @@ impl CapturedResponse {
         &self.headers
     }
 
-    /// Returns the first retained Content-Type without parameters or surrounding whitespace.
+    /// Returns the media type of the first retained `Content-Type`, or
+    /// `None` when it is missing or not a valid media type.
     #[must_use]
-    pub fn media_type(&self) -> Option<&str> {
-        self.headers
-            .get("content-type")
-            .next()
-            .map(|value| value.split(';').next().unwrap_or(value).trim())
+    pub const fn media_type(&self) -> Option<&MediaType> {
+        self.media_type.as_ref()
     }
 
     /// Returns the live response-body preview.
@@ -544,9 +558,30 @@ mod tests {
             false,
         );
         assert_eq!(
-            response(headers).media_type(),
+            response(headers).media_type().map(MediaType::essence),
             Some("application/problem+json")
         );
+    }
+
+    #[test]
+    fn request_media_type_is_parsed_from_captured_headers() {
+        let request = |value: &str| {
+            let headers = HeaderPreview::new(
+                vec![crate::engine::domain::CapturedHeader::new(
+                    "content-type".into(),
+                    value.into(),
+                )],
+                false,
+            );
+            CapturedRequest::new(Method::POST, "http://example.invalid/".into(), headers)
+        };
+        assert_eq!(
+            request("Application/X-WWW-Form-Urlencoded; charset=utf-8")
+                .media_type()
+                .map(MediaType::essence),
+            Some("application/x-www-form-urlencoded")
+        );
+        assert_eq!(request("not a media type").media_type(), None);
     }
 
     #[test]

@@ -6,9 +6,9 @@ use http::HeaderMap;
 use http_body::{Body, Frame, SizeHint};
 
 use crate::engine::domain::BodyLifecycle;
-use crate::engine::domain::ImageFormat;
 use crate::engine::domain::RetentionBudget;
 use crate::engine::domain::{BodyPreview, CapturedHeader, HeaderPreview};
+use crate::engine::domain::{ImageFormat, MediaType};
 use crate::engine::journal::BodySide;
 use crate::engine::journal::FullLog;
 
@@ -45,11 +45,10 @@ pub(in crate::engine) fn capture_headers(headers: &HeaderMap) -> HeaderPreview {
     HeaderPreview::new(entries, omitted)
 }
 
-/// Reports whether a `Content-Type` value names a supported image, ignoring case
-/// and media-type parameters.
+/// Reports whether a media type names a supported image.
 #[must_use]
-pub fn is_previewable_image_media_type(content_type: &str) -> bool {
-    ImageFormat::from_media_type(content_type).is_some()
+pub fn is_previewable_image_media_type(media_type: &MediaType) -> bool {
+    ImageFormat::from_media_type(media_type).is_some()
 }
 
 /// Creates the response-body preview: image responses keep enough bytes to be
@@ -58,7 +57,9 @@ pub fn is_previewable_image_media_type(content_type: &str) -> bool {
 /// never be drawn, so it keeps the default prefix without using the budget.
 pub(in crate::engine) fn response_body_preview(headers: &HeaderMap) -> BodyPreview {
     let header = |name| headers.get(name).and_then(|value| value.to_str().ok());
-    let image = header(http::header::CONTENT_TYPE).is_some_and(is_previewable_image_media_type);
+    let image = header(http::header::CONTENT_TYPE)
+        .and_then(MediaType::parse)
+        .is_some_and(|media_type| is_previewable_image_media_type(&media_type));
     let fits = header(http::header::CONTENT_LENGTH)
         .and_then(|value| value.trim().parse::<u64>().ok())
         .is_none_or(|length| length <= IMAGE_PREVIEW_BYTES as u64);
@@ -227,6 +228,9 @@ mod tests {
 
     #[test]
     fn recognizes_previewable_image_media_types() {
+        let previewable = |value| {
+            MediaType::parse(value).is_some_and(|media| is_previewable_image_media_type(&media))
+        };
         for value in [
             "image/png",
             "IMAGE/PNG",
@@ -240,10 +244,10 @@ mod tests {
             "image/x-icon",
             "image/vnd.microsoft.icon",
         ] {
-            assert!(is_previewable_image_media_type(value), "{value}");
+            assert!(previewable(value), "{value}");
         }
         for value in ["image/pngx", "image/avif", "text/plain; type=image/png", ""] {
-            assert!(!is_previewable_image_media_type(value), "{value}");
+            assert!(!previewable(value), "{value}");
         }
     }
 
