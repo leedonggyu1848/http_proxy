@@ -129,7 +129,7 @@ fn render_body(
         && headers
             .get("content-type")
             .next()
-            .is_some_and(http_proxy::is_png_media_type)
+            .is_some_and(http_proxy::is_previewable_image_media_type)
     {
         panel.show(ui, record, &snapshot, &encodings);
         return;

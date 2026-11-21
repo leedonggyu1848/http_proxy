@@ -7,7 +7,9 @@ mod tls;
 mod trust;
 
 pub use browser::{Browser, BrowserEvent, BrowserSession};
-pub use capture::{IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES, is_png_media_type};
+pub use capture::{
+    IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES, is_previewable_image_media_type,
+};
 pub use domain::{
     BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, CaptureSource, CapturedHeader,
     CapturedRequest, CapturedResponse, Exchange, FailureStage, HeaderPreview, Outcome, RecordId,
