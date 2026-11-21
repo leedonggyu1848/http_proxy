@@ -28,6 +28,19 @@ allow = ["BSL-1.0"]
 crate = "error-code"
 allow = ["BSL-1.0"]
 
+# CSS syntax tokenizer and its serializer helpers; no upstream files are modified.
+[[licenses.exceptions]]
+crate = "cssparser"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+crate = "cssparser-macros"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+crate = "dtoa-short"
+allow = ["MPL-2.0"]
+
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"

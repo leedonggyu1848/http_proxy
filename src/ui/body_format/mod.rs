@@ -6,6 +6,7 @@
 //! token stream; [`highlight`] maps the shared [`TokenKind`]s to theme colors.
 //! The result never feeds back into forwarding or the full log.
 
+mod css;
 pub(in crate::ui) mod form;
 pub(in crate::ui) mod highlight;
 mod javascript;
@@ -17,6 +18,7 @@ pub(in crate::ui) mod xml;
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(in crate::ui) enum BodyFormat {
     Json,
+    Css,
     Form,
     Markup,
     Xml,
@@ -40,6 +42,8 @@ impl BodyFormat {
         let subtype = essence.split_once('/').map_or("", |(_, subtype)| subtype);
         if subtype == "json" || subtype.ends_with("+json") {
             Self::Json
+        } else if essence == "text/css" {
+            Self::Css
         } else if essence == "application/x-www-form-urlencoded" {
             Self::Form
         } else if matches!(essence.as_str(), "text/html" | "application/xhtml+xml") {
@@ -65,6 +69,7 @@ impl BodyFormat {
     pub(in crate::ui) const fn label(self) -> &'static str {
         match self {
             Self::Json => "JSON",
+            Self::Css => "CSS",
             Self::Form => "Form",
             Self::Markup => "HTML",
             Self::Xml => "XML",
@@ -190,6 +195,7 @@ pub(in crate::ui) fn format(format: BodyFormat, mode: ViewMode, text: &str) -> F
         (ViewMode::Pretty | ViewMode::Tree, BodyFormat::Markup) => {
             markup::pretty(text).map(complete)
         }
+        (ViewMode::Pretty | ViewMode::Tree, BodyFormat::Css) => return css::pretty(text),
         (ViewMode::Pretty | ViewMode::Tree, BodyFormat::Xml) => xml::pretty(text),
         (ViewMode::Pretty | ViewMode::Tree, BodyFormat::JavaScript) => {
             return javascript_pretty(text);
@@ -255,6 +261,7 @@ mod tests {
     fn detects_formats_from_content_type() {
         for (value, expected) in [
             (Some("application/json"), BodyFormat::Json),
+            (Some("Text/CSS; charset=utf-8"), BodyFormat::Css),
             (Some("Application/JSON; charset=utf-8"), BodyFormat::Json),
             (Some("application/problem+json"), BodyFormat::Json),
             (Some("application/x-www-form-urlencoded"), BodyFormat::Form),

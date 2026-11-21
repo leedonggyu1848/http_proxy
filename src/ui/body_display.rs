@@ -140,9 +140,13 @@ fn build(source: &BodySource<'_>, key: &Key, text_color: egui::Color32) -> Conte
             ));
         }
     }
-    let formatted = body_format::format(format, key.mode, &text);
-    let numbered = format == BodyFormat::JavaScript;
-    let partial = (numbered && !source.complete).then(|| {
+    let mut formatted = body_format::format(format, key.mode, &text);
+    if format == BodyFormat::Css && key.mode == ViewMode::Pretty && !source.complete {
+        formatted.fallback =
+            Some("Incomplete CSS preview (up to 8 KiB); showing the available prefix.".to_owned());
+    }
+    let numbered = matches!(format, BodyFormat::JavaScript | BodyFormat::Css);
+    let partial = (format == BodyFormat::JavaScript && !source.complete).then(|| {
         "Only part of the script was captured; the view ends where the preview ends.".to_owned()
     });
     Content::Ready {
@@ -293,6 +297,96 @@ mod tests {
             content_type: Some("application/json"),
             complete: true,
         }
+    }
+
+    #[test]
+    fn css_preview_caches_gutter_and_warns_when_truncated() {
+        let ctx = egui::Context::default();
+        let mut cache = BodyViewCache::default();
+        let css = BodySource {
+            content_type: Some("text/css"),
+            complete: false,
+            ..source(1, b"a{color:red}")
+        };
+        run(&mut cache, &ctx, &css, ViewMode::Pretty);
+        run(&mut cache, &ctx, &css, ViewMode::Pretty);
+        assert_eq!(cache.builds(), 1);
+        if let Some((
+            _,
+            Content::Ready {
+                job,
+                lines,
+                fallback,
+                ..
+            },
+        )) = &cache.response
+        {
+            assert_eq!(job.text, "a{\n  color:red\n}");
+            let texts: Vec<_> = lines
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect();
+            assert_eq!(texts, ["a{", "  color:red", "}"]);
+            assert!(
+                fallback
+                    .as_ref()
+                    .is_some_and(|s| s.contains("Incomplete CSS"))
+            );
+        } else {
+            assert_eq!(cache.builds(), 0, "expected prepared CSS content");
+        }
+        run(&mut cache, &ctx, &css, ViewMode::Raw);
+        if let Some((_, Content::Ready { job, lines, .. })) = &cache.response {
+            assert_eq!(job.text.as_bytes(), css.bytes);
+            let texts: Vec<_> = lines
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect();
+            assert_eq!(texts, ["a{color:red}"]);
+        }
+    }
+
+    #[test]
+    fn complete_compressed_css_uses_decoder_notice_without_incomplete_warning()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write;
+
+        let text = format!("{}{}", "a{color:red}".repeat(600), " ".repeat(2000));
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(text.as_bytes())?;
+        let compressed = encoder.finish()?;
+        let css = BodySource {
+            content_type: Some("text/css"),
+            encodings: &["gzip"],
+            ..source(1, &compressed)
+        };
+        let ctx = egui::Context::default();
+        let mut cache = BodyViewCache::default();
+        run(&mut cache, &ctx, &css, ViewMode::Pretty);
+        let Some((
+            _,
+            Content::Ready {
+                fallback,
+                notice,
+                job,
+                ..
+            },
+        )) = &cache.response
+        else {
+            return Err("expected prepared CSS content".into());
+        };
+        assert_eq!(fallback, &None);
+        assert!(
+            notice
+                .as_ref()
+                .is_some_and(|s| s.contains("first 8 KiB of decoded bytes"))
+        );
+        assert!(job.text.contains("color:red"));
+        Ok(())
     }
 
     #[test]
