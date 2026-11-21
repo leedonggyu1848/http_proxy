@@ -3,7 +3,7 @@
 use super::{Styled, TokenKind, split_while};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Lexeme<'a> {
+pub(super) enum Lexeme<'a> {
     Open(&'a str),
     Close(&'a str),
     Comma,
@@ -11,6 +11,20 @@ enum Lexeme<'a> {
     String(&'a str),
     Number(&'a str),
     Literal(&'a str),
+}
+
+impl<'a> Lexeme<'a> {
+    pub(super) const fn text(self) -> &'a str {
+        match self {
+            Self::Open(text)
+            | Self::Close(text)
+            | Self::String(text)
+            | Self::Number(text)
+            | Self::Literal(text) => text,
+            Self::Comma => ",",
+            Self::Colon => ":",
+        }
+    }
 }
 
 const LITERALS: [&str; 3] = ["true", "false", "null"];
@@ -73,7 +87,7 @@ pub(super) fn pretty(text: &str) -> Result<Styled, String> {
     Ok(out)
 }
 
-fn lex(text: &str) -> Result<Vec<Lexeme<'_>>, String> {
+pub(super) fn lex(text: &str) -> Result<Vec<Lexeme<'_>>, String> {
     let mut lexemes = Vec::new();
     let mut rest = text.trim_start();
     while let Some(first) = rest.chars().next() {

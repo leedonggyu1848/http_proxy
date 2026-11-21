@@ -2,7 +2,7 @@
 
 use crate::ui::InspectorApp;
 use crate::ui::body_display::{BodySide, BodySource, BodyViewCache};
-use crate::ui::body_format::{ViewMode, form, highlight::SyntaxPalette};
+use crate::ui::body_format::{BodyFormat, ViewMode, form, highlight::SyntaxPalette};
 use crate::ui::detail_tabs::{self, DetailTab};
 use crate::ui::theme::Palette;
 use crate::ui::{image_view, outcome_view, replay_panel, scope_help};
@@ -69,7 +69,10 @@ impl InspectorApp {
                         render_headers(ui, "request-headers", request.headers());
                     }
                     DetailTab::Body => {
-                        body.mode = view_mode_bar(ui, &mut self.body_mode);
+                        let has_json = json_headers(request.headers())
+                            || matches!(record.outcome(),
+                            Outcome::Response(response) if json_headers(response.headers()));
+                        body.mode = view_mode_bar(ui, &mut self.body_mode, has_json);
                         ui.strong("Request body");
                         render_optional_body(ui, request.body(), request.headers(), &mut body);
                     }
@@ -87,12 +90,23 @@ struct BodyPanel<'a> {
     cache: &'a mut BodyViewCache,
 }
 
-/// Shows the Pretty / Raw switch and returns the mode to draw this frame.
-fn view_mode_bar(ui: &mut egui::Ui, mode: &mut ViewMode) -> ViewMode {
+fn json_headers(headers: &HeaderPreview) -> bool {
+    BodyFormat::from_content_type(headers.get("content-type").next()) == BodyFormat::Json
+}
+
+/// Shows Tree only as an enabled option when either body has JSON content type.
+fn view_mode_bar(ui: &mut egui::Ui, mode: &mut ViewMode, has_json: bool) -> ViewMode {
+    if !has_json && *mode == ViewMode::Tree {
+        *mode = ViewMode::Pretty;
+    }
     ui.horizontal(|ui| {
         ui.label("View:");
         for option in ViewMode::ALL {
-            ui.selectable_value(mode, option, option.label());
+            ui.add_enabled_ui(option != ViewMode::Tree || has_json, |ui| {
+                ui.selectable_value(mode, option, option.label())
+            })
+            .inner
+            .on_disabled_hover_text("Tree requires a JSON request or response body");
         }
     });
     *mode
