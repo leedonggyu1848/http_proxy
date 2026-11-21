@@ -63,6 +63,7 @@ HTTPS 복호화는 기본으로 꺼져 있다. 이 상태에서 앱은 `CONNECT`
 | 형식 | 판별하는 `Content-Type` | Pretty 보기 |
 | --- | --- | --- |
 | JSON | `application/json`, `*/*+json` | 2칸 들여쓰기, 키·문자열·숫자·`true`/`false`/`null`·괄호를 다른 색으로 표시 |
+| CSS | `text/css` | 규칙·선언마다 줄바꿈, 중첩 블록 들여쓰기, 줄 번호와 선택자·at-rule·속성·값·단위·색상·`!important`·주석 강조 |
 | Form | `application/x-www-form-urlencoded` | 키와 값을 퍼센트 디코딩해 한 줄에 `key = value` 하나씩 표시 |
 | HTML | `text/html`, `application/xhtml+xml` | 태그마다 줄을 나누고 들여쓰기, 태그·속성 이름·속성 값·주석을 구분. 공백이 의미를 갖는 `pre`·`textarea`와 `script`·`style`의 내용은 원문 그대로 |
 | XML | `application/xml`, `text/xml`, `*/*+xml`(Atom·RSS·SOAP·SVG 소스 등) | 요소만 담은 내용을 2칸 들여쓰기. 태그·네임스페이스 접두사·속성 이름·속성 값·주석·`CDATA`·처리 명령·엔티티를 구분. 텍스트·`CDATA`·주석의 내용과 `xml:space="preserve"` 요소는 원문 그대로 |
@@ -70,6 +71,7 @@ HTTPS 복호화는 기본으로 꺼져 있다. 이 상태에서 앱은 `CONNECT`
 
 - 미리보기는 8KiB에서 잘릴 수 있으므로 문법 분석 대신 토큰 단위로 정리한다. 잘린 문자열, 닫히지 않은 괄호·태그도 있는 데까지 정리해 보여 준다.
 - 형식에 맞지 않는 글자가 있어 정리할 수 없으면(예: JSON으로 표시된 HTML 오류 페이지) 원문을 그대로 보여 주고 `Showing raw text: …` 안내에 이유와 위치를 적는다. 그 밖의 형식은 Pretty에서도 원문 그대로다.
+- CSS는 문자열, `url(...)`, 주석의 원문을 보존한다. 잘린 미리보기나 닫히지 않은 블록·문자열에는 불완전 안내를 표시하고 읽은 부분까지 정리한다. 속성 값의 유효성은 검사하지 않는다. URL과 `sourceMappingURL` 주석은 표시만 하며 외부 파일은 가져오지 않는다. 색 견본은 `var()`·`currentColor`처럼 문맥에 따라 달라지는 색을 오해하지 않도록 제공하지 않는다.
 - **Raw**는 압축만 푼 원문을 정리 없이 보여 준다.
 - **Tree**는 XML에서만 쓸 수 있으며, 다른 형식은 Pretty로 보여 주고 그 사실을 안내한다.
 - JavaScript는 줄 번호와 함께 보이는 줄만 그린다. Pretty는 정리한 줄, Raw는 원래 줄 기준으로 번호를 매기며 긴 줄은 접지 않고 가로로 스크롤한다. 모듈 스크립트(`.mjs`)와 JSONP 응답도 위 `Content-Type`으로 오면 같은 방식으로 보여 준다.
@@ -88,6 +90,8 @@ XML 본문은 [quick-xml](https://crates.io/crates/quick-xml)로 읽어 Pretty�
 - 미리보기가 8KiB에서 잘렸거나 문법이 틀리면 읽은 데까지 보여 주고 `XML is incomplete (… at byte N); showing the part read so far.`처럼 이유와 위치를 안내한다. 나머지는 **Raw**에서 볼 수 있다.
 - **보안:** DTD와 엔티티 정의를 해석하지 않는다. `&xxe;` 같은 외부 엔티티나 엔티티 확장 공격은 원문 표기 그대로 보여 줄 뿐 파일·네트워크를 읽거나 펼치지 않는다. 요소 중첩 256단계, 노드 10,000개를 넘으면 그 앞까지만 보여 주고 안내한다.
 - `image/svg+xml`도 텍스트로 보여 줄 때는 같은 XML 보기를 쓴다.
+
+CSS 실제 화면 캡처는 macOS 접근성 권한이 없는 환경에서 추가하지 못했다. 아래 캡처는 기존 JSON·HTML 보기이며 CSS 화면을 나타내지 않는다.
 
 다음은 로컬 테스트 서버의 minified JSON 응답을 Pretty와 Raw로 본 실제 화면이다.
 
