@@ -114,6 +114,11 @@ pub(crate) fn tunnel_detail(state: &TunnelState) -> String {
     }
 }
 
+/// Converts a duration to milliseconds for UI timing displays.
+pub(crate) fn elapsed_millis(duration: std::time::Duration) -> f64 {
+    duration.as_secs_f64() * 1_000.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

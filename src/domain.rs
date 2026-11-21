@@ -69,6 +69,14 @@ impl HeaderPreview {
         &self.entries
     }
 
+    /// Returns all retained values for a header name, ignoring ASCII case.
+    pub fn get(&self, name: &str) -> impl Iterator<Item = &str> {
+        self.entries
+            .iter()
+            .filter(move |header| header.name().eq_ignore_ascii_case(name))
+            .map(CapturedHeader::value)
+    }
+
     /// Reports whether fields were omitted because the limit was reached.
     #[must_use]
     pub const fn omitted(&self) -> bool {
@@ -426,6 +434,23 @@ impl std::fmt::Display for FailureStage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retained_headers_preserve_duplicates_and_ignore_name_case() {
+        let headers = HeaderPreview::new(
+            vec![
+                CapturedHeader::new("content-encoding".into(), "gzip".into()),
+                CapturedHeader::new("content-encoding".into(), "br".into()),
+            ],
+            true,
+        );
+        assert_eq!(
+            headers.get("Content-Encoding").collect::<Vec<_>>(),
+            ["gzip", "br"]
+        );
+        assert_eq!(headers.get("missing").next(), None);
+        assert_eq!(HeaderPreview::default().get("content-type").next(), None);
+    }
 
     #[test]
     fn body_lifecycle_round_trips_through_u8() {

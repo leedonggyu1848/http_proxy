@@ -301,7 +301,7 @@ impl ProxyConfig {
 
 impl Default for ProxyConfig {
     fn default() -> Self {
-        Self::loopback(8080)
+        Self::loopback(crate::DEFAULT_PORT)
     }
 }
 

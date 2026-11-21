@@ -9,7 +9,7 @@ use std::path::Path;
 use http_proxy::StartError;
 
 /// Port used when nothing else chooses one.
-pub(crate) const DEFAULT_PORT: ProxyPort = ProxyPort(8080);
+pub(crate) const DEFAULT_PORT: ProxyPort = ProxyPort(http_proxy::DEFAULT_PORT);
 /// Environment variable that overrides the saved port for one run.
 pub(crate) const PORT_ENV: &str = "HTTP_INSPECTOR_PORT";
 const SETTINGS_FILE: &str = "settings";

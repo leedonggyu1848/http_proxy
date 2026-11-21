@@ -28,11 +28,14 @@ const NOT_RECORDED: [&str; 4] = [
 const QUIC_HINT: &str = "Browsers opened with Open Browser already disable QUIC. \
      For a Chrome profile you start yourself, add --disable-quic so it uses HTTP/1.1 or HTTP/2 over TCP.";
 
-const DISABLE_QUIC_EXAMPLE: &str = "google-chrome --user-data-dir=/tmp/http-inspector-chrome \
-     --proxy-server=http://127.0.0.1:8080 --disable-quic";
+fn disable_quic_example(address: std::net::SocketAddr) -> String {
+    format!(
+        "google-chrome --user-data-dir=/tmp/http-inspector-chrome --proxy-server=http://{address} --disable-quic"
+    )
+}
 
 /// Shows the scope summary and the expandable capture help.
-pub(super) fn show(ui: &mut egui::Ui) {
+pub(super) fn show(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>) {
     ui.label(SCOPE_SUMMARY);
     egui::CollapsingHeader::new("What is captured?")
         .id_salt("capture-scope-help")
@@ -48,7 +51,9 @@ pub(super) fn show(ui: &mut egui::Ui) {
             }
             ui.add_space(4.0);
             ui.label(QUIC_HINT);
-            ui.monospace(DISABLE_QUIC_EXAMPLE);
+            if let Some(address) = address {
+                ui.monospace(disable_quic_example(address));
+            }
         });
 }
 
@@ -62,7 +67,9 @@ mod tests {
         for expected in ["ignore proxy settings", "NO_PROXY", "QUIC", "VPN"] {
             assert!(gaps.contains(expected), "missing {expected}");
         }
-        assert!(DISABLE_QUIC_EXAMPLE.contains("--disable-quic"));
+        let example = disable_quic_example(std::net::SocketAddr::from(([127, 0, 0, 1], 18080)));
+        assert!(example.contains("--disable-quic"));
+        assert!(example.contains("http://127.0.0.1:18080"));
     }
 
     #[test]

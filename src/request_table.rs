@@ -393,13 +393,7 @@ fn content_type(record: &Exchange) -> Option<&str> {
     let Outcome::Response(response) = record.outcome() else {
         return None;
     };
-    let value = response
-        .headers()
-        .entries()
-        .iter()
-        .find(|header| header.name() == "content-type")?
-        .value();
-    let essence = value.split(';').next().unwrap_or(value).trim();
+    let essence = response.media_type()?;
     let subtype = essence.rsplit('/').next().unwrap_or(essence);
     let subtype = subtype.rsplit('+').next().unwrap_or(subtype);
     Some(subtype.strip_prefix("x-").unwrap_or(subtype))
@@ -411,7 +405,7 @@ fn duration(record: &Exchange) -> Option<Duration> {
 }
 
 fn duration_text(record: &Exchange) -> String {
-    let millis = |duration: Duration| duration.as_secs_f64() * 1_000.0;
+    use super::outcome_view::elapsed_millis as millis;
     record.timing().complete().map_or_else(
         || format!("{:.0} ms…", millis(record.elapsed())),
         |total| format!("{:.1} ms", millis(total)),
