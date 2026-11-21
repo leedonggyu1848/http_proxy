@@ -213,7 +213,27 @@ sudo apt-get install --yes fonts-noto-cjk
 cargo run --release
 ```
 
-UI에 `Running`과 `127.0.0.1:8080`이 표시되면 프록시가 요청을 받을 수 있다. 툴바의 `Copy` 메뉴는 프록시 URL, `curl` 예시, `HTTP_PROXY` 변수를 클립보드에 복사한다.
+UI에 `● Running`과 `127.0.0.1:8080`이 표시되면 프록시가 요청을 받을 수 있다. 툴바의 `Copy` 메뉴는 프록시 URL, `curl` 예시, `HTTP_PROXY` 변수를 클립보드에 복사한다.
+
+### 화면 구성
+
+화면은 위에서 아래로 다음 순서로 놓인다. 요청 목록과 상세가 남은 높이를 모두 쓴다.
+
+- **툴바:** 프록시 상태·주소·`Copy`·`Stop`, **Decrypt HTTPS**와 CA 상태, **Open Browser**, **Save**, **Settings**(테마), **?**(캡처 범위 안내). 창이 좁으면 다음 줄로 넘어간다.
+- **알림:** 포트 충돌, 브라우저·CA 오류처럼 확인해야 할 오류와 경고는 툴바 바로 아래에 표시한다.
+- **필터 줄:** 검색어, 종류(All·Responses·Failures·Tunnels), **Follow newest**, **Clear**.
+- **요청 목록과 상세:** 가운데 경계를 끌어 너비를 조절한다. 목록의 열은 목록 영역 안에서 잘린다. 요청이 없으면 다음에 할 일을 안내한다.
+- **상태 바:** 요청 수, 누락·삭제된 기록 수, 전체 로그 오류와 한도 경고, 저장 결과.
+
+창 높이가 부족하면 요청 목록과 상세는 약 10행 높이를 유지하고 창 전체가 세로로 스크롤된다. 마우스가 목록이나 상세 위에 있으면 그 영역이 먼저 스크롤되고, 끝에 닿은 뒤에는 창 전체가 스크롤된다.
+
+다음은 1100×700 창에서 HTTPS 검사를 켜고 테스트 요청 21건을 보낸 실제 화면이다.
+
+![HTTPS 검사를 켠 상태에서 요청 21건이 모두 보이는 화면](docs/screenshots/theme-dark-ca.png)
+
+800×420처럼 좁고 낮은 창에서는 툴바가 두 줄로 넘어가고, 목록과 상세는 최소 높이를 유지한다.
+
+![좁은 창에서 두 줄로 넘어간 툴바와 최소 높이를 유지한 목록](docs/screenshots/narrow-window.png)
 
 ### 요청 목록 단축키
 
@@ -227,11 +247,11 @@ UI에 `Running`과 `127.0.0.1:8080`이 표시되면 프록시가 요청을 받�
 | `Tab`, `Shift+Tab` | 요청 행, 상세 탭과 다른 컨트롤 사이에서 포커스를 옮깁니다. |
 | `Enter`, `Space` | 포커스가 있는 요청 행 또는 상세 탭을 선택합니다. |
 
-목록 단축키는 현재 정렬과 필터를 따릅니다. 검색창, 포트 입력란 또는 저장 경로 입력란에 포커스가 있으면 단축키를 처리하지 않습니다. `Esc`로 입력란의 포커스를 해제하면 다시 단축키를 사용할 수 있습니다. 키보드로 다른 요청을 선택하면 **Follow newest**가 꺼지고 선택한 행이 보이도록 목록이 스크롤됩니다.
+목록 단축키는 현재 정렬과 필터를 따릅니다. 검색창, 포트 입력란 또는 **Save** 메뉴의 저장 경로 입력란에 포커스가 있으면 단축키를 처리하지 않습니다. `Esc`로 입력란의 포커스를 해제하면 다시 단축키를 사용할 수 있습니다. 키보드로 다른 요청을 선택하면 **Follow newest**가 꺼지고 선택한 행이 보이도록 목록이 스크롤됩니다.
 
 ### 화면 테마
 
-상단의 **Theme: System / Light / Dark**에서 테마를 고른다. 기본값은 **System**이며, 감지 가능한 환경에서는 실행 중 시스템 외관 변경도 반영한다. 감지에 실패하면 Dark를 사용하고 화면에 안내한다. Tab으로 선택 항목에 이동한 뒤 Space로 바꿀 수 있다.
+툴바의 **Settings** 메뉴에서 **System / Light / Dark** 테마를 고른다. 기본값은 **System**이며, 감지 가능한 환경에서는 실행 중 시스템 외관 변경도 반영한다. 감지에 실패하면 Dark를 사용하고 화면에 안내한다. Tab으로 선택 항목에 이동한 뒤 Space로 바꿀 수 있다.
 
 선택은 즉시 적용되며 포트 설정과 같은 디렉터리의 `theme` 파일에 저장된다.
 
@@ -318,7 +338,7 @@ HTTPS_PROXY=http://127.0.0.1:8080 your-command
 
 ## 캡처 범위
 
-앱은 클라이언트가 이 프록시로 보낸 HTTP 통신만 기록한다. 컴퓨터의 모든 트래픽을 수집하지 않는다. 화면 위쪽의 **What is captured?**를 펼치면 같은 안내를 볼 수 있다.
+앱은 클라이언트가 이 프록시로 보낸 HTTP 통신만 기록한다. 컴퓨터의 모든 트래픽을 수집하지 않는다. 툴바의 **?** 버튼을 누르면 같은 안내를 볼 수 있다.
 
 - HTTP는 메서드, URL, 헤더와 본문을 기록한다.
 - **Decrypt HTTPS**를 끄면 HTTPS는 `Tunnel` 행으로 기록한다. 이 행에는 호스트, 포트, 전송 바이트 수와 연결 시간만 있다. URL 경로, 헤더와 본문은 암호화된 채 전달한다.
@@ -333,25 +353,25 @@ HTTPS_PROXY=http://127.0.0.1:8080 your-command
 
 **Open Browser**로 연 검사 브라우저는 QUIC을 끈다. 직접 실행하는 Chrome에는 [HTTPS 복호화](#https-복호화)의 예처럼 `--disable-quic`을 추가한다.
 
-다음은 테스트용 HTTP 요청과 `CONNECT` 터널을 보낸 뒤 **What is captured?**를 펼치고 `Tunnel` 행을 선택한 실제 화면이다.
+다음은 테스트용 HTTP 요청과 `CONNECT` 터널을 보낸 뒤 캡처 범위 안내(현재는 툴바의 **?** 버튼)를 펼치고 `Tunnel` 행을 선택한 실제 화면이다.
 
 ![캡처 범위 안내와 Tunnel 행 상세](docs/screenshots/capture-scope-help.png)
 
 ## 검사 브라우저 열기
 
-1. **Browser** 목록에서 설치된 Firefox 또는 Chrome을 선택한다. Chromium도 선택할 수 있다. 앱은 기본 브라우저를 자동으로 선택하지 않는다.
-2. HTTPS의 URL, 헤더와 본문을 확인하려면 프록시를 중지하고 **Decrypt HTTPS**를 선택한 뒤 **Start**를 누른다.
-3. **Open Browser**를 누른다. 앱이 프록시를 설정한 검사 전용 프로필로 비공개 창을 연다. HTTPS 복호화를 켰으면 공개 CA도 자동으로 등록한다. Firefox에는 NSS `certutil`이 필요하다. Linux의 Chrome·Chromium도 NSS를 사용한다. macOS의 Chrome·Chromium은 로그인 키체인을 사용한다.
+1. HTTPS의 URL, 헤더와 본문을 확인하려면 프록시를 중지하고 **Decrypt HTTPS**를 선택한 뒤 **Start**를 누른다.
+2. 툴바의 **Open Browser** 메뉴에서 설치된 Firefox, Chrome 또는 Chromium을 누른다. 앱은 기본 브라우저를 자동으로 선택하지 않는다. 각 항목에 마우스를 올리면 CA 등록 방식을 안내한다.
+3. 앱이 프록시를 설정한 검사 전용 프로필로 비공개 창을 연다. HTTPS 복호화를 켰으면 공개 CA도 자동으로 등록한다. Firefox에는 NSS `certutil`이 필요하다. Linux의 Chrome·Chromium도 NSS를 사용한다. macOS의 Chrome·Chromium은 로그인 키체인을 사용한다.
 4. 열린 브라우저에서 확인할 사이트에 접속한다. HTTP Inspector의 요청 목록에서 트래픽을 확인한다.
 5. 검사를 마치면 브라우저 창을 닫거나 **Close browser**를 누른다. **Stop**을 누르거나 앱을 종료해도 앱에서 연 검사 브라우저를 종료한다.
 
-**Refresh browsers**는 `PATH`에서 Firefox, Firefox ESR, Google Chrome의 Stable·Beta·Dev, Chromium 실행 파일을 다시 찾는다. 같은 실행 파일의 별칭은 하나만 표시한다. Firefox Snap도 지원한다. Flatpak 브라우저와 Chromium Snap은 지원하지 않는다.
+**Open Browser** 메뉴의 **Refresh browsers**는 `PATH`에서 Firefox, Firefox ESR, Google Chrome의 Stable·Beta·Dev, Chromium 실행 파일을 다시 찾는다. 같은 실행 파일의 별칭은 하나만 표시한다. Firefox Snap도 지원한다. Flatpak 브라우저와 Chromium Snap은 지원하지 않는다.
 
 매번 새 검사 프로필을 만들며 브라우저 프로세스가 종료되면 삭제한다. 기존 개인 프로필의 쿠키와 로그인 상태는 가져오지 않는다. Firefox Snap의 임시 프로필은 `$HOME/snap/firefox/common` 아래에 만든다. 앱이 강제 종료되면 임시 프로필이 남을 수 있다. 비공개 창을 사용해도 HTTP Inspector의 요청 기록과 전체 로그는 남는다.
 
-Firefox의 CA는 검사 전용 프로필에만 등록한다. Chrome·Chromium의 CA는 Linux에서 현재 사용자의 공용 NSS 저장소에, macOS에서 로그인 키체인에 등록하므로 개인 브라우저에도 신뢰 설정이 적용된다. Chrome·Chromium 등록은 검사 창을 닫아도 유지된다. 필요 없으면 **Decrypt HTTPS** 영역의 **Remove CA**로 제거한다.
+Firefox의 CA는 검사 전용 프로필에만 등록한다. Chrome·Chromium의 CA는 Linux에서 현재 사용자의 공용 NSS 저장소에, macOS에서 로그인 키체인에 등록하므로 개인 브라우저에도 신뢰 설정이 적용된다. Chrome·Chromium 등록은 검사 창을 닫아도 유지된다. 필요 없으면 툴바의 **Remove CA** 또는 **CA details** 메뉴의 **Remove CA**로 제거한다.
 
-다음은 실제 Firefox Snap에서 HTTPS를 복호화한 뒤 브라우저 선택 목록을 연 화면이다.
+다음은 실제 Firefox Snap에서 HTTPS를 복호화한 뒤 브라우저 선택 목록을 연 화면이다. 이 캡처는 브라우저 선택이 툴바 메뉴로 옮겨지기 전의 화면이다.
 
 ![Firefox와 Chrome 선택 목록과 복호화한 HTTPS 요청](docs/screenshots/browser-chooser.png)
 
@@ -359,20 +379,20 @@ Firefox의 CA는 검사 전용 프로필에만 등록한다. Chrome·Chromium의
 
 ## 창 캡처와 전체 로그 저장
 
-1. **Save directory**에 저장할 기존 폴더의 경로를 입력한다. 기본값은 앱을 실행한 폴더다.
-2. 창 이미지를 저장하려면 **Save window PNG**를 누른다. 현재 스크롤 위치를 포함한 앱 내부 전체가 PNG로 저장된다. 운영체제의 제목 표시줄과 테두리는 포함하지 않는다.
-3. 전체 로그를 저장하려면 **Save all logs**를 누른다. 수집 시작부터 버튼을 누른 시점까지의 기록을 `.log` 텍스트 파일로 저장한다.
-4. 화면에 표시된 **Saved:** 경로에서 파일을 확인한다. 저장할 때마다 새 파일을 만들며 기존 파일을 덮어쓰지 않는다.
+1. 툴바의 **Save** 메뉴를 열고 **Save directory**에 저장할 기존 폴더의 경로를 입력한다. 기본값은 앱을 실행한 폴더다.
+2. 창 이미지를 저장하려면 같은 메뉴에서 **Save window PNG**를 누른다. 현재 스크롤 위치를 포함한 앱 내부 전체가 PNG로 저장된다. 운영체제의 제목 표시줄과 테두리는 포함하지 않는다.
+3. 전체 로그를 저장하려면 같은 메뉴에서 **Save all logs**를 누른다. 수집 시작부터 버튼을 누른 시점까지의 기록을 `.log` 텍스트 파일로 저장한다.
+4. 하단 상태 바에 표시된 **Saved:** 경로에서 파일을 확인한다. 저장할 때마다 새 파일을 만들며 기존 파일을 덮어쓰지 않는다.
 
 다음 이미지는 테스트용 HTTP 트래픽을 보낸 뒤 **Save window PNG**로 저장한 실제 화면이다.
 
-![창 캡처와 전체 로그 저장 버튼이 있는 HTTP Inspector 화면](docs/screenshots/save-window.png)
+![Save 메뉴가 있는 툴바와 요청 목록](docs/screenshots/save-window.png)
 
 전체 로그에는 필터, 선택한 요청, 화면의 2,000건 보관 한도와 관계없이 모든 요청의 대상과 헤더, 응답 결과, 관찰한 요청·응답 본문, 트레일러를 기록한다. **Clear**는 화면 기록만 지운다. **Stop** 후 **Start**를 눌러도 같은 앱 세션의 전체 로그를 유지한다. 앱을 종료하면 임시 로그를 삭제하므로 필요한 로그는 종료 전에 저장한다.
 
 로그는 발생 순서대로 기록하며 대괄호 안의 요청 번호로 내용을 구분한다. 본문 바이트는 `\n`, `\r`, `\t`, `\\`, `\xNN` 이스케이프를 사용한다. 같은 요청과 방향의 `body bytes:` 줄을 순서대로 합치고 이스케이프를 풀면 본문 바이트를 복원할 수 있다. UTF-8이 아닌 본문도 바이트를 잃지 않는다. 저장 시 수신 중인 본문은 그 시점까지 관찰한 내용이 들어가며, `body: complete` 또는 `body: interrupted`가 없는 방향은 아직 완료되지 않았을 수 있다.
 
-전체 로그는 세션당 본문 바이트를 512MiB까지 기록한다. 한도에 도달하면 해당 본문 뒤에 `body: later bytes omitted ...` 줄을 남기고 이후 본문 바이트를 기록하지 않는다. 대상, 헤더와 결과는 계속 기록하며 툴바에 노란색 안내를 표시한다. 프록시는 본문 전체를 계속 전달한다.
+전체 로그는 세션당 본문 바이트를 512MiB까지 기록한다. 한도에 도달하면 해당 본문 뒤에 `body: later bytes omitted ...` 줄을 남기고 이후 본문 바이트를 기록하지 않는다. 대상, 헤더와 결과는 계속 기록하며 상태 바에 노란색 안내를 표시한다. 프록시는 본문 전체를 계속 전달한다.
 
 복호화하지 않은 HTTPS는 CONNECT 연결 기록만 저장한다. 프록시가 본문을 읽기 전에 실패한 요청의 본문은 저장할 수 없다. 전체 로그에는 URL과 본문의 민감한 내용이 포함될 수 있으며, 위에 나열한 네 가지 헤더 외의 내용은 가리지 않는다. 임시 로그와 내보낸 파일은 소유자만 읽고 쓸 수 있는 권한으로 만든다.
 
@@ -384,18 +404,29 @@ HTTPS 복호화는 사용 권한이 있는 트래픽에만 사용한다.
 
 1. 실행 중인 프록시에서 **Stop**을 누른다.
 2. **Decrypt HTTPS**를 선택한다.
-3. UI에 표시된 `root-ca.pem` 경로와 SHA-256 지문을 확인한다. CA는 프록시를 시작하기 전에도 생성된다.
+3. 툴바에 CA 상태가 표시된다. **CA details** 메뉴에서 `root-ca.pem` 경로와 SHA-256 지문을 확인하고 복사할 수 있다. CA는 프록시를 시작하기 전에도 생성된다.
 4. **Start**를 누른다.
-5. **Browser**에서 브라우저를 선택한다.
-6. **Open Browser**를 누른다. CA를 자동으로 등록한 뒤 검사 전용 비공개 창이 열린다.
+5. **Open Browser** 메뉴에서 브라우저를 누른다. CA를 자동으로 등록한 뒤 검사 전용 비공개 창이 열린다.
 
-기존 Chrome·Chromium을 직접 프록시에 연결하려면 **Register CA**로 CA를 등록한다. **CA is registered and trusted for HTTPS.**가 표시되는지 확인한다.
+처음 **Decrypt HTTPS**를 켜면 권한이 있는 트래픽에만 사용하라는 경고를 한 번 표시한다. 같은 안내는 체크박스 툴팁에서도 볼 수 있다.
+
+툴바의 CA 상태는 색과 짧은 문구로 표시한다.
+
+| 표시 | 의미 | 툴바 동작 |
+| --- | --- | --- |
+| `● Trusted` (초록) | 등록되어 HTTPS 신뢰 대상이다. | **Remove CA** |
+| `● Not registered` (노랑) | 이 앱이 등록한 항목이 없다. | **Register CA** |
+| `● Registered, not trusted` (빨강) | 등록되었지만 HTTPS 신뢰 설정이 없다. | **Register CA** 재시도 |
+| `● Error` (빨강) | 확인 또는 등록에 실패했다. 오류는 툴바 아래에 표시한다. | **Register CA** |
+| 스피너 | 확인·등록·제거 중이다. | 없음 |
+
+기존 Chrome·Chromium을 직접 프록시에 연결하려면 **Register CA**로 CA를 등록한다. CA 상태가 `● Trusted`로 바뀌는지 확인한다.
 
 Linux에서 **Register CA**는 NSS의 `certutil` 명령으로 현재 사용자의 Chrome·Chromium 인증서 저장소에 공개 CA만 등록한다. 관리자 권한은 필요하지 않다. Ubuntu·Debian에서는 `sudo apt install libnss3-tools`, Fedora에서는 `sudo dnf install nss-tools`로 도구를 설치한다. 도구가 없거나 등록에 실패하면 화면에 오류를 표시한다. 수동으로 등록하려면 Chrome의 `chrome://settings/certificates`에서 공개 CA를 가져온다.
 
-Linux의 등록 대상은 [Chromium의 NSS 저장소 선택 규칙](https://chromium.googlesource.com/chromium/src/+/HEAD/crypto/nss_util.cc)을 따른다. `$HOME/.pki/nssdb` 디렉터리가 있으면 그 경로를 사용한다. 없으면 `$XDG_DATA_HOME/pki/nssdb`를 사용하고, `XDG_DATA_HOME`이 없으면 `$HOME/.local/share/pki/nssdb`를 사용한다. 화면에 실제 대상 경로를 표시한다. 별도 저장소를 사용하는 Snap·Flatpak 브라우저와 Firefox, 시스템 전체 저장소에는 등록하지 않는다.
+Linux의 등록 대상은 [Chromium의 NSS 저장소 선택 규칙](https://chromium.googlesource.com/chromium/src/+/HEAD/crypto/nss_util.cc)을 따른다. `$HOME/.pki/nssdb` 디렉터리가 있으면 그 경로를 사용한다. 없으면 `$XDG_DATA_HOME/pki/nssdb`를 사용하고, `XDG_DATA_HOME`이 없으면 `$HOME/.local/share/pki/nssdb`를 사용한다. **CA details** 메뉴에 실제 대상 경로를 표시한다. 별도 저장소를 사용하는 Snap·Flatpak 브라우저와 Firefox, 시스템 전체 저장소에는 등록하지 않는다.
 
-**Check registration**은 이 앱이 관리하는 항목의 인증서와 HTTPS 신뢰 설정을 확인한다. **Remove CA**는 현재 CA와 일치하는 앱 관리 항목만 제거한다. 다른 설치의 CA와 수동으로 등록한 다른 이름의 항목은 제거하지 않는다. 등록 상태를 바꾼 후에는 브라우저를 다시 시작한다.
+**CA details** 메뉴의 **Check registration** 또는 CA 상태 문구 클릭은 이 앱이 관리하는 항목의 인증서와 HTTPS 신뢰 설정을 확인한다. **Remove CA**는 현재 CA와 일치하는 앱 관리 항목만 제거한다. 다른 설치의 CA와 수동으로 등록한 다른 이름의 항목은 제거하지 않는다. 등록 상태를 바꾼 후에는 브라우저를 다시 시작한다.
 
 기본 CA 경로는 다음과 같다.
 

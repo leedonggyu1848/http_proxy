@@ -2,7 +2,7 @@
 
 use eframe::egui;
 
-/// One-line scope shown above the toolbar.
+/// One-line scope at the top of the capture help.
 pub(in crate::ui) const SCOPE_SUMMARY: &str = "Capture scope: only HTTP traffic that a client sends through this proxy. \
      Other traffic on this computer is not recorded.";
 
@@ -34,30 +34,32 @@ fn disable_quic_example(address: std::net::SocketAddr) -> String {
     )
 }
 
-/// Shows the scope summary and the expandable capture help.
-pub(in crate::ui) fn show(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>) {
-    ui.label(SCOPE_SUMMARY);
-    egui::CollapsingHeader::new("What is captured?")
-        .id_salt("capture-scope-help")
-        .show(ui, |ui| {
-            ui.strong("Recorded");
-            for line in RECORDED {
-                ui.label(format!("• {line}"));
-            }
-            ui.add_space(4.0);
-            ui.strong("Not recorded");
-            for line in NOT_RECORDED {
-                ui.colored_label(
-                    crate::ui::theme::Palette::of(ui).warning,
-                    format!("• {line}"),
-                );
-            }
-            ui.add_space(4.0);
-            ui.label(QUIC_HINT);
-            if let Some(address) = address {
-                ui.monospace(disable_quic_example(address));
-            }
-        });
+/// Shows the `?` button whose popup explains the capture scope.
+pub(in crate::ui) fn button(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>) {
+    ui.menu_button("?", |ui| {
+        ui.set_max_width(520.0);
+        ui.label(SCOPE_SUMMARY);
+        ui.add_space(4.0);
+        ui.strong("Recorded");
+        for line in RECORDED {
+            ui.label(format!("• {line}"));
+        }
+        ui.add_space(4.0);
+        ui.strong("Not recorded");
+        for line in NOT_RECORDED {
+            ui.colored_label(
+                crate::ui::theme::Palette::of(ui).warning,
+                format!("• {line}"),
+            );
+        }
+        ui.add_space(4.0);
+        ui.label(QUIC_HINT);
+        if let Some(address) = address {
+            ui.monospace(disable_quic_example(address));
+        }
+    })
+    .response
+    .on_hover_text("What is captured?");
 }
 
 #[cfg(test)]

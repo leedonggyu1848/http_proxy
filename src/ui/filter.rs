@@ -60,12 +60,13 @@ use crate::ui::replay_panel;
 use eframe::egui;
 
 impl InspectorApp {
+    /// Filter, list options, and Clear, shown right above the request list.
     pub(in crate::ui) fn filters(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Filter");
+        ui.horizontal_wrapped(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.filter_text)
-                    .hint_text("method, URL, status, or header"),
+                    .desired_width(260.0)
+                    .hint_text("Filter: method, URL, status, or header"),
             );
             egui::ComboBox::from_id_salt("record-filter")
                 .selected_text(self.record_filter.label())
@@ -74,6 +75,15 @@ impl InspectorApp {
                         ui.selectable_value(&mut self.record_filter, filter, filter.label());
                     }
                 });
+            self.table.controls(ui);
+            if ui
+                .button("Clear")
+                .on_hover_text("Clear the displayed requests. The full-session log is retained.")
+                .clicked()
+            {
+                self.records.clear(self.engine_dropped());
+                self.selected = None;
+            }
         });
     }
 
@@ -84,16 +94,36 @@ impl InspectorApp {
             .iter()
             .filter(|record| record_matches(record, self.record_filter, &query))
             .collect();
-        self.table.controls(ui);
+        if rows.is_empty() {
+            let message = empty_list_text(
+                self.records.len(),
+                self.proxy.as_ref().map(http_proxy::ProxyHandle::local_addr),
+            );
+            ui.centered_and_justified(|ui| {
+                ui.weak(message);
+            });
+            return;
+        }
+        if let Some(selected) = self.table.show(ui, rows, self.selected, shortcuts_allowed) {
+            self.selected = Some(selected);
+        }
         if let Some(original) = self.table.replay.take() {
             match replay_panel::ReplayPanel::new(original) {
                 Ok(panel) => self.replay = Some(panel),
                 Err(error) => self.error = Some(error),
             }
         }
-        if let Some(selected) = self.table.show(ui, rows, self.selected, shortcuts_allowed) {
-            self.selected = Some(selected);
-        }
+    }
+}
+
+/// Tells the user what to do next when the list shows no rows.
+fn empty_list_text(captured: usize, proxy: Option<std::net::SocketAddr>) -> String {
+    match proxy {
+        _ if captured > 0 => "No requests match the filter.".to_owned(),
+        Some(address) => format!(
+            "No requests yet.\nSet your client's HTTP proxy to http://{address} or use Open Browser."
+        ),
+        None => "The proxy is stopped. Press Start to capture requests.".to_owned(),
     }
 }
 
@@ -104,6 +134,14 @@ mod tests {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::{TcpListener, TcpStream};
     use tokio::time::{Duration, timeout};
+
+    #[test]
+    fn empty_list_explains_the_next_step() {
+        let address = std::net::SocketAddr::from(([127, 0, 0, 1], 18080));
+        assert!(empty_list_text(0, Some(address)).contains("http://127.0.0.1:18080"));
+        assert!(empty_list_text(0, None).contains("Start"));
+        assert!(empty_list_text(3, Some(address)).contains("match the filter"));
+    }
 
     #[test]
     fn text_search_ignores_value_case() {

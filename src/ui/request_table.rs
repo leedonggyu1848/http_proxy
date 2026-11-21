@@ -176,18 +176,16 @@ impl RequestTable {
         }
     }
 
-    /// Shows the controls above the table.
+    /// Shows the list options inline in the filter row.
     pub(in crate::ui) fn controls(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut self.follow_newest, "Follow newest")
-                .on_hover_text("Keep the newest request in view while sorted by arrival.");
-            if self.follow_newest {
-                self.keyboard_row = None;
-            }
-            if self.sort.field.is_some() && ui.button("Arrival order").clicked() {
-                self.sort = Self::new().sort;
-            }
-        });
+        ui.checkbox(&mut self.follow_newest, "Follow newest")
+            .on_hover_text("Keep the newest request in view while sorted by arrival.");
+        if self.follow_newest {
+            self.keyboard_row = None;
+        }
+        if self.sort.field.is_some() && ui.button("Arrival order").clicked() {
+            self.sort = Self::new().sort;
+        }
     }
 
     fn sort_rows(&self, rows: &mut [&Exchange]) {
