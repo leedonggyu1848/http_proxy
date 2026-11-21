@@ -2,6 +2,7 @@ use std::fmt;
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+use std::slice::Chunks;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, TryLockError};
@@ -58,6 +59,7 @@ type Failure = Arc<Mutex<Option<String>>>;
 
 const DISCONNECTED: &str =
     "Session logging stopped because its writer disconnected; the log is incomplete";
+const QUEUE_UNAVAILABLE: &str = "The session journal queue is unavailable; the log is incomplete";
 
 #[derive(Debug)]
 enum Event {
@@ -147,18 +149,29 @@ impl FullLog {
         if !text.ends_with('\n') {
             text.push('\n');
         }
-        let Ok(sender) = self.sender.lock() else {
-            self.record_failure("The session journal queue is unavailable; the log is incomplete");
-            return;
-        };
         if self.error().is_some() {
             return;
         }
-        for chunk in text.as_bytes().chunks(EVENT_BYTES) {
-            if send_waiting(&sender, Event::Append(chunk.to_vec())).is_err() {
-                self.record_failure(DISCONNECTED);
-                break;
-            }
+        let mut chunks = text.as_bytes().chunks(EVENT_BYTES);
+        // Fast path: an uncontended lock and free queue space never wait.
+        // Every wait, for the lock or for queue space, goes through
+        // `while_waiting` so a full queue cannot pin a runtime worker.
+        let result = match self.sender.try_lock() {
+            Ok(sender) => match send_without_waiting(&sender, &mut chunks) {
+                Ok(()) => Ok(()),
+                Err(TrySendError::Full(event)) => {
+                    while_waiting(|| send_waiting(&sender, Some(event), chunks))
+                }
+                Err(TrySendError::Disconnected(_)) => Err(DISCONNECTED),
+            },
+            Err(TryLockError::WouldBlock) => while_waiting(|| {
+                let sender = self.sender.lock().map_err(|_| QUEUE_UNAVAILABLE)?;
+                send_waiting(&sender, None, chunks)
+            }),
+            Err(TryLockError::Poisoned(_)) => Err(QUEUE_UNAVAILABLE),
+        };
+        if let Err(message) = result {
+            self.record_failure(message);
         }
     }
 
@@ -301,26 +314,44 @@ impl FullLog {
     }
 }
 
-/// Sends `event`, waiting for queue space instead of dropping it.
+/// Sends chunks while the queue has space and returns the first one that
+/// did not fit.
+fn send_without_waiting(
+    sender: &SyncSender<Event>,
+    chunks: &mut Chunks<'_, u8>,
+) -> Result<(), TrySendError<Event>> {
+    chunks.try_for_each(|chunk| sender.try_send(Event::Append(chunk.to_vec())))
+}
+
+/// Sends `first` and the remaining chunks, waiting for queue space instead
+/// of dropping any of them.
+fn send_waiting(
+    sender: &SyncSender<Event>,
+    first: Option<Event>,
+    chunks: Chunks<'_, u8>,
+) -> Result<(), &'static str> {
+    first
+        .into_iter()
+        .chain(chunks.map(|chunk| Event::Append(chunk.to_vec())))
+        .try_for_each(|event| sender.send(event))
+        .map_err(|_| DISCONNECTED)
+}
+
+/// Runs a wait for the journal without pinning a Tokio worker.
 ///
-/// On a multi-threaded Tokio worker the wait goes through `block_in_place`
-/// so other proxy tasks keep running while this one waits for the disk.
-fn send_waiting(sender: &SyncSender<Event>, event: Event) -> Result<(), ()> {
+/// On a multi-threaded runtime the wait goes through `block_in_place`, which
+/// hands the worker's queued tasks, timers and I/O to another thread, so other
+/// connections keep running while this one waits for the disk.
+fn while_waiting<R>(wait: impl FnOnce() -> R) -> R {
     use tokio::runtime::{Handle, RuntimeFlavor};
 
-    let event = match sender.try_send(event) {
-        Ok(()) => return Ok(()),
-        Err(TrySendError::Disconnected(_)) => return Err(()),
-        Err(TrySendError::Full(event)) => event,
-    };
-    let on_multi_thread_worker = Handle::try_current()
+    let on_multi_thread_runtime = Handle::try_current()
         .is_ok_and(|handle| handle.runtime_flavor() == RuntimeFlavor::MultiThread);
-    let sent = if on_multi_thread_worker {
-        tokio::task::block_in_place(|| sender.send(event))
+    if on_multi_thread_runtime {
+        tokio::task::block_in_place(wait)
     } else {
-        sender.send(event)
-    };
-    sent.map_err(|_| ())
+        wait()
+    }
 }
 
 fn run(
@@ -699,6 +730,60 @@ mod tests {
             .join()
             .map_err(|_| io::Error::other("producer panicked"))?;
         assert!(log.error().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn full_queue_keeps_other_runtime_tasks_running() -> io::Result<()> {
+        const WRITERS: usize = 16;
+        const TICKS: u32 = 20;
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()?;
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let log = FullLog::from_parts(sender, Arc::new(Mutex::new(None)), SESSION_BODY_LIMIT_BYTES);
+        // With no consumer, every writer task waits either for queue space or
+        // for the sender lock held by a waiting writer.
+        let (written, writers_done) = mpsc::channel();
+        for index in 0..WRITERS {
+            let log = log.clone();
+            let written = written.clone();
+            runtime.spawn(async move {
+                log.text(format!("event {index}"));
+                let _test_ended = written.send(());
+            });
+        }
+        let (ticked, timer_done) = mpsc::channel();
+        runtime.spawn(async move {
+            for _ in 0..TICKS {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let _test_ended = ticked.send(());
+        });
+        let timer = timer_done.recv_timeout(Duration::from_secs(10));
+        // The queue holds one event, so at most one writer has finished.
+        let finished_early = writers_done.try_iter().count();
+        assert!(
+            finished_early <= 1,
+            "writers must still be waiting while the queue is full"
+        );
+        assert!(
+            timer.is_ok(),
+            "a full journal queue stopped timers on other runtime tasks"
+        );
+        for _ in 0..WRITERS {
+            receiver
+                .recv_timeout(Duration::from_secs(10))
+                .map_err(io::Error::other)?;
+        }
+        for _ in finished_early..WRITERS {
+            writers_done
+                .recv_timeout(Duration::from_secs(10))
+                .map_err(io::Error::other)?;
+        }
+        assert!(log.error().is_none());
+        runtime.shutdown_timeout(Duration::from_secs(1));
         Ok(())
     }
 
