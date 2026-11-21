@@ -513,7 +513,7 @@ mod tests {
                 let rows = records
                     .iter()
                     .filter(|record| {
-                        super::super::record_matches(
+                        crate::filter::record_matches(
                             record,
                             super::super::RecordFilter::All,
                             &query,

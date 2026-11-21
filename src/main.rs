@@ -16,7 +16,9 @@ mod save;
     reason = "Shared presentation within the application."
 )]
 mod outcome_view;
-use outcome_view::outcome_matches_query;
+use detail_view::DetailTab;
+use filter::RecordFilter;
+use toolbar::PortChoice;
 
 #[allow(
     clippy::redundant_pub_crate,
@@ -72,15 +74,31 @@ mod request_table;
 )]
 mod app_paths;
 
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "Module is private to the application."
+)]
+mod filter;
+
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "Module is private to the application."
+)]
+mod detail_view;
+
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "Module is private to the application."
+)]
+mod toolbar;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui;
 use http_proxy::{
-    BodyLifecycle, BodyPreview, BodyRetention, EngineState, Exchange, FullLog, HeaderPreview,
-    HttpsInspection, Outcome, ProxyConfig, ProxyHandle, RecordId, TunnelPreview,
+    EngineState, Exchange, FullLog, HttpsInspection, ProxyConfig, ProxyHandle, RecordId,
 };
-use tracing_subscriber::EnvFilter;
 
 const MAX_RECORDS: usize = 2_000;
 /// Repaint interval while pending requests or streaming bodies change on screen.
@@ -98,37 +116,13 @@ fn main() -> eframe::Result {
         http_proxy::APP_NAME,
         options,
         Box::new(|context| {
-            configure_fonts(&context.egui_ctx);
+            detail_view::configure_fonts(&context.egui_ctx);
             Ok(Box::new(InspectorApp::new(context.egui_ctx.clone())))
         }),
     )
 }
 
-fn configure_fonts(context: &egui::Context) {
-    let candidates = [
-        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
-        "/usr/share/fonts/truetype/nanum/NanumGothicCoding.ttf",
-        "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
-    ];
-    let Some(data) = candidates
-        .into_iter()
-        .find_map(|path| std::fs::read(path).ok())
-    else {
-        return;
-    };
-    let mut fonts = egui::FontDefinitions::default();
-    let name = "cjk-fallback".to_owned();
-    fonts
-        .font_data
-        .insert(name.clone(), egui::FontData::from_owned(data).into());
-    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        fonts.families.entry(family).or_default().push(name.clone());
-    }
-    context.set_fonts(fonts);
-}
+use tracing_subscriber::EnvFilter;
 
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
@@ -158,45 +152,6 @@ struct InspectorApp {
     detail_tab: DetailTab,
     image: image_view::ImagePanel,
     context: egui::Context,
-}
-
-/// Port typed in the toolbar and where its current value came from.
-struct PortChoice {
-    text: String,
-    origin: port_settings::PortOrigin,
-    settings_directory: Option<PathBuf>,
-    launch_warning: Option<String>,
-}
-
-impl PortChoice {
-    fn from_launch() -> Self {
-        let settings_directory = app_paths::settings_directory(|name| std::env::var_os(name));
-        let saved = settings_directory
-            .as_deref()
-            .and_then(port_settings::load_port);
-        let launch = port_settings::launch_port(
-            std::env::args_os(),
-            std::env::var_os(port_settings::PORT_ENV),
-            saved,
-        );
-        Self {
-            text: launch.port.to_string(),
-            origin: launch.origin,
-            settings_directory,
-            launch_warning: launch.warning,
-        }
-    }
-
-    /// Remembers a port the user typed once the proxy started on it.
-    fn remember(&self, port: port_settings::ProxyPort) -> Result<(), port_settings::PortSaveError> {
-        if self.origin != port_settings::PortOrigin::User {
-            return Ok(());
-        }
-        let Some(directory) = self.settings_directory.as_deref() else {
-            return Err(port_settings::PortSaveError::SettingsDirectoryUnavailable);
-        };
-        port_settings::save_port(directory, port).map_err(port_settings::PortSaveError::Save)
-    }
 }
 
 impl InspectorApp {
@@ -324,237 +279,9 @@ impl InspectorApp {
         }
     }
 
-    fn toolbar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            if let Some(proxy) = self.proxy.as_ref() {
-                let address = proxy.local_addr();
-                ui.label(RichText::new("Running").color(Color32::LIGHT_GREEN));
-                ui.monospace(address.to_string());
-                copy_menu(ui, address);
-                if ui.button("Stop").clicked() {
-                    self.stop_proxy();
-                }
-            } else {
-                ui.label(RichText::new("Stopped").color(Color32::LIGHT_RED));
-                ui.label("Port");
-                let edited = ui
-                    .add(egui::TextEdit::singleline(&mut self.port.text).desired_width(56.0))
-                    .on_hover_text(
-                        "Loopback port for the proxy. 0 picks a free port. A port you type is remembered.",
-                    )
-                    .changed();
-                if edited {
-                    self.port.origin = port_settings::PortOrigin::User;
-                }
-                if ui.button("Start").clicked() {
-                    self.start_proxy();
-                }
-            }
-
-            ui.separator();
-            ui.label(format!("{} requests", self.records.len()));
-            let dropped = self.records.dropped(self.engine_dropped());
-            if dropped > 0 {
-                ui.colored_label(Color32::LIGHT_RED, format!("{dropped} records dropped"))
-                    .on_hover_text(
-                        "The capture queue was full, so these exchanges were forwarded but not shown.",
-                    );
-            }
-            let evicted = self.records.evicted();
-            if evicted > 0 {
-                ui.colored_label(
-                    Color32::YELLOW,
-                    format!("{evicted} older records removed"),
-                )
-                .on_hover_text(format!(
-                    "Only the newest {MAX_RECORDS} requests are kept on screen. The full-session log keeps every record."
-                ));
-            }
-            if ui
-                .button("Clear")
-                .on_hover_text("Clear the displayed requests. The full-session log is retained.")
-                .clicked()
-            {
-                self.records.clear(self.engine_dropped());
-                self.selected = None;
-            }
-        });
-
-        self.status_messages(ui);
-
-        self.save.ui(ui, self.full_log.as_ref());
-
-        self.https_controls(ui);
-        ui.separator();
-        if self.browsers.show(
-            ui,
-            self.proxy.as_ref().map(ProxyHandle::local_addr),
-            self.ca_directory
-                .as_deref()
-                .filter(|_| self.https_inspection),
-        ) {
-            self.ca_panel.refresh();
-        }
-    }
-
-    /// Shows launch warnings, errors, and full-session log notices.
-    fn status_messages(&self, ui: &mut egui::Ui) {
-        if let Some(warning) = self.port.launch_warning.as_ref() {
-            ui.colored_label(Color32::YELLOW, warning);
-        }
-        if let Some(error) = self.error.as_ref() {
-            ui.colored_label(Color32::LIGHT_RED, error);
-        }
-        if let Some(error) = self
-            .log_init_error
-            .clone()
-            .or_else(|| self.full_log.as_ref().and_then(FullLog::error))
-        {
-            ui.colored_label(Color32::LIGHT_RED, error);
-        }
-        if let Some(log) = self
-            .full_log
-            .as_ref()
-            .filter(|log| log.body_limit_reached())
-        {
-            ui.colored_label(
-                Color32::YELLOW,
-                format!(
-                    "The full-session log reached its {} body limit. Later body bytes are omitted; headers and results are still logged.",
-                    log.formatted_body_limit()
-                ),
-            );
-        }
-    }
-
-    fn https_controls(&mut self, ui: &mut egui::Ui) {
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.label("HTTPS inspection");
-            ui.add_enabled(
-                self.proxy.is_none(),
-                egui::Checkbox::new(&mut self.https_inspection, "Decrypt HTTPS"),
-            );
-            if self.proxy.is_some() {
-                ui.weak("Stop the proxy to change this setting.");
-            }
-        });
-        if self.https_inspection {
-            self.ca_panel.show(ui, self.ca_directory.as_deref());
-            ui.colored_label(
-                Color32::YELLOW,
-                "Only enable inspection for traffic that you are authorized to inspect.",
-            );
-        }
-    }
-
-    fn filters(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Filter");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.filter_text)
-                    .hint_text("method, URL, status, or header"),
-            );
-            egui::ComboBox::from_id_salt("record-filter")
-                .selected_text(self.record_filter.label())
-                .show_ui(ui, |ui| {
-                    for filter in RecordFilter::ALL {
-                        ui.selectable_value(&mut self.record_filter, filter, filter.label());
-                    }
-                });
-        });
-    }
-
-    fn request_table(&mut self, ui: &mut egui::Ui, shortcuts_allowed: bool) {
-        let query = self.filter_text.to_lowercase();
-        let rows: Vec<&Exchange> = self
-            .records
-            .iter()
-            .filter(|record| record_matches(record, self.record_filter, &query))
-            .collect();
-        self.table.controls(ui);
-        if let Some(original) = self.table.replay.take() {
-            match replay_panel::ReplayPanel::new(original) {
-                Ok(panel) => self.replay = Some(panel),
-                Err(error) => self.error = Some(error),
-            }
-        }
-        if let Some(selected) = self.table.show(ui, rows, self.selected, shortcuts_allowed) {
-            self.selected = Some(selected);
-        }
-    }
-
     /// Reports whether any displayed value still changes over time.
     fn has_live_records(&self) -> bool {
         self.records.iter().any(Exchange::is_live)
-    }
-
-    fn detail_panel(&mut self, ui: &mut egui::Ui, shortcuts_allowed: bool) {
-        let Some(selected) = self.selected else {
-            ui.centered_and_justified(|ui| {
-                ui.label("Select a request to inspect headers and body previews.");
-            });
-            return;
-        };
-        let Some(record) = self.records.iter().find(|record| record.id() == selected) else {
-            return;
-        };
-
-        if shortcuts_allowed
-            && ui.input_mut(|input| {
-                !input.modifiers.any() && input.consume_key(egui::Modifiers::NONE, egui::Key::F6)
-            })
-        {
-            self.detail_tab = match self.detail_tab {
-                DetailTab::Headers => DetailTab::Body,
-                DetailTab::Body => DetailTab::Headers,
-            };
-        }
-        if ui
-            .add_enabled(
-                record.source() != http_proxy::CaptureSource::Connect,
-                egui::Button::new("Edit and Resend"),
-            )
-            .clicked()
-        {
-            match replay_panel::ReplayPanel::new(record.clone()) {
-                Ok(panel) => self.replay = Some(panel),
-                Err(error) => self.error = Some(error),
-            }
-        }
-        if let Some(original) = record.replay_of()
-            && ui
-                .link(format!("Replay of #{} — show original", original.value()))
-                .clicked()
-        {
-            self.selected = Some(original);
-        }
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.detail_tab, DetailTab::Headers, "Headers");
-            ui.selectable_value(&mut self.detail_tab, DetailTab::Body, "Body");
-        });
-
-        egui::ScrollArea::vertical()
-            .id_salt(("details-scroll", self.detail_tab))
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                let request = record.request();
-                ui.heading(format!("{} {}", request.method(), request.target()));
-                render_timing(ui, record);
-                ui.separator();
-                match self.detail_tab {
-                    DetailTab::Headers => {
-                        ui.strong("Request headers");
-                        render_headers(ui, "request-headers", request.headers());
-                    }
-                    DetailTab::Body => {
-                        ui.strong("Request body");
-                        render_optional_body(ui, request.body(), request.headers());
-                    }
-                }
-                ui.separator();
-                render_outcome(ui, record, self.detail_tab, &mut self.image);
-            });
     }
 }
 
@@ -609,318 +336,4 @@ fn request_shortcuts_allowed(ctx: &egui::Context) -> bool {
     let focused = ctx.memory(egui::Memory::focused);
     !egui::Popup::is_any_open(ctx)
         && focused.is_none_or(|id| egui::TextEdit::load_state(ctx, id).is_none())
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-enum DetailTab {
-    Headers,
-    Body,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RecordFilter {
-    All,
-    Responses,
-    Failures,
-    Tunnels,
-}
-
-impl RecordFilter {
-    const ALL: [Self; 4] = [Self::All, Self::Responses, Self::Failures, Self::Tunnels];
-
-    const fn label(self) -> &'static str {
-        match self {
-            Self::All => "All",
-            Self::Responses => "Responses",
-            Self::Failures => "Failures",
-            Self::Tunnels => "Tunnels",
-        }
-    }
-}
-
-fn record_matches(record: &Exchange, filter: RecordFilter, query: &str) -> bool {
-    let outcome = record.outcome();
-    let outcome_matches = match filter {
-        RecordFilter::All => true,
-        RecordFilter::Responses => matches!(outcome, Outcome::Response(_)),
-        RecordFilter::Failures => outcome.is_failure(),
-        RecordFilter::Tunnels => {
-            matches!(outcome, Outcome::Tunnel(_) | Outcome::InspectionEstablished)
-        }
-    };
-    let request = record.request();
-    outcome_matches
-        && (query.is_empty()
-            || text_matches(request.method().as_str(), query)
-            || text_matches(request.target(), query)
-            || headers_match(request.headers(), query)
-            || outcome_matches_query(outcome, query))
-}
-
-fn headers_match(headers: &HeaderPreview, query: &str) -> bool {
-    headers
-        .entries()
-        .iter()
-        .any(|header| text_matches(header.name(), query) || text_matches(header.value(), query))
-}
-
-fn text_matches(value: &str, lowercase_query: &str) -> bool {
-    value.to_lowercase().contains(lowercase_query)
-}
-
-fn render_headers(ui: &mut egui::Ui, id: &str, headers: &HeaderPreview) {
-    egui::Grid::new(id).striped(true).show(ui, |ui| {
-        for header in headers.entries() {
-            ui.monospace(header.name());
-            ui.monospace(header.value());
-            ui.end_row();
-        }
-    });
-    if headers.entries().is_empty() {
-        ui.weak("No headers captured.");
-    }
-    if headers.omitted() {
-        ui.colored_label(Color32::YELLOW, "Additional headers were omitted.");
-    }
-}
-
-fn render_optional_body(ui: &mut egui::Ui, body: Option<&BodyPreview>, headers: &HeaderPreview) {
-    match body {
-        Some(body) => render_body(ui, body, headers, None),
-        None => {
-            ui.weak("Body was not observed.");
-        }
-    }
-}
-
-/// Draws a body preview; `image` draws PNG bodies of that record as images.
-fn render_body(
-    ui: &mut egui::Ui,
-    body: &BodyPreview,
-    headers: &HeaderPreview,
-    image: Option<(&mut image_view::ImagePanel, RecordId)>,
-) {
-    let Some(snapshot) = body.snapshot() else {
-        ui.weak("Preview is updating.");
-        return;
-    };
-    ui.label(format!(
-        "{} bytes observed · {} · {}",
-        snapshot.observed_bytes(),
-        lifecycle_text(snapshot.lifecycle()),
-        retention_text(snapshot.retention())
-    ));
-    if snapshot.retention() == BodyRetention::Omitted {
-        ui.colored_label(
-            Color32::YELLOW,
-            "Preview was omitted to keep forwarding nonblocking.",
-        );
-        return;
-    }
-    if snapshot.bytes().is_empty() {
-        ui.weak("Empty body.");
-        return;
-    }
-    let encodings = headers.get("content-encoding").collect::<Vec<_>>();
-    if let Some((panel, record)) = image
-        && headers
-            .get("content-type")
-            .next()
-            .is_some_and(http_proxy::is_png_media_type)
-    {
-        panel.show(ui, record, &snapshot, &encodings);
-        return;
-    }
-    let complete = snapshot.lifecycle() == BodyLifecycle::Complete
-        && snapshot.retention() == BodyRetention::Prefix;
-    let mut preview = match body_view::decode(snapshot.bytes(), &encodings, complete) {
-        body_view::BodyText::Ready { text, notice } => {
-            if let Some(notice) = notice {
-                ui.weak(notice);
-            }
-            text
-        }
-        body_view::BodyText::Unavailable(message) => {
-            ui.colored_label(Color32::YELLOW, message);
-            return;
-        }
-    };
-    ui.add(
-        egui::TextEdit::multiline(&mut preview)
-            .font(egui::TextStyle::Monospace)
-            .desired_rows(8)
-            .interactive(false),
-    );
-}
-
-const fn lifecycle_text(lifecycle: BodyLifecycle) -> &'static str {
-    match lifecycle {
-        BodyLifecycle::Streaming => "streaming",
-        BodyLifecycle::Complete => "complete",
-        BodyLifecycle::Interrupted => "interrupted by the sender",
-        BodyLifecycle::Cancelled => "cancelled by the receiver",
-    }
-}
-
-const fn retention_text(retention: BodyRetention) -> &'static str {
-    match retention {
-        BodyRetention::Prefix => "full preview",
-        BodyRetention::Truncated => "truncated preview",
-        BodyRetention::Omitted => "preview omitted",
-    }
-}
-
-fn render_outcome(
-    ui: &mut egui::Ui,
-    record: &Exchange,
-    tab: DetailTab,
-    image: &mut image_view::ImagePanel,
-) {
-    match record.outcome() {
-        Outcome::Response(response) => match tab {
-            DetailTab::Headers => {
-                ui.strong(format!(
-                    "Response headers · {} {} · {:?}",
-                    response.status().as_str(),
-                    response.reason(),
-                    response.version()
-                ));
-                render_headers(ui, "response-headers", response.headers());
-            }
-            DetailTab::Body => {
-                ui.strong("Response body");
-                render_body(
-                    ui,
-                    response.body(),
-                    response.headers(),
-                    Some((image, record.id())),
-                );
-            }
-        },
-        Outcome::Tunnel(tunnel) => {
-            ui.label(scope_help::TUNNEL_NOTE);
-            render_tunnel(ui, tunnel);
-        }
-        outcome => {
-            let (text, color) = outcome_view::detail_text(outcome);
-            if outcome.is_in_flight() {
-                ui.weak(text);
-            } else if matches!(outcome, Outcome::InspectionEstablished) {
-                ui.label(text);
-            } else {
-                ui.colored_label(color, text);
-            }
-        }
-    }
-}
-
-fn render_timing(ui: &mut egui::Ui, record: &Exchange) {
-    let timing = record.timing();
-    let settled_label = outcome_view::timing_label(record.outcome());
-    let settled_value = if record.outcome().is_in_flight() {
-        elapsed_text(record)
-    } else {
-        optional_millis(timing.settled())
-    };
-    let total = timing.complete().map_or_else(
-        || "in progress".to_owned(),
-        |duration| format!("{:.1} ms", outcome_view::elapsed_millis(duration)),
-    );
-    let rows = [
-        ("Connect", optional_millis(timing.connect())),
-        ("Send", optional_millis(timing.send())),
-        ("Wait (TTFB)", optional_millis(timing.wait())),
-        ("Receive", optional_millis(timing.receive())),
-        (settled_label, settled_value),
-        ("Total", total),
-    ];
-    egui::Grid::new("timing").num_columns(2).show(ui, |ui| {
-        for (label, value) in rows {
-            ui.label(label);
-            ui.monospace(value);
-            ui.end_row();
-        }
-    });
-}
-
-fn optional_millis(duration: Option<Duration>) -> String {
-    duration.map_or_else(
-        || "not observed".to_owned(),
-        |duration| format!("{:.1} ms", outcome_view::elapsed_millis(duration)),
-    )
-}
-
-fn elapsed_text(record: &Exchange) -> String {
-    let millis = outcome_view::elapsed_millis(record.elapsed());
-    if record.outcome().is_in_flight() {
-        format!("{millis:.0} ms…")
-    } else {
-        format!("{millis:.1} ms")
-    }
-}
-
-fn render_tunnel(ui: &mut egui::Ui, tunnel: &TunnelPreview) {
-    let snapshot = tunnel.snapshot();
-    let state = outcome_view::tunnel_detail(snapshot.state());
-    egui::Grid::new("tunnel-details")
-        .num_columns(2)
-        .show(ui, |ui| {
-            ui.label("State");
-            ui.label(state);
-            ui.end_row();
-            ui.label("Sent to upstream");
-            ui.monospace(format!("{} bytes", snapshot.client_to_upstream()));
-            ui.end_row();
-            ui.label("Received from upstream");
-            ui.monospace(format!("{} bytes", snapshot.upstream_to_client()));
-            ui.end_row();
-            ui.label("Duration");
-            ui.monospace(format!(
-                "{:.1} ms",
-                outcome_view::elapsed_millis(snapshot.duration())
-            ));
-            ui.end_row();
-        });
-}
-
-fn copy_menu(ui: &mut egui::Ui, address: std::net::SocketAddr) {
-    ui.menu_button("Copy", |ui| {
-        for target in port_settings::CopyTarget::ALL {
-            let text = target.text(address);
-            if ui.button(target.label()).on_hover_text(&text).clicked() {
-                ui.ctx().copy_text(text);
-                ui.close();
-            }
-        }
-    });
-}
-
-#[cfg(test)]
-mod port_choice_tests {
-    use super::{
-        PortChoice,
-        port_settings::{PortOrigin, PortSaveError, ProxyPort},
-    };
-
-    #[test]
-    fn remember_reports_typed_errors_and_skips_non_user_ports()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let port = ProxyPort::parse("8080").map_err(|error| error.to_string())?;
-        let mut choice = PortChoice {
-            text: port.to_string(),
-            origin: PortOrigin::User,
-            settings_directory: None,
-            launch_warning: None,
-        };
-        assert!(matches!(
-            choice.remember(port),
-            Err(PortSaveError::SettingsDirectoryUnavailable)
-        ));
-        let file = tempfile::NamedTempFile::new()?;
-        choice.settings_directory = Some(file.path().to_path_buf());
-        assert!(matches!(choice.remember(port), Err(PortSaveError::Save(_))));
-        choice.origin = PortOrigin::Environment;
-        assert!(choice.remember(port).is_ok());
-        Ok(())
-    }
 }

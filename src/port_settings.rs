@@ -180,39 +180,8 @@ pub(crate) fn start_error_text(error: &StartError, port: ProxyPort) -> String {
     }
 }
 
-/// Text placed on the clipboard for one of the toolbar copy actions.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CopyTarget {
-    Address,
-    Curl,
-    Environment,
-}
-
-impl CopyTarget {
-    pub(crate) const ALL: [Self; 3] = [Self::Address, Self::Curl, Self::Environment];
-
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::Address => "Proxy URL",
-            Self::Curl => "curl example",
-            Self::Environment => "HTTP_PROXY variables",
-        }
-    }
-
-    pub(crate) fn text(self, address: std::net::SocketAddr) -> String {
-        let url = format!("http://{address}");
-        match self {
-            Self::Address => url,
-            Self::Curl => format!("curl --proxy {url} http://example.com/"),
-            Self::Environment => format!("HTTP_PROXY={url} HTTPS_PROXY={url}"),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
     use super::*;
 
     fn args(values: &[&str]) -> Vec<OsString> {
@@ -314,19 +283,5 @@ mod tests {
         assert!(text.contains("already in use"), "{text}");
         assert!(text.contains(&port.to_string()), "{text}");
         Ok(())
-    }
-
-    #[test]
-    fn formats_copy_texts_for_the_running_address() {
-        let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 18080);
-        assert_eq!(CopyTarget::Address.text(address), "http://127.0.0.1:18080");
-        assert_eq!(
-            CopyTarget::Curl.text(address),
-            "curl --proxy http://127.0.0.1:18080 http://example.com/"
-        );
-        assert_eq!(
-            CopyTarget::Environment.text(address),
-            "HTTP_PROXY=http://127.0.0.1:18080 HTTPS_PROXY=http://127.0.0.1:18080"
-        );
     }
 }

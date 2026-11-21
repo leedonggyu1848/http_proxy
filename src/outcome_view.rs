@@ -59,10 +59,11 @@ pub(crate) fn outcome_matches_query(outcome: &Outcome, query: &str) -> bool {
     match outcome {
         Outcome::Response(response) => {
             response.status().as_str().contains(query)
-                || super::headers_match(response.headers(), query)
+                || crate::filter::headers_match(response.headers(), query)
         }
         Outcome::Failed { stage, message } => {
-            super::text_matches(&format!("{stage}"), query) || super::text_matches(message, query)
+            crate::filter::text_matches(&format!("{stage}"), query)
+                || crate::filter::text_matches(message, query)
         }
         Outcome::InFlight
         | Outcome::Tunnel(_)
