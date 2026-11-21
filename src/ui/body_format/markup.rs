@@ -8,8 +8,10 @@ const VOID_ELEMENTS: [&str; 14] = [
     "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source",
     "track", "wbr",
 ];
-/// HTML elements whose content is raw text rather than markup.
-const RAW_TEXT_ELEMENTS: [&str; 2] = ["script", "style"];
+/// HTML elements whose content is shown exactly as written: raw text
+/// rather than markup (`script`, `style`), or text whose whitespace is
+/// meaningful (`pre`, `textarea`).
+const VERBATIM_ELEMENTS: [&str; 4] = ["script", "style", "pre", "textarea"];
 /// Longest text kept on the same line as its enclosing tags.
 const INLINE_TEXT: usize = 80;
 
@@ -28,6 +30,8 @@ enum Node<'a> {
         name: &'a str,
     },
     Text(&'a str),
+    /// Content of a [`VERBATIM_ELEMENTS`] element, never trimmed or re-indented.
+    Verbatim(&'a str),
 }
 
 /// Puts each tag, comment, and text run on its own line and indents element
@@ -51,6 +55,8 @@ pub(super) fn pretty(text: &str) -> Result<Styled, String> {
                 line(&mut out, depth);
                 out.push(comment, TokenKind::Comment);
             }
+            // Only reached when the closing tag was cut off.
+            Node::Verbatim(text) => out.push(text, TokenKind::Text),
             Node::Text(text) => {
                 for text_line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
                     line(&mut out, depth);
@@ -85,8 +91,9 @@ pub(super) fn pretty(text: &str) -> Result<Styled, String> {
     Ok(out)
 }
 
-/// Finds `[short text] </name>` right after an opening tag and returns how
-/// many nodes it spans, the trimmed text, and the closing tag.
+/// Finds `[short text] </name>` or `verbatim content </name>` right after an
+/// opening tag and returns how many nodes it spans, the text to show between
+/// the tags, and the closing tag.
 fn inline_content<'a>(
     nodes: &[Node<'a>],
     index: usize,
@@ -98,6 +105,9 @@ fn inline_content<'a>(
     };
     if let Some(close) = closes(nodes.get(index)) {
         return Some((1, "", close));
+    }
+    if let Some(Node::Verbatim(text)) = nodes.get(index) {
+        return Some((2, text, closes(nodes.get(index + 1))?));
     }
     let Some(Node::Text(text)) = nodes.get(index) else {
         return None;
@@ -125,14 +135,14 @@ fn lex(text: &str) -> Vec<Node<'_>> {
             has_content: true,
             ..
         } = node
-            && RAW_TEXT_ELEMENTS
+            && VERBATIM_ELEMENTS
                 .iter()
-                .any(|raw| raw.eq_ignore_ascii_case(name))
+                .any(|verbatim| verbatim.eq_ignore_ascii_case(name))
         {
             let end = find_ignore_case(rest, &format!("</{name}")).unwrap_or(rest.len());
             let (content, after) = rest.split_at(end);
             if !content.is_empty() {
-                nodes.push(Node::Text(content));
+                nodes.push(Node::Verbatim(content));
             }
             rest = after;
         }
@@ -323,6 +333,28 @@ mod tests {
         assert_eq!(
             styled.text(),
             "<?xml version=\"1.0\"?>\n<feed>\n  <script>if (a<b) {}</script>\n  <e />\n</feed>"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn keeps_whitespace_of_pre_textarea_and_script_content() -> Result<(), String> {
+        let pre = "\n  first\n\n    indented <b>bold</b>\n";
+        let textarea = "  line 1\n\n  line 2 ";
+        let script = "\n  if (a) {\n    b();\n  }\n";
+        let styled = pretty(&format!(
+            "<body><PRE class=x>{pre}</PRE><textarea>{textarea}</textarea><script>{script}</script></body>"
+        ))?;
+        assert_eq!(
+            styled.text(),
+            format!(
+                "<body>\n  <PRE class=x>{pre}</PRE>\n  <textarea>{textarea}</textarea>\n  <script>{script}</script>\n</body>"
+            )
+        );
+        assert_eq!(
+            pretty(&format!("<pre>{pre}"))?.text(),
+            format!("<pre>{pre}"),
+            "content cut before the closing tag is kept as well"
         );
         Ok(())
     }
