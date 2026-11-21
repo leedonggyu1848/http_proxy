@@ -125,6 +125,7 @@ mod tests {
             assert!(record_matches(&pending, RecordFilter::All, "/mixed"));
             assert!(record_matches(&pending, RecordFilter::All, "x-request"));
             assert!(record_matches(&pending, RecordFilter::All, "requestvalue"));
+            read_request_head(&mut server).await?;
             server.write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\nX-Response: ResponseVALUE\r\nConnection: close\r\n\r\n").await?;
             let mut bytes = Vec::new();
             client.read_to_end(&mut bytes).await?;
@@ -159,8 +160,24 @@ mod tests {
 
     fn check_filters(record: &Exchange, expected: [bool; 4]) {
         for (filter, expected) in RecordFilter::ALL.into_iter().zip(expected) {
-            assert_eq!(record_matches(record, filter, ""), expected, "{filter:?}");
+            assert_eq!(
+                record_matches(record, filter, ""),
+                expected,
+                "{filter:?}: {:?}",
+                record.outcome()
+            );
         }
+    }
+
+    /// Reads one request head so the reply cannot arrive before the proxy sends it.
+    async fn read_request_head(stream: &mut TcpStream) -> std::io::Result<()> {
+        let mut head = Vec::new();
+        let mut byte = [0; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte).await?;
+            head.extend_from_slice(&byte);
+        }
+        Ok(())
     }
 
     async fn wait_settled(record: &Exchange) {
