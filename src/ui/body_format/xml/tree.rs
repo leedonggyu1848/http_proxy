@@ -1,54 +1,30 @@
-//! Collapsible element tree of an XML preview, with an `XPath` for every
-//! element.
+//! Builds the [`TreeModel`] of an XML preview, with an `XPath` for every
+//! element. [`Document::parse`] applies the node and depth limits.
 
 use super::pretty::{push_leaf, push_tag};
 use super::{Document, Element, NodeKind};
+use crate::ui::body_format::tree::{CopyLabels, TreeModel, TreeNode, elide};
 use crate::ui::body_format::{Styled, TokenKind};
 
-/// Longest text shown on one tree row; the rest is elided.
-const ROW_TEXT: usize = 200;
+const COPY: CopyLabels = CopyLabels {
+    path: "Copy XPath",
+    value: "Copy value (XML)",
+};
 
-/// One row of the tree.
-#[derive(Debug, Eq, PartialEq)]
-pub(in crate::ui) struct TreeNode {
-    /// Highlighted row text: the opening tag, or a whole short element such
-    /// as `<title>News</title>`, or a text, comment, or `CDATA` node.
-    pub(in crate::ui) label: Styled,
-    /// `XPath` of an element, such as `/rss/channel/item[2]`.
-    pub(in crate::ui) path: Option<String>,
-    pub(in crate::ui) children: Vec<usize>,
-    /// Element nesting level, starting at 0 for the root element.
-    pub(in crate::ui) depth: usize,
-}
-
-/// The rows of an XML preview read as far as it could be.
-#[derive(Debug, Eq, PartialEq)]
-pub(in crate::ui) struct XmlTree {
-    pub(in crate::ui) nodes: Vec<TreeNode>,
-    pub(in crate::ui) roots: Vec<usize>,
-    pub(in crate::ui) incomplete: Option<String>,
-}
-
-impl XmlTree {
-    /// Builds the tree of `text`. Whitespace-only text is left out; fails
-    /// when `text` has no element.
-    pub(in crate::ui) fn build(text: &str) -> Result<Self, String> {
-        let document = Document::parse(text)?;
-        let mut builder = Builder {
-            document: &document,
-            nodes: Vec::new(),
-        };
-        let roots = builder.children(&document.roots, "", 0);
-        Ok(Self {
-            nodes: builder.nodes,
-            roots,
-            incomplete: document.incomplete_notice(),
-        })
-    }
-
-    pub(in crate::ui) fn node(&self, index: usize) -> Option<&TreeNode> {
-        self.nodes.get(index)
-    }
+/// Builds the rows of `text` as far as it could be read. Whitespace-only
+/// text is left out; fails when `text` has no element.
+pub(in crate::ui) fn build(text: &str) -> Result<TreeModel, String> {
+    let document = Document::parse(text)?;
+    let mut builder = Builder {
+        document: &document,
+        nodes: Vec::new(),
+    };
+    builder.children(&document.roots, None, "", 0);
+    Ok(TreeModel::new(
+        builder.nodes,
+        document.incomplete_notice(),
+        COPY,
+    ))
 }
 
 struct Builder<'d, 'a> {
@@ -57,63 +33,78 @@ struct Builder<'d, 'a> {
 }
 
 impl Builder<'_, '_> {
-    /// Adds the rows of `indexes` under the element at `parent_path`.
-    fn children(&mut self, indexes: &[usize], parent_path: &str, depth: usize) -> Vec<usize> {
+    /// Adds the rows of `indexes` under the row `parent`, whose element is
+    /// at `parent_path`, and returns how many rows were added.
+    fn children(
+        &mut self,
+        indexes: &[usize],
+        parent: Option<usize>,
+        parent_path: &str,
+        depth: usize,
+    ) -> usize {
         let document = self.document;
         let names = indexes
             .iter()
             .map(|&index| element_name(document, index))
             .collect::<Vec<_>>();
-        let mut rows = Vec::new();
+        let mut count = 0;
         for (position, &index) in indexes.iter().enumerate() {
             let Some(node) = document.node(index) else {
                 continue;
             };
             let raw = document.slice(&node.range);
-            let row = match (&node.kind, names.get(position).copied().flatten()) {
+            match (&node.kind, names.get(position).copied().flatten()) {
                 (NodeKind::Element(element), Some(name)) => {
                     let path = xpath(parent_path, name, &names, position);
-                    self.element(raw, element, path, depth)
+                    self.element(index, element, path, parent, depth);
                 }
                 (NodeKind::Text, _) if raw.trim().is_empty() => continue,
                 (kind, _) => {
                     let mut label = Styled::default();
-                    push_leaf(&mut label, kind, &elide(raw.trim()));
-                    self.push(TreeNode {
-                        label,
-                        path: None,
-                        children: Vec::new(),
-                        depth,
-                    })
+                    push_leaf(&mut label, kind, &row_text(raw.trim()));
+                    self.push(label, None, raw.to_owned(), parent, depth);
                 }
-            };
-            rows.push(row);
+            }
+            count += 1;
         }
-        rows
+        count
     }
 
-    fn element(&mut self, start_tag: &str, element: &Element, path: String, depth: usize) -> usize {
+    fn element(
+        &mut self,
+        index: usize,
+        element: &Element,
+        path: String,
+        parent: Option<usize>,
+        depth: usize,
+    ) {
+        let document = self.document;
+        let start_tag = document
+            .node(index)
+            .map_or("", |node| document.slice(&node.range));
+        let value = document
+            .text
+            .get(start(document, index)..end(document, index))
+            .unwrap_or_default()
+            .to_owned();
         let mut label = Styled::default();
-        push_tag(&mut label, &elide(start_tag), true);
+        push_tag(&mut label, &row_text(start_tag), true);
         if let Some(text) = self.only_text(element) {
-            label.push(&elide(text.trim()), TokenKind::Text);
+            label.push(&row_text(text.trim()), TokenKind::Text);
             if let Some(end_tag) = &element.end_tag {
-                push_tag(&mut label, self.document.slice(end_tag), true);
+                push_tag(&mut label, document.slice(end_tag), true);
             }
-            return self.push(TreeNode {
-                label,
-                path: Some(path),
-                children: Vec::new(),
-                depth,
-            });
+            self.push(label, Some(path), value, parent, depth);
+            return;
         }
-        let children = self.children(&element.children, &path, depth + 1);
-        self.push(TreeNode {
-            label,
-            path: Some(path),
-            children,
-            depth,
-        })
+        let row = self.push(label, Some(path.clone()), value, parent, depth);
+        let count = self.children(&element.children, Some(row), &path, depth + 1);
+        if count > 0
+            && let Some(node) = self.nodes.get_mut(row)
+        {
+            let noun = if count == 1 { "child" } else { "children" };
+            node.summary = Some(format!("… {count} {noun}"));
+        }
     }
 
     /// The text of an element whose only content is one text node.
@@ -125,9 +116,46 @@ impl Builder<'_, '_> {
         (node.kind == NodeKind::Text).then(|| self.document.slice(&node.range))
     }
 
-    fn push(&mut self, node: TreeNode) -> usize {
-        self.nodes.push(node);
+    fn push(
+        &mut self,
+        label: Styled,
+        path: Option<String>,
+        value: String,
+        parent: Option<usize>,
+        depth: usize,
+    ) -> usize {
+        self.nodes.push(TreeNode {
+            name: label.text().to_owned(),
+            label,
+            path,
+            value,
+            summary: None,
+            parent,
+            depth,
+        });
         self.nodes.len() - 1
+    }
+}
+
+fn start(document: &Document<'_>, index: usize) -> usize {
+    document.node(index).map_or(0, |node| node.range.start)
+}
+
+/// Where the source of the node at `index` ends: after the closing tag of
+/// an element, or after its last descendant when it was cut off.
+fn end(document: &Document<'_>, index: usize) -> usize {
+    let Some(node) = document.node(index) else {
+        return 0;
+    };
+    match &node.kind {
+        NodeKind::Element(Element {
+            end_tag: Some(end_tag),
+            ..
+        }) => end_tag.end,
+        NodeKind::Element(element) => element.children.last().map_or(node.range.end, |&last| {
+            end(document, last).max(node.range.end)
+        }),
+        _ => node.range.end,
     }
 }
 
@@ -155,49 +183,40 @@ fn xpath(parent: &str, name: &str, names: &[Option<&str>], position: usize) -> S
     }
 }
 
-/// Collapses runs of whitespace and cuts text longer than [`ROW_TEXT`].
-fn elide(text: &str) -> String {
-    let mut words = text.split_whitespace();
-    let mut out = words.next().unwrap_or_default().to_owned();
-    for word in words {
-        out.push(' ');
-        out.push_str(word);
-    }
-    if let Some((cut, _)) = out.char_indices().nth(ROW_TEXT) {
-        out.truncate(cut);
-        out.push('…');
-    }
-    out
+/// Collapses runs of whitespace so a row stays on one line, then elides it.
+fn row_text(text: &str) -> String {
+    elide(&text.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::body_format::tree::ROW_TEXT;
 
-    fn rows(tree: &XmlTree, indexes: &[usize]) -> Vec<(String, Option<String>, usize)> {
-        indexes
-            .iter()
-            .filter_map(|&index| tree.node(index))
-            .map(|node| {
-                (
+    fn rows(tree: &TreeModel, parent: Option<usize>) -> Vec<(String, Option<String>, usize)> {
+        tree.children(parent)
+            .into_iter()
+            .filter_map(|index| {
+                let node = tree.node(index)?;
+                Some((
                     node.label.text().to_owned(),
                     node.path.clone(),
-                    node.children.len(),
-                )
+                    tree.child_count(index),
+                ))
             })
             .collect()
     }
 
     #[test]
     fn builds_rows_with_paths_and_child_counts() -> Result<(), String> {
-        let tree = XmlTree::build(concat!(
+        let tree = build(concat!(
             "<?xml version=\"1.0\"?>\n<rss version=\"2.0\"><channel><title>News</title>",
             "<item><title>A</title></item><!-- x --><item><title>B</title><n:x/></item>",
             "</channel></rss>"
         ))?;
         assert_eq!(tree.incomplete, None);
         assert_eq!(
-            rows(&tree, &tree.roots),
+            rows(&tree, None),
             [
                 ("<?xml version=\"1.0\"?>".to_owned(), None, 0),
                 (
@@ -207,16 +226,15 @@ mod tests {
                 ),
             ]
         );
-        let rss = tree.roots.get(1).and_then(|&index| tree.node(index));
-        let channel = rss
-            .and_then(|rss| rss.children.first())
-            .and_then(|&index| tree.node(index));
-        let Some(channel) = channel else {
+        let rss = tree.children(None).get(1).copied();
+        let channel = rss.and_then(|rss| tree.children(Some(rss)).first().copied());
+        let Some(channel_node) = channel.and_then(|index| tree.node(index)) else {
             return Err("missing channel".to_owned());
         };
-        assert_eq!(channel.depth, 1);
+        assert_eq!(channel_node.depth, 1);
+        assert_eq!(channel_node.summary.as_deref(), Some("… 4 children"));
         assert_eq!(
-            rows(&tree, &channel.children),
+            rows(&tree, channel),
             [
                 (
                     "<title>News</title>".to_owned(),
@@ -236,13 +254,17 @@ mod tests {
                 ),
             ]
         );
-        let second = channel.children.get(3).and_then(|&index| tree.node(index));
+        let second = channel.and_then(|channel| tree.children(Some(channel)).get(3).copied());
         let paths = second.map(|item| {
-            rows(&tree, &item.children)
+            rows(&tree, Some(item))
                 .into_iter()
                 .map(|(_, path, _)| path)
                 .collect::<Vec<_>>()
         });
+        let value = second
+            .and_then(|item| tree.node(item))
+            .map(|item| item.value.as_str());
+        assert_eq!(value, Some("<item><title>B</title><n:x/></item>"));
         assert_eq!(
             paths,
             Some(vec![
@@ -256,10 +278,11 @@ mod tests {
     #[test]
     fn keeps_partial_trees_and_elides_long_rows() -> Result<(), String> {
         let long = "word ".repeat(100);
-        let tree = XmlTree::build(&format!("<a><b>{long}</b><c>\n  mixed <d/></c><e"))?;
+        let text = format!("<a><b>{long}</b><c>\n  mixed <d/></c><e");
+        let tree = build(&text)?;
         assert!(tree.incomplete.is_some());
-        let a = tree.roots.first().and_then(|&index| tree.node(index));
-        let children = a.map_or_else(Vec::new, |a| rows(&tree, &a.children));
+        let a = tree.children(None).first().copied();
+        let children = a.map_or_else(Vec::new, |a| rows(&tree, Some(a)));
         let labels = children
             .iter()
             .map(|(label, _, count)| (label.chars().count(), *count))
@@ -268,7 +291,12 @@ mod tests {
             labels,
             [(ROW_TEXT + "<b>".len() + 1 + "</b>".len(), 0), (3, 2)]
         );
-        assert!(XmlTree::build("not xml").is_err());
+        assert_eq!(
+            a.and_then(|a| tree.node(a)).map(|a| a.value.as_str()),
+            text.strip_suffix("<e"),
+            "a cut-off element's value runs to its last descendant"
+        );
+        assert!(build("not xml").is_err());
         Ok(())
     }
 }

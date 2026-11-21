@@ -11,8 +11,9 @@ pub(in crate::ui) mod form;
 pub(in crate::ui) mod highlight;
 mod javascript;
 mod json;
-pub(in crate::ui) mod json_tree;
+mod json_tree;
 mod markup;
+pub(in crate::ui) mod tree;
 pub(in crate::ui) mod xml;
 
 /// Body syntax detected from `Content-Type`.
