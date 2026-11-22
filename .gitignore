@@ -17,3 +17,7 @@
 
 .DS_Store
 Thumbs.db
+
+/dist/
+/downloaded/
+/scripts/__pycache__/
