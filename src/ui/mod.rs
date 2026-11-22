@@ -9,6 +9,8 @@ mod detail_tabs;
 mod detail_view;
 mod filter;
 mod fonts;
+mod har;
+mod har_dialog;
 mod image_decode;
 mod image_view;
 mod outcome_view;
@@ -96,6 +98,7 @@ struct InspectorApp {
     full_log: Option<FullLog>,
     log_init_error: Option<String>,
     save: save::SaveControls,
+    har_dialog: har_dialog::HarDialog,
     port: PortChoice,
     table: request_table::RequestTable,
     detail_tab: DetailTab,
@@ -135,6 +138,7 @@ impl InspectorApp {
             full_log,
             log_init_error,
             save: save::SaveControls::new(),
+            har_dialog: har_dialog::HarDialog::default(),
             port: PortChoice::from_launch(),
             table: request_table::RequestTable::new(),
             detail_tab: DetailTab::Headers,
@@ -264,6 +268,7 @@ impl eframe::App for InspectorApp {
                 self.replay = None;
             }
         }
+        self.har_export(ui.ctx());
         let shortcuts_allowed = request_shortcuts_allowed(ui.ctx());
         let viewport_height = ui.available_height();
         egui::ScrollArea::vertical()
@@ -296,6 +301,32 @@ impl eframe::App for InspectorApp {
 }
 
 impl InspectorApp {
+    /// Shows the `Export HAR` window and starts the export it confirms.
+    fn har_export(&mut self, context: &egui::Context) {
+        if !self.har_dialog.is_open() {
+            return;
+        }
+        let counts = har_dialog::ScopeCounts {
+            all: self.records.len(),
+            filtered: self.filtered_records().len(),
+        };
+        let Some(export) = self.har_dialog.show(context, counts, self.save.is_busy()) else {
+            return;
+        };
+        let records: Vec<Exchange> = match export.scope {
+            har_dialog::HarScope::All => self.records.iter().cloned().collect(),
+            har_dialog::HarScope::Filtered => {
+                self.filtered_records().into_iter().cloned().collect()
+            }
+        };
+        self.save
+            .export_har(context, records, export.options, export.path);
+    }
+
+    fn filtered_records(&self) -> Vec<&Exchange> {
+        filter::visible_records(&self.records, self.record_filter, &self.filter_text)
+    }
+
     /// Requests on the left and details on the right, split by a draggable
     /// divider. Both are clipped to `height` so neither draws over the other.
     fn main_area(&mut self, ui: &mut egui::Ui, height: f32, shortcuts_allowed: bool) {

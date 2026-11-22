@@ -88,7 +88,9 @@ impl InspectorApp {
             ) {
                 self.ca_panel.refresh();
             }
-            self.save.menu(ui, self.full_log.as_ref());
+            if self.save.menu(ui, self.full_log.as_ref()) {
+                self.har_dialog.open(self.save.suggested_path("har"));
+            }
             ui.menu_button("Settings", |ui| self.theme.menu(ui));
             crate::ui::scope_help::button(ui, self.proxy.as_ref().map(ProxyHandle::local_addr));
         });
