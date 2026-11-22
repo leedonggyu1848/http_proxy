@@ -324,8 +324,13 @@ fn render(
             arguments.push(format!("-H {}", quote(&format!("{name}:"))));
         }
     }
-    if body.is_some() && !has("content-type") {
-        arguments.push(format!("-H {}", quote("Content-Type:")));
+    if body.is_some() {
+        // curl also adds `Expect: 100-continue` to some larger bodies.
+        for name in ["Content-Type", "Expect"] {
+            if !has(name) {
+                arguments.push(format!("-H {}", quote(&format!("{name}:"))));
+            }
+        }
     }
 
     let mut input = None;
@@ -406,11 +411,13 @@ fn quote(value: &str) -> String {
 }
 
 /// Encodes arbitrary bytes as a POSIX `printf` format that prints exactly
-/// those bytes, including NUL, which no shell argument can carry.
+/// those bytes, including NUL, which no shell argument can carry. A leading
+/// `-` is escaped too, or bash and dash would read the format as an option.
 fn printf_format(bytes: &[u8]) -> String {
     let mut format = String::with_capacity(bytes.len() * 2);
-    for &byte in bytes {
+    for (index, &byte) in bytes.iter().enumerate() {
         match byte {
+            b'-' if index == 0 => format.push_str("\\055"),
             b'\\' => format.push_str("\\\\"),
             b'%' => format.push_str("%%"),
             b' '..=b'~' => format.push(char::from(byte)),
@@ -477,6 +484,9 @@ mod tests {
             printf_format(b"a\0b\\c%d'\n\xff"),
             "a\\000b\\\\c%%d'\\012\\377"
         );
+        // Only a leading dash could be read as a printf option.
+        assert_eq!(printf_format(b"-a-\x01"), "\\055a-\\001");
+        assert_eq!(printf_format(b"--b\r\n"), "\\055-b\\015\\012");
     }
 
     #[test]
@@ -522,13 +532,20 @@ mod tests {
             "curl 'http://example.test/' \\\n  -H 'host: other.test' \\\n  \
              -H 'content-type: text/plain' \\\n  -H 'x-quote: a'\\''b $c \\d 한' \\\n  \
              -H 'x-empty;' \\\n  -H 'accept-encoding: gzip' \\\n  -H 'User-Agent:' \\\n  \
-             -H 'Accept:' \\\n  --data-binary 'it'\\''s $HOME\n\\ 한글\t' \\\n  --compressed"
+             -H 'Accept:' \\\n  -H 'Expect:' \\\n  --data-binary 'it'\\''s $HOME\n\\ 한글\t' \\\n  --compressed"
         );
     }
 
     #[test]
     fn binary_or_at_prefixed_bodies_are_piped_from_printf() {
-        for body in [&b"\x1f\x8b\0\xff"[..], b"@/etc/passwd", b"a\r\nb"] {
+        let multipart = b"--b\r\nContent-Disposition: form-data; name=\"f\"\r\n\r\nv\r\n--b--\r\n";
+        for body in [
+            &b"\x1f\x8b\0\xff"[..],
+            b"@/etc/passwd",
+            b"a\r\nb",
+            b"-x\x01",
+            multipart,
+        ] {
             let record = exchange(
                 Method::PUT,
                 "http://example.test/",

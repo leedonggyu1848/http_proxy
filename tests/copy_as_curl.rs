@@ -39,6 +39,14 @@ async fn copied_commands_send_unprintable_bodies_byte_for_byte() -> Result<(), T
     repeat_through_curl(body, "application/octet-stream").await
 }
 
+#[tokio::test]
+async fn copied_commands_send_multipart_bodies_that_start_with_a_dash() -> Result<(), TestError> {
+    // A multipart body starts with `--` and has CRLF, so it is piped from printf.
+    let body =
+        b"--boundary\r\nContent-Disposition: form-data; name=\"f\"\r\n\r\nv\r\n--boundary--\r\n";
+    repeat_through_curl(body, "multipart/form-data; boundary=boundary").await
+}
+
 #[expect(
     clippy::print_stderr,
     reason = "A skipped run must say why it passed without running curl"

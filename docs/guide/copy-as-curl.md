@@ -6,6 +6,8 @@
 bash·zsh 같은 POSIX 셸에서 실행할 수 있는 `curl` 명령으로 클립보드에 복사한다.
 복사가 끝나면 알림 줄에 결과가 표시된다.
 
+![상세 패널의 Copy as cURL 버튼과 Redacted placeholders 옵션](../screenshots/copy-as-curl.png)
+
 ## 명령에 들어가는 내용
 
 - **메서드:** `curl`의 기본값과 다를 때만 `-X`를 쓴다. 본문이 없으면 `GET`, 본문이 있으면
@@ -16,7 +18,8 @@ bash·zsh 같은 POSIX 셸에서 실행할 수 있는 `curl` 명령으로 클립
   `Transfer-Encoding`, `Upgrade`, `Proxy-Authorization`과 `Connection`이 가리키는 헤더)와
   `curl`이 계산하는 `Content-Length`는 넣지 않는다. URL과 같은 `Host`도 생략한다.
 - **curl 기본 헤더:** 원래 요청에 `User-Agent`·`Accept`가 없으면 `-H 'User-Agent:'`처럼 넣어
-  `curl`이 자기 값을 추가하지 않게 한다. 본문이 있는데 `Content-Type`이 없을 때도 같다.
+  `curl`이 자기 값을 추가하지 않게 한다. 본문이 있는데 `Content-Type`·`Expect`가 없을 때도 같다.
+  (`curl`은 큰 본문에 `Expect: 100-continue`를 스스로 붙일 수 있다.)
 - **본문:** `--data-binary`로 원래 바이트를 그대로 보낸다. `Content-Encoding`으로 압축된 요청
   본문도 압축된 바이트 그대로 보낸다. 요청에 `Accept-Encoding`이 있으면 `--compressed`를 붙인다.
 
@@ -24,7 +27,8 @@ bash·zsh 같은 POSIX 셸에서 실행할 수 있는 `curl` 명령으로 클립
 그대로 전달된다. 작은따옴표는 `'\''`로 바꾼다.
 
 본문에 출력할 수 없는 바이트(NUL, 제어 문자, UTF-8이 아닌 바이트, CR)가 있거나 본문이 `@`로
-시작하면, 본문을 `printf`의 8진수 이스케이프로 만들어 표준 입력으로 넘긴다.
+시작하면, 본문을 `printf`의 8진수 이스케이프로 만들어 표준 입력으로 넘긴다. `multipart/form-data`
+본문처럼 `-`로 시작하는 본문은 첫 `-`를 `\055`로 바꿔 `printf`가 옵션으로 읽지 않게 한다.
 
 ```bash
 printf '\037\213\000\001' | curl -X PUT 'http://127.0.0.1:8000/upload' \
