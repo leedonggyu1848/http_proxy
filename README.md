@@ -141,6 +141,7 @@ CA 상태 표시의 의미, OS별 CA 저장 위치, 직접 실행한 Chrome 설�
 - **본문 보기:** **Body** 탭의 **View: Pretty / Raw / Tree**로 보기 방식을 바꾼다. 미리보기는 방향별 최대 8KiB다. 자세한 내용은 [본문 보기](docs/guide/body-view.md)를 참고한다.
 - **요청 재전송:** 요청을 우클릭하거나 상세 패널에서 **Edit and Resend**를 눌러 수정한 뒤 **Send**한다. [요청을 수정해 다시 보내기](docs/guide/resend.md)를 참고한다.
 - **로그·창 저장:** 툴바의 **Save** 메뉴에서 저장 폴더를 정하고 **Save window PNG** 또는 **Save all logs**를 누른다. 전체 로그는 앱을 종료하면 삭제되므로 종료 전에 저장한다. [창 캡처와 전체 로그 저장](docs/guide/logs.md)을 참고한다.
+- **HAR 내보내기:** **Save** 메뉴의 **Export HAR…**로 목록 전체나 필터된 요청을 HAR 1.2 파일로 저장해 Chrome DevTools에서 불러온다. 민감 헤더와 본문은 기본으로 빠지며 직접 켜야 들어간다. `CONNECT` 터널, 실패 기록, 잘린 본문의 표현은 [HAR로 내보내기](docs/guide/har.md)를 참고한다.
 - **포트 변경:** 프록시를 멈추고 툴바의 `Port` 칸에 번호를 입력해 **Start**를 누르거나, `cargo run --release -- --port 18080` 또는 `HTTP_INSPECTOR_PORT`로 실행한다. [프록시 포트와 캡처 범위](docs/guide/proxy-and-capture.md)를 참고한다.
 - **단축키:** 요청 목록에서 `↑`·`↓`·`Home`·`End`·`PageUp`·`PageDown`으로 요청을 고르고, `F6` 또는 `Ctrl+PageDown`·`Ctrl+PageUp`으로 **Headers**·**Body** 탭을 바꾼다. 전체 표와 테마·접근성 설정은 [화면과 조작](docs/guide/interface.md)에 있다.
 

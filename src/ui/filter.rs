@@ -56,6 +56,7 @@ pub(in crate::ui) fn text_matches(value: &str, lowercase_query: &str) -> bool {
 }
 
 use crate::ui::InspectorApp;
+use crate::ui::records::RecordList;
 use crate::ui::replay_panel;
 use eframe::egui;
 
@@ -88,12 +89,7 @@ impl InspectorApp {
     }
 
     pub(in crate::ui) fn request_table(&mut self, ui: &mut egui::Ui, shortcuts_allowed: bool) {
-        let query = self.filter_text.to_lowercase();
-        let rows: Vec<&Exchange> = self
-            .records
-            .iter()
-            .filter(|record| record_matches(record, self.record_filter, &query))
-            .collect();
+        let rows = visible_records(&self.records, self.record_filter, &self.filter_text);
         if rows.is_empty() {
             let message = empty_list_text(
                 self.records.len(),
@@ -114,6 +110,19 @@ impl InspectorApp {
             }
         }
     }
+}
+
+/// Records that match the filter and search text, in arrival order.
+pub(in crate::ui) fn visible_records<'a>(
+    records: &'a RecordList<Exchange>,
+    filter: RecordFilter,
+    text: &str,
+) -> Vec<&'a Exchange> {
+    let query = text.to_lowercase();
+    records
+        .iter()
+        .filter(|record| record_matches(record, filter, &query))
+        .collect()
 }
 
 /// Tells the user what to do next when the list shows no rows.
