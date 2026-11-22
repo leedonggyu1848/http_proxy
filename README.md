@@ -18,7 +18,43 @@ HTTP Inspector는 로컬 HTTP 프록시를 통해 요청·응답 기록을 보�
 
 ## 설치
 
-소스에서 빌드해 실행한다. 먼저 [rustup](https://rustup.rs/)을 설치한다. `rustup`은 저장소의 `rust-toolchain.toml`에 지정된 Rust 툴체인(1.100.0)을 설치한다.
+### 배포 파일로 실행
+
+[GitHub Releases](https://github.com/leedonggyu1848/http_proxy/releases)에서 버전에 맞는 `.tar.gz`와 같은 이름의 `.sha256` 파일을 받는다. 개발 빌드는 [CI 실행 목록](https://github.com/leedonggyu1848/http_proxy/actions/workflows/ci.yml)의 성공한 실행에서 **Artifacts**를 받는다(GitHub 로그인 필요, 보관 기간 14일). CI artifact ZIP을 먼저 풀면 같은 두 파일이 나온다.
+
+| 대상 | 파일 이름의 대상 식별자 | 빌드·실행 검증 환경 |
+| --- | --- | --- |
+| Linux x86_64 | `x86_64-unknown-linux-gnu` | Ubuntu 24.04, X11 |
+| macOS Apple Silicon | `aarch64-apple-darwin` | macOS 15 arm64 |
+| macOS Intel | `x86_64-apple-darwin` | macOS 15 x86_64 |
+
+파일 이름은 `http-proxy-v버전-대상.tar.gz`이며 개발 빌드에는 버전 뒤에 전체 커밋 ID가 붙는다. Linux는 glibc 2.39 이상인 Ubuntu 24.04 환경을 기준으로 제공한다. 다른 배포판과 이전 macOS의 실행은 보장하지 않는다. Linux에는 X11 디스플레이와 다음 런타임 라이브러리가 필요하다.
+
+```bash
+sudo apt-get install --yes libgl1 libegl1 libx11-6 libxkbcommon0 libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2 libnss3-tools
+```
+
+다운로드한 폴더에서 체크섬을 확인하고 압축을 푼다. 아래 파일 이름은 실제 받은 이름으로 바꾼다.
+
+```bash
+# Linux
+sha256sum --check http-proxy-v0.1.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+tar -xzf http-proxy-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+./http-proxy-v0.1.0-x86_64-unknown-linux-gnu/http-proxy
+```
+
+macOS에서는 `sha256sum --check` 대신 `shasum -a 256 --check`를 쓰고 해당 아키텍처 파일을 같은 방법으로 푼다. macOS 바이너리는 서명·공증하지 않는다. 실행이 차단되면 출처와 체크섬을 확인한 파일에 한해 **시스템 설정 → 개인정보 보호 및 보안 → 확인 없이 열기**로 승인한다. 이 항목을 사용할 수 없으면 압축을 푼 실행 파일 하나의 격리 속성만 제거한 뒤 터미널에서 실행한다.
+
+```bash
+xattr -d com.apple.quarantine ./http-proxy-v0.1.0-aarch64-apple-darwin/http-proxy
+./http-proxy-v0.1.0-aarch64-apple-darwin/http-proxy
+```
+
+체크섬은 다운로드 손상을 확인하며 서명이나 배포자의 신원 검증을 대신하지 않는다. 배포 압축에는 실행 파일, README, 코드·폰트 라이선스와 빌드 정보만 포함한다. CA 개인키·설정·트래픽은 포함하지 않는다. CI는 artifact를 다시 내려받아 체크섬과 실행 권한을 확인하고, GUI 프로세스가 실행된 상태에서 로컬 HTTP 요청을 전달한다. Gatekeeper 승인, 실제 사용자 화면 조작과 브라우저 CA 등록은 이 자동 검사 범위에 포함되지 않는다.
+
+### 소스에서 빌드
+
+먼저 [rustup](https://rustup.rs/)을 설치한다. `rustup`은 저장소의 `rust-toolchain.toml`에 지정된 Rust 툴체인(1.100.0)을 설치한다.
 
 | | Linux | macOS |
 | --- | --- | --- |
@@ -58,7 +94,7 @@ brew install nss
 
 ## 빠른 시작
 
-1. 저장소 루트에서 앱을 실행한다.
+1. 배포 파일의 `http-proxy`를 실행한다. 소스에서 빌드하려면 저장소 루트에서 다음 명령을 실행한다.
 
    ```bash
    cargo run --release
