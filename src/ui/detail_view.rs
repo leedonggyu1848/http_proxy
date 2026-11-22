@@ -85,6 +85,7 @@ impl InspectorApp {
                             || matches!(record.outcome(),
                             Outcome::Response(response) if has_tree(response.media_type()));
                         body.mode = view_mode_bar(ui, &mut self.body_mode, has_tree);
+                        self.body_saving.menus(ui, record, &self.save);
                         ui.strong("Request body");
                         render_optional_body(ui, request, &mut body);
                     }

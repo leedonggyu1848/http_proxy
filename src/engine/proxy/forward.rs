@@ -80,7 +80,7 @@ where
     let request_body = BodyPreview::new(BODY_PREVIEW_BYTES);
     capture.exchange.attach_request_body(request_body.clone());
     let request = request
-        .map(|body| ObservedBody::new(body, request_body, capture.body_log(BodySide::Request)));
+        .map(|body| ObservedBody::new(body, request_body, capture.body_sinks(BodySide::Request)));
 
     let Ok(response) = timeout(engine.response_timeout, sender.send_request(request)).await else {
         return failed_response(
@@ -106,7 +106,7 @@ where
             remove_hop_by_hop_headers(response.headers_mut());
             response
                 .map(|body| {
-                    ObservedBody::new(body, response_body, capture.body_log(BodySide::Response))
+                    ObservedBody::new(body, response_body, capture.body_sinks(BodySide::Response))
                 })
                 .map(BodyExt::boxed)
         }

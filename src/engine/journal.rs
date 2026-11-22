@@ -15,9 +15,12 @@ use tempfile::NamedTempFile;
 use crate::engine::capture::redacted_value;
 use crate::engine::domain::{BodyLifecycle, FailureStage, Outcome, RecordId, TunnelSnapshot};
 
-#[derive(Clone, Copy, Debug)]
-pub(in crate::engine) enum BodySide {
+/// Which message of an exchange a body belongs to.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum BodySide {
+    /// The request body sent by the client.
     Request,
+    /// The response body sent by the upstream server.
     Response,
 }
 

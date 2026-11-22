@@ -91,7 +91,11 @@ impl InspectorApp {
             if self.save.menu(ui, self.full_log.as_ref()) {
                 self.har_dialog.open(self.save.suggested_path("har"));
             }
-            ui.menu_button("Settings", |ui| self.theme.menu(ui));
+            ui.menu_button("Settings", |ui| {
+                self.theme.menu(ui);
+                ui.separator();
+                self.body_saving.settings_menu(ui);
+            });
             crate::ui::scope_help::button(ui, self.proxy.as_ref().map(ProxyHandle::local_addr));
         });
     }
@@ -215,6 +219,7 @@ impl InspectorApp {
                 );
             }
             self.save.status(ui);
+            self.body_saving.status(ui);
             self.theme.status(ui);
         });
     }

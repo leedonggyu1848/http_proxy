@@ -106,6 +106,11 @@ impl InspectorApp {
         if let Some(record) = self.table.copy_curl.take() {
             self.curl.copy(ui.ctx(), &record);
         }
+        if let Some((record, side)) = self.table.save_body.take() {
+            let directory = self.save.directory();
+            self.body_saving
+                .request(&record, side, http_proxy::SaveFormat::Decoded, directory);
+        }
         if let Some(original) = self.table.replay.take() {
             match replay_panel::ReplayPanel::new(original) {
                 Ok(panel) => self.replay = Some(panel),

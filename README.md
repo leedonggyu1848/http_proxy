@@ -12,7 +12,7 @@ HTTP Inspector는 로컬 HTTP 프록시를 통해 요청·응답 기록을 보�
 - **요청 목록과 상세:** 메서드, 대상, 상태, 시간을 목록으로 보고, 선택한 요청의 헤더와 본문을 확인한다. 검색과 결과 필터를 제공한다.
 - **본문 보기:** 압축을 푼 본문을 JSON·HTML·XML·CSS·JavaScript·form 형식별로 정리해 보여 주고, 이미지 응답은 그림으로 그린다.
 - **요청 재전송:** 기록한 요청을 수정해 다시 보내고 원본과 비교한다.
-- **저장:** 앱 창을 PNG로, 세션의 모든 요청을 텍스트 로그로 저장한다.
+- **저장:** 앱 창을 PNG로, 세션의 모든 요청을 텍스트 로그나 HAR 파일로, 선택한 요청·응답 본문을 원본 파일로 저장한다.
 
 전체 기능 목록과 세부 동작은 [사용자 가이드](docs/guide/README.md)에 있다.
 
@@ -143,6 +143,7 @@ CA 상태 표시의 의미, OS별 CA 저장 위치, 직접 실행한 Chrome 설�
 - **cURL로 복사:** 요청을 우클릭하거나 상세 패널에서 **Copy as cURL**을 누르면 bash·zsh에서 실행할 수 있는 `curl` 명령이 복사된다. 값이 저장되지 않는 `Authorization`·`Cookie` 헤더는 기본으로 빼고, **Redacted placeholders**를 켜면 `<REDACTED>` 자리 표시자로 넣는다. 본문이 8KiB를 넘어 잘린 요청은 복사하지 않고 안내한다. [요청을 cURL 명령으로 복사하기](docs/guide/copy-as-curl.md)를 참고한다.
 - **로그·창 저장:** 툴바의 **Save** 메뉴에서 저장 폴더를 정하고 **Save window PNG** 또는 **Save all logs**를 누른다. 전체 로그는 앱을 종료하면 삭제되므로 종료 전에 저장한다. [창 캡처와 전체 로그 저장](docs/guide/logs.md)을 참고한다.
 - **HAR 내보내기:** **Save** 메뉴의 **Export HAR…**로 목록 전체나 필터된 요청을 HAR 1.2 파일로 저장해 Chrome DevTools에서 불러온다. 민감 헤더와 본문은 기본으로 빠지며 직접 켜야 들어간다. `CONNECT` 터널, 실패 기록, 잘린 본문의 표현은 [HAR로 내보내기](docs/guide/har.md)를 참고한다.
+- **본문 파일 저장:** **Body** 탭의 **Save request body ▼**·**Save response body ▼**에서 **Decoded**(압축 해제) 또는 **As received**(받은 그대로)를 고르거나, 요청을 우클릭해 **Save response body**를 누른다. 파일은 **Save** 메뉴의 저장 폴더에 소유자 전용 권한(`0600`)으로 만들어진다. 본문 저장소는 세션당 기본 2GiB까지 캐시 폴더에 보관하고 앱을 종료하면 지운다. [본문 파일 저장](docs/guide/logs.md#본문-파일-저장)을 참고한다.
 - **포트 변경:** 프록시를 멈추고 툴바의 `Port` 칸에 번호를 입력해 **Start**를 누르거나, `cargo run --release -- --port 18080` 또는 `HTTP_INSPECTOR_PORT`로 실행한다. [프록시 포트와 캡처 범위](docs/guide/proxy-and-capture.md)를 참고한다.
 - **단축키:** 요청 목록에서 `↑`·`↓`·`Home`·`End`·`PageUp`·`PageDown`으로 요청을 고르고, `F6` 또는 `Ctrl+PageDown`·`Ctrl+PageUp`으로 **Headers**·**Body** 탭을 바꾼다. 전체 표와 테마·접근성 설정은 [화면과 조작](docs/guide/interface.md)에 있다.
 

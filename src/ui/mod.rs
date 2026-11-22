@@ -1,6 +1,7 @@
 mod app_paths;
 mod body_display;
 mod body_format;
+mod body_saving;
 mod body_view;
 mod browser_panel;
 mod ca_panel;
@@ -99,6 +100,7 @@ struct InspectorApp {
     log_init_error: Option<String>,
     save: save::SaveControls,
     har_dialog: har_dialog::HarDialog,
+    body_saving: body_saving::BodySaving,
     port: PortChoice,
     table: request_table::RequestTable,
     detail_tab: DetailTab,
@@ -139,6 +141,7 @@ impl InspectorApp {
             log_init_error,
             save: save::SaveControls::new(),
             har_dialog: har_dialog::HarDialog::default(),
+            body_saving: body_saving::BodySaving::open(),
             port: PortChoice::from_launch(),
             table: request_table::RequestTable::new(),
             detail_tab: DetailTab::Headers,
@@ -171,6 +174,9 @@ impl InspectorApp {
                 return;
             };
             config = config.with_https_inspection(HttpsInspection::new(directory.clone()));
+        }
+        if let Some(store) = self.body_saving.store() {
+            config = config.with_body_store(store.clone());
         }
         let result = self.full_log.as_ref().map_or_else(
             || ProxyHandle::start(config.clone()),
@@ -258,6 +264,7 @@ impl eframe::App for InspectorApp {
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
         self.receive_records();
         self.release_failed_proxy();
+        self.body_saving.update(ui.ctx());
         if let Some(panel) = self.replay.as_mut() {
             let latest = self
                 .records

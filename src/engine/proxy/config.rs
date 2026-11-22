@@ -1,3 +1,4 @@
+use crate::engine::body_store::BodyStore;
 use crate::engine::tls::HttpsInspection;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
@@ -15,6 +16,7 @@ pub struct ProxyConfig {
     pub(super) connect_timeout: Duration,
     pub(super) response_timeout: Duration,
     pub(super) max_connections: usize,
+    pub(super) body_store: Option<BodyStore>,
 }
 
 impl ProxyConfig {
@@ -28,6 +30,7 @@ impl ProxyConfig {
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             response_timeout: DEFAULT_RESPONSE_TIMEOUT,
             max_connections: DEFAULT_MAX_CONNECTIONS,
+            body_store: None,
         }
     }
 
@@ -61,6 +64,16 @@ impl ProxyConfig {
     #[must_use]
     pub const fn with_max_connections(mut self, limit: usize) -> Self {
         self.max_connections = if limit == 0 { 1 } else { limit };
+        self
+    }
+
+    /// Copies every forwarded body into `store` so it can be saved later.
+    ///
+    /// Copying never waits for the disk; bodies the store cannot keep up
+    /// with are marked incomplete there while forwarding continues.
+    #[must_use]
+    pub fn with_body_store(mut self, store: BodyStore) -> Self {
+        self.body_store = Some(store);
         self
     }
 
