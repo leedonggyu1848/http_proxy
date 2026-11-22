@@ -7,6 +7,7 @@ use eframe::egui::{self, Key, RichText};
 use egui_extras::{Column, TableBuilder};
 use http_proxy::{Exchange, Outcome, RecordId};
 
+use crate::ui::copy_curl;
 use crate::ui::outcome_view::{outcome_summary, outcome_text, status_rank};
 
 const ROW_HEIGHT: f32 = 20.0;
@@ -156,6 +157,8 @@ fn keyboard_selection(
 /// Sort state and scrolling preference of the request list.
 pub(in crate::ui) struct RequestTable {
     pub(in crate::ui) replay: Option<Exchange>,
+    /// Record whose "Copy as cURL" menu item was chosen this frame.
+    pub(in crate::ui) copy_curl: Option<Exchange>,
     sort: Sort,
     follow_newest: bool,
     keyboard_row: Option<usize>,
@@ -171,6 +174,7 @@ impl RequestTable {
             },
             follow_newest: true,
             replay: None,
+            copy_curl: None,
             keyboard_row: None,
             page_rows: 1,
         }
@@ -274,7 +278,7 @@ impl RequestTable {
                         self.keyboard_row = None;
                         changed = Some(record.id());
                     }
-                    replay_menu(&row.response(), record, &mut self.replay);
+                    self.row_menu(&row.response(), record);
                     if row.response().clicked() {
                         self.keyboard_row = None;
                         changed = Some(record.id());
@@ -293,19 +297,26 @@ impl RequestTable {
     }
 }
 
-fn replay_menu(response: &egui::Response, record: &Exchange, replay: &mut Option<Exchange>) {
-    response.context_menu(|ui| {
-        if ui
-            .add_enabled(
-                record.source() != http_proxy::CaptureSource::Connect,
-                egui::Button::new("Edit and Resend"),
-            )
-            .clicked()
-        {
-            *replay = Some(record.clone());
-            ui.close();
-        }
-    });
+impl RequestTable {
+    /// Offers resending or copying the row's request on right click.
+    fn row_menu(&mut self, response: &egui::Response, record: &Exchange) {
+        response.context_menu(|ui| {
+            if ui
+                .add_enabled(
+                    record.source() != http_proxy::CaptureSource::Connect,
+                    egui::Button::new("Edit and Resend"),
+                )
+                .clicked()
+            {
+                self.replay = Some(record.clone());
+                ui.close();
+            }
+            if copy_curl::copy_button(ui, record).clicked() {
+                self.copy_curl = Some(record.clone());
+                ui.close();
+            }
+        });
+    }
 }
 
 fn show_cells(

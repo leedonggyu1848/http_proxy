@@ -1,5 +1,6 @@
 mod browser;
 mod capture;
+mod curl;
 mod domain;
 mod journal;
 mod proxy;
@@ -10,6 +11,10 @@ pub use browser::{Browser, BrowserEvent, BrowserSession};
 pub use capture::{
     BODY_PREVIEW_BYTES, IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES,
     is_previewable_image_media_type,
+};
+pub use curl::{
+    CURL_REDACTED_PLACEHOLDER, CurlCommand, CurlUnavailable, RedactedHeaders, curl_command,
+    curl_unavailable_reason,
 };
 pub use domain::{
     BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, CaptureSource, CapturedHeader,

@@ -155,6 +155,7 @@ impl InspectorApp {
         if let Some(error) = self.browsers.error() {
             ui.colored_label(palette.error, error);
         }
+        self.curl.notice(ui);
         if self.https_inspection {
             self.ca_panel.messages(ui);
             if self.authorization_notice == AuthorizationNotice::Showing {

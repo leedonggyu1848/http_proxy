@@ -11,6 +11,7 @@ README는 설치부터 HTTPS 복호화까지 꼭 필요한 내용만 담는다. 
 | [HTTPS 복호화와 검사 브라우저](https.md) | 복호화 켜기, CA 상태 표시, 검사 브라우저, OS별 CA 등록 위치와 제거, 개인키 주의사항 |
 | [본문 보기](body-view.md) | 미리보기 한도, 압축 해제, 형식별 Pretty/Raw/Tree, XML·JSON 트리, 이미지 미리보기 |
 | [요청을 수정해 다시 보내기](resend.md) | **Edit and Resend** 편집기, 원본 비교, 민감 헤더와 큰 본문 처리 |
+| [요청을 cURL 명령으로 복사하기](copy-as-curl.md) | **Copy as cURL** 명령 형식, 셸 인용, 가려진 헤더와 잘린 본문 처리 |
 | [창 캡처와 전체 로그 저장](logs.md) | **Save window PNG**, **Save all logs**, 로그 형식, 한도, 민감정보 |
 
 ## 전체 기능 목록
@@ -30,6 +31,7 @@ README는 설치부터 HTTPS 복호화까지 꼭 필요한 내용만 담는다. 
 - PNG·JPEG·GIF·WebP·SVG·BMP·ICO 응답 본문의 이미지 미리보기, SVG 소스 보기, 16진수 보기
 - 문자열 검색과 응답, 실패, 터널 결과 필터
 - 선택한 요청의 Headers와 Body 상세 패널
+- 선택한 요청을 POSIX 셸용 `curl` 명령으로 복사
 - 프록시 시작, 중지, 기록 삭제
 - 최대 2,000개의 메모리 기록
 - 기록 큐 초과 건수 표시
