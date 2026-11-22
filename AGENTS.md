@@ -7,6 +7,7 @@ HTTP Inspector는 로컬 프록시를 통해 HTTP 요청·응답과 선택적으
 - Rust 1.100.0, edition 2024, Cargo를 사용한다. 툴체인은 `rust-toolchain.toml`을 따른다.
 - UI는 eframe/egui와 X11, 프록시는 Tokio와 Hyper, TLS는 rustls를 사용한다.
 - 명령은 저장소 루트 또는 작업 워크트리 루트에서 실행한다.
+- 개발 환경, 검증 명령과 설계 문서 목록은 `docs/development.md`에 있다.
 - Linux 시스템 패키지는 README의 설치 명령을 따른다. 기본 실행에는 별도 외부 서비스가 필요하지 않으며, UI 확인에는 X11 디스플레이가 필요하다.
 - `XDG_DATA_HOME` 또는 `HOME`은 CA 저장 위치를 결정한다. CA 개인키 파일은 열어 출력하거나 공유하지 않는다.
 
