@@ -5,7 +5,9 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use eframe::egui::{self, Color32, ColorImage};
-use http_proxy::FullLog;
+use http_proxy::{Exchange, FullLog};
+
+use crate::ui::har::{self, HarOptions};
 
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 
@@ -27,19 +29,59 @@ impl SaveControls {
         }
     }
 
-    /// Shows the `Save` menu in the toolbar.
-    pub(in crate::ui) fn menu(&mut self, ui: &mut egui::Ui, log: Option<&FullLog>) {
+    /// Shows the `Save` menu in the toolbar and reports whether the user
+    /// asked to export a HAR file.
+    pub(in crate::ui) fn menu(&mut self, ui: &mut egui::Ui, log: Option<&FullLog>) -> bool {
         self.poll();
         if self.pending.is_some() {
             ui.spinner();
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
         ui.add_enabled_ui(self.pending.is_none(), |ui| {
-            ui.menu_button("Save ▼", |ui| self.menu_items(ui, log));
-        });
+            ui.menu_button("Save ▼", |ui| self.menu_items(ui, log))
+                .inner
+                .unwrap_or_default()
+        })
+        .inner
     }
 
-    fn menu_items(&mut self, ui: &mut egui::Ui, log: Option<&FullLog>) {
+    /// Reports whether a save is still running.
+    pub(in crate::ui) const fn is_busy(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// Suggests a new file in the save directory, without checking it.
+    pub(in crate::ui) fn suggested_path(&self, extension: &str) -> String {
+        self.destination(extension)
+            .map_or_else(|_| String::new(), |path| path.display().to_string())
+    }
+
+    /// Writes `records` as HAR to `path` on a worker thread.
+    pub(in crate::ui) fn export_har(
+        &mut self,
+        context: &egui::Context,
+        records: Vec<Exchange>,
+        options: HarOptions,
+        path: PathBuf,
+    ) {
+        self.status = None;
+        let (sender, receiver) = mpsc::channel();
+        let worker_context = context.clone();
+        let spawned = std::thread::Builder::new()
+            .name("export-har".to_owned())
+            .spawn(move || {
+                let document = har::document(&records, options, SystemTime::now());
+                drop(records);
+                let _receiver_closed = sender.send(har::write(&path, &document));
+                worker_context.request_repaint();
+            });
+        match spawned {
+            Ok(_worker) => self.pending = Some(receiver),
+            Err(error) => self.status = Some(Err(error)),
+        }
+    }
+
+    fn menu_items(&mut self, ui: &mut egui::Ui, log: Option<&FullLog>) -> bool {
         ui.label("Save directory");
         ui.add(
             egui::TextEdit::singleline(&mut self.directory)
@@ -67,6 +109,16 @@ impl SaveControls {
                 Err(error) => self.status = Some(Err(error)),
             }
         }
+        let export_har = ui
+            .button("Export HAR…")
+            .on_hover_text(
+                "Save the requests in the list as a HAR 1.2 file. Bodies and sensitive headers are left out unless you include them.",
+            )
+            .clicked();
+        if export_har {
+            ui.close();
+        }
+        export_har
     }
 
     /// Shows the result of the last save in the status bar.
