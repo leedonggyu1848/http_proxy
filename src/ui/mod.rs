@@ -423,6 +423,9 @@ impl InspectorApp {
             rect.y_range(),
         );
         let handle = main.interact(handle_rect, split_id, egui::Sense::drag());
+        if handle.dragged() || handle.drag_stopped() {
+            main.ctx().request_repaint();
+        }
         if handle.hovered() || handle.dragged() {
             main.ctx()
                 .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
@@ -468,9 +471,9 @@ mod layout_tests {
     use super::{
         DEFAULT_DETAIL_SHARE, DEFAULT_WINDOW, DetailTab, InspectorApp, MAX_RECORDS,
         MIN_DETAIL_WIDTH, MIN_MAIN_HEIGHT, MIN_TABLE_WIDTH, MIN_WINDOW, PortChoice, RecordFilter,
-        body_display, body_format, body_saving, browser_panel, ca_panel, copy_curl, har_dialog,
-        image_view, main_height, port_settings, records, replay_panel, request_table, save, search,
-        split_detail_width, theme, toolbar,
+        body_display, body_format, body_saving, browser_panel, ca_panel, copy_curl, fonts,
+        har_dialog, image_view, main_height, port_settings, records, replay_panel, request_table,
+        save, search, split_detail_width, theme, toolbar,
     };
     use eframe::egui;
     use http_proxy::{Exchange, ProxyConfig, ProxyHandle};
@@ -480,6 +483,7 @@ mod layout_tests {
     use tokio::time::timeout;
 
     fn test_app(context: egui::Context) -> InspectorApp {
+        fonts::configure_fonts(&context);
         InspectorApp {
             theme: theme::ThemeSettings::new(&context),
             replay: None,
@@ -548,13 +552,10 @@ mod layout_tests {
         rect: egui::Rect,
     }
 
-    fn collect_text_shapes(
-        shapes: &[egui::epaint::ClippedShape],
-        viewport: egui::Rect,
-    ) -> Vec<DrawnText> {
+    fn collect_text_shapes(shapes: &[egui::epaint::ClippedShape]) -> Vec<DrawnText> {
         let mut drawn = Vec::new();
         for clipped in shapes {
-            let clip = clipped.clip_rect.intersect(viewport);
+            let clip = clipped.clip_rect;
             if !clip.is_positive() {
                 continue;
             }
@@ -617,19 +618,33 @@ mod layout_tests {
         }
     }
 
-    fn render_settled(app: &mut InspectorApp, size: [f32; 2]) -> Vec<DrawnText> {
+    fn render_frame(
+        app: &mut InspectorApp,
+        size: [f32; 2],
+        events: Vec<egui::Event>,
+    ) -> (Vec<DrawnText>, Duration) {
         let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size[0], size[1]));
+        let input = egui::RawInput {
+            screen_rect: Some(viewport),
+            events,
+            ..Default::default()
+        };
+        let mut output = app.context.clone().run_ui(input, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| app.render_ui(ui));
+        });
+        output.textures_delta.clear();
+        let repaint_delay = output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map_or(Duration::MAX, |viewport_out| viewport_out.repaint_delay);
+        (collect_text_shapes(&output.shapes), repaint_delay)
+    }
+
+    fn render_settled(app: &mut InspectorApp, size: [f32; 2]) -> Vec<DrawnText> {
         let mut drawn = Vec::new();
         for _ in 0..4 {
-            let input = egui::RawInput {
-                screen_rect: Some(viewport),
-                ..Default::default()
-            };
-            let mut output = app.context.clone().run_ui(input, |ui| {
-                egui::CentralPanel::default().show(ui, |ui| app.render_ui(ui));
-            });
-            output.textures_delta.clear();
-            drawn = collect_text_shapes(&output.shapes, viewport);
+            let (frame_drawn, _) = render_frame(app, size, Vec::new());
+            drawn = frame_drawn;
         }
         drawn
     }
@@ -716,6 +731,15 @@ mod layout_tests {
             let drawn = render_settled(&mut app, size);
             assert!(!drawn.is_empty(), "expected painted text at {size:?}");
             assert_no_text_overlap(&drawn, viewport, &format!("headers@{size:?}"));
+            assert!(
+                drawn.iter().any(|item| item.text == "OPTIONS"),
+                "expected untruncated OPTIONS method at {size:?}, got methods: {:?}",
+                drawn
+                    .iter()
+                    .filter(|item| item.text.starts_with("OPT"))
+                    .map(|item| &item.text)
+                    .collect::<Vec<_>>(),
+            );
 
             // At 640x900, query parameters and wrapped request/response headers are all visible.
             if (size[0] - MIN_WINDOW[0]).abs() < 1.0 && (size[1] - 900.0).abs() < 1.0 {
@@ -763,6 +787,112 @@ mod layout_tests {
         Ok(())
     }
 
+    fn drag_pointer(
+        app: &mut InspectorApp,
+        size: [f32; 2],
+        from: egui::Pos2,
+        to: egui::Pos2,
+    ) -> (Duration, Duration) {
+        let _ = render_frame(app, size, vec![egui::Event::PointerMoved(from)]);
+        let _ = render_frame(
+            app,
+            size,
+            vec![egui::Event::PointerButton {
+                pos: from,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        let (_, drag_delay) = render_frame(app, size, vec![egui::Event::PointerMoved(to)]);
+        let (_, release_delay) = render_frame(
+            app,
+            size,
+            vec![egui::Event::PointerButton {
+                pos: to,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        (drag_delay, release_delay)
+    }
+
+    fn text_left(drawn: &[DrawnText], label: &str) -> Result<f32, String> {
+        drawn
+            .iter()
+            .find(|item| item.text == label)
+            .map(|item| item.rect.left())
+            .ok_or_else(|| format!("missing {label:?} text"))
+    }
+
+    #[tokio::test]
+    async fn split_divider_drag_repaints_and_restores_across_resize()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let exchanges = timeout(Duration::from_secs(5), capture_sample_exchanges()).await??;
+        let mut app = test_app(egui::Context::default());
+        for exchange in exchanges {
+            app.selected = Some(exchange.id());
+            let _evicted = app.records.push(exchange);
+        }
+
+        let wide = [1_100.0, 700.0];
+        let initial_edit_left = text_left(&render_settled(&mut app, wide), "Edit and Resend")?;
+
+        // CentralPanel defaults to 8px horizontal margin on each side.
+        let main_width = wide[0] - 16.0;
+        let start_x = (8.0 + main_width - split_detail_width(main_width, app.detail_share)).round();
+        let (drag_delay, release_delay) = drag_pointer(
+            &mut app,
+            wide,
+            egui::pos2(start_x, 360.0),
+            egui::pos2(start_x - 140.0, 360.0),
+        );
+        assert_eq!(
+            drag_delay,
+            Duration::ZERO,
+            "dragging the split divider must request an immediate repaint"
+        );
+        assert_eq!(
+            release_delay,
+            Duration::ZERO,
+            "releasing the split divider must request an immediate repaint for the final position"
+        );
+
+        let (after_drag, _) = render_frame(&mut app, wide, Vec::new());
+        assert!(
+            app.detail_share > 0.50,
+            "expected dragged detail_share > 0.50, got {}",
+            app.detail_share
+        );
+        let dragged_share = app.detail_share;
+        let dragged_edit_left = text_left(&after_drag, "Edit and Resend")?;
+        assert!(
+            dragged_edit_left < initial_edit_left - 100.0,
+            "details pane should widen immediately after drag release: before={initial_edit_left}, after={dragged_edit_left}"
+        );
+
+        // Shrink to minimum size: clamped cleanly without overwriting the user's preferred share.
+        let min_viewport =
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(MIN_WINDOW[0], MIN_WINDOW[1]));
+        let narrow_drawn = render_settled(&mut app, MIN_WINDOW);
+        assert_no_text_overlap(&narrow_drawn, min_viewport, "dragged-shrunk@640x420");
+        assert!((app.detail_share - dragged_share).abs() < f32::EPSILON);
+
+        // Enlarge back to wide: user-dragged split width is restored.
+        let wide_viewport =
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(wide[0], wide[1]));
+        let restored_drawn = render_settled(&mut app, wide);
+        assert_no_text_overlap(&restored_drawn, wide_viewport, "dragged-restored@1100x700");
+        let restored_edit_left = text_left(&restored_drawn, "Edit and Resend")?;
+        assert!(
+            (restored_edit_left - dragged_edit_left).abs() < 4.0,
+            "expected restored detail position near {dragged_edit_left}, got {restored_edit_left}"
+        );
+
+        Ok(())
+    }
+
     #[tokio::test]
     async fn dialogs_fit_minimum_window_without_text_overlap()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -773,6 +903,7 @@ mod layout_tests {
 
         // Export HAR dialog at 640x420.
         let ctx = egui::Context::default();
+        fonts::configure_fonts(&ctx);
         let mut har = har_dialog::HarDialog::default();
         har.open("/tmp/example-export-path/session-20261123.har".to_owned());
         let counts = har_dialog::ScopeCounts {
@@ -789,13 +920,14 @@ mod layout_tests {
                 let _ = har.show(ui.ctx(), counts, false);
             });
             output.textures_delta.clear();
-            drawn = collect_text_shapes(&output.shapes, viewport);
+            drawn = collect_text_shapes(&output.shapes);
         }
         assert_no_text_overlap(&drawn, viewport, "har-dialog@640x420");
         assert!(drawn.iter().any(|item| item.text == "Cancel"));
 
         // Replay editor at 640x420.
         let ctx = egui::Context::default();
+        fonts::configure_fonts(&ctx);
         let mut replay = replay_panel::ReplayPanel::new(sample)?;
         let mut drawn = Vec::new();
         for _ in 0..3 {
@@ -807,7 +939,7 @@ mod layout_tests {
                 let _ = replay.show(ui.ctx(), None, None);
             });
             output.textures_delta.clear();
-            drawn = collect_text_shapes(&output.shapes, viewport);
+            drawn = collect_text_shapes(&output.shapes);
         }
         assert_no_text_overlap(&drawn, viewport, "replay-panel@640x420");
 
@@ -825,7 +957,7 @@ mod layout_tests {
                 app.bulk_body_save(ui.ctx());
             });
             output.textures_delta.clear();
-            drawn = collect_text_shapes(&output.shapes, viewport);
+            drawn = collect_text_shapes(&output.shapes);
         }
         assert_no_text_overlap(&drawn, viewport, "bulk-save@640x420");
         assert!(drawn.iter().any(|item| item.text == "Save"));

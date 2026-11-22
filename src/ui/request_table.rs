@@ -260,7 +260,6 @@ impl RequestTable {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.set_min_width(total_width);
-                ui.set_max_width(total_width);
                 self.show_table(
                     ui,
                     &rows,
@@ -363,7 +362,7 @@ impl RequestTable {
 /// that fit cleanly without slicing the next column at the pane border, while
 /// the remaining columns stay reachable via horizontal scrolling.
 fn column_widths(viewport_width: f32, spacing_x: f32, scroll_gutter: f32) -> [f32; 6] {
-    const METHOD: f32 = 64.0;
+    const METHOD: f32 = 78.0;
     const STATUS_WIDE: f32 = 112.0;
     const STATUS_COMPACT: f32 = 104.0;
     const TYPE: f32 = 48.0;
@@ -393,7 +392,7 @@ fn column_widths(viewport_width: f32, spacing_x: f32, scroll_gutter: f32) -> [f3
         return [METHOD, target, STATUS_COMPACT, TYPE, SIZE, DURATION];
     }
 
-    let method = METHOD.min((visible * 0.20).floor().max(Field::Method.min_width()));
+    let method = METHOD.min((visible * 0.22).floor().max(Field::Method.min_width()));
     let status = STATUS_COMPACT.min((visible * 0.30).floor().max(Field::Status.min_width()));
     let target = spacing_x
         .mul_add(-2.0, visible - method - status - EDGE_PAD)
@@ -473,9 +472,10 @@ fn show_cells(
     let mut clicked = false;
     row.col(|ui| {
         ui.push_id(record.id(), |ui| {
-            let response = ui.add(
-                egui::Button::selectable(selected, record.request().method().as_str()).truncate(),
-            );
+            let method = record.request().method().as_str();
+            let response = ui
+                .add(egui::Button::selectable(selected, method).truncate())
+                .on_hover_text(method);
             response.widget_info(|| {
                 egui::WidgetInfo::selected(
                     egui::Role::ListBoxOption,
@@ -763,5 +763,95 @@ mod tests {
         assert!(wide_total <= 740.0);
         assert!(wide[1] > narrow[1]);
         assert!(wide[1] >= 250.0);
+    }
+
+    fn header_left(shapes: &[egui::epaint::ClippedShape], label: &str) -> Option<f32> {
+        fn find_in_shape(shape: &egui::Shape, label: &str) -> Option<f32> {
+            match shape {
+                egui::Shape::Text(text) if text.galley.text().trim() == label => {
+                    Some(text.visual_bounding_rect().left())
+                }
+                egui::Shape::Vec(items) => items.iter().find_map(|item| find_in_shape(item, label)),
+                _ => None,
+            }
+        }
+        shapes
+            .iter()
+            .find_map(|clipped| find_in_shape(&clipped.shape, label))
+    }
+
+    #[test]
+    fn manual_column_resize_expands_column_and_persists() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let ctx = egui::Context::default();
+        let mut table = RequestTable::new();
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(740.0, 300.0));
+        let mut run = |events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(viewport),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(ui, |ui| {
+                        let _ = table.show(ui, Vec::new(), None, false);
+                    });
+            });
+            output.textures_delta.clear();
+            output.shapes
+        };
+
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            shapes = run(Vec::new());
+        }
+        let before_target =
+            header_left(&shapes, "Host / Path").ok_or("missing Host / Path header")?;
+        let before_size = header_left(&shapes, "Size").ok_or("missing Size header")?;
+
+        // Column 0 resize handle sits halfway across the spacing between Method and Host / Path.
+        let handle_x = before_target - 4.0;
+        let drag_y = 12.0;
+        let _ = run(vec![egui::Event::PointerMoved(egui::pos2(
+            handle_x, drag_y,
+        ))]);
+        let _ = run(vec![egui::Event::PointerButton {
+            pos: egui::pos2(handle_x, drag_y),
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        let _ = run(vec![egui::Event::PointerMoved(egui::pos2(
+            handle_x + 80.0,
+            drag_y,
+        ))]);
+        let _ = run(vec![egui::Event::PointerButton {
+            pos: egui::pos2(handle_x + 80.0, drag_y),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+
+        let settled = run(Vec::new());
+        let after_target =
+            header_left(&settled, "Host / Path").ok_or("missing Host / Path header after drag")?;
+        let after_size = header_left(&settled, "Size").ok_or("missing Size header after drag")?;
+        assert!(
+            after_target > before_target + 60.0,
+            "expected Method column expansion to shift Host / Path right: before={before_target}, after={after_target}"
+        );
+        assert!(
+            after_size > before_size + 60.0,
+            "expected later columns to shift right instead of being crushed: before={before_size}, after={after_size}"
+        );
+
+        // Width stays preserved on subsequent frames while viewport width is unchanged.
+        let next = run(Vec::new());
+        let next_target = header_left(&next, "Host / Path")
+            .ok_or("missing Host / Path header on subsequent frame")?;
+        assert!((next_target - after_target).abs() < 1.0);
+        Ok(())
     }
 }
