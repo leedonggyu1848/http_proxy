@@ -2,7 +2,10 @@
 //! rebuilt only when the shown body or the way it is shown changes.
 
 use crate::ui::body_format::{self, BodyFormat, Notice, NoticeLevel, ViewMode, highlight, tree};
+use crate::ui::body_matches::{BodyMatches, Hit};
 use crate::ui::body_view::{self, BodyText};
+use crate::ui::search::Query;
+use crate::ui::search::highlight::MatchColors;
 use crate::ui::theme::{Palette, Theme};
 use crate::ui::tree_view::TreeView;
 use eframe::egui::{self, Galley, text::LayoutJob};
@@ -29,6 +32,8 @@ pub(in crate::ui) struct BodySource<'a> {
     pub(in crate::ui) media_type: Option<&'a MediaType>,
     /// How much of the body the retained bytes cover.
     pub(in crate::ui) capture: Capture,
+    /// The search whose matches are marked, when it covers this body.
+    pub(in crate::ui) search: Option<&'a Query>,
 }
 
 /// How much of a body the retained bytes cover, and why not all of it.
@@ -96,6 +101,8 @@ struct Key {
     mode: ViewMode,
     theme: Theme,
     font: egui::FontId,
+    /// [`Query::generation`] of the marked search.
+    search: Option<u64>,
 }
 
 enum Content {
@@ -112,9 +119,19 @@ enum Content {
         job: LayoutJob,
         /// One layout per line for formats shown with line numbers.
         lines: Option<Vec<LayoutJob>>,
+        /// Search matches, with `job` and `lines` before they were marked.
+        matches: Option<Box<Marked>>,
         /// The last laid-out galley and the wrap width it was laid out for.
         galley: Option<(u32, Arc<Galley>)>,
     },
+}
+
+/// Search matches in a body view and the text before marking, so moving to
+/// another match marks it again from the original.
+struct Marked {
+    matches: BodyMatches,
+    job: LayoutJob,
+    lines: Option<Vec<LayoutJob>>,
 }
 
 /// The tree of one side's body with its open rows and search. It is kept
@@ -201,6 +218,7 @@ impl BodyViewCache {
             mode,
             theme: ui.ctx().theme(),
             font: egui::TextStyle::Monospace.resolve(ui.style()),
+            search: source.search.map(|query| query.generation),
         };
         let side = match source.side {
             BodySide::Request => &mut self.request,
@@ -243,6 +261,9 @@ fn build(
             Some(Ok(())) => {
                 let incomplete = trees.view().and_then(|view| view.incomplete());
                 notices.extend(incomplete.map(Notice::warning));
+                if source.search.is_some() {
+                    notices.push(Notice::info("Search matches are marked in Pretty and Raw."));
+                }
                 return Content::Tree { format, notices };
             }
             Some(Err(reason)) => notices.push(Notice::warning(format!(
@@ -257,14 +278,38 @@ fn build(
     let formatted = body_format::format(format, key.mode, &text);
     notices.extend(formatted.notices);
     let palette = highlight::SyntaxPalette::for_theme(key.theme);
+    let job = highlight::layout_job(&formatted.styled, &palette, text_color, &key.font);
+    let lines = format
+        .spec()
+        .numbered
+        .then(|| highlight::line_jobs(&formatted.styled, &palette, text_color, &key.font));
+    let Some(query) = source.search else {
+        return Content::Ready {
+            format,
+            notices,
+            job,
+            lines,
+            matches: None,
+            galley: None,
+        };
+    };
+    let matches = BodyMatches::find(
+        &query.matcher,
+        &job,
+        lines.as_deref(),
+        MatchColors::for_theme(key.theme),
+    );
+    let (marked_job, marked_lines) = matches.mark(&job, lines.as_deref());
     Content::Ready {
         format,
         notices,
-        job: highlight::layout_job(&formatted.styled, &palette, text_color, &key.font),
-        lines: format
-            .spec()
-            .numbered
-            .then(|| highlight::line_jobs(&formatted.styled, &palette, text_color, &key.font)),
+        job: marked_job,
+        lines: marked_lines,
+        matches: Some(Box::new(Marked {
+            matches,
+            job,
+            lines,
+        })),
         galley: None,
     }
 }
@@ -280,7 +325,7 @@ fn capture_notices(decoding: Option<String>, capture: Capture) -> Vec<Notice> {
 }
 
 fn render(ui: &mut egui::Ui, content: &mut Content, key: &Key, trees: &mut TreeCache) {
-    let (format, notices, job, lines, galley) = match content {
+    let (format, notices, job, lines, matches, galley) = match content {
         Content::Unavailable(message) => {
             ui.colored_label(Palette::of(ui).warning, message.as_str());
             return;
@@ -299,12 +344,20 @@ fn render(ui: &mut egui::Ui, content: &mut Content, key: &Key, trees: &mut TreeC
             notices,
             job,
             lines,
+            matches,
             galley,
-        } => (*format, &*notices, &*job, lines.as_deref(), galley),
+        } => (*format, &*notices, job, lines, matches, galley),
     };
     render_header(ui, format, notices, key);
+    let scroll = matches.as_mut().and_then(|marked| {
+        if marked.matches.controls(ui) {
+            (*job, *lines) = marked.matches.mark(&marked.job, marked.lines.as_deref());
+            *galley = None;
+        }
+        marked.matches.take_scroll()
+    });
     if let Some(lines) = lines {
-        render_numbered_lines(ui, lines, key.side);
+        render_numbered_lines(ui, lines, key.side, scroll.map(|hit| hit.line));
         return;
     }
     let mut text = job.text.as_str();
@@ -321,13 +374,27 @@ fn render(ui: &mut egui::Ui, content: &mut Content, key: &Key, trees: &mut TreeC
             }
         }
     };
-    ui.add(
-        egui::TextEdit::multiline(&mut text)
-            .font(egui::TextStyle::Monospace)
-            .desired_rows(8)
-            .interactive(false)
-            .layouter(&mut layouter),
-    );
+    let output = egui::TextEdit::multiline(&mut text)
+        .font(egui::TextStyle::Monospace)
+        .desired_rows(8)
+        .interactive(false)
+        .layouter(&mut layouter)
+        .show(ui);
+    if let Some(hit) = scroll {
+        scroll_to_hit(ui, &output, &job.text, &hit);
+    }
+}
+
+/// Scrolls the enclosing scroll area so the match `hit` in `text` is in view.
+fn scroll_to_hit(ui: &egui::Ui, output: &egui::text_edit::TextEditOutput, text: &str, hit: &Hit) {
+    let characters = text
+        .get(..hit.range.start)
+        .map_or(0, |prefix| prefix.chars().count());
+    let rect = output
+        .galley
+        .pos_from_cursor(egui::text::CCursor::new(characters))
+        .translate(output.galley_pos.to_vec2());
+    ui.scroll_to_rect(rect, Some(egui::Align::Center));
 }
 
 /// The format and view mode, then each notice in order.
@@ -348,36 +415,51 @@ fn render_header(ui: &mut egui::Ui, format: BodyFormat, notices: &[Notice], key:
 /// Draws `lines` with a line number gutter, laying out only the rows that
 /// are scrolled into view. Long lines scroll sideways instead of wrapping so
 /// each row is one source line.
-fn render_numbered_lines(ui: &mut egui::Ui, lines: &[LayoutJob], side: BodySide) {
+fn render_numbered_lines(
+    ui: &mut egui::Ui,
+    lines: &[LayoutJob],
+    side: BodySide,
+    scroll_to: Option<usize>,
+) {
     let font = egui::TextStyle::Monospace.resolve(ui.style());
     let row_height = ui.fonts_mut(|fonts| fonts.row_height(&font));
     let digits = lines.len().to_string().len();
-    egui::ScrollArea::both()
+    let mut area = egui::ScrollArea::both()
         .id_salt(("body-lines", side))
         .max_height(LINE_VIEW_HEIGHT)
-        .auto_shrink([false, true])
-        .show_rows(ui, row_height, lines.len(), |ui, rows| {
-            for number in rows {
-                let Some(line) = lines.get(number) else {
-                    break;
-                };
-                // `horizontal` would pad rows to the button height and break
-                // the fixed row height `show_rows` relies on.
-                let row_size = egui::vec2(ui.available_width(), row_height);
-                let layout = egui::Layout::left_to_right(egui::Align::Min);
-                ui.allocate_ui_with_layout(row_size, layout, |ui| {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(format!("{:>digits$}", number + 1))
-                                .font(font.clone())
-                                .weak(),
-                        )
-                        .selectable(false),
-                    );
-                    ui.add(egui::Label::new(line.clone()).wrap_mode(egui::TextWrapMode::Extend));
-                });
-            }
-        });
+        .auto_shrink([false, true]);
+    if let Some(line) = scroll_to {
+        // `show_rows` places rows `row_height` plus item spacing apart.
+        let spacing = ui.spacing().item_spacing.y;
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "line counts of an 8 KiB preview fit in f32"
+        )]
+        let top = line as f32 * (row_height + spacing);
+        area = area.vertical_scroll_offset((top - LINE_VIEW_HEIGHT / 2.0).max(0.0));
+    }
+    area.show_rows(ui, row_height, lines.len(), |ui, rows| {
+        for number in rows {
+            let Some(line) = lines.get(number) else {
+                break;
+            };
+            // `horizontal` would pad rows to the button height and break
+            // the fixed row height `show_rows` relies on.
+            let row_size = egui::vec2(ui.available_width(), row_height);
+            let layout = egui::Layout::left_to_right(egui::Align::Min);
+            ui.allocate_ui_with_layout(row_size, layout, |ui| {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(format!("{:>digits$}", number + 1))
+                            .font(font.clone())
+                            .weak(),
+                    )
+                    .selectable(false),
+                );
+                ui.add(egui::Label::new(line.clone()).wrap_mode(egui::TextWrapMode::Extend));
+            });
+        }
+    });
 }
 
 #[cfg(test)]
@@ -423,6 +505,7 @@ mod tests {
             encodings: &[],
             media_type: media("application/json"),
             capture: Capture::Whole,
+            search: None,
         }
     }
 

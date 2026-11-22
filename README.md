@@ -9,7 +9,7 @@ HTTP Inspector는 로컬 HTTP 프록시를 통해 요청·응답 기록을 보�
 - **로컬 프록시:** `127.0.0.1`에서만 연결을 받는 HTTP/1.1 프록시(기본 포트 `8080`). HTTPS는 기본적으로 `CONNECT` 터널로 전달한다.
 - **선택적 HTTPS 복호화:** 설치별 로컬 CA로 HTTPS를 복호화한다. 실제 서버 인증서와 호스트 이름은 그대로 검증한다.
 - **검사 브라우저:** 설치된 Firefox·Chrome·Chromium을 프록시와 CA가 설정된 비공개 창으로 연다.
-- **요청 목록과 상세:** 메서드, 대상, 상태, 시간을 목록으로 보고, 선택한 요청의 헤더와 본문을 확인한다. 검색과 결과 필터를 제공한다.
+- **요청 목록과 상세:** 메서드, 대상, 상태, 시간을 목록으로 보고, 선택한 요청의 헤더와 본문을 확인한다. 본문까지 찾는 검색과 결과 필터를 제공한다.
 - **본문 보기:** 압축을 푼 본문을 JSON·HTML·XML·CSS·JavaScript·form 형식별로 정리해 보여 주고, 이미지 응답은 그림으로 그린다.
 - **요청 재전송:** 기록한 요청을 수정해 다시 보내고 원본과 비교한다.
 - **저장:** 앱 창을 PNG로, 세션의 모든 요청을 텍스트 로그나 HAR 파일로, 선택한 요청·응답 본문을 원본 파일로 저장한다.
@@ -137,7 +137,7 @@ CA 상태 표시의 의미, OS별 CA 저장 위치, 직접 실행한 Chrome 설�
 
 ## 자주 쓰는 기능
 
-- **필터·검색:** 필터 줄에 검색어를 입력하고 종류(All·Responses·Failures·Tunnels)를 고른다. **Follow newest**는 새 요청을 따라가고 **Clear**는 화면 기록을 지운다.
+- **필터·검색:** 필터 줄에 검색어를 입력하면 메서드, URL, 헤더, 상태와 압축을 푼 요청·응답 본문(방향별 앞 8KiB)에서 찾는다. 검색 범위(All·URL·Headers·Request body·Response body), **Aa**(대소문자 구분), **.\***(정규식)와 종류(All·Responses·Failures·Tunnels)를 고른다. 상세 패널은 일치한 위치를 강조하고 **Previous**·**Next**로 이동한다. [요청 검색](docs/guide/search.md)을 참고한다. **Follow newest**는 새 요청을 따라가고 **Clear**는 화면 기록을 지운다.
 - **본문 보기:** **Body** 탭의 **View: Pretty / Raw / Tree**로 보기 방식을 바꾼다. 미리보기는 방향별 최대 8KiB다. 자세한 내용은 [본문 보기](docs/guide/body-view.md)를 참고한다.
 - **요청 재전송:** 요청을 우클릭하거나 상세 패널에서 **Edit and Resend**를 눌러 수정한 뒤 **Send**한다. [요청을 수정해 다시 보내기](docs/guide/resend.md)를 참고한다.
 - **cURL로 복사:** 요청을 우클릭하거나 상세 패널에서 **Copy as cURL**을 누르면 bash·zsh에서 실행할 수 있는 `curl` 명령이 복사된다. 값이 저장되지 않는 `Authorization`·`Cookie` 헤더는 기본으로 빼고, **Redacted placeholders**를 켜면 `<REDACTED>` 자리 표시자로 넣는다. 본문이 8KiB를 넘어 잘린 요청은 복사하지 않고 안내한다. [요청을 cURL 명령으로 복사하기](docs/guide/copy-as-curl.md)를 참고한다.

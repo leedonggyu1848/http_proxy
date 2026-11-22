@@ -58,6 +58,40 @@ pub(in crate::ui) fn decode(bytes: &[u8], encodings: &[&str], complete: bool) ->
     }
 }
 
+/// Decoded bytes of a retained body, bounded like the text preview.
+#[derive(Debug, Eq, PartialEq)]
+pub(in crate::ui) struct DecodedPrefix {
+    pub(in crate::ui) bytes: Vec<u8>,
+    /// More decoded bytes exist than the preview limit keeps.
+    pub(in crate::ui) cut: bool,
+}
+
+/// Decodes at most the first 8 KiB of `bytes` under the same limits as the
+/// text preview, so search sees what the preview shows. A decoding error
+/// after some output keeps that output, as an incomplete capture would.
+pub(in crate::ui) fn decode_prefix(
+    bytes: &[u8],
+    encodings: &[&str],
+) -> Result<DecodedPrefix, String> {
+    let encodings = content_encodings(encodings)?;
+    let mut decoded = if encodings.is_empty() {
+        bytes.get(..=PREVIEW_BYTES).unwrap_or(bytes).to_vec()
+    } else {
+        let (decoded, error) = read_decoded(bytes, &encodings, PREVIEW_BYTES, INTERMEDIATE_BYTES)
+            .map_err(|error| error.to_string())?;
+        match error {
+            Some(error) if decoded.is_empty() => return Err(error.to_string()),
+            _ => decoded,
+        }
+    };
+    let cut = decoded.len() > PREVIEW_BYTES;
+    decoded.truncate(PREVIEW_BYTES);
+    Ok(DecodedPrefix {
+        bytes: decoded,
+        cut,
+    })
+}
+
 /// Removes the `Content-Encoding` layers from a complete body and returns at
 /// most `limit` decoded bytes. Unencoded bodies are returned as they are.
 ///

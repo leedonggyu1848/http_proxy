@@ -10,7 +10,7 @@
 
 - **툴바:** 프록시 상태·주소·`Copy`·`Stop`, **Decrypt HTTPS**와 CA 상태, **Open Browser**, **Save**, **Settings**(테마), **?**(캡처 범위 안내). 창이 좁으면 다음 줄로 넘어간다.
 - **알림:** 포트 충돌, 브라우저·CA 오류처럼 확인해야 할 오류와 경고는 툴바 바로 아래에 표시한다.
-- **필터 줄:** 검색어, 종류(All·Responses·Failures·Tunnels), **Follow newest**, **Clear**.
+- **필터 줄:** 검색어, 검색 범위(All·URL·Headers·Request body·Response body), **Aa**(대소문자 구분), **.\***(정규식), 종류(All·Responses·Failures·Tunnels), **Follow newest**, **Clear**.
 - **요청 목록과 상세:** 가운데 경계를 끌어 너비를 조절한다. 목록의 열은 목록 영역 안에서 잘린다. 요청이 없으면 다음에 할 일을 안내한다.
 - **상태 바:** 요청 수, 누락·삭제된 기록 수, 전체 로그 오류와 한도 경고, 저장 결과.
 
