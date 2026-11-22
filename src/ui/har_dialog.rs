@@ -75,11 +75,17 @@ impl HarDialog {
         }
         let mut open = true;
         let mut confirmed = None;
-        let center = context.content_rect().center();
+        let viewport = context.content_rect();
+        let center = viewport.center();
+        let max_width = (viewport.width() - 32.0).clamp(240.0, 460.0);
+        let max_height = (viewport.height() - 48.0).max(200.0);
         egui::Window::new("Export HAR")
             .open(&mut open)
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(center)
+            .max_width(max_width)
+            .max_height(max_height)
+            .vscroll(true)
             .collapsible(false)
             .resizable(false)
             .show(context, |ui| confirmed = self.contents(ui, counts, busy));
@@ -121,16 +127,17 @@ impl HarDialog {
         );
         ui.separator();
         ui.label("File");
+        let path_width = ui.available_width().clamp(180.0, 420.0);
         ui.add(
             egui::TextEdit::singleline(&mut self.path)
-                .desired_width(420.0)
+                .desired_width(path_width)
                 .hint_text("Path of a new .har file"),
         );
         ui.weak("An existing file is never replaced.");
         let count = counts.of(self.scope);
         let ready = count > 0 && !self.path.trim().is_empty() && !busy;
         let mut confirmed = None;
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(ready, egui::Button::new(format!("Export {count} requests")))
                 .clicked()

@@ -45,17 +45,21 @@ impl Field {
         }
     }
 
+    /// Minimum width kept even if the user drags a column narrow.
+    const fn min_width(self) -> f32 {
+        match self {
+            Self::Method | Self::Size => 40.0,
+            Self::Target => 60.0,
+            Self::Status => 64.0,
+            Self::Type => 32.0,
+            Self::Duration => 52.0,
+        }
+    }
+
     /// Columns truncate their text instead of clipping, because a clipped
     /// cell gets its own clip rectangle and therefore its own draw call.
-    fn column(self) -> Column {
-        match self {
-            Self::Method => Column::initial(56.0).at_least(40.0),
-            Self::Target => Column::initial(170.0).at_least(60.0),
-            Self::Status => Column::initial(130.0).at_least(64.0),
-            Self::Type => Column::initial(44.0).at_least(32.0),
-            Self::Size => Column::initial(68.0).at_least(40.0),
-            Self::Duration => Column::remainder().at_least(56.0),
-        }
+    fn column(self, width: f32) -> Column {
+        Column::initial(width.max(self.min_width())).at_least(self.min_width())
     }
 
     fn compare(self, left: &Exchange, right: &Exchange) -> Ordering {
@@ -167,6 +171,7 @@ pub(in crate::ui) struct RequestTable {
     follow_newest: bool,
     keyboard_row: Option<usize>,
     page_rows: usize,
+    last_viewport_width: f32,
 }
 
 impl RequestTable {
@@ -183,6 +188,7 @@ impl RequestTable {
             saving_body: false,
             keyboard_row: None,
             page_rows: 1,
+            last_viewport_width: 0.0,
         }
     }
 
@@ -240,6 +246,55 @@ impl RequestTable {
             }
         }
 
+        let viewport_width = ui.available_width();
+        let spacing_x = ui.spacing().item_spacing.x;
+        let scroll_gutter = ui.spacing().scroll.allocated_width();
+        let widths = column_widths(viewport_width, spacing_x, scroll_gutter);
+        let total_width = spacing_x.mul_add(5.0, widths.iter().sum::<f32>()) + scroll_gutter;
+        let width_changed = (viewport_width - self.last_viewport_width).abs() > 1.0;
+        self.last_viewport_width = viewport_width;
+        let row_stride = ROW_HEIGHT + ui.spacing().item_spacing.y;
+
+        let inner_height = egui::ScrollArea::horizontal()
+            .id_salt("requests-hscroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.set_min_width(total_width);
+                self.show_table(
+                    ui,
+                    &rows,
+                    selected,
+                    scroll_to,
+                    widths,
+                    width_changed,
+                    &mut changed,
+                )
+            })
+            .inner;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "The viewport height is nonnegative and UI-sized, and a page counts only full rows"
+        )]
+        let page_rows = (inner_height / row_stride) as usize;
+        self.page_rows = page_rows.max(1);
+        changed
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Table rendering passes frame-local selection and layout metrics directly without extra state"
+    )]
+    fn show_table(
+        &mut self,
+        ui: &mut egui::Ui,
+        rows: &[&Exchange],
+        selected: Option<RecordId>,
+        scroll_to: Option<usize>,
+        widths: [f32; 6],
+        width_changed: bool,
+        changed: &mut Option<RecordId>,
+    ) -> f32 {
         let mut table = TableBuilder::new(ui)
             .id_salt("requests")
             .striped(true)
@@ -248,10 +303,12 @@ impl RequestTable {
             .auto_shrink([false, false])
             .stick_to_bottom(self.follow_newest && self.sort.field.is_none())
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
-        for field in Field::ALL {
-            table = table.column(field.column());
+        for (field, width) in Field::ALL.into_iter().zip(widths) {
+            table = table.column(field.column(width));
         }
-
+        if width_changed {
+            table.reset();
+        }
         if let Some(index) = scroll_to {
             table = table.scroll_to_row(index, None).animate_scrolling(false);
         }
@@ -261,7 +318,11 @@ impl RequestTable {
                     header.col(|ui| {
                         let title = format!("{}{}", field.title(), self.sort.arrow(field));
                         if ui
-                            .add(egui::Button::new(RichText::new(title).strong()).frame(false))
+                            .add(
+                                egui::Button::new(RichText::new(title).strong())
+                                    .frame(false)
+                                    .truncate(),
+                            )
                             .clicked()
                         {
                             self.sort = self.sort.toggled(field);
@@ -282,25 +343,62 @@ impl RequestTable {
                     if show_cells(&mut row, record, selected_row, focus_row) {
                         self.follow_newest = false;
                         self.keyboard_row = None;
-                        changed = Some(record.id());
+                        *changed = Some(record.id());
                     }
                     self.row_menu(&row.response(), record);
                     if row.response().clicked() {
                         self.keyboard_row = None;
-                        changed = Some(record.id());
+                        *changed = Some(record.id());
                     }
                 });
             });
-        let row_stride = ROW_HEIGHT + ui.spacing().item_spacing.y;
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "The viewport height is nonnegative and UI-sized, and a page counts only full rows"
-        )]
-        let page_rows = (body.inner_rect.height() / row_stride) as usize;
-        self.page_rows = page_rows.max(1);
-        changed
+        body.inner_rect.height()
     }
+}
+
+/// Computes responsive initial column widths for `viewport_width`.
+/// When all six columns fit, `Host / Path` takes the spare width. When the
+/// table is narrower, `Host / Path` fills the space beside the leading columns
+/// that fit cleanly without slicing the next column at the pane border, while
+/// the remaining columns stay reachable via horizontal scrolling.
+fn column_widths(viewport_width: f32, spacing_x: f32, scroll_gutter: f32) -> [f32; 6] {
+    const METHOD: f32 = 78.0;
+    const STATUS_WIDE: f32 = 112.0;
+    const STATUS_COMPACT: f32 = 104.0;
+    const TYPE: f32 = 48.0;
+    const SIZE: f32 = 68.0;
+    const DURATION: f32 = 68.0;
+    const MIN_TARGET: f32 = 140.0;
+    const EDGE_PAD: f32 = 4.0;
+
+    let usable = (viewport_width - scroll_gutter).max(0.0);
+    let fixed_wide = METHOD + STATUS_WIDE + TYPE + SIZE + DURATION;
+    let all_spacing = spacing_x * 5.0;
+    if usable >= fixed_wide + all_spacing + MIN_TARGET {
+        let target = (usable - fixed_wide - all_spacing).floor();
+        return [METHOD, target, STATUS_WIDE, TYPE, SIZE, DURATION];
+    }
+
+    let visible = viewport_width.max(0.0);
+    let fixed_five = spacing_x.mul_add(4.0, METHOD + STATUS_COMPACT + TYPE + SIZE) + EDGE_PAD;
+    if visible >= fixed_five + MIN_TARGET {
+        let target = (visible - fixed_five).floor();
+        return [METHOD, target, STATUS_COMPACT, TYPE, SIZE, DURATION];
+    }
+
+    let fixed_four = spacing_x.mul_add(3.0, METHOD + STATUS_COMPACT + TYPE) + EDGE_PAD;
+    if visible >= fixed_four + MIN_TARGET {
+        let target = (visible - fixed_four).floor();
+        return [METHOD, target, STATUS_COMPACT, TYPE, SIZE, DURATION];
+    }
+
+    let method = METHOD.min((visible * 0.22).floor().max(Field::Method.min_width()));
+    let status = STATUS_COMPACT.min((visible * 0.30).floor().max(Field::Status.min_width()));
+    let target = spacing_x
+        .mul_add(-2.0, visible - method - status - EDGE_PAD)
+        .floor()
+        .clamp(84.0, 220.0);
+    [method, target, status, TYPE, SIZE, DURATION]
 }
 
 impl RequestTable {
@@ -374,7 +472,10 @@ fn show_cells(
     let mut clicked = false;
     row.col(|ui| {
         ui.push_id(record.id(), |ui| {
-            let response = ui.selectable_label(selected, record.request().method().as_str());
+            let method = record.request().method().as_str();
+            let response = ui
+                .add(egui::Button::selectable(selected, method).truncate())
+                .on_hover_text(method);
             response.widget_info(|| {
                 egui::WidgetInfo::selected(
                     egui::Role::ListBoxOption,
@@ -424,14 +525,20 @@ fn show_cells(
         ui.add(egui::Label::new(content_type(record).unwrap_or("—")).truncate());
     });
     row.col(|ui| {
-        ui.monospace(
-            record
-                .received_bytes()
-                .map_or_else(|| "—".to_owned(), format_bytes),
+        ui.add(
+            egui::Label::new(
+                RichText::new(
+                    record
+                        .received_bytes()
+                        .map_or_else(|| "—".to_owned(), format_bytes),
+                )
+                .monospace(),
+            )
+            .truncate(),
         );
     });
     row.col(|ui| {
-        ui.monospace(duration_text(record));
+        ui.add(egui::Label::new(RichText::new(duration_text(record)).monospace()).truncate());
     });
     clicked
 }
@@ -632,5 +739,119 @@ mod tests {
     fn ranks_responses_by_status_before_other_outcomes() {
         assert!(status_rank(&Outcome::InFlight) > (0, 599));
         assert!(status_rank(&Outcome::Cancelled) > status_rank(&Outcome::InFlight));
+    }
+
+    #[test]
+    fn column_widths_adapt_between_narrow_and_wide_viewports() {
+        let spacing = 8.0;
+        let gutter = 14.0;
+
+        // Minimum-width table pane (~360px): Method, Host/Path, Status fit cleanly inside.
+        let narrow = column_widths(360.0, spacing, gutter);
+        assert!(narrow[0] >= Field::Method.min_width());
+        assert!(narrow[1] >= 84.0);
+        assert!(narrow[2] >= Field::Status.min_width());
+        assert!(spacing.mul_add(2.0, narrow[0] + narrow[1] + narrow[2]) <= 360.0);
+
+        // Medium table pane (~415px): 4 leading columns fit cleanly.
+        let medium = column_widths(415.0, spacing, gutter);
+        assert!(spacing.mul_add(3.0, medium[0] + medium[1] + medium[2] + medium[3]) <= 415.0);
+
+        // Wide table pane (~740px): all 6 columns fit and Host/Path takes spare space.
+        let wide = column_widths(740.0, spacing, gutter);
+        let wide_total = spacing.mul_add(5.0, wide.iter().sum::<f32>()) + gutter;
+        assert!(wide_total <= 740.0);
+        assert!(wide[1] > narrow[1]);
+        assert!(wide[1] >= 250.0);
+    }
+
+    fn header_left(shapes: &[egui::epaint::ClippedShape], label: &str) -> Option<f32> {
+        fn find_in_shape(shape: &egui::Shape, label: &str) -> Option<f32> {
+            match shape {
+                egui::Shape::Text(text) if text.galley.text().trim() == label => {
+                    Some(text.visual_bounding_rect().left())
+                }
+                egui::Shape::Vec(items) => items.iter().find_map(|item| find_in_shape(item, label)),
+                _ => None,
+            }
+        }
+        shapes
+            .iter()
+            .find_map(|clipped| find_in_shape(&clipped.shape, label))
+    }
+
+    #[test]
+    fn manual_column_resize_expands_column_and_persists() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let ctx = egui::Context::default();
+        let mut table = RequestTable::new();
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(740.0, 300.0));
+        let mut run = |events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(viewport),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(ui, |ui| {
+                        let _ = table.show(ui, Vec::new(), None, false);
+                    });
+            });
+            output.textures_delta.clear();
+            output.shapes
+        };
+
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            shapes = run(Vec::new());
+        }
+        let before_target =
+            header_left(&shapes, "Host / Path").ok_or("missing Host / Path header")?;
+        let before_size = header_left(&shapes, "Size").ok_or("missing Size header")?;
+
+        // Column 0 resize handle sits halfway across the spacing between Method and Host / Path.
+        let handle_x = before_target - 4.0;
+        let drag_y = 12.0;
+        let _ = run(vec![egui::Event::PointerMoved(egui::pos2(
+            handle_x, drag_y,
+        ))]);
+        let _ = run(vec![egui::Event::PointerButton {
+            pos: egui::pos2(handle_x, drag_y),
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        let _ = run(vec![egui::Event::PointerMoved(egui::pos2(
+            handle_x + 80.0,
+            drag_y,
+        ))]);
+        let _ = run(vec![egui::Event::PointerButton {
+            pos: egui::pos2(handle_x + 80.0, drag_y),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+
+        let settled = run(Vec::new());
+        let after_target =
+            header_left(&settled, "Host / Path").ok_or("missing Host / Path header after drag")?;
+        let after_size = header_left(&settled, "Size").ok_or("missing Size header after drag")?;
+        assert!(
+            after_target > before_target + 60.0,
+            "expected Method column expansion to shift Host / Path right: before={before_target}, after={after_target}"
+        );
+        assert!(
+            after_size > before_size + 60.0,
+            "expected later columns to shift right instead of being crushed: before={before_size}, after={after_size}"
+        );
+
+        // Width stays preserved on subsequent frames while viewport width is unchanged.
+        let next = run(Vec::new());
+        let next_target = header_left(&next, "Host / Path")
+            .ok_or("missing Host / Path header on subsequent frame")?;
+        assert!((next_target - after_target).abs() < 1.0);
+        Ok(())
     }
 }

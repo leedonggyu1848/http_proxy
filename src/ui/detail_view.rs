@@ -19,7 +19,10 @@ impl InspectorApp {
     pub(in crate::ui) fn detail_panel(&mut self, ui: &mut egui::Ui, shortcuts_allowed: bool) {
         let Some(selected) = self.selected else {
             ui.centered_and_justified(|ui| {
-                ui.label("Select a request to inspect headers and body previews.");
+                ui.add(
+                    egui::Label::new("Select a request to inspect headers and body previews.")
+                        .wrap(),
+                );
             });
             return;
         };
@@ -143,7 +146,7 @@ fn view_mode_bar(ui: &mut egui::Ui, mode: &mut ViewMode, has_tree: bool) -> View
     if !has_tree && *mode == ViewMode::Tree {
         *mode = ViewMode::Pretty;
     }
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label("View:");
         for option in ViewMode::ALL {
             ui.add_enabled_ui(option != ViewMode::Tree || has_tree, |ui| {
@@ -154,6 +157,51 @@ fn view_mode_bar(ui: &mut egui::Ui, mode: &mut ViewMode, has_tree: bool) -> View
         }
     });
     *mode
+}
+
+/// Column width bounds for two-column key/value grids inside the detail pane.
+#[derive(Clone, Copy)]
+struct GridBounds {
+    available: f32,
+    right: f32,
+    key_max: f32,
+}
+
+impl GridBounds {
+    fn from_ui(ui: &egui::Ui) -> Self {
+        let available = ui.available_width().max(120.0);
+        let right = ui.cursor().left() + available;
+        let key_max = ((available - ui.spacing().item_spacing.x) * 0.42).clamp(72.0, 220.0);
+        Self {
+            available,
+            right,
+            key_max,
+        }
+    }
+
+    fn value_max(self, ui: &egui::Ui) -> f32 {
+        (self.right - ui.cursor().left()).max(48.0)
+    }
+}
+
+fn wrapped_cell(ui: &mut egui::Ui, max_width: f32, text: impl Into<egui::WidgetText>) {
+    ui.scope(|ui| {
+        ui.set_max_width(max_width);
+        ui.add(egui::Label::new(text).wrap());
+    });
+}
+
+fn wrapped_highlight(
+    text: &str,
+    query: &Query,
+    font: egui::FontId,
+    color: egui::Color32,
+    colors: MatchColors,
+    max_width: f32,
+) -> egui::text::LayoutJob {
+    let mut job = highlight::plain(text, &query.matcher, font, color, colors);
+    job.wrap.max_width = max_width;
+    job
 }
 
 /// Lists decoded query parameters of the request target, if it has any.
@@ -168,16 +216,26 @@ fn render_query(ui: &mut egui::Ui, target: &str) {
     }
     ui.strong("Query parameters");
     let key_color = SyntaxPalette::for_theme(ui.ctx().theme()).key;
+    let bounds = GridBounds::from_ui(ui);
     egui::Grid::new("query-parameters")
+        .num_columns(2)
         .striped(true)
+        .max_col_width(bounds.available)
         .show(ui, |ui| {
             for (key, value) in pairs {
-                ui.label(
+                wrapped_cell(
+                    ui,
+                    bounds.key_max,
                     egui::RichText::new(form::visible(&key))
                         .monospace()
                         .color(key_color),
                 );
-                ui.monospace(form::visible(&value));
+                let value_max = bounds.value_max(ui);
+                wrapped_cell(
+                    ui,
+                    value_max,
+                    egui::RichText::new(form::visible(&value)).monospace(),
+                );
                 ui.end_row();
             }
         });
@@ -189,31 +247,50 @@ fn render_headers(ui: &mut egui::Ui, id: &str, headers: &HeaderPreview, search: 
     let font = egui::TextStyle::Monospace.resolve(ui.style());
     let text_color = ui.visuals().text_color();
     let colors = MatchColors::for_theme(ui.ctx().theme());
-    egui::Grid::new(id).striped(true).show(ui, |ui| {
-        for header in headers.entries() {
-            let name = format!("{}:", header.name());
-            if let Some(query) = search {
-                ui.label(highlight::plain(
-                    &name,
-                    &query.matcher,
-                    font.clone(),
-                    name_color,
-                    colors,
-                ));
-                ui.label(highlight::plain(
-                    header.value(),
-                    &query.matcher,
-                    font.clone(),
-                    text_color,
-                    colors,
-                ));
-            } else {
-                ui.label(egui::RichText::new(name).monospace().color(name_color));
-                ui.monospace(header.value());
+    let bounds = GridBounds::from_ui(ui);
+    egui::Grid::new(id)
+        .num_columns(2)
+        .striped(true)
+        .max_col_width(bounds.available)
+        .show(ui, |ui| {
+            for header in headers.entries() {
+                let name = format!("{}:", header.name());
+                if let Some(query) = search {
+                    let name_job = wrapped_highlight(
+                        &name,
+                        query,
+                        font.clone(),
+                        name_color,
+                        colors,
+                        bounds.key_max,
+                    );
+                    wrapped_cell(ui, bounds.key_max, name_job);
+                    let value_max = bounds.value_max(ui);
+                    let value_job = wrapped_highlight(
+                        header.value(),
+                        query,
+                        font.clone(),
+                        text_color,
+                        colors,
+                        value_max,
+                    );
+                    wrapped_cell(ui, value_max, value_job);
+                } else {
+                    wrapped_cell(
+                        ui,
+                        bounds.key_max,
+                        egui::RichText::new(name).monospace().color(name_color),
+                    );
+                    let value_max = bounds.value_max(ui);
+                    wrapped_cell(
+                        ui,
+                        value_max,
+                        egui::RichText::new(header.value()).monospace(),
+                    );
+                }
+                ui.end_row();
             }
-            ui.end_row();
-        }
-    });
+        });
     if headers.entries().is_empty() {
         ui.weak("No headers captured.");
     }
@@ -367,13 +444,18 @@ fn render_timing(ui: &mut egui::Ui, record: &Exchange) {
         (settled_label, settled_value),
         ("Total", total),
     ];
-    egui::Grid::new("timing").num_columns(2).show(ui, |ui| {
-        for (label, value) in rows {
-            ui.label(label);
-            ui.monospace(value);
-            ui.end_row();
-        }
-    });
+    let bounds = GridBounds::from_ui(ui);
+    egui::Grid::new("timing")
+        .num_columns(2)
+        .max_col_width(bounds.available)
+        .show(ui, |ui| {
+            for (label, value) in rows {
+                wrapped_cell(ui, bounds.key_max, label);
+                let value_max = bounds.value_max(ui);
+                wrapped_cell(ui, value_max, egui::RichText::new(value).monospace());
+                ui.end_row();
+            }
+        });
 }
 
 fn optional_millis(duration: Option<Duration>) -> String {
@@ -395,23 +477,42 @@ fn elapsed_text(record: &Exchange) -> String {
 fn render_tunnel(ui: &mut egui::Ui, tunnel: &TunnelPreview) {
     let snapshot = tunnel.snapshot();
     let state = outcome_view::tunnel_detail(snapshot.state());
+    let bounds = GridBounds::from_ui(ui);
     egui::Grid::new("tunnel-details")
         .num_columns(2)
+        .max_col_width(bounds.available)
         .show(ui, |ui| {
-            ui.label("State");
-            ui.label(state);
+            wrapped_cell(ui, bounds.key_max, "State");
+            let value_max = bounds.value_max(ui);
+            wrapped_cell(ui, value_max, state);
             ui.end_row();
-            ui.label("Sent to upstream");
-            ui.monospace(format!("{} bytes", snapshot.client_to_upstream()));
+            wrapped_cell(ui, bounds.key_max, "Sent to upstream");
+            let value_max = bounds.value_max(ui);
+            wrapped_cell(
+                ui,
+                value_max,
+                egui::RichText::new(format!("{} bytes", snapshot.client_to_upstream())).monospace(),
+            );
             ui.end_row();
-            ui.label("Received from upstream");
-            ui.monospace(format!("{} bytes", snapshot.upstream_to_client()));
+            wrapped_cell(ui, bounds.key_max, "Received from upstream");
+            let value_max = bounds.value_max(ui);
+            wrapped_cell(
+                ui,
+                value_max,
+                egui::RichText::new(format!("{} bytes", snapshot.upstream_to_client())).monospace(),
+            );
             ui.end_row();
-            ui.label("Duration");
-            ui.monospace(format!(
-                "{:.1} ms",
-                outcome_view::elapsed_millis(snapshot.duration())
-            ));
+            wrapped_cell(ui, bounds.key_max, "Duration");
+            let value_max = bounds.value_max(ui);
+            wrapped_cell(
+                ui,
+                value_max,
+                egui::RichText::new(format!(
+                    "{:.1} ms",
+                    outcome_view::elapsed_millis(snapshot.duration())
+                ))
+                .monospace(),
+            );
             ui.end_row();
         });
 }

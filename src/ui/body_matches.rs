@@ -120,7 +120,7 @@ impl BodyMatches {
             return false;
         }
         let mut step = None;
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(format!("Match {} of {count}", self.current + 1));
             if ui
                 .small_button("◀ Previous")

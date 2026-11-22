@@ -78,7 +78,7 @@ impl InspectorApp {
                 self.proxy.as_ref().map(http_proxy::ProxyHandle::local_addr),
             );
             ui.centered_and_justified(|ui| {
-                ui.weak(message);
+                ui.add(egui::Label::new(egui::RichText::new(message).weak()).wrap());
             });
             return;
         }

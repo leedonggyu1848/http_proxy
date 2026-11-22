@@ -37,26 +37,38 @@ fn disable_quic_example(address: std::net::SocketAddr) -> String {
 /// Shows the `?` button whose popup explains the capture scope.
 pub(in crate::ui) fn button(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>) {
     ui.menu_button("?", |ui| {
-        ui.set_max_width(520.0);
-        ui.label(SCOPE_SUMMARY);
-        ui.add_space(4.0);
-        ui.strong("Recorded");
-        for line in RECORDED {
-            ui.label(format!("• {line}"));
-        }
-        ui.add_space(4.0);
-        ui.strong("Not recorded");
-        for line in NOT_RECORDED {
-            ui.colored_label(
-                crate::ui::theme::Palette::of(ui).warning,
-                format!("• {line}"),
-            );
-        }
-        ui.add_space(4.0);
-        ui.label(QUIC_HINT);
-        if let Some(address) = address {
-            ui.monospace(disable_quic_example(address));
-        }
+        let viewport = ui.ctx().content_rect();
+        let max_width = (viewport.width() - 32.0).clamp(240.0, 520.0);
+        let max_height = (viewport.height() - 80.0).max(160.0);
+        ui.set_max_width(max_width);
+        egui::ScrollArea::vertical()
+            .max_height(max_height)
+            .show(ui, |ui| {
+                ui.label(SCOPE_SUMMARY);
+                ui.add_space(4.0);
+                ui.strong("Recorded");
+                for line in RECORDED {
+                    ui.label(format!("• {line}"));
+                }
+                ui.add_space(4.0);
+                ui.strong("Not recorded");
+                for line in NOT_RECORDED {
+                    ui.colored_label(
+                        crate::ui::theme::Palette::of(ui).warning,
+                        format!("• {line}"),
+                    );
+                }
+                ui.add_space(4.0);
+                ui.label(QUIC_HINT);
+                if let Some(address) = address {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(disable_quic_example(address)).monospace(),
+                        )
+                        .wrap(),
+                    );
+                }
+            });
     })
     .response
     .on_hover_text("What is captured?");

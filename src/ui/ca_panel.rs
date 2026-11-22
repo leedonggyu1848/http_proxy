@@ -155,43 +155,49 @@ impl CaPanel {
 
     /// Paths, fingerprint, and less frequent actions, shown only on request.
     fn details(&mut self, ui: &mut egui::Ui, directory: &Path) {
-        ui.set_max_width(560.0);
-        copyable(
-            ui,
-            "Public CA certificate",
-            &directory.join("root-ca.pem").display().to_string(),
-        );
-        if let Some(info) = &self.info {
-            copyable(ui, "SHA-256 fingerprint", info.fingerprint_sha256());
-        }
-        if let Some(registration) = &self.registration {
-            copyable(
-                ui,
-                &format!("Trust store: {}", registration.target),
-                &registration.location.display().to_string(),
-            );
-        }
-        ui.separator();
-        ui.weak(REGISTER_HELP);
-        #[cfg(target_os = "macos")]
-        ui.weak(KEYCHAIN_HELP);
-        ui.add_enabled_ui(self.pending_action.is_none(), |ui| {
-            ui.horizontal(|ui| {
-                if ui.button("Check registration").clicked() {
-                    self.start(Action::Check, directory, ui.ctx());
+        let viewport = ui.ctx().content_rect();
+        let max_width = (viewport.width() - 32.0).clamp(240.0, 560.0);
+        let max_height = (viewport.height() - 80.0).max(160.0);
+        ui.set_max_width(max_width);
+        egui::ScrollArea::vertical()
+            .max_height(max_height)
+            .show(ui, |ui| {
+                copyable(
+                    ui,
+                    "Public CA certificate",
+                    &directory.join("root-ca.pem").display().to_string(),
+                );
+                if let Some(info) = &self.info {
+                    copyable(ui, "SHA-256 fingerprint", info.fingerprint_sha256());
                 }
-                let registered = self
-                    .registration
-                    .as_ref()
-                    .is_some_and(|registration| registration.status != CaTrustStatus::NotInstalled);
-                if ui
-                    .add_enabled(registered, egui::Button::new("Remove CA"))
-                    .clicked()
-                {
-                    self.start(Action::Remove, directory, ui.ctx());
+                if let Some(registration) = &self.registration {
+                    copyable(
+                        ui,
+                        &format!("Trust store: {}", registration.target),
+                        &registration.location.display().to_string(),
+                    );
                 }
+                ui.separator();
+                ui.weak(REGISTER_HELP);
+                #[cfg(target_os = "macos")]
+                ui.weak(KEYCHAIN_HELP);
+                ui.add_enabled_ui(self.pending_action.is_none(), |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button("Check registration").clicked() {
+                            self.start(Action::Check, directory, ui.ctx());
+                        }
+                        let registered = self.registration.as_ref().is_some_and(|registration| {
+                            registration.status != CaTrustStatus::NotInstalled
+                        });
+                        if ui
+                            .add_enabled(registered, egui::Button::new("Remove CA"))
+                            .clicked()
+                        {
+                            self.start(Action::Remove, directory, ui.ctx());
+                        }
+                    });
+                });
             });
-        });
     }
 
     /// Errors and follow-up guidance shown right below the toolbar so they
@@ -305,7 +311,7 @@ fn registration(
 
 /// One labelled value with a button that copies it.
 fn copyable(ui: &mut egui::Ui, label: &str, value: &str) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.strong(label);
         if ui.small_button("Copy").clicked() {
             ui.ctx().copy_text(value.to_owned());

@@ -79,6 +79,23 @@ impl BodySaving {
         }
     }
 
+    #[cfg(test)]
+    pub(in crate::ui) fn without_store() -> Self {
+        Self {
+            store: None,
+            init_error: None,
+            limit_mib: BODY_STORE_LIMIT_BYTES / MIB,
+            settings_path: None,
+            settings_error: None,
+            pending: None,
+            status: None,
+            confirmation: None,
+            privacy_acknowledged: false,
+            bulk: crate::ui::bulk_save::BulkControls::default(),
+            merge: crate::ui::range_merge::MergeControls::default(),
+        }
+    }
+
     /// Reports whether a body save is running or waiting for confirmation;
     /// another save cannot start until it finishes.
     pub(in crate::ui) const fn is_busy(&self) -> bool {
@@ -223,8 +240,9 @@ impl BodySaving {
             return;
         };
         let mut choice = None;
+        let max_width = (ctx.content_rect().width() - 48.0).clamp(240.0, 420.0);
         egui::Modal::new(egui::Id::unique("confirm-body-save")).show(ctx, |ui| {
-            ui.set_max_width(420.0);
+            ui.set_max_width(max_width);
             ui.heading("Save body");
             if let Some(reason) = confirmation.incomplete.as_deref() {
                 ui.colored_label(
@@ -237,7 +255,7 @@ impl BodySaving {
             if confirmation.show_privacy {
                 ui.label(PRIVACY_NOTICE);
             }
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui.button("Save").clicked() {
                     choice = Some(true);
                 }
@@ -273,6 +291,8 @@ impl BodySaving {
 
     /// The body store limit inside the Settings menu.
     pub(in crate::ui) fn settings_menu(&mut self, ui: &mut egui::Ui) {
+        let max_width = (ui.ctx().content_rect().width() - 48.0).clamp(220.0, 380.0);
+        ui.set_max_width(max_width);
         ui.label("Body store limit");
         let changed = ui
             .add(

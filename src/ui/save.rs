@@ -94,9 +94,10 @@ impl SaveControls {
 
     fn menu_items(&mut self, ui: &mut egui::Ui, log: Option<&FullLog>) -> Option<SaveMenuAction> {
         ui.label("Save directory");
+        let input_width = (ui.ctx().content_rect().width() - 48.0).clamp(160.0, 320.0);
         ui.add(
             egui::TextEdit::singleline(&mut self.directory)
-                .desired_width(320.0)
+                .desired_width(input_width)
                 .hint_text("Existing directory"),
         );
         if ui
