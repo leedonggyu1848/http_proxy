@@ -73,6 +73,12 @@ impl BodySaving {
         }
     }
 
+    /// Reports whether a body save is running or waiting for confirmation;
+    /// another save cannot start until it finishes.
+    pub(in crate::ui) const fn is_busy(&self) -> bool {
+        self.pending.is_some() || self.confirmation.is_some()
+    }
+
     pub(in crate::ui) const fn store(&self) -> Option<&BodyStore> {
         self.store.as_ref()
     }
@@ -101,7 +107,7 @@ impl BodySaving {
             BodySide::Request => "Save request body ▼",
             BodySide::Response => "Save response body ▼",
         };
-        let enabled = stored.is_some() && self.pending.is_none();
+        let enabled = stored.is_some() && !self.is_busy();
         let response = ui.add_enabled_ui(enabled, |ui| {
             ui.menu_button(label, |ui| {
                 if let Some(stored) = stored {
@@ -122,7 +128,7 @@ impl BodySaving {
     }
 
     fn unavailable_text(&self) -> &str {
-        if self.pending.is_some() {
+        if self.is_busy() {
             "Another body is being saved."
         } else if let Some(error) = self.init_error.as_deref() {
             error
@@ -140,6 +146,11 @@ impl BodySaving {
         format: SaveFormat,
         directory: io::Result<PathBuf>,
     ) {
+        // Starting another save would replace the pending receiver and lose
+        // the running save's result, so callers disable their controls.
+        if self.is_busy() {
+            return;
+        }
         self.status = None;
         let result = directory
             .map_err(|error| error.to_string())
@@ -405,6 +416,55 @@ mod tests {
         for text in ["", "limit_mib=0", "limit_mib=x", "limit_mib=99999999"] {
             assert_eq!(parse_limit(text), None, "{text}");
         }
+    }
+
+    #[test]
+    fn a_running_save_blocks_a_new_request() -> io::Result<()> {
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let mut saving = BodySaving {
+            store: None,
+            init_error: None,
+            limit_mib: 1,
+            settings_path: None,
+            settings_error: None,
+            pending: Some(receiver),
+            status: Some(Err("earlier".to_owned())),
+            confirmation: None,
+            privacy_acknowledged: true,
+        };
+        assert!(saving.is_busy());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let exchange = runtime.block_on(sample_exchange())?;
+        saving.request(
+            &exchange,
+            BodySide::Request,
+            SaveFormat::Decoded,
+            Ok(PathBuf::new()),
+        );
+        assert!(saving.pending.is_some(), "the running save is kept");
+        assert_eq!(saving.status, Some(Err("earlier".to_owned())));
+        Ok(())
+    }
+
+    /// Captures one rejected request through a real proxy.
+    async fn sample_exchange() -> io::Result<Exchange> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut proxy = http_proxy::ProxyHandle::start(http_proxy::ProxyConfig::loopback(0))
+            .map_err(io::Error::other)?;
+        let mut client = tokio::net::TcpStream::connect(proxy.local_addr()).await?;
+        client
+            .write_all(b"GET ftp://example.invalid/ HTTP/1.1\r\nHost: example.invalid\r\nConnection: close\r\n\r\n")
+            .await?;
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await?;
+        let exchange = proxy
+            .receive()
+            .await
+            .ok_or_else(|| io::Error::other("no capture"))?;
+        proxy.stop().map_err(io::Error::other)?;
+        Ok(exchange)
     }
 
     #[test]

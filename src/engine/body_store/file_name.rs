@@ -193,7 +193,7 @@ fn sanitize(name: &str) -> Option<String> {
     let last = name.rsplit(['/', '\\']).next().unwrap_or_default();
     let cleaned: String = last
         .chars()
-        .filter(|character| !character.is_control())
+        .filter(|character| !character.is_control() && !is_bidi_control(*character))
         .map(|character| match character {
             ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
             other => other,
@@ -202,6 +202,15 @@ fn sanitize(name: &str) -> Option<String> {
     let trimmed =
         cleaned.trim_matches(|character: char| character == '.' || character.is_whitespace());
     (!trimmed.is_empty()).then(|| shorten(trimmed))
+}
+
+/// Reports Unicode bidirectional formatting characters, which can make a
+/// name such as `photo\u{202E}gpj.exe` display with a fake extension.
+const fn is_bidi_control(character: char) -> bool {
+    matches!(
+        character,
+        '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+    )
 }
 
 /// Shortens a name to [`MAX_NAME_BYTES`], keeping a short extension whole.
@@ -407,6 +416,14 @@ mod tests {
             ("attachment; filename=\".hidden\"", "hidden"),
             ("attachment; filename=\"   \"", "response-42"),
             ("attachment; filename=\"con:name?.txt\"", "con_name_.txt"),
+            (
+                "attachment; filename*=UTF-8''photo%E2%80%AEgpj.exe",
+                "photogpj.exe",
+            ),
+            (
+                "attachment; filename*=UTF-8''a%E2%81%A6b%E2%81%A9c%E2%80%8Fd%D8%9Ce.txt",
+                "abcde.txt",
+            ),
         ] {
             let name = named("http://example.test/", Some(disposition), None);
             assert_eq!(name, expected, "{disposition}");

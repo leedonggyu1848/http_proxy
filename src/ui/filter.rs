@@ -100,6 +100,7 @@ impl InspectorApp {
             });
             return;
         }
+        self.table.saving_body = self.body_saving.is_busy();
         if let Some(selected) = self.table.show(ui, rows, self.selected, shortcuts_allowed) {
             self.selected = Some(selected);
         }

@@ -161,6 +161,8 @@ pub(in crate::ui) struct RequestTable {
     pub(in crate::ui) copy_curl: Option<Exchange>,
     /// A body save chosen from a row's context menu.
     pub(in crate::ui) save_body: Option<(Exchange, http_proxy::BodySide)>,
+    /// Whether a body save is running, which disables the save menu items.
+    pub(in crate::ui) saving_body: bool,
     sort: Sort,
     follow_newest: bool,
     keyboard_row: Option<usize>,
@@ -178,6 +180,7 @@ impl RequestTable {
             replay: None,
             copy_curl: None,
             save_body: None,
+            saving_body: false,
             keyboard_row: None,
             page_rows: 1,
         }
@@ -319,7 +322,7 @@ impl RequestTable {
                 ui.close();
             }
             ui.separator();
-            if let Some(side) = save_body_items(ui, record) {
+            if let Some(side) = save_body_items(ui, record, !self.saving_body) {
                 self.save_body = Some((record.clone(), side));
                 ui.close();
             }
@@ -328,7 +331,12 @@ impl RequestTable {
 }
 
 /// The body save items of the row menu; returns the side chosen.
-fn save_body_items(ui: &mut egui::Ui, record: &Exchange) -> Option<http_proxy::BodySide> {
+/// They are disabled while `idle` is false, when another save is running.
+fn save_body_items(
+    ui: &mut egui::Ui,
+    record: &Exchange,
+    idle: bool,
+) -> Option<http_proxy::BodySide> {
     let has_response = matches!(record.outcome(), http_proxy::Outcome::Response(_));
     let mut chosen = None;
     for (side, label, enabled) in [
@@ -344,8 +352,11 @@ fn save_body_items(ui: &mut egui::Ui, record: &Exchange) -> Option<http_proxy::B
         ),
     ] {
         if ui
-            .add_enabled(enabled, egui::Button::new(label))
+            .add_enabled(enabled && idle, egui::Button::new(label))
             .on_hover_text("Save the decoded body to the Save directory.")
+            .on_disabled_hover_text(
+                "Unavailable while another body is being saved, or when the body was not observed.",
+            )
             .clicked()
         {
             chosen = Some(side);
