@@ -74,6 +74,21 @@ const RANGED_LENGTH: usize = 1_000;
 /// `/gappy.mp4` with `206 Partial Content`; a `X-Version: 2` request header
 /// gets a different `ETag`.
 fn ranged_reply(path: &str, head: &str) -> Option<Vec<u8>> {
+    // Hostile or broken servers: a tiny body far into a huge resource, and
+    // a body shorter than its Content-Range.
+    let odd = match path {
+        "/huge.bin" => Some(("bytes 999999999990-999999999999/1000000000000", 10)),
+        "/short.mp4" => Some(("bytes 0-99/1000", 50)),
+        _ => None,
+    };
+    if let Some((range, length)) = odd {
+        let mut response = format!(
+            "HTTP/1.1 206 Partial Content\r\nContent-Type: video/mp4\r\nContent-Range: {range}\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n"
+        )
+        .into_bytes();
+        response.extend(std::iter::repeat_n(b'x', length));
+        return Some(response);
+    }
     if path != "/ranged.mp4" && path != "/gappy.mp4" {
         return None;
     }
@@ -603,10 +618,14 @@ async fn gaps_between_ranges_are_reported_and_zero_filled() -> TestResult {
         .ok_or("not a range response")?;
     assert_eq!(plan.gaps(), [(100, 299), (400, 999)]);
     assert!(!plan.is_complete());
+    assert_eq!(plan.file_bytes(), 400);
+    assert_eq!(plan.zero_filled_bytes(), 200);
+    let reason = plan.incomplete_reason().unwrap_or_default();
     assert!(
-        plan.incomplete_reason()
-            .is_some_and(|reason| reason.contains("100-299"))
+        reason.contains("Bytes 100-299, 400-999 were not captured."),
+        "{reason}"
     );
+    assert!(reason.contains("the file ends at 400 bytes"), "{reason}");
     let receiver = harness
         .store
         .save_ranges(plan, output.path().to_path_buf())?;
@@ -619,5 +638,63 @@ async fn gaps_between_ranges_are_reported_and_zero_filled() -> TestResult {
     expected.extend(std::iter::repeat_n(0, 200));
     expected.extend_from_slice(resource.get(300..400).ok_or("short")?);
     assert_eq!(std::fs::read(merged.path())?, expected);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn merged_files_that_would_fill_the_disk_are_refused() -> TestResult {
+    let mut harness = Harness::start(u64::MAX).await?;
+    let output = tempfile::tempdir()?;
+    harness.fetch_range("/huge.bin", "0-9", "").await?;
+    let exchanges = harness.all_exchanges("/huge.bin", 1).await?;
+    let bodies = response_bodies(&exchanges, output.path())?;
+    let receiver = harness
+        .store
+        .plan_ranges_in_background(bodies.first().ok_or("no body")?.clone(), bodies.clone())?;
+    let plan = tokio::task::spawn_blocking(move || receiver.recv_timeout(TEST_TIMEOUT))
+        .await???
+        .ok_or("not a range response")?;
+    assert_eq!(plan.file_bytes(), 1_000_000_000_000);
+    assert_eq!(plan.zero_filled_bytes(), 999_999_999_990);
+    let receiver = harness
+        .store
+        .save_ranges(plan, output.path().to_path_buf())?;
+    let refused =
+        tokio::task::spawn_blocking(move || receiver.recv_timeout(TEST_TIMEOUT)).await??;
+    assert_eq!(
+        refused.err().map(|error| error.kind()),
+        Some(io::ErrorKind::StorageFull)
+    );
+    assert_eq!(
+        std::fs::read_dir(output.path())?.count(),
+        0,
+        "nothing was written"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_body_shorter_than_its_range_is_saved_as_partial() -> TestResult {
+    let mut harness = Harness::start(u64::MAX).await?;
+    let output = tempfile::tempdir()?;
+    harness.fetch_range("/short.mp4", "0-99", "").await?;
+    let saved = harness
+        .save(
+            "/short.mp4",
+            BodySide::Response,
+            SaveFormat::AsReceived,
+            output.path(),
+        )
+        .await?;
+    assert!(!saved.complete());
+    assert_eq!(
+        saved.path(),
+        output.path().join("short.bytes-0-99.mp4.partial")
+    );
+    assert!(
+        saved
+            .incomplete_reason()
+            .is_some_and(|reason| reason.contains("50 bytes but Content-Range promises 100"))
+    );
     Ok(())
 }

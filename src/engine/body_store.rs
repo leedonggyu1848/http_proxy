@@ -305,7 +305,19 @@ impl BodyStore {
             SaveFormat::Decoded => (ContentEncoding::parse_all(&layers)?, Vec::new()),
             SaveFormat::AsReceived => (Vec::new(), layers),
         };
-        let complete = body.is_complete();
+        // A 206 body shorter or longer than its Content-Range is not the
+        // range its name promises.
+        let range_mismatch = request
+            .content_range
+            .filter(|range| body.is_complete() && range.byte_len() != body.stored_bytes())
+            .map(|range| {
+                format!(
+                    "The body has {} bytes but Content-Range promises {}.",
+                    body.stored_bytes(),
+                    range.byte_len()
+                )
+            });
+        let complete = body.is_complete() && range_mismatch.is_none();
         let name = file_name::file_name(&NameSource {
             record: request.record.value(),
             side: request.side,
@@ -339,7 +351,7 @@ impl BodyStore {
             bytes,
             sha256,
             complete,
-            incomplete_reason: body.incomplete_reason(),
+            incomplete_reason: body.incomplete_reason().or(range_mismatch),
         })
     }
 

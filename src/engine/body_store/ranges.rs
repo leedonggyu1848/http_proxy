@@ -30,7 +30,8 @@ impl ContentRange {
     /// Parses `bytes <start>-<end>/<total>` or `bytes <start>-<end>/*`.
     ///
     /// Returns `None` for other units, unsatisfied ranges (`bytes */<total>`),
-    /// a start after the end, or an end at or past the total.
+    /// numbers with signs or other non-digits, a start after the end, an end
+    /// at or past the total, or a length that does not fit in `u64`.
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         let (unit, rest) = value.trim().split_once(' ')?;
@@ -39,17 +40,26 @@ impl ContentRange {
         }
         let (range, total) = rest.trim().split_once('/')?;
         let (start, end) = range.split_once('-')?;
-        let start = start.trim().parse::<u64>().ok()?;
-        let end = end.trim().parse::<u64>().ok()?;
+        let start = digits(start)?;
+        let end = digits(end)?;
         let total = match total.trim() {
             "*" => None,
-            total => Some(total.parse::<u64>().ok()?),
+            total => Some(digits(total)?),
         };
+        // The length `end - start + 1` must be representable.
+        end.checked_add(1)?;
         (start <= end && total.is_none_or(|total| end < total)).then_some(Self {
             start,
             end,
             total,
         })
+    }
+
+    /// Returns the number of bytes in the range.
+    #[must_use]
+    pub const fn byte_len(&self) -> u64 {
+        // `parse` rejects an end of `u64::MAX`, so this cannot overflow.
+        self.end - self.start + 1
     }
 
     /// Returns the position of the first byte.
@@ -69,6 +79,14 @@ impl ContentRange {
     pub const fn total(&self) -> Option<u64> {
         self.total
     }
+}
+
+/// Parses a decimal number made only of ASCII digits.
+fn digits(text: &str) -> Option<u64> {
+    let text = text.trim();
+    (!text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| text.parse().ok())
+        .flatten()
 }
 
 /// Bytes of one stored part copied to one position of the merged file.
@@ -142,6 +160,7 @@ impl RangePlan {
     /// Explains why the merged file would be incomplete.
     #[must_use]
     pub fn incomplete_reason(&self) -> Option<String> {
+        let mut reasons = Vec::new();
         if !self.gaps.is_empty() {
             let mut listed: Vec<String> = self
                 .gaps
@@ -152,22 +171,50 @@ impl RangePlan {
             if self.gaps.len() > LISTED_GAPS {
                 listed.push(format!("and {} more", self.gaps.len() - LISTED_GAPS));
             }
-            let streaming = if self.streaming > 0 {
-                format!(
-                    " {} responses are still being received; merge again after they finish.",
-                    self.streaming
-                )
-            } else {
-                String::new()
-            };
-            return Some(format!(
-                "Bytes {} were not captured; they are filled with zeros.{streaming}",
-                listed.join(", ")
+            reasons.push(format!("Bytes {} were not captured.", listed.join(", ")));
+            if self.zero_filled_bytes() > 0 {
+                reasons.push("Gaps between parts are filled with zeros.".to_owned());
+            }
+            if self.trailing_gap().is_some() {
+                reasons.push(format!(
+                    "Missing bytes after the last part are left out, so the file ends at {} bytes.",
+                    self.file_bytes()
+                ));
+            }
+        } else if self.total.is_none() {
+            reasons.push(
+                "The server did not send the total length, so the end may be missing.".to_owned(),
+            );
+        }
+        if self.streaming > 0 {
+            reasons.push(format!(
+                "{} responses are still being received; merge again after they finish.",
+                self.streaming
             ));
         }
-        self.total.is_none().then(|| {
-            "The server did not send the total length, so the end may be missing.".to_owned()
-        })
+        (!reasons.is_empty()).then(|| reasons.join(" "))
+    }
+
+    /// Returns the size of the merged file: it ends after the last part.
+    #[must_use]
+    pub fn file_bytes(&self) -> u64 {
+        self.pieces
+            .last()
+            .map_or(0, |piece| piece.offset.saturating_add(piece.length))
+    }
+
+    /// Returns the zeros written for gaps between parts.
+    #[must_use]
+    pub fn zero_filled_bytes(&self) -> u64 {
+        self.file_bytes().saturating_sub(self.covered_bytes())
+    }
+
+    /// Returns the missing range after the last part, if any.
+    fn trailing_gap(&self) -> Option<(u64, u64)> {
+        self.gaps
+            .last()
+            .copied()
+            .filter(|(first, _)| *first >= self.file_bytes())
     }
 }
 
@@ -183,11 +230,11 @@ fn plan_pieces(
     let mut gaps = Vec::new();
     let mut next: u64 = 0;
     for (key, range, stored) in parts {
-        let available = stored.min(range.end - range.start + 1);
+        let available = stored.min(range.byte_len());
         if available == 0 {
             continue;
         }
-        let last = range.start + available - 1;
+        let last = range.start.saturating_add(available - 1);
         if last < next {
             continue;
         }
@@ -201,7 +248,7 @@ fn plan_pieces(
             offset: first,
             length: last - first + 1,
         });
-        next = last + 1;
+        next = last.saturating_add(1);
     }
     if let Some(total) = total
         && next < total
@@ -284,9 +331,30 @@ impl BodyStore {
         }))
     }
 
+    /// Plans a merge like [`BodyStore::plan_ranges`] on a background thread,
+    /// so a caller such as a UI frame never waits for the writer.
+    pub fn plan_ranges_in_background(
+        &self,
+        target: SaveBody,
+        candidates: Vec<SaveBody>,
+    ) -> io::Result<Receiver<io::Result<Option<RangePlan>>>> {
+        let (sender, receiver) = mpsc::channel();
+        let store = self.clone();
+        thread::Builder::new()
+            .name("body-plan-ranges".to_owned())
+            .spawn(move || {
+                let _requester_gone = sender.send(store.plan_ranges(&target, &candidates));
+            })?;
+        Ok(receiver)
+    }
+
     /// Writes a merged file in `directory` in the background. Missing bytes
     /// between parts are written as zeros so later parts keep their
-    /// positions, and an incomplete file name ends in `.partial`.
+    /// positions; missing bytes after the last part are left out. An
+    /// incomplete file name ends in `.partial`.
+    ///
+    /// The save is refused when the file, zeros included, would leave less
+    /// than [`super::BODY_STORE_MIN_FREE_BYTES`] free in `directory`.
     pub fn save_ranges(
         &self,
         plan: RangePlan,
@@ -307,6 +375,11 @@ impl BodyStore {
         plan: &RangePlan,
         directory: &std::path::Path,
     ) -> io::Result<SavedBody> {
+        check_space(
+            plan.file_bytes(),
+            fs2::available_space(directory)?,
+            super::BODY_STORE_MIN_FREE_BYTES,
+        )?;
         self.wait_for_writer()?;
         let parts = {
             let index = self
@@ -350,6 +423,20 @@ impl BodyStore {
             incomplete_reason: plan.incomplete_reason(),
         })
     }
+}
+
+/// Refuses a file of `needed` bytes that would leave less than `keep_free`
+/// of `available` free disk space.
+fn check_space(needed: u64, available: u64, keep_free: u64) -> io::Result<()> {
+    if needed <= available.saturating_sub(keep_free) {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::StorageFull,
+        format!(
+            "The merged file would be {needed} bytes, including zeros for missing bytes, but only {available} bytes are free and {keep_free} bytes must stay free"
+        ),
+    ))
 }
 
 /// Reports whether two `206` bodies are parts of the same representation.
@@ -396,6 +483,10 @@ mod tests {
             "items 0-1/2",
             "bytes 0-x/3",
             "bytes 0-1",
+            "bytes +0-+5/+10",
+            "bytes -0-5/10",
+            "bytes 0-18446744073709551615/*",
+            "bytes 0-5/1e3",
             "",
         ] {
             assert_eq!(ContentRange::parse(invalid), None, "{invalid}");
@@ -477,5 +568,90 @@ mod tests {
             }]
         );
         assert_eq!(slice(&segments, 0, 0), []);
+    }
+
+    #[test]
+    fn huge_ranges_saturate_instead_of_overflowing() {
+        let last = u64::MAX - 1;
+        assert_eq!(
+            ContentRange::parse(&format!("bytes 0-{last}/*")).map(|range| range.byte_len()),
+            Some(u64::MAX)
+        );
+        let parts = vec![
+            (key(1), range(0, last, None), u64::MAX),
+            (key(2), range(last, last, None), 1),
+        ];
+        let (pieces, gaps) = plan_pieces(parts, None);
+        assert_eq!(pieces.len(), 1);
+        assert_eq!(gaps, []);
+    }
+
+    fn make_plan(pieces: Vec<Piece>, gaps: Vec<(u64, u64)>, total: Option<u64>) -> RangePlan {
+        RangePlan {
+            template: SaveBody {
+                record: crate::engine::domain::RecordId::new(1),
+                side: BodySide::Response,
+                format: super::super::SaveFormat::AsReceived,
+                directory: PathBuf::new(),
+                target: "http://example.test/clip.mp4".to_owned(),
+                method: "GET".to_owned(),
+                status: Some(206),
+                disposition: None,
+                media_type: None,
+                encodings: Vec::new(),
+                content_range: None,
+                validator: None,
+            },
+            total,
+            parts: pieces.len(),
+            streaming: 0,
+            pieces,
+            gaps,
+        }
+    }
+
+    #[test]
+    fn reports_file_size_zero_fill_and_a_left_out_end() {
+        let (pieces, gaps) = plan_pieces(
+            vec![
+                (key(1), range(0, 99, Some(1000)), 100),
+                (key(2), range(300, 399, Some(1000)), 100),
+            ],
+            Some(1000),
+        );
+        let plan = make_plan(pieces, gaps, Some(1000));
+        assert_eq!(plan.file_bytes(), 400);
+        assert_eq!(plan.zero_filled_bytes(), 200);
+        let reason = plan.incomplete_reason().unwrap_or_default();
+        assert!(
+            reason.contains("Bytes 100-299, 400-999 were not captured."),
+            "{reason}"
+        );
+        assert!(reason.contains("filled with zeros"), "{reason}");
+        assert!(
+            reason.contains("left out, so the file ends at 400 bytes"),
+            "{reason}"
+        );
+
+        let (pieces, gaps) = plan_pieces(vec![(key(1), range(0, 99, Some(1000)), 100)], Some(1000));
+        let reason = make_plan(pieces, gaps, Some(1000))
+            .incomplete_reason()
+            .unwrap_or_default();
+        assert!(
+            !reason.contains("zeros"),
+            "only the end is missing: {reason}"
+        );
+    }
+
+    #[test]
+    fn refuses_files_that_would_fill_the_disk() {
+        assert!(check_space(10, 100, 50).is_ok());
+        assert!(check_space(50, 100, 50).is_ok());
+        let error = check_space(1_000_000_000_000, 100, 50).err();
+        assert_eq!(
+            error.map(|error| error.kind()),
+            Some(io::ErrorKind::StorageFull)
+        );
+        assert!(check_space(1, 10, 50).is_err());
     }
 }
