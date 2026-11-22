@@ -12,6 +12,7 @@ mod export;
 mod file_name;
 mod index;
 mod location;
+mod ranges;
 mod writer;
 
 use std::fmt;
@@ -27,6 +28,7 @@ use std::time::Duration;
 pub use bulk::{BodyLayout, BulkProgress, BulkSave, BulkSummary};
 pub use export::SaveFormat;
 pub use index::{StoreGap, StoredBody};
+pub use ranges::{ContentRange, RangePlan};
 
 use self::export::{ContentEncoding, CopyPlan};
 use self::file_name::NameSource;
@@ -269,11 +271,19 @@ impl BodyStore {
 
     fn save_now(&self, request: &SaveBody) -> io::Result<SavedBody> {
         self.wait_for_writer()?;
-        self.write_body(request, &request.directory)
+        self.write_body(request, &request.directory, None)
     }
 
     /// Writes one stored body into `directory`; the writer must have caught up.
-    fn write_body(&self, request: &SaveBody, directory: &Path) -> io::Result<SavedBody> {
+    ///
+    /// `numbers` remembers the next free number for each name, so saving
+    /// many bodies with one name does not retry every taken number.
+    fn write_body(
+        &self,
+        request: &SaveBody,
+        directory: &Path,
+        numbers: Option<&mut NameNumbers>,
+    ) -> io::Result<SavedBody> {
         let key = BodyKey {
             record: request.record.value(),
             side: request.side,
@@ -303,6 +313,9 @@ impl BodyStore {
             disposition: request.disposition.as_deref(),
             media_type: request.media_type.as_ref(),
             kept_encodings: &kept,
+            range: request
+                .content_range
+                .map(|range| (range.start(), range.end())),
             partial: !complete,
         });
         let plan = CopyPlan {
@@ -312,7 +325,15 @@ impl BodyStore {
             decode,
             incomplete: !complete,
         };
-        let (path, bytes, sha256) = export::save(plan, directory, &name)?;
+        let key = directory.join(&name);
+        let first = numbers
+            .as_ref()
+            .and_then(|numbers| numbers.get(&key).copied())
+            .unwrap_or(0);
+        let (path, bytes, sha256, attempt) = export::save(plan, directory, &name, first)?;
+        if let Some(numbers) = numbers {
+            numbers.insert(key, attempt.saturating_add(1));
+        }
         Ok(SavedBody {
             path,
             bytes,
@@ -378,6 +399,9 @@ impl BodyStore {
         }
     }
 }
+
+/// The next numbering attempt for each intended file path.
+type NameNumbers = std::collections::HashMap<PathBuf, u32>;
 
 /// Splits `Content-Encoding` values into lowercase layers in the order they
 /// were applied, without `identity`.
@@ -447,9 +471,19 @@ pub struct SaveBody {
     disposition: Option<String>,
     media_type: Option<MediaType>,
     encodings: Vec<String>,
+    /// The single byte range of a `206 Partial Content` response body.
+    content_range: Option<ContentRange>,
+    /// `ETag`, or else `Last-Modified`, of the response.
+    validator: Option<String>,
 }
 
 impl SaveBody {
+    /// Returns the byte range of a `206 Partial Content` response body.
+    #[must_use]
+    pub const fn content_range(&self) -> Option<ContentRange> {
+        self.content_range
+    }
+
     /// Describes saving one body of `exchange` into `directory`.
     ///
     /// Returns `None` for a response body when no response was received.
@@ -483,6 +517,19 @@ impl SaveBody {
             disposition: headers.get("content-disposition").next().map(str::to_owned),
             media_type: media_type.cloned(),
             encodings: headers.get("content-encoding").map(str::to_owned).collect(),
+            content_range: (side == BodySide::Response && status == Some(206))
+                .then(|| {
+                    headers
+                        .get("content-range")
+                        .next()
+                        .and_then(ContentRange::parse)
+                })
+                .flatten(),
+            validator: headers
+                .get("etag")
+                .next()
+                .or_else(|| headers.get("last-modified").next())
+                .map(str::to_owned),
         })
     }
 }

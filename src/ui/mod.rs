@@ -17,6 +17,7 @@ mod image_decode;
 mod image_view;
 mod outcome_view;
 mod port_settings;
+mod range_merge;
 mod records;
 mod replay_panel;
 mod request_table;
@@ -278,6 +279,7 @@ impl eframe::App for InspectorApp {
         }
         self.har_export(ui.ctx());
         self.bulk_body_save(ui.ctx());
+        self.range_merge(ui.ctx());
         let shortcuts_allowed = request_shortcuts_allowed(ui.ctx());
         let viewport_height = ui.available_height();
         egui::ScrollArea::vertical()
