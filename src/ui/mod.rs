@@ -1,6 +1,7 @@
 mod app_paths;
 mod body_display;
 mod body_format;
+mod body_matches;
 mod body_saving;
 mod body_view;
 mod browser_panel;
@@ -22,6 +23,7 @@ mod replay_panel;
 mod request_table;
 mod save;
 mod scope_help;
+mod search;
 mod theme;
 mod toolbar;
 mod tree_view;
@@ -89,7 +91,7 @@ struct InspectorApp {
     proxy: Option<ProxyHandle>,
     records: records::RecordList<Exchange>,
     selected: Option<RecordId>,
-    filter_text: String,
+    search: search::RequestSearch,
     record_filter: RecordFilter,
     https_inspection: bool,
     authorization_notice: toolbar::AuthorizationNotice,
@@ -130,7 +132,7 @@ impl InspectorApp {
             proxy: None,
             records: records::RecordList::new(MAX_RECORDS),
             selected: None,
-            filter_text: String::new(),
+            search: search::RequestSearch::new(&context),
             record_filter: RecordFilter::All,
             https_inspection: false,
             authorization_notice: toolbar::AuthorizationNotice::default(),
@@ -333,7 +335,7 @@ impl InspectorApp {
     }
 
     fn filtered_records(&self) -> Vec<&Exchange> {
-        filter::visible_records(&self.records, self.record_filter, &self.filter_text)
+        filter::visible_records(&self.records, self.record_filter, &self.search)
     }
 
     /// Requests on the left and details on the right, split by a draggable

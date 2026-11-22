@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod engine;
+pub mod text_search;
 
 pub use engine::{
     BODY_PREVIEW_BYTES, IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES,

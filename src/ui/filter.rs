@@ -1,7 +1,6 @@
-//! Request filtering and case-insensitive search.
+//! Request filtering by outcome kind, and the controls above the list.
 
-use crate::ui::outcome_view::outcome_matches_query;
-use http_proxy::{Exchange, HeaderPreview, Outcome};
+use http_proxy::{Exchange, Outcome};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::ui) enum RecordFilter {
@@ -25,50 +24,31 @@ impl RecordFilter {
     }
 }
 
-pub(in crate::ui) fn record_matches(record: &Exchange, filter: RecordFilter, query: &str) -> bool {
+/// Reports whether `record` has the outcome kind `filter` selects. Text
+/// search is applied separately by [`crate::ui::search::RequestSearch`].
+pub(in crate::ui) fn record_matches(record: &Exchange, filter: RecordFilter) -> bool {
     let outcome = record.outcome();
-    let outcome_matches = match filter {
+    match filter {
         RecordFilter::All => true,
         RecordFilter::Responses => matches!(outcome, Outcome::Response(_)),
         RecordFilter::Failures => outcome.is_failure(),
         RecordFilter::Tunnels => {
             matches!(outcome, Outcome::Tunnel(_) | Outcome::InspectionEstablished)
         }
-    };
-    let request = record.request();
-    outcome_matches
-        && (query.is_empty()
-            || text_matches(request.method().as_str(), query)
-            || text_matches(request.target(), query)
-            || headers_match(request.headers(), query)
-            || outcome_matches_query(outcome, query))
-}
-
-pub(in crate::ui) fn headers_match(headers: &HeaderPreview, query: &str) -> bool {
-    headers
-        .entries()
-        .iter()
-        .any(|header| text_matches(header.name(), query) || text_matches(header.value(), query))
-}
-
-pub(in crate::ui) fn text_matches(value: &str, lowercase_query: &str) -> bool {
-    value.to_lowercase().contains(lowercase_query)
+    }
 }
 
 use crate::ui::InspectorApp;
 use crate::ui::records::RecordList;
 use crate::ui::replay_panel;
+use crate::ui::search::RequestSearch;
 use eframe::egui;
 
 impl InspectorApp {
     /// Filter, list options, and Clear, shown right above the request list.
     pub(in crate::ui) fn filters(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.filter_text)
-                    .desired_width(260.0)
-                    .hint_text("Filter: method, URL, status, or header"),
-            );
+            self.search.controls(ui);
             egui::ComboBox::from_id_salt("record-filter")
                 .selected_text(self.record_filter.label())
                 .show_ui(ui, |ui| {
@@ -86,10 +66,12 @@ impl InspectorApp {
                 self.selected = None;
             }
         });
+        self.search.status(ui);
     }
 
     pub(in crate::ui) fn request_table(&mut self, ui: &mut egui::Ui, shortcuts_allowed: bool) {
-        let rows = visible_records(&self.records, self.record_filter, &self.filter_text);
+        self.search.update(&self.records, ui.ctx());
+        let rows = visible_records(&self.records, self.record_filter, &self.search);
         if rows.is_empty() {
             let message = empty_list_text(
                 self.records.len(),
@@ -121,16 +103,16 @@ impl InspectorApp {
     }
 }
 
-/// Records that match the filter and search text, in arrival order.
+/// Records that match the outcome filter and the search, in arrival order.
 pub(in crate::ui) fn visible_records<'a>(
     records: &'a RecordList<Exchange>,
     filter: RecordFilter,
-    text: &str,
+    search: &RequestSearch,
 ) -> Vec<&'a Exchange> {
-    let query = text.to_lowercase();
     records
         .iter()
-        .filter(|record| record_matches(record, filter, &query))
+        .filter(|record| record_matches(record, filter))
+        .filter(|record| search.shows(record.id()))
         .collect()
 }
 
@@ -148,6 +130,9 @@ fn empty_list_text(captured: usize, proxy: Option<std::net::SocketAddr>) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::search::SearchScope;
+    use crate::ui::search::document::{self, BodyCache};
+    use http_proxy::text_search::{MatchOptions, Matcher};
     use http_proxy::{ProxyConfig, ProxyHandle};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::{TcpListener, TcpStream};
@@ -161,10 +146,15 @@ mod tests {
         assert!(empty_list_text(3, Some(address)).contains("match the filter"));
     }
 
-    #[test]
-    fn text_search_ignores_value_case() {
-        assert!(text_matches("HeLLo WORLD", "hello world"));
-        assert!(!text_matches("hello", "absent"));
+    /// Checks `record` the way the search thread does.
+    fn found(record: &Exchange, query: &str, scope: SearchScope, case_sensitive: bool) -> bool {
+        let options = MatchOptions {
+            case_sensitive,
+            regex: false,
+        };
+        Matcher::new(query, options).is_ok_and(|matcher| {
+            document::check(record, &matcher, scope, &mut BodyCache::default()).matched
+        })
     }
 
     #[tokio::test]
@@ -178,11 +168,9 @@ mod tests {
             let (mut server, _) = upstream.accept().await?;
             let pending = proxy.receive().await.ok_or("missing pending capture")?;
             check_filters(&pending, [true, false, false, false]);
-            assert!(record_matches(&pending, RecordFilter::All, "pending"));
-            assert!(record_matches(&pending, RecordFilter::All, "get"));
-            assert!(record_matches(&pending, RecordFilter::All, "/mixed"));
-            assert!(record_matches(&pending, RecordFilter::All, "x-request"));
-            assert!(record_matches(&pending, RecordFilter::All, "requestvalue"));
+            for query in ["pending", "get", "/mixed", "x-request", "requestvalue"] {
+                assert!(found(&pending, query, SearchScope::All, false), "{query}");
+            }
             read_request_head(&mut server).await?;
             server.write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\nX-Response: ResponseVALUE\r\nConnection: close\r\n\r\n").await?;
             let mut bytes = Vec::new();
@@ -190,10 +178,9 @@ mod tests {
             wait_settled(&pending).await;
             check_filters(&pending, [true, true, false, false]);
             for query in ["201", "x-response", "responsevalue"] {
-                assert!(record_matches(&pending, RecordFilter::Responses, query), "{query}");
+                assert!(found(&pending, query, SearchScope::All, false), "{query}");
             }
-            assert!(!record_matches(&pending, RecordFilter::All, "absent"));
-            assert!(!record_matches(&pending, RecordFilter::Failures, "201"));
+            assert!(!found(&pending, "absent", SearchScope::All, false));
 
             let mut tunnel_client = TcpStream::connect(proxy.local_addr()).await?;
             tunnel_client.write_all(format!("CONNECT {address} HTTP/1.1\r\nHost: {address}\r\n\r\n").as_bytes()).await?;
@@ -201,7 +188,7 @@ mod tests {
             let tunnel = proxy.receive().await.ok_or("missing tunnel capture")?;
             wait_settled(&tunnel).await;
             check_filters(&tunnel, [true, false, false, true]);
-            assert!(record_matches(&tunnel, RecordFilter::Tunnels, "tunnel"));
+            assert!(found(&tunnel, "tunnel", SearchScope::All, false));
 
             drop(upstream);
             let mut failed_client = TcpStream::connect(proxy.local_addr()).await?;
@@ -209,7 +196,109 @@ mod tests {
             let failed = proxy.receive().await.ok_or("missing failure capture")?;
             wait_settled(&failed).await;
             check_filters(&failed, [true, false, true, false]);
-            assert!(record_matches(&failed, RecordFilter::Failures, "connect"));
+            assert!(found(&failed, "connect", SearchScope::All, false));
+            proxy.stop()?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        }).await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn searches_bodies_by_scope_and_case() -> Result<(), Box<dyn std::error::Error>> {
+        timeout(Duration::from_secs(5), async {
+            let upstream = TcpListener::bind("127.0.0.1:0").await?;
+            let address = upstream.local_addr()?;
+            let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0))?;
+            let mut client = TcpStream::connect(proxy.local_addr()).await?;
+            let body = "orderId=REQ-123";
+            client.write_all(format!("POST http://{address}/submit HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer SECRET-TOKEN\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await?;
+            let (mut server, _) = upstream.accept().await?;
+            let record = proxy.receive().await.ok_or("missing capture")?;
+            read_request_head(&mut server).await?;
+            let mut received = vec![0; body.len()];
+            server.read_exact(&mut received).await?;
+            let gzip = {
+                use std::io::Write as _;
+                let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+                encoder.write_all(br#"{"error":"Quota Exceeded"}"#)?;
+                encoder.finish()?
+            };
+            server.write_all(format!("HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", gzip.len()).as_bytes()).await?;
+            server.write_all(&gzip).await?;
+            drop(server);
+            let mut bytes = Vec::new();
+            client.read_to_end(&mut bytes).await?;
+            while !document::is_settled(&record) {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+
+            // Only the gzip-compressed response body has this text.
+            assert!(found(&record, "quota exceeded", SearchScope::All, false));
+            assert!(found(&record, "quota exceeded", SearchScope::ResponseBody, false));
+            for scope in [SearchScope::RequestBody, SearchScope::Url, SearchScope::Headers] {
+                assert!(!found(&record, "quota exceeded", scope, false), "{scope:?}");
+            }
+            assert!(!found(&record, "quota exceeded", SearchScope::All, true));
+            assert!(found(&record, "Quota Exceeded", SearchScope::All, true));
+            assert!(found(&record, "REQ-123", SearchScope::RequestBody, true));
+            assert!(!found(&record, "REQ-123", SearchScope::ResponseBody, false));
+            assert!(found(&record, "/submit", SearchScope::Url, false));
+            assert!(!found(&record, "/submit", SearchScope::Headers, false));
+            // Redacted header values are not searchable.
+            assert!(found(&record, "authorization", SearchScope::Headers, false));
+            assert!(!found(&record, "secret-token", SearchScope::All, false));
+
+            let mut records = crate::ui::records::RecordList::new(4);
+            let _evicted = records.push(record.clone());
+            let context = eframe::egui::Context::default();
+            let mut search = crate::ui::search::RequestSearch::new(&context);
+            let options = MatchOptions::default();
+            search.search_now(("quota", SearchScope::All, options), &records, &context);
+            assert!(search.shows(record.id()));
+            search.search_now(("quota exceeded!", SearchScope::All, options), &records, &context);
+            assert!(!search.shows(record.id()));
+            search.search_now(("", SearchScope::All, options), &records, &context);
+            assert!(search.shows(record.id()));
+            proxy.stop()?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        }).await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reports_bodies_searched_only_in_their_preview()
+    -> Result<(), Box<dyn std::error::Error>> {
+        timeout(Duration::from_secs(5), async {
+            let upstream = TcpListener::bind("127.0.0.1:0").await?;
+            let address = upstream.local_addr()?;
+            let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0))?;
+            let mut client = TcpStream::connect(proxy.local_addr()).await?;
+            client.write_all(format!("GET http://{address}/large HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n").as_bytes()).await?;
+            let (mut server, _) = upstream.accept().await?;
+            let record = proxy.receive().await.ok_or("missing capture")?;
+            read_request_head(&mut server).await?;
+            // The word sits after the 8 KiB the preview keeps.
+            let body = format!("{}tail-word", "a".repeat(http_proxy::BODY_PREVIEW_BYTES + 100));
+            server.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await?;
+            drop(server);
+            client.read_to_end(&mut Vec::new()).await?;
+            while !document::is_settled(&record) {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+
+            let matcher = Matcher::new("tail-word", MatchOptions::default())?;
+            let checked = document::check(&record, &matcher, SearchScope::ResponseBody, &mut BodyCache::default());
+            assert!(!checked.matched);
+            assert!(checked.coverage.partial);
+            assert!(found(&record, "aaaa", SearchScope::ResponseBody, false));
+
+            let mut records = crate::ui::records::RecordList::new(4);
+            let _evicted = records.push(record.clone());
+            let context = eframe::egui::Context::default();
+            let mut search = crate::ui::search::RequestSearch::new(&context);
+            search.search_now(("tail-word", SearchScope::All, MatchOptions::default()), &records, &context);
+            assert!(!search.shows(record.id()));
+            assert_eq!(search.partially_searched(), 1);
             proxy.stop()?;
             Ok::<_, Box<dyn std::error::Error>>(())
         }).await??;
@@ -219,7 +308,7 @@ mod tests {
     fn check_filters(record: &Exchange, expected: [bool; 4]) {
         for (filter, expected) in RecordFilter::ALL.into_iter().zip(expected) {
             assert_eq!(
-                record_matches(record, filter, ""),
+                record_matches(record, filter),
                 expected,
                 "{filter:?}: {:?}",
                 record.outcome()

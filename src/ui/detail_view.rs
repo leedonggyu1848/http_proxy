@@ -4,6 +4,8 @@ use crate::ui::InspectorApp;
 use crate::ui::body_display::{BodySide, BodySource, BodyViewCache, Capture};
 use crate::ui::body_format::{BodyFormat, ViewMode, form, highlight::SyntaxPalette};
 use crate::ui::detail_tabs::{self, DetailTab};
+use crate::ui::search::Query;
+use crate::ui::search::highlight::{self, MatchColors};
 use crate::ui::theme::Palette;
 use crate::ui::{image_view, outcome_view, replay_panel, scope_help};
 use eframe::egui;
@@ -29,14 +31,8 @@ impl InspectorApp {
             detail_tabs::apply_shortcuts(ui, &mut self.detail_tab);
         }
         let request = record.request();
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(format!("{} {}", request.method(), request.target()))
-                    .strong()
-                    .monospace(),
-            )
-            .wrap(),
-        );
+        let search = self.search.active_query().map(AsRef::as_ref);
+        render_title(ui, record, search);
         ui.horizontal_wrapped(|ui| {
             let (status, color) = outcome_view::outcome_text(record.outcome(), &Palette::of(ui));
             ui.colored_label(color, status);
@@ -73,12 +69,18 @@ impl InspectorApp {
                     record: record.id(),
                     mode: self.body_mode,
                     cache: &mut self.body_cache,
+                    search,
                 };
                 match self.detail_tab {
                     DetailTab::Headers => {
                         render_query(ui, request.target());
                         ui.strong("Request headers");
-                        render_headers(ui, "request-headers", request.headers());
+                        render_headers(
+                            ui,
+                            "request-headers",
+                            request.headers(),
+                            body.headers_search(),
+                        );
                     }
                     DetailTab::Body => {
                         let has_tree = has_tree(request.media_type())
@@ -101,6 +103,32 @@ struct BodyPanel<'a> {
     record: RecordId,
     mode: ViewMode,
     cache: &'a mut BodyViewCache,
+    /// The active search, whose matches are marked.
+    search: Option<&'a Query>,
+}
+
+impl BodyPanel<'_> {
+    fn headers_search(&self) -> Option<&Query> {
+        self.search.filter(|query| query.scope.covers_headers())
+    }
+}
+
+/// The method and URL, with URL matches of the active search marked.
+fn render_title(ui: &mut egui::Ui, record: &Exchange, search: Option<&Query>) {
+    let request = record.request();
+    let title = format!("{} {}", request.method(), request.target());
+    let label = match search.filter(|query| query.scope.covers_url()) {
+        Some(query) => {
+            let font = egui::TextStyle::Monospace.resolve(ui.style());
+            let color = ui.visuals().strong_text_color();
+            let colors = MatchColors::for_theme(ui.ctx().theme());
+            let mut job = highlight::plain(&title, &query.matcher, font, color, colors);
+            job.wrap.max_width = ui.available_width();
+            egui::Label::new(job)
+        }
+        None => egui::Label::new(egui::RichText::new(title).strong().monospace()),
+    };
+    ui.add(label.wrap());
 }
 
 fn has_tree(media_type: Option<&MediaType>) -> bool {
@@ -156,16 +184,33 @@ fn render_query(ui: &mut egui::Ui, target: &str) {
     ui.separator();
 }
 
-fn render_headers(ui: &mut egui::Ui, id: &str, headers: &HeaderPreview) {
+fn render_headers(ui: &mut egui::Ui, id: &str, headers: &HeaderPreview, search: Option<&Query>) {
     let name_color = SyntaxPalette::for_theme(ui.ctx().theme()).key;
+    let font = egui::TextStyle::Monospace.resolve(ui.style());
+    let text_color = ui.visuals().text_color();
+    let colors = MatchColors::for_theme(ui.ctx().theme());
     egui::Grid::new(id).striped(true).show(ui, |ui| {
         for header in headers.entries() {
-            ui.label(
-                egui::RichText::new(format!("{}:", header.name()))
-                    .monospace()
-                    .color(name_color),
-            );
-            ui.monospace(header.value());
+            let name = format!("{}:", header.name());
+            if let Some(query) = search {
+                ui.label(highlight::plain(
+                    &name,
+                    &query.matcher,
+                    font.clone(),
+                    name_color,
+                    colors,
+                ));
+                ui.label(highlight::plain(
+                    header.value(),
+                    &query.matcher,
+                    font.clone(),
+                    text_color,
+                    colors,
+                ));
+            } else {
+                ui.label(egui::RichText::new(name).monospace().color(name_color));
+                ui.monospace(header.value());
+            }
             ui.end_row();
         }
     });
@@ -232,6 +277,7 @@ fn render_body(
         encodings: &encodings,
         media_type,
         capture: Capture::of(snapshot.lifecycle(), snapshot.retention()),
+        search: panel.search.filter(|query| query.scope.covers_body(side)),
     };
     panel.cache.show(ui, &source, panel.mode);
 }
@@ -270,7 +316,8 @@ fn render_outcome(
                     outcome_view::status_class(response.status().as_u16()),
                     response.version()
                 ));
-                render_headers(ui, "response-headers", response.headers());
+                let search = body.headers_search();
+                render_headers(ui, "response-headers", response.headers(), search);
             }
             DetailTab::Body => {
                 ui.strong("Response body");

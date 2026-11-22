@@ -29,6 +29,8 @@ cargo deny check
 cargo build --release
 ```
 
+요청 검색 알고리즘 후보(미리보기 2,000건 × 8KiB, 전체 로그 256MiB, gzip 64MiB)의 검색 시간은 `cargo bench --bench search`로 측정한다. 결과는 `target/criterion`에 남는다.
+
 통합 테스트는 실제 TCP 연결을 사용한다. 테스트는 HTTP 전달과 `CONNECT` 터널의 양방향 전송을 검증한다.
 
 macOS 실환경에서 키체인 등록·상태 확인·제거와 Chrome 검사 창 실행을 확인하려면 다음 검사를 실행한다. 첫 검사는 임시 CA를 로그인 키체인에 등록한 뒤 제거하며, macOS 인증 창이 나타날 수 있다.

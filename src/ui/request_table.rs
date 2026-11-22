@@ -569,13 +569,7 @@ mod tests {
                 }
                 let rows = records
                     .iter()
-                    .filter(|record| {
-                        crate::ui::filter::record_matches(
-                            record,
-                            crate::ui::filter::RecordFilter::All,
-                            &query,
-                        )
-                    })
+                    .filter(|record| record.request().target().contains(query.as_str()))
                     .collect();
                 let shortcuts_allowed = crate::ui::request_shortcuts_allowed(ui.ctx());
                 if let Some(id) = table.show(ui, rows, selected, shortcuts_allowed) {
