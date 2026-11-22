@@ -41,7 +41,7 @@ cargo test --workspace --all-features
 ```
 
 - 의존성을 바꾸면 `cargo deny check`도 실행한다. `cargo-deny`가 없다면 `cargo install --locked cargo-deny`로 설치한다.
-- PR 전에는 CI가 사용하는 전체 검증을 실행한다.
+- PR 전에는 CI와 별도로 로컬에서 아래 전체 검증을 실행한다. PR CI가 생략한 러너·단계(`macos-15-intel`, macOS Release 빌드·패키지 검사)는 `main` 푸시·일정 실행에서 검증한다. CI 실행 범위는 `docs/development.md`의 "CI"에 있다.
 
 ```bash
 cargo fmt --all --check

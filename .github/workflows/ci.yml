@@ -7,22 +7,42 @@ on:
       - main
     tags:
       - "v[0-9]*"
+  schedule:
+    # 매일 03:00 KST에 PR에서 생략한 macos-15-intel과 macOS 패키지 검사를 실행한다.
+    - cron: "0 18 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  # PR은 같은 브랜치의 이전 실행을 취소한다.
+  # main 푸시, 태그 푸시, 일정·수동 실행은 실행마다 별도 그룹이라 취소되거나 대체되지 않는다.
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # 백트레이스의 파일·줄 번호는 유지하고 test 빌드 시간과 캐시 크기를 줄인다.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
 jobs:
   quality:
+    # package 값을 넣어도 작업 이름이 바뀌지 않도록 기존 이름을 명시한다.
+    name: quality (${{ matrix.os }}, ${{ matrix.target }})
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - os: macos-15
-            target: aarch64-apple-darwin
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
+        # PR: macos-15-intel을 빼고, Release 빌드·패키지·실행 검사(package)는 Linux에서만 한다.
+        # 그 밖의 이벤트(main·태그 푸시, 일정·수동 실행): 세 대상 모두 전체 단계를 실행한다.
+        # 태그 푸시의 release 작업은 세 대상의 압축이 모두 필요하다.
+        # 같은 들여쓰기의 줄은 YAML 접힘(>-)으로 공백 하나씩 이어져 한 줄 식이 된다.
+        include: >-
+          ${{ fromJSON(github.event_name == 'pull_request'
+          && '[{"os": "ubuntu-24.04", "target": "x86_64-unknown-linux-gnu", "package": true},
+          {"os": "macos-15", "target": "aarch64-apple-darwin", "package": false}]'
+          || '[{"os": "ubuntu-24.04", "target": "x86_64-unknown-linux-gnu", "package": true},
+          {"os": "macos-15", "target": "aarch64-apple-darwin", "package": true},
+          {"os": "macos-15-intel", "target": "x86_64-apple-darwin", "package": true}]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -53,6 +73,13 @@ jobs:
         run: python3 scripts/package.py --validate
       - name: Show Rust version
         run: rustc --version --verbose
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          # 캐시 키는 운영체제, rustc 버전, Cargo.lock으로 정해진다.
+          # main 브랜치의 푸시·일정·수동 실행만 저장하고, PR과 태그 푸시는 main 캐시를 읽기만 한다.
+          # PR 캐시가 10GB 저장소 한도를 채워 main 캐시를 밀어내지 않게 한다.
+          save-if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
       - name: Check formatting
         run: cargo fmt --all --check
       - name: Run Clippy
@@ -64,30 +91,35 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --all-features --no-deps
       - name: Build release binary
+        # PR에서는 Linux만 Release 빌드·패키지·실행 검사를 한다. 아래 단계도 같은 조건을 쓴다.
+        if: matrix.package
         run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Package allowlisted files
+        if: matrix.package
         env:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
         run: python3 scripts/package.py ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
+        if: matrix.package
         with:
           name: http-proxy-${{ github.sha }}-${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
           retention-days: 14
       - uses: actions/download-artifact@v4
+        if: matrix.package
         with:
           name: http-proxy-${{ github.sha }}-${{ matrix.target }}
           path: downloaded
       - name: Install Linux runtime smoke dependencies
-        if: runner.os == 'Linux'
+        if: matrix.package && runner.os == 'Linux'
         run: sudo apt-get install --yes xvfb
       - name: Run downloaded binary (Linux X11)
-        if: runner.os == 'Linux'
+        if: matrix.package && runner.os == 'Linux'
         run: xvfb-run -a python3 scripts/smoke-package.py downloaded
       - name: Run downloaded binary (macOS)
-        if: runner.os == 'macOS'
+        if: matrix.package && runner.os == 'macOS'
         run: python3 scripts/smoke-package.py downloaded
 
   dependencies:
@@ -95,7 +127,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install cargo-deny
-        run: cargo install --locked cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
       - name: Check dependencies
         run: cargo deny check
 
