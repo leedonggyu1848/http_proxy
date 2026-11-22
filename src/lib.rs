@@ -12,6 +12,10 @@ pub use engine::{
     MediaType, Outcome, RecordId, SessionId, Timing, TunnelPreview, TunnelSnapshot, TunnelState,
 };
 pub use engine::{Browser, BrowserEvent, BrowserSession};
+pub use engine::{
+    CURL_REDACTED_PLACEHOLDER, CurlCommand, CurlUnavailable, RedactedHeaders, curl_command,
+    curl_unavailable_reason,
+};
 pub use engine::{CaInfo, HttpsInspection, HttpsSetupError};
 pub use engine::{CaTrustError, CaTrustStatus, CaTrustStore};
 pub use engine::{

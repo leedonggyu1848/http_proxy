@@ -10,7 +10,7 @@ mod capture_context;
 mod config;
 mod forward;
 mod handle;
-mod headers;
+pub(in crate::engine) mod headers;
 mod inspect;
 mod replay;
 mod status;

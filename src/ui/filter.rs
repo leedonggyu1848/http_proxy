@@ -103,6 +103,9 @@ impl InspectorApp {
         if let Some(selected) = self.table.show(ui, rows, self.selected, shortcuts_allowed) {
             self.selected = Some(selected);
         }
+        if let Some(record) = self.table.copy_curl.take() {
+            self.curl.copy(ui.ctx(), &record);
+        }
         if let Some(original) = self.table.replay.take() {
             match replay_panel::ReplayPanel::new(original) {
                 Ok(panel) => self.replay = Some(panel),

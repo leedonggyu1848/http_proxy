@@ -4,6 +4,7 @@ mod body_format;
 mod body_view;
 mod browser_panel;
 mod ca_panel;
+mod copy_curl;
 mod detail_tabs;
 mod detail_view;
 mod filter;
@@ -82,6 +83,7 @@ fn init_tracing() {
 struct InspectorApp {
     theme: theme::ThemeSettings,
     replay: Option<replay_panel::ReplayPanel>,
+    curl: copy_curl::CurlCopy,
     proxy: Option<ProxyHandle>,
     records: records::RecordList<Exchange>,
     selected: Option<RecordId>,
@@ -121,6 +123,7 @@ impl InspectorApp {
         };
         let mut app = Self {
             replay: None,
+            curl: copy_curl::CurlCopy::default(),
             proxy: None,
             records: records::RecordList::new(MAX_RECORDS),
             selected: None,

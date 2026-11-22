@@ -52,6 +52,7 @@ impl InspectorApp {
                     Err(error) => self.error = Some(error),
                 }
             }
+            self.curl.controls(ui, record);
             if let Some(original) = record.replay_of()
                 && ui
                     .link(format!("Replay of #{} — show original", original.value()))
