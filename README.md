@@ -138,6 +138,9 @@ CA 상태 표시의 의미, OS별 CA 저장 위치, 직접 실행한 Chrome 설�
 ## 자주 쓰는 기능
 
 - **필터·검색:** 필터 줄에 검색어를 입력하면 메서드, URL, 헤더, 상태와 압축을 푼 요청·응답 본문(방향별 앞 8KiB)에서 찾는다. 검색 범위(All·URL·Headers·Request body·Response body), **Aa**(대소문자 구분), **.\***(정규식)와 종류(All·Responses·Failures·Tunnels)를 고른다. 상세 패널은 일치한 위치를 강조하고 **Previous**·**Next**로 이동한다. [요청 검색](docs/guide/search.md)을 참고한다. **Follow newest**는 새 요청을 따라가고 **Clear**는 화면 기록을 지운다.
+
+  ![테스트 트래픽을 quota로 검색해 압축 응답 본문·요청 본문에 단어가 있는 요청만 남기고 일치 위치를 강조한 화면](docs/screenshots/request-search-body.png)
+
 - **본문 보기:** **Body** 탭의 **View: Pretty / Raw / Tree**로 보기 방식을 바꾼다. 미리보기는 방향별 최대 8KiB다. 자세한 내용은 [본문 보기](docs/guide/body-view.md)를 참고한다.
 - **요청 재전송:** 요청을 우클릭하거나 상세 패널에서 **Edit and Resend**를 눌러 수정한 뒤 **Send**한다. [요청을 수정해 다시 보내기](docs/guide/resend.md)를 참고한다.
 - **cURL로 복사:** 요청을 우클릭하거나 상세 패널에서 **Copy as cURL**을 누르면 bash·zsh에서 실행할 수 있는 `curl` 명령이 복사된다. 값이 저장되지 않는 `Authorization`·`Cookie` 헤더는 기본으로 빼고, **Redacted placeholders**를 켜면 `<REDACTED>` 자리 표시자로 넣는다. 본문이 8KiB를 넘어 잘린 요청은 복사하지 않고 안내한다. [요청을 cURL 명령으로 복사하기](docs/guide/copy-as-curl.md)를 참고한다.
