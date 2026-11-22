@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 
@@ -155,13 +155,23 @@ pub(super) struct CopyPlan {
     pub(super) incomplete: bool,
 }
 
-/// A body file that was written.
-pub(super) type Written = (PathBuf, u64, String);
+/// A body file that was written: its path, size, SHA-256 in lowercase
+/// hexadecimal, and the numbering attempt that gave its name (0 for `name`
+/// itself, `n` for `name (n)`).
+pub(super) type Written = (PathBuf, u64, String, u32);
 
 /// Writes the body to a new file in `directory` named `name`, or a numbered
 /// variant when that name exists. Returns the path, the bytes written and
 /// their SHA-256 in lowercase hexadecimal.
-pub(super) fn save(copy: CopyPlan, directory: &Path, name: &str) -> io::Result<Written> {
+///
+/// Numbering starts at `first_attempt`, so a caller saving many files with
+/// the same name can skip numbers it already used.
+pub(super) fn save(
+    copy: CopyPlan,
+    directory: &Path,
+    name: &str,
+    first_attempt: u32,
+) -> io::Result<Written> {
     let mut destination = NamedTempFile::new_in(directory)?;
     let mut output = HashingWriter {
         inner: destination.as_file_mut(),
@@ -170,12 +180,82 @@ pub(super) fn save(copy: CopyPlan, directory: &Path, name: &str) -> io::Result<W
     let written = write_body(copy, &mut output)?;
     let digest = output.hasher.finalize();
     destination.as_file_mut().sync_all()?;
-    let path = persist_unique(destination, directory, name)?;
-    let hex = digest.iter().fold(String::new(), |mut hex, byte| {
+    let (path, attempt) = persist_unique(destination, directory, name, first_attempt)?;
+    Ok((path, written, hex(&digest), attempt))
+}
+
+/// Stored bytes copied to one position of a merged file.
+pub(super) struct Part {
+    pub(super) offset: u64,
+    pub(super) segments: Vec<Segment>,
+}
+
+/// Writes `parts` in position order to a new file in `directory`, filling
+/// the space between parts with zeros, and names it like [`save`].
+pub(super) fn save_parts(
+    data: &File,
+    parts: Vec<Part>,
+    directory: &Path,
+    name: &str,
+) -> io::Result<Written> {
+    let mut destination = NamedTempFile::new_in(directory)?;
+    let mut hasher = Sha256::new();
+    let mut position: u64 = 0;
+    for part in parts {
+        let zeros = part.offset.saturating_sub(position);
+        if zeros > 0 {
+            // Seek over the gap instead of writing zeros: the file system
+            // keeps a hole that reads as zeros. Only the hash sees them.
+            hash_zeros(&mut hasher, zeros);
+            position = part.offset;
+            destination.as_file_mut().seek(SeekFrom::Start(position))?;
+        }
+        let length: u64 = part.segments.iter().map(|segment| segment.length).sum();
+        let mut output = io::BufWriter::new(HashingWriter {
+            inner: destination.as_file_mut(),
+            hasher,
+        });
+        let copied = io::copy(
+            &mut SegmentReader::new(data.try_clone()?, part.segments),
+            &mut output,
+        )?;
+        hasher = output
+            .into_inner()
+            .map_err(io::IntoInnerError::into_error)?
+            .hasher;
+        if copied != length {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "The body store data file ended early",
+            ));
+        }
+        position = position.saturating_add(copied);
+    }
+    // A file that ends in a hole still needs its full length.
+    destination.as_file_mut().set_len(position)?;
+    destination.as_file_mut().sync_all()?;
+    let digest = hasher.finalize();
+    let (path, attempt) = persist_unique(destination, directory, name, 0)?;
+    Ok((path, position, hex(&digest), attempt))
+}
+
+/// Feeds `count` zero bytes to `hasher` without allocating them all.
+fn hash_zeros(hasher: &mut Sha256, mut count: u64) {
+    let zeros = [0_u8; 8 * 1024];
+    while count > 0 {
+        let chunk = usize::try_from(count)
+            .unwrap_or(zeros.len())
+            .min(zeros.len());
+        hasher.update(zeros.get(..chunk).unwrap_or_default());
+        count -= chunk as u64;
+    }
+}
+
+fn hex(digest: &[u8]) -> String {
+    digest.iter().fold(String::new(), |mut hex, byte| {
         let _infallible = write!(hex, "{byte:02x}");
         hex
-    });
-    Ok((path, written, hex))
+    })
 }
 
 /// Passes writes through and hashes exactly the bytes that were accepted.
@@ -264,8 +344,13 @@ fn copy_decoded(
 
 /// Moves the finished file to `name`, or `name (1)`, `name (2)`, …, never
 /// replacing an existing file.
-fn persist_unique(mut file: NamedTempFile, directory: &Path, name: &str) -> io::Result<PathBuf> {
-    for attempt in 0..MAX_NAME_ATTEMPTS {
+fn persist_unique(
+    mut file: NamedTempFile,
+    directory: &Path,
+    name: &str,
+    first_attempt: u32,
+) -> io::Result<(PathBuf, u32)> {
+    for attempt in first_attempt..first_attempt.saturating_add(MAX_NAME_ATTEMPTS) {
         let candidate = if attempt == 0 {
             name.to_owned()
         } else {
@@ -273,7 +358,7 @@ fn persist_unique(mut file: NamedTempFile, directory: &Path, name: &str) -> io::
         };
         let path = directory.join(candidate);
         match file.persist_noclobber(&path) {
-            Ok(_) => return Ok(path),
+            Ok(_) => return Ok((path, attempt)),
             Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => file = error.file,
             Err(error) => return Err(error.error),
         }
@@ -287,6 +372,11 @@ fn persist_unique(mut file: NamedTempFile, directory: &Path, name: &str) -> io::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Saves with numbering from the start, as a single save does.
+    fn save(copy: CopyPlan, directory: &Path, name: &str) -> io::Result<Written> {
+        super::save(copy, directory, name, 0)
+    }
 
     fn data_file(bytes: &[u8]) -> io::Result<(NamedTempFile, File)> {
         let mut file = NamedTempFile::new()?;
@@ -367,7 +457,7 @@ mod tests {
                 length: encoded.len() as u64,
             }]
         };
-        let (raw, raw_bytes, _) = save(
+        let (raw, raw_bytes, _, _) = save(
             copy(data.try_clone()?, whole(), Vec::new()),
             directory.path(),
             "body.gz",
@@ -375,14 +465,14 @@ mod tests {
         assert_eq!(std::fs::read(&raw)?, encoded);
         assert_eq!(raw_bytes, encoded.len() as u64);
         let decode = vec![ContentEncoding::Gzip];
-        let (decoded, decoded_bytes, _) = save(
+        let (decoded, decoded_bytes, _, _) = save(
             copy(data.try_clone()?, whole(), decode.clone()),
             directory.path(),
             "body",
         )?;
         assert_eq!(std::fs::read(&decoded)?, original);
         assert_eq!(decoded_bytes, original.len() as u64);
-        let (again, _, _) = save(copy(data, whole(), decode), directory.path(), "body")?;
+        let (again, _, _, _) = save(copy(data, whole(), decode), directory.path(), "body")?;
         assert_eq!(again, directory.path().join("body (1)"));
         assert_eq!(std::fs::read(directory.path().join("body"))?, original);
         Ok(())
@@ -405,7 +495,7 @@ mod tests {
         assert!(save(complete, directory.path(), "cut").is_err());
         let mut partial = copy(data, segments(), vec![ContentEncoding::Gzip]);
         partial.incomplete = true;
-        let (path, _, _) = save(partial, directory.path(), "cut.partial")?;
+        let (path, _, _, _) = save(partial, directory.path(), "cut.partial")?;
         let kept = std::fs::read(path)?;
         assert!(original.starts_with(&kept));
         Ok(())
@@ -433,7 +523,7 @@ mod tests {
             offset: 0,
             length: BROTLI.len() as u64,
         }];
-        let (path, _, _) = save(
+        let (path, _, _, _) = save(
             copy(data, segments, vec![ContentEncoding::Brotli]),
             directory.path(),
             "br",
@@ -445,12 +535,42 @@ mod tests {
             offset: 0,
             length: zstd.len() as u64,
         }];
-        let (path, _, _) = save(
+        let (path, _, _, _) = save(
             copy(data, segments, vec![ContentEncoding::Zstd]),
             directory.path(),
             "zst",
         )?;
         assert_eq!(std::fs::read(path)?, EXPECTED);
+        Ok(())
+    }
+
+    #[test]
+    fn merged_gaps_read_as_zeros_and_are_hashed() -> io::Result<()> {
+        let (_file, data) = data_file(b"AAAABBBB")?;
+        let directory = tempfile::tempdir()?;
+        let parts = vec![
+            Part {
+                offset: 0,
+                segments: vec![Segment {
+                    offset: 0,
+                    length: 4,
+                }],
+            },
+            Part {
+                offset: 100_000,
+                segments: vec![Segment {
+                    offset: 4,
+                    length: 4,
+                }],
+            },
+        ];
+        let (path, bytes, sha256, _) = save_parts(&data, parts, directory.path(), "merged")?;
+        let mut expected = b"AAAA".to_vec();
+        expected.resize(100_000, 0);
+        expected.extend_from_slice(b"BBBB");
+        assert_eq!(bytes, 100_004);
+        assert_eq!(std::fs::read(path)?, expected);
+        assert_eq!(sha256, hex(&Sha256::digest(&expected)));
         Ok(())
     }
 }

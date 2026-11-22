@@ -1,6 +1,6 @@
 //! Saving many stored bodies into one folder with a `manifest.json`.
 
-use std::fs::{DirBuilder, OpenOptions};
+use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{self, Write as _};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
@@ -13,11 +13,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 use tempfile::NamedTempFile;
 
-use super::file_name::url_directories;
+use super::file_name::{numbered, url_directories};
 use super::{BodyStore, SaveBody, SaveFormat, SavedBody};
 use crate::engine::journal::BodySide;
 
 const MANIFEST: &str = "manifest.json";
+/// Numbered names tried for one folder before giving up.
+const MAX_FOLDER_ATTEMPTS: u32 = 1_000;
 
 /// How saved files are arranged inside the output folder.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -141,7 +143,9 @@ impl BulkSave {
 
 impl BodyStore {
     /// Saves `bodies` into the new folder `directory` in the background and
-    /// writes `manifest.json` there listing every body, saved or not.
+    /// writes `manifest.json` there with one entry per body it handled:
+    /// saved, or failed with an error. After a cancel, bodies that were not
+    /// reached have no entry and the manifest says `"cancelled": true`.
     ///
     /// The folder must not exist yet; it is created readable only by this
     /// user. The directory each body names is ignored.
@@ -193,13 +197,14 @@ impl BodyStore {
             cancelled: false,
         };
         let mut entries = Vec::with_capacity(bodies.len());
+        let mut numbers = super::NameNumbers::new();
         for body in bodies {
             if progress.is_cancelled() {
                 summary.cancelled = true;
                 break;
             }
             let saved = target_directory(root, &body.target, layout)
-                .and_then(|directory| self.write_body(body, &directory));
+                .and_then(|directory| self.write_body(body, &directory, Some(&mut numbers)));
             match &saved {
                 Ok(file) => {
                     summary.saved += 1;
@@ -219,17 +224,40 @@ impl BodyStore {
 fn target_directory(root: &Path, target: &str, layout: BodyLayout) -> io::Result<PathBuf> {
     match layout {
         BodyLayout::Flat => Ok(root.to_path_buf()),
-        BodyLayout::HostPath => {
-            let directory = url_directories(target)
-                .iter()
-                .fold(root.to_path_buf(), |path, component| path.join(component));
-            DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(&directory)?;
-            Ok(directory)
+        BodyLayout::HostPath => url_directories(target)
+            .iter()
+            .try_fold(root.to_path_buf(), |parent, component| {
+                child_directory(&parent, component)
+            }),
+    }
+}
+
+/// Returns the folder `name` inside `parent`, creating it when missing. When
+/// a file already has that name, `name (1)`, `name (2)`, … is used instead,
+/// so a saved file such as `/a` does not block a later `/a/b`.
+fn child_directory(parent: &Path, name: &str) -> io::Result<PathBuf> {
+    for attempt in 0..MAX_FOLDER_ATTEMPTS {
+        let candidate = if attempt == 0 {
+            parent.join(name)
+        } else {
+            parent.join(numbered(name, attempt))
+        };
+        match DirBuilder::new().mode(0o700).create(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                // `symlink_metadata` does not follow links, so a link is
+                // never used as a folder.
+                if fs::symlink_metadata(&candidate)?.is_dir() {
+                    return Ok(candidate);
+                }
+            }
+            Err(error) => return Err(error),
         }
     }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        format!("Too many files named like the folder {name:?} already exist"),
+    ))
 }
 
 const fn side_name(side: BodySide) -> &'static str {
@@ -329,6 +357,8 @@ mod tests {
             disposition: None,
             media_type: None,
             encodings: Vec::new(),
+            content_range: None,
+            validator: None,
         }
     }
 
@@ -433,6 +463,69 @@ mod tests {
             manifest.pointer("/entries/0/file").and_then(Value::as_str),
             Some("manifest (1).json")
         );
+        Ok(())
+    }
+
+    fn finish(running: &BulkSave) -> io::Result<BulkSummary> {
+        loop {
+            if let Some(result) = running.try_finish() {
+                return result;
+            }
+            thread::yield_now();
+        }
+    }
+
+    fn record(store: &BodyStore, id: u64, bytes: &[u8]) {
+        let mut recorder = BodyRecorder::new(store.clone(), id, BodySide::Response);
+        recorder.observe(bytes);
+        recorder.end(BodyLifecycle::Complete);
+    }
+
+    #[test]
+    fn folders_get_numbers_when_a_file_has_their_name() -> io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let store = BodyStore::with_limits(root.path(), u64::MAX, 0)?;
+        record(&store, 5, b"file a");
+        record(&store, 6, b"file b");
+        let output = tempfile::tempdir()?;
+        let folder = output.path().join("bulk");
+        let bodies = vec![
+            body(5, "http://example.test/a", &folder),
+            body(6, "http://example.test/a/b", &folder),
+        ];
+        let summary = finish(&store.save_all(bodies, BodyLayout::HostPath, folder.clone())?)?;
+        assert_eq!((summary.saved(), summary.failed()), (2, 0));
+        assert_eq!(std::fs::read(folder.join("example.test/a"))?, b"file a");
+        assert_eq!(
+            std::fs::read(folder.join("example.test/a (1)/b"))?,
+            b"file b"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn many_bodies_with_one_name_get_consecutive_numbers() -> io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let store = BodyStore::with_limits(root.path(), u64::MAX, 0)?;
+        let output = tempfile::tempdir()?;
+        let folder = output.path().join("bulk");
+        let mut bodies = Vec::new();
+        for id in 10..20 {
+            record(&store, id, &id.to_le_bytes());
+            bodies.push(body(id, "http://example.test/same.bin", &folder));
+        }
+        let summary = finish(&store.save_all(bodies, BodyLayout::Flat, folder.clone())?)?;
+        assert_eq!(summary.saved(), 10);
+        assert_eq!(
+            std::fs::read(folder.join("same.bin"))?,
+            10_u64.to_le_bytes()
+        );
+        for number in 1..10_u64 {
+            assert_eq!(
+                std::fs::read(folder.join(format!("same ({number}).bin")))?,
+                (10 + number).to_le_bytes()
+            );
+        }
         Ok(())
     }
 }

@@ -10,7 +10,8 @@ mod trust;
 
 pub use body_store::{
     BODY_STORE_LIMIT_BYTES, BODY_STORE_MIN_FREE_BYTES, BodyLayout, BodyStore, BulkProgress,
-    BulkSave, BulkSummary, SaveBody, SaveFormat, SavedBody, StoreGap, StoredBody,
+    BulkSave, BulkSummary, ContentRange, RangePlan, SaveBody, SaveFormat, SavedBody, StoreGap,
+    StoredBody,
 };
 pub use browser::{Browser, BrowserEvent, BrowserSession};
 pub use capture::{

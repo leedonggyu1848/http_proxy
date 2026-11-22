@@ -24,6 +24,8 @@ pub(super) struct NameSource<'a> {
     pub(super) media_type: Option<&'a MediaType>,
     /// `Content-Encoding` layers kept in the file, in the order they were applied.
     pub(super) kept_encodings: &'a [String],
+    /// First and last byte of a partial response, added before the extension.
+    pub(super) range: Option<(u64, u64)>,
     pub(super) partial: bool,
 }
 
@@ -51,6 +53,9 @@ pub(super) fn file_name(source: &NameSource<'_>) -> String {
     if let Some(media_type) = source.media_type {
         name = with_media_extension(name, media_type);
     }
+    if let Some((start, end)) = source.range {
+        name = with_range(&name, start, end);
+    }
     for encoding in source.kept_encodings {
         if let Some(suffix) = encoding_suffix(encoding)
             && !name.ends_with(suffix)
@@ -62,6 +67,13 @@ pub(super) fn file_name(source: &NameSource<'_>) -> String {
         name.push_str(PARTIAL_SUFFIX);
     }
     name
+}
+
+/// Inserts `.bytes-<start>-<end>` before the extension of `name`.
+fn with_range(name: &str, start: u64, end: u64) -> String {
+    let (stem, extension) = split_extension(name);
+    let extension = extension.map_or_else(String::new, |extension| format!(".{extension}"));
+    format!("{stem}.bytes-{start}-{end}{extension}")
 }
 
 /// Returns `name` with ` (n)` before its extension, keeping `.partial` last.
@@ -360,6 +372,7 @@ mod tests {
             disposition,
             media_type: None,
             kept_encodings: &[],
+            range: None,
             partial: false,
         }
     }
@@ -538,6 +551,18 @@ mod tests {
         assert_eq!(url_directories("/origin/only"), Vec::<String>::new());
         let deep = format!("http://h/{}leaf", "d/".repeat(40));
         assert_eq!(url_directories(&deep).len(), MAX_DIRECTORY_DEPTH);
+    }
+
+    #[test]
+    fn partial_responses_name_their_byte_range() {
+        let media_type = MediaType::parse("video/mp4");
+        let name = file_name(&NameSource {
+            media_type: media_type.as_ref(),
+            range: Some((0, 1_048_575)),
+            partial: true,
+            ..source("http://example.test/movie.mp4", None)
+        });
+        assert_eq!(name, "movie.bytes-0-1048575.mp4.partial");
     }
 
     #[test]

@@ -9,7 +9,8 @@ pub use engine::{
 };
 pub use engine::{
     BODY_STORE_LIMIT_BYTES, BODY_STORE_MIN_FREE_BYTES, BodyLayout, BodyStore, BulkProgress,
-    BulkSave, BulkSummary, SaveBody, SaveFormat, SavedBody, StoreGap, StoredBody,
+    BulkSave, BulkSummary, ContentRange, RangePlan, SaveBody, SaveFormat, SavedBody, StoreGap,
+    StoredBody,
 };
 pub use engine::{
     BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, CaptureSource, CapturedHeader,

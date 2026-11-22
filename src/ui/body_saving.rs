@@ -41,6 +41,8 @@ pub(in crate::ui) struct BodySaving {
     privacy_acknowledged: bool,
     /// The `Save bodies…` dialog and a running bulk save.
     pub(in crate::ui) bulk: crate::ui::bulk_save::BulkControls,
+    /// The `Merge ranges…` dialog.
+    pub(in crate::ui) merge: crate::ui::range_merge::MergeControls,
 }
 
 impl BodySaving {
@@ -73,13 +75,14 @@ impl BodySaving {
             confirmation: None,
             privacy_acknowledged: false,
             bulk: crate::ui::bulk_save::BulkControls::default(),
+            merge: crate::ui::range_merge::MergeControls::default(),
         }
     }
 
     /// Reports whether a body save is running or waiting for confirmation;
     /// another save cannot start until it finishes.
     pub(in crate::ui) const fn is_busy(&self) -> bool {
-        self.pending.is_some() || self.confirmation.is_some()
+        self.pending.is_some() || self.confirmation.is_some() || self.merge.is_open()
     }
 
     /// Opens the `Save bodies…` dialog.
@@ -127,6 +130,9 @@ impl BodySaving {
                         ui.close();
                         self.request(record, side, format, save.directory());
                     }
+                }
+                if side == BodySide::Response && self.merge.menu_items(ui, record) {
+                    ui.close();
                 }
             })
         });
@@ -189,6 +195,12 @@ impl BodySaving {
             }
             Err(error) => self.status = Some(Err(error)),
         }
+    }
+
+    /// Shows the result of a save started elsewhere, such as a range merge.
+    pub(in crate::ui) fn track(&mut self, receiver: Receiver<io::Result<SavedBody>>) {
+        self.status = None;
+        self.pending = Some(receiver);
     }
 
     fn start(&mut self, request: SaveBody) {
@@ -441,6 +453,7 @@ mod tests {
             confirmation: None,
             privacy_acknowledged: true,
             bulk: crate::ui::bulk_save::BulkControls::default(),
+            merge: crate::ui::range_merge::MergeControls::default(),
         };
         assert!(saving.is_busy());
         let runtime = tokio::runtime::Builder::new_current_thread()

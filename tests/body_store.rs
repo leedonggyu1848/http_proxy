@@ -67,6 +67,53 @@ fn reply_for(path: &str) -> Reply {
     }
 }
 
+/// Length of the resources served in ranges.
+const RANGED_LENGTH: usize = 1_000;
+
+/// Answers `Range: bytes=<a>-<b>` requests for `/ranged.mp4` and
+/// `/gappy.mp4` with `206 Partial Content`; a `X-Version: 2` request header
+/// gets a different `ETag`.
+fn ranged_reply(path: &str, head: &str) -> Option<Vec<u8>> {
+    // Hostile or broken servers: a tiny body far into a huge resource, and
+    // a body shorter than its Content-Range.
+    let odd = match path {
+        // Larger than any disk, so every machine refuses it the same way.
+        "/huge.bin" => Some((
+            "bytes 18446744073709551600-18446744073709551609/18446744073709551610",
+            10,
+        )),
+        "/short.mp4" => Some(("bytes 0-99/1000", 50)),
+        _ => None,
+    };
+    if let Some((range, length)) = odd {
+        let mut response = format!(
+            "HTTP/1.1 206 Partial Content\r\nContent-Type: video/mp4\r\nContent-Range: {range}\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n"
+        )
+        .into_bytes();
+        response.extend(std::iter::repeat_n(b'x', length));
+        return Some(response);
+    }
+    if path != "/ranged.mp4" && path != "/gappy.mp4" {
+        return None;
+    }
+    let lower = head.to_ascii_lowercase();
+    let range = lower
+        .lines()
+        .find_map(|line| line.strip_prefix("range: bytes="))?;
+    let (start, end) = range.trim().split_once('-')?;
+    let (start, end): (usize, usize) = (start.parse().ok()?, end.parse().ok()?);
+    let version = if lower.contains("x-version: 2") { 2 } else { 1 };
+    let resource = pseudo_random(RANGED_LENGTH, version);
+    let body = resource.get(start..=end)?;
+    let mut response = format!(
+        "HTTP/1.1 206 Partial Content\r\nContent-Type: video/mp4\r\nContent-Range: bytes {start}-{end}/{RANGED_LENGTH}\r\nETag: \"v{version}\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    response.extend_from_slice(body);
+    Some(response)
+}
+
 fn pseudo_random(length: usize, seed: u64) -> Vec<u8> {
     let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
     (0..length)
@@ -117,6 +164,10 @@ async fn serve(listener: TcpListener) {
                 return;
             }
             let path = head.split(' ').nth(1).unwrap_or("/").to_owned();
+            if let Some(response) = ranged_reply(&path, &head) {
+                let _closed = stream.write_all(&response).await;
+                return;
+            }
             let reply = reply_for(&path);
             let response = format!(
                 "HTTP/1.1 200 OK\r\n{}Content-Length: {}\r\nConnection: close\r\n\r\n",
@@ -175,6 +226,51 @@ impl Harness {
             .position(|window| window == b"\r\n\r\n")
             .ok_or("no response head")?;
         Ok(response.split_off(split + 4))
+    }
+
+    /// Sends a range request through the proxy and returns the response body.
+    async fn fetch_range(&self, path: &str, range: &str, extra: &str) -> TestResult<Vec<u8>> {
+        let mut client = TcpStream::connect(self.proxy.local_addr()).await?;
+        let address = self.upstream;
+        let request = format!(
+            "GET http://{address}{path} HTTP/1.1\r\nHost: {address}\r\nRange: bytes={range}\r\n{extra}Connection: close\r\n\r\n"
+        );
+        client.write_all(request.as_bytes()).await?;
+        let mut response = Vec::new();
+        timeout(TEST_TIMEOUT, client.read_to_end(&mut response)).await??;
+        let split = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .ok_or("no response head")?;
+        Ok(response.split_off(split + 4))
+    }
+
+    /// Returns every exchange for `path` once `count` of them have settled bodies.
+    async fn all_exchanges(&mut self, path: &str, count: usize) -> TestResult<Vec<Exchange>> {
+        let started = Instant::now();
+        loop {
+            while let Some(exchange) = self.proxy.try_receive() {
+                self.seen.push(exchange);
+            }
+            let settled: Vec<Exchange> = self
+                .seen
+                .iter()
+                .filter(|exchange| exchange.request().target().ends_with(path))
+                .filter(|exchange| {
+                    self.store
+                        .body(exchange.id(), BodySide::Response)
+                        .is_some_and(|body| body.lifecycle() != BodyLifecycle::Streaming)
+                })
+                .cloned()
+                .collect();
+            if settled.len() >= count {
+                return Ok(settled);
+            }
+            if started.elapsed() > TEST_TIMEOUT {
+                return Err(format!("only {} settled exchanges for {path}", settled.len()).into());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     /// Returns the exchange for `path` once both bodies stopped streaming.
@@ -442,5 +538,167 @@ async fn saves_many_bodies_with_a_manifest() -> TestResult {
             assert_eq!(saved.len(), 4_000);
         }
     }
+    Ok(())
+}
+
+fn response_bodies(exchanges: &[Exchange], directory: &Path) -> TestResult<Vec<SaveBody>> {
+    exchanges
+        .iter()
+        .map(|exchange| {
+            SaveBody::new(
+                exchange,
+                BodySide::Response,
+                SaveFormat::AsReceived,
+                directory.to_path_buf(),
+            )
+            .ok_or_else(|| "no response".into())
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn merges_overlapping_ranges_in_position_order() -> TestResult {
+    let mut harness = Harness::start(u64::MAX).await?;
+    let output = tempfile::tempdir()?;
+    // Fetched out of order, overlapping, plus a part of another version.
+    for range in ["600-999", "0-399", "300-699"] {
+        harness.fetch_range("/ranged.mp4", range, "").await?;
+    }
+    harness
+        .fetch_range("/ranged.mp4", "400-499", "X-Version: 2\r\n")
+        .await?;
+    let exchanges = harness.all_exchanges("/ranged.mp4", 4).await?;
+    let bodies = response_bodies(&exchanges, output.path())?;
+    let single = bodies.first().ok_or("no body")?;
+    let range = single.content_range().ok_or("no range")?;
+    assert_eq!(
+        (range.start(), range.end(), range.total()),
+        (600, 999, Some(1000))
+    );
+    let saved = harness
+        .save(
+            "/ranged.mp4",
+            BodySide::Response,
+            SaveFormat::AsReceived,
+            output.path(),
+        )
+        .await?;
+    assert_eq!(saved.path(), output.path().join("ranged.bytes-600-999.mp4"));
+
+    let plan = harness
+        .store
+        .plan_ranges(single, &bodies)?
+        .ok_or("not a range response")?;
+    assert_eq!(plan.parts(), 3, "the other version is not merged");
+    assert!(plan.is_complete());
+    assert_eq!(plan.gaps(), []);
+    assert_eq!(plan.validator(), Some("\"v1\""));
+    let receiver = harness
+        .store
+        .save_ranges(plan, output.path().to_path_buf())?;
+    let merged =
+        tokio::task::spawn_blocking(move || receiver.recv_timeout(TEST_TIMEOUT)).await???;
+    assert!(merged.complete());
+    assert_eq!(merged.path(), output.path().join("ranged.mp4"));
+    assert_eq!(
+        std::fs::read(merged.path())?,
+        pseudo_random(RANGED_LENGTH, 1)
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn gaps_between_ranges_are_reported_and_zero_filled() -> TestResult {
+    let mut harness = Harness::start(u64::MAX).await?;
+    let output = tempfile::tempdir()?;
+    for range in ["0-99", "300-399"] {
+        harness.fetch_range("/gappy.mp4", range, "").await?;
+    }
+    let exchanges = harness.all_exchanges("/gappy.mp4", 2).await?;
+    let bodies = response_bodies(&exchanges, output.path())?;
+    let plan = harness
+        .store
+        .plan_ranges(bodies.first().ok_or("no body")?, &bodies)?
+        .ok_or("not a range response")?;
+    assert_eq!(plan.gaps(), [(100, 299), (400, 999)]);
+    assert!(!plan.is_complete());
+    assert_eq!(plan.file_bytes(), 400);
+    assert_eq!(plan.zero_filled_bytes(), 200);
+    let reason = plan.incomplete_reason().unwrap_or_default();
+    assert!(
+        reason.contains("Bytes 100-299, 400-999 were not captured."),
+        "{reason}"
+    );
+    assert!(reason.contains("the file ends at 400 bytes"), "{reason}");
+    let receiver = harness
+        .store
+        .save_ranges(plan, output.path().to_path_buf())?;
+    let merged =
+        tokio::task::spawn_blocking(move || receiver.recv_timeout(TEST_TIMEOUT)).await???;
+    assert!(!merged.complete());
+    assert_eq!(merged.path(), output.path().join("gappy.mp4.partial"));
+    let resource = pseudo_random(RANGED_LENGTH, 1);
+    let mut expected = resource.get(..100).ok_or("short")?.to_vec();
+    expected.extend(std::iter::repeat_n(0, 200));
+    expected.extend_from_slice(resource.get(300..400).ok_or("short")?);
+    assert_eq!(std::fs::read(merged.path())?, expected);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn merged_files_that_would_fill_the_disk_are_refused() -> TestResult {
+    let mut harness = Harness::start(u64::MAX).await?;
+    let output = tempfile::tempdir()?;
+    harness.fetch_range("/huge.bin", "0-9", "").await?;
+    let exchanges = harness.all_exchanges("/huge.bin", 1).await?;
+    let bodies = response_bodies(&exchanges, output.path())?;
+    let receiver = harness
+        .store
+        .plan_ranges_in_background(bodies.first().ok_or("no body")?.clone(), bodies.clone())?;
+    let plan = tokio::task::spawn_blocking(move || receiver.recv_timeout(TEST_TIMEOUT))
+        .await???
+        .ok_or("not a range response")?;
+    assert_eq!(plan.file_bytes(), 18_446_744_073_709_551_610);
+    assert_eq!(plan.zero_filled_bytes(), 18_446_744_073_709_551_600);
+    let receiver = harness
+        .store
+        .save_ranges(plan, output.path().to_path_buf())?;
+    let refused =
+        tokio::task::spawn_blocking(move || receiver.recv_timeout(TEST_TIMEOUT)).await??;
+    assert_eq!(
+        refused.err().map(|error| error.kind()),
+        Some(io::ErrorKind::StorageFull)
+    );
+    assert_eq!(
+        std::fs::read_dir(output.path())?.count(),
+        0,
+        "nothing was written"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_body_shorter_than_its_range_is_saved_as_partial() -> TestResult {
+    let mut harness = Harness::start(u64::MAX).await?;
+    let output = tempfile::tempdir()?;
+    harness.fetch_range("/short.mp4", "0-99", "").await?;
+    let saved = harness
+        .save(
+            "/short.mp4",
+            BodySide::Response,
+            SaveFormat::AsReceived,
+            output.path(),
+        )
+        .await?;
+    assert!(!saved.complete());
+    assert_eq!(
+        saved.path(),
+        output.path().join("short.bytes-0-99.mp4.partial")
+    );
+    assert!(
+        saved
+            .incomplete_reason()
+            .is_some_and(|reason| reason.contains("50 bytes but Content-Range promises 100"))
+    );
     Ok(())
 }
