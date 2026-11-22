@@ -416,12 +416,13 @@ src/platform/
 
 ## CI 최소 검사
 
-CI는 지원 운영체제마다 다음 명령을 실행한다.
+CI는 지원 운영체제마다 다음 명령을 실행한다. 이벤트별로 생략하는 러너와 단계는 [개발 문서의 CI](development.md#ci)에 있다.
 
 ```bash
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace
+cargo test --workspace --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 cargo deny check
 cargo build --release
 ```

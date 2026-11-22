@@ -20,7 +20,7 @@ HTTP Inspector는 로컬 HTTP 프록시를 통해 요청·응답 기록을 보�
 
 ### 배포 파일로 실행
 
-[GitHub Releases](https://github.com/leedonggyu1848/http_proxy/releases)에서 버전에 맞는 `.tar.gz`와 같은 이름의 `.sha256` 파일을 받는다. 개발 빌드는 [CI 실행 목록](https://github.com/leedonggyu1848/http_proxy/actions/workflows/ci.yml)의 성공한 실행에서 **Artifacts**를 받는다(GitHub 로그인 필요, 보관 기간 14일). CI artifact ZIP을 먼저 풀면 같은 두 파일이 나온다.
+[GitHub Releases](https://github.com/leedonggyu1848/http_proxy/releases)에서 버전에 맞는 `.tar.gz`와 같은 이름의 `.sha256` 파일을 받는다. 개발 빌드는 [CI 실행 목록](https://github.com/leedonggyu1848/http_proxy/actions/workflows/ci.yml)의 성공한 실행에서 **Artifacts**를 받는다(GitHub 로그인 필요, 보관 기간 14일). PR 실행에는 Linux 파일만 있고, 세 대상의 파일은 `main` 실행에 있다. CI artifact ZIP을 먼저 풀면 같은 두 파일이 나온다.
 
 | 대상 | 파일 이름의 대상 식별자 | 빌드·실행 검증 환경 |
 | --- | --- | --- |
@@ -165,7 +165,7 @@ CA 상태 표시의 의미, OS별 CA 저장 위치, 직접 실행한 Chrome 설�
 ## 문서
 
 - [사용자 가이드](docs/guide/README.md): 기능별 세부 동작과 한도
-- [개발 문서](docs/development.md): 개발 환경, 검증 명령, 설계 문서
+- [개발 문서](docs/development.md): 개발 환경, 검증 명령, CI 실행 범위, 설계 문서
 
 ## 라이선스
 
