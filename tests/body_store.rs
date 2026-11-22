@@ -77,7 +77,11 @@ fn ranged_reply(path: &str, head: &str) -> Option<Vec<u8>> {
     // Hostile or broken servers: a tiny body far into a huge resource, and
     // a body shorter than its Content-Range.
     let odd = match path {
-        "/huge.bin" => Some(("bytes 999999999990-999999999999/1000000000000", 10)),
+        // Larger than any disk, so every machine refuses it the same way.
+        "/huge.bin" => Some((
+            "bytes 18446744073709551600-18446744073709551609/18446744073709551610",
+            10,
+        )),
         "/short.mp4" => Some(("bytes 0-99/1000", 50)),
         _ => None,
     };
@@ -654,8 +658,8 @@ async fn merged_files_that_would_fill_the_disk_are_refused() -> TestResult {
     let plan = tokio::task::spawn_blocking(move || receiver.recv_timeout(TEST_TIMEOUT))
         .await???
         .ok_or("not a range response")?;
-    assert_eq!(plan.file_bytes(), 1_000_000_000_000);
-    assert_eq!(plan.zero_filled_bytes(), 999_999_999_990);
+    assert_eq!(plan.file_bytes(), 18_446_744_073_709_551_610);
+    assert_eq!(plan.zero_filled_bytes(), 18_446_744_073_709_551_600);
     let receiver = harness
         .store
         .save_ranges(plan, output.path().to_path_buf())?;

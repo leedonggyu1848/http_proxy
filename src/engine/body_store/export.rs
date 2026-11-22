@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 
@@ -199,34 +199,56 @@ pub(super) fn save_parts(
     name: &str,
 ) -> io::Result<Written> {
     let mut destination = NamedTempFile::new_in(directory)?;
-    let mut output = io::BufWriter::new(HashingWriter {
-        inner: destination.as_file_mut(),
-        hasher: Sha256::new(),
-    });
+    let mut hasher = Sha256::new();
     let mut position: u64 = 0;
     for part in parts {
         let zeros = part.offset.saturating_sub(position);
-        io::copy(&mut io::repeat(0).take(zeros), &mut output)?;
+        if zeros > 0 {
+            // Seek over the gap instead of writing zeros: the file system
+            // keeps a hole that reads as zeros. Only the hash sees them.
+            hash_zeros(&mut hasher, zeros);
+            position = part.offset;
+            destination.as_file_mut().seek(SeekFrom::Start(position))?;
+        }
         let length: u64 = part.segments.iter().map(|segment| segment.length).sum();
+        let mut output = io::BufWriter::new(HashingWriter {
+            inner: destination.as_file_mut(),
+            hasher,
+        });
         let copied = io::copy(
             &mut SegmentReader::new(data.try_clone()?, part.segments),
             &mut output,
         )?;
+        hasher = output
+            .into_inner()
+            .map_err(io::IntoInnerError::into_error)?
+            .hasher;
         if copied != length {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "The body store data file ended early",
             ));
         }
-        position = part.offset.saturating_add(copied).max(position);
+        position = position.saturating_add(copied);
     }
-    let hashing = output
-        .into_inner()
-        .map_err(io::IntoInnerError::into_error)?;
-    let digest = hashing.hasher.finalize();
+    // A file that ends in a hole still needs its full length.
+    destination.as_file_mut().set_len(position)?;
     destination.as_file_mut().sync_all()?;
+    let digest = hasher.finalize();
     let (path, attempt) = persist_unique(destination, directory, name, 0)?;
     Ok((path, position, hex(&digest), attempt))
+}
+
+/// Feeds `count` zero bytes to `hasher` without allocating them all.
+fn hash_zeros(hasher: &mut Sha256, mut count: u64) {
+    let zeros = [0_u8; 8 * 1024];
+    while count > 0 {
+        let chunk = usize::try_from(count)
+            .unwrap_or(zeros.len())
+            .min(zeros.len());
+        hasher.update(zeros.get(..chunk).unwrap_or_default());
+        count -= chunk as u64;
+    }
 }
 
 fn hex(digest: &[u8]) -> String {
@@ -519,6 +541,36 @@ mod tests {
             "zst",
         )?;
         assert_eq!(std::fs::read(path)?, EXPECTED);
+        Ok(())
+    }
+
+    #[test]
+    fn merged_gaps_read_as_zeros_and_are_hashed() -> io::Result<()> {
+        let (_file, data) = data_file(b"AAAABBBB")?;
+        let directory = tempfile::tempdir()?;
+        let parts = vec![
+            Part {
+                offset: 0,
+                segments: vec![Segment {
+                    offset: 0,
+                    length: 4,
+                }],
+            },
+            Part {
+                offset: 100_000,
+                segments: vec![Segment {
+                    offset: 4,
+                    length: 4,
+                }],
+            },
+        ];
+        let (path, bytes, sha256, _) = save_parts(&data, parts, directory.path(), "merged")?;
+        let mut expected = b"AAAA".to_vec();
+        expected.resize(100_000, 0);
+        expected.extend_from_slice(b"BBBB");
+        assert_eq!(bytes, 100_004);
+        assert_eq!(std::fs::read(path)?, expected);
+        assert_eq!(sha256, hex(&Sha256::digest(&expected)));
         Ok(())
     }
 }

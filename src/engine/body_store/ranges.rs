@@ -349,8 +349,9 @@ impl BodyStore {
     }
 
     /// Writes a merged file in `directory` in the background. Missing bytes
-    /// between parts are written as zeros so later parts keep their
-    /// positions; missing bytes after the last part are left out. An
+    /// between parts read as zeros so later parts keep their positions; they
+    /// are left as holes of a sparse file where the file system supports
+    /// it. Missing bytes after the last part are left out. An
     /// incomplete file name ends in `.partial`.
     ///
     /// The save is refused when the file, zeros included, would leave less
@@ -375,11 +376,6 @@ impl BodyStore {
         plan: &RangePlan,
         directory: &std::path::Path,
     ) -> io::Result<SavedBody> {
-        check_space(
-            plan.file_bytes(),
-            fs2::available_space(directory)?,
-            super::BODY_STORE_MIN_FREE_BYTES,
-        )?;
         self.wait_for_writer()?;
         let parts = {
             let index = self
@@ -413,6 +409,13 @@ impl BodyStore {
             range: None,
             partial: !complete,
         });
+        // Checked right before writing, after the wait for the writer, so
+        // the free space is as current as possible.
+        check_space(
+            plan.file_bytes(),
+            fs2::available_space(directory)?,
+            super::BODY_STORE_MIN_FREE_BYTES,
+        )?;
         let data = File::open(&self.shared.data_path)?;
         let (path, bytes, sha256, _) = export::save_parts(&data, parts, directory, &name)?;
         Ok(SavedBody {

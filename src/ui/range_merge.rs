@@ -211,13 +211,20 @@ impl InspectorApp {
         let result = match receiver.try_recv() {
             Ok(result) => result,
             Err(TryRecvError::Empty) => {
+                let mut cancelled = false;
                 egui::Modal::new(egui::Id::unique("plan-ranges")).show(context, |ui| {
                     ui.horizontal(|ui| {
                         ui.spinner();
                         ui.label("Checking the range responses…");
                     });
+                    cancelled = ui.button("Cancel").clicked();
                 });
-                context.request_repaint_after(Duration::from_millis(100));
+                if cancelled {
+                    // The worker finishes on its own; its result is dropped.
+                    self.body_saving.merge.planning = None;
+                } else {
+                    context.request_repaint_after(Duration::from_millis(100));
+                }
                 return;
             }
             Err(TryRecvError::Disconnected) => Err(io::Error::other(
