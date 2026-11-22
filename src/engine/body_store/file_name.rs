@@ -74,6 +74,30 @@ pub(super) fn numbered(name: &str, number: u32) -> String {
     format!("{stem} ({number}){extension}{partial}")
 }
 
+/// Most folders created below the save folder for one URL.
+const MAX_DIRECTORY_DEPTH: usize = 16;
+
+/// Returns safe folder names for a target: its host, then each folder of
+/// its path, without the last segment. Each name is one plain component.
+pub(super) fn url_directories(target: &str) -> Vec<String> {
+    let Some((_, rest)) = target.split_once("://") else {
+        return Vec::new();
+    };
+    let rest = rest.split(['?', '#']).next().unwrap_or_default();
+    let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let host = authority.rsplit('@').next().unwrap_or_default();
+    let folders = path.rsplit_once('/').map_or("", |(folders, _)| folders);
+    std::iter::once(host.to_owned())
+        .chain(
+            folders
+                .split('/')
+                .map(|segment| String::from_utf8_lossy(&percent_decode(segment)).into_owned()),
+        )
+        .filter_map(|segment| sanitize(&segment))
+        .take(MAX_DIRECTORY_DEPTH)
+        .collect()
+}
+
 /// Reads `filename*` (RFC 8187) or else `filename` from a `Content-Disposition` value.
 fn disposition_file_name(value: &str) -> Option<String> {
     let parameters = parameters(value);
@@ -495,6 +519,25 @@ mod tests {
             ..source("http://example.test/archive.gz", None)
         });
         assert_eq!(name, "archive.gz");
+    }
+
+    #[test]
+    fn url_directories_are_safe_components() {
+        assert_eq!(
+            url_directories("https://user@cdn.example.test:8443/v/a%20b/seg-1.ts?x=/y"),
+            ["cdn.example.test_8443", "v", "a b"]
+        );
+        assert_eq!(
+            url_directories("http://example.test/../..%2F../etc/passwd"),
+            ["example.test", "etc"]
+        );
+        assert_eq!(
+            url_directories("http://example.test/file"),
+            ["example.test"]
+        );
+        assert_eq!(url_directories("/origin/only"), Vec::<String>::new());
+        let deep = format!("http://h/{}leaf", "d/".repeat(40));
+        assert_eq!(url_directories(&deep).len(), MAX_DIRECTORY_DEPTH);
     }
 
     #[test]

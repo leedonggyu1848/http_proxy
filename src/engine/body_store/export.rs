@@ -1,10 +1,12 @@
 //! Copying one stored body to a user file, as received or decoded.
 
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
 use super::file_name::numbered;
@@ -153,17 +155,49 @@ pub(super) struct CopyPlan {
     pub(super) incomplete: bool,
 }
 
+/// A body file that was written.
+pub(super) type Written = (PathBuf, u64, String);
+
 /// Writes the body to a new file in `directory` named `name`, or a numbered
-/// variant when that name exists. Returns the path and the bytes written.
-pub(super) fn save(copy: CopyPlan, directory: &Path, name: &str) -> io::Result<(PathBuf, u64)> {
+/// variant when that name exists. Returns the path, the bytes written and
+/// their SHA-256 in lowercase hexadecimal.
+pub(super) fn save(copy: CopyPlan, directory: &Path, name: &str) -> io::Result<Written> {
     let mut destination = NamedTempFile::new_in(directory)?;
-    let written = write_body(copy, destination.as_file_mut())?;
+    let mut output = HashingWriter {
+        inner: destination.as_file_mut(),
+        hasher: Sha256::new(),
+    };
+    let written = write_body(copy, &mut output)?;
+    let digest = output.hasher.finalize();
     destination.as_file_mut().sync_all()?;
     let path = persist_unique(destination, directory, name)?;
-    Ok((path, written))
+    let hex = digest.iter().fold(String::new(), |mut hex, byte| {
+        let _infallible = write!(hex, "{byte:02x}");
+        hex
+    });
+    Ok((path, written, hex))
 }
 
-fn write_body(copy: CopyPlan, output: &mut File) -> io::Result<u64> {
+/// Passes writes through and hashes exactly the bytes that were accepted.
+struct HashingWriter<W> {
+    inner: W,
+    hasher: Sha256,
+}
+
+impl<W: Write> Write for HashingWriter<W> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let written = self.inner.write(buffer)?;
+        self.hasher
+            .update(buffer.get(..written).unwrap_or_default());
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+fn write_body(copy: CopyPlan, output: &mut impl Write) -> io::Result<u64> {
     let CopyPlan {
         data,
         segments,
@@ -333,7 +367,7 @@ mod tests {
                 length: encoded.len() as u64,
             }]
         };
-        let (raw, raw_bytes) = save(
+        let (raw, raw_bytes, _) = save(
             copy(data.try_clone()?, whole(), Vec::new()),
             directory.path(),
             "body.gz",
@@ -341,14 +375,14 @@ mod tests {
         assert_eq!(std::fs::read(&raw)?, encoded);
         assert_eq!(raw_bytes, encoded.len() as u64);
         let decode = vec![ContentEncoding::Gzip];
-        let (decoded, decoded_bytes) = save(
+        let (decoded, decoded_bytes, _) = save(
             copy(data.try_clone()?, whole(), decode.clone()),
             directory.path(),
             "body",
         )?;
         assert_eq!(std::fs::read(&decoded)?, original);
         assert_eq!(decoded_bytes, original.len() as u64);
-        let (again, _) = save(copy(data, whole(), decode), directory.path(), "body")?;
+        let (again, _, _) = save(copy(data, whole(), decode), directory.path(), "body")?;
         assert_eq!(again, directory.path().join("body (1)"));
         assert_eq!(std::fs::read(directory.path().join("body"))?, original);
         Ok(())
@@ -371,7 +405,7 @@ mod tests {
         assert!(save(complete, directory.path(), "cut").is_err());
         let mut partial = copy(data, segments(), vec![ContentEncoding::Gzip]);
         partial.incomplete = true;
-        let (path, _) = save(partial, directory.path(), "cut.partial")?;
+        let (path, _, _) = save(partial, directory.path(), "cut.partial")?;
         let kept = std::fs::read(path)?;
         assert!(original.starts_with(&kept));
         Ok(())
@@ -399,7 +433,7 @@ mod tests {
             offset: 0,
             length: BROTLI.len() as u64,
         }];
-        let (path, _) = save(
+        let (path, _, _) = save(
             copy(data, segments, vec![ContentEncoding::Brotli]),
             directory.path(),
             "br",
@@ -411,7 +445,7 @@ mod tests {
             offset: 0,
             length: zstd.len() as u64,
         }];
-        let (path, _) = save(
+        let (path, _, _) = save(
             copy(data, segments, vec![ContentEncoding::Zstd]),
             directory.path(),
             "zst",

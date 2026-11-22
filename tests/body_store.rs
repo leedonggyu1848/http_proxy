@@ -1,13 +1,14 @@
 //! Saving bodies captured through a running proxy from the body store.
 
 use std::error::Error;
+use std::fmt::Write as _;
 use std::io::{self, Write as _};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use http_proxy::{
-    BodyLifecycle, BodySide, BodyStore, Exchange, ProxyConfig, ProxyHandle, SaveBody, SaveFormat,
-    SavedBody, StoreGap,
+    BodyLayout, BodyLifecycle, BodySide, BodyStore, Exchange, ProxyConfig, ProxyHandle, SaveBody,
+    SaveFormat, SavedBody, StoreGap,
 };
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -358,5 +359,88 @@ async fn reaching_the_session_limit_keeps_forwarding() -> TestResult {
     assert_eq!(saved.path(), output.path().join("bundle.zip.partial"));
     let kept = std::fs::read(saved.path())?;
     assert!(forwarded.starts_with(&kept));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn saves_many_bodies_with_a_manifest() -> TestResult {
+    let mut harness = Harness::start(u64::MAX).await?;
+    let output = tempfile::tempdir()?;
+    let paths = ["/media/animation", "/api/data", "/manifest.json", "/cut"];
+    for path in paths {
+        harness.fetch("GET", path, b"").await?;
+    }
+    let mut bodies = Vec::new();
+    for path in paths {
+        let exchange = harness.exchange(path).await?;
+        bodies.push(
+            SaveBody::new(
+                &exchange,
+                BodySide::Response,
+                SaveFormat::Decoded,
+                output.path().to_path_buf(),
+            )
+            .ok_or("no response")?,
+        );
+    }
+    let folder = output.path().join("bulk");
+    let running = harness
+        .store
+        .save_all(bodies, BodyLayout::HostPath, folder.clone())?;
+    let summary = tokio::task::spawn_blocking(move || {
+        let started = Instant::now();
+        loop {
+            if let Some(result) = running.try_finish() {
+                return result.map(|summary| (summary, running.progress().done()));
+            }
+            if started.elapsed() > TEST_TIMEOUT {
+                return Err(io::Error::other("bulk save timed out"));
+            }
+            std::thread::yield_now();
+        }
+    })
+    .await??;
+    let (summary, done) = summary;
+    assert_eq!(
+        (summary.saved(), summary.incomplete(), summary.failed()),
+        (4, 1, 0)
+    );
+    assert_eq!(done, 4);
+    assert!(!summary.cancelled());
+
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(folder.join("manifest.json"))?)?;
+    let field = |entry: &serde_json::Value, name: &str| entry.get(name).cloned();
+    assert_eq!(field(&manifest, "layout"), Some("host-path".into()));
+    let entries = manifest
+        .get("entries")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("no entries")?;
+    assert_eq!(entries.len(), 4);
+    let host = harness.upstream.to_string().replace(':', "_");
+    let expected = [
+        (format!("{host}/media/animation.gif"), IMAGE.to_vec(), true),
+        (format!("{host}/api/data.json"), JSON.to_vec(), true),
+        (format!("{host}/manifest.json"), b"ok".to_vec(), true),
+        (format!("{host}/cut.ts.partial"), Vec::new(), false),
+    ];
+    for (entry, (file, bytes, complete)) in entries.iter().zip(expected) {
+        assert_eq!(field(entry, "file"), Some(file.as_str().into()), "{entry}");
+        assert_eq!(field(entry, "status"), Some(200.into()));
+        assert_eq!(field(entry, "side"), Some("response".into()));
+        assert_eq!(field(entry, "complete"), Some(complete.into()));
+        let saved = std::fs::read(folder.join(&file))?;
+        let digest = sha256(&saved).iter().fold(String::new(), |mut hex, byte| {
+            let _infallible = write!(hex, "{byte:02x}");
+            hex
+        });
+        assert_eq!(field(entry, "sha256"), Some(digest.into()));
+        assert_eq!(field(entry, "bytes"), Some(saved.len().into()));
+        if complete {
+            assert_eq!(saved, bytes);
+        } else {
+            assert_eq!(saved.len(), 4_000);
+        }
+    }
     Ok(())
 }

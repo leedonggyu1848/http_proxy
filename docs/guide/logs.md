@@ -40,6 +40,27 @@
 3. **Decoded**는 `gzip`, `deflate`, `br`, `zstd` `Content-Encoding`을 풀어 실제 파일을 저장한다(기본 동작). **As received**는 받은 바이트를 그대로 저장하고 `.gz`, `.br`, `.zst`, `.zz` 확장자를 붙인다. 요청 목록에서 행을 우클릭해 **Save response body**·**Save request body**를 누르면 **Decoded**로 저장한다.
 4. 세션에서 처음 저장할 때와 본문이 불완전할 때 확인 창이 나타난다. 저장 결과는 하단 상태 바에 `Saved body:` 경로로 표시된다.
 
+다음 이미지는 로컬 테스트 서버로 보낸 테스트 트래픽에서 MPEG-TS 응답을 고른 실제 화면이다. **Body** 탭 위쪽에 두 저장 메뉴가 있다.
+
+![Body 탭의 Save request body·Save response body 메뉴](../screenshots/body-save-menu.png)
+
+처음 저장할 때 나타나는 확인 창이다.
+
+![처음 저장할 때의 개인정보 안내 확인 창](../screenshots/body-save-confirm.png)
+
+## 여러 본문 한꺼번에 저장
+
+1. **Save** 메뉴에서 **Save bodies…**를 누른다.
+2. 대상 요청(**Filtered list**, **All**, **Selected request**), 본문(**Responses**, **Requests**, **Both**), 형식(**Decoded**, **As received**), 폴더 구조(**One folder**, **host/path folders**)를 고르고 **Save**를 누른다.
+3. 저장 폴더 안에 `http-inspector-bodies-<시각>` 폴더를 새로 만들어 저장한다. 하단 상태 바에 진행률과 **Cancel** 버튼이 나타나며, 저장 중에도 프록시와 화면은 계속 동작한다. **Cancel**을 누르면 쓰고 있던 본문까지만 저장하고 멈춘다.
+
+![Save bodies 창](../screenshots/save-bodies-dialog.png)
+
+- **host/path folders**는 요청 URL을 따라 `127.0.0.1_8080/media/` 같은 폴더를 만든다. 각 폴더 이름은 파일 이름과 같은 규칙으로 정리하므로 저장 폴더 밖으로 나가지 않는다. 최대 16단계까지 만든다.
+- 파일 이름 결정, `.partial`, 번호 붙이기 규칙은 한 개를 저장할 때와 같다. 완료된 빈 본문(예: `GET` 요청 본문)은 건너뛴다.
+- 폴더에는 `manifest.json`이 함께 생긴다. 각 항목에 요청 번호, 방향, 메서드, URL, 상태 코드, `Content-Type`, 형식, 상대 파일 경로, 크기, SHA-256, 완료 여부와 불완전 이유를 적는다. 저장하지 못한 본문(예: 저장소가 열리기 전에 캡처한 요청)은 `error`로 남는다. 취소한 경우에도 그때까지의 항목과 `"cancelled": true`를 기록한다. 본문 파일 이름이 `manifest.json`이면 `manifest (1).json`으로 저장한다.
+- 폴더는 `0700`, 파일은 `0600`으로 만든다.
+
 ### 파일 이름
 
 응답 본문은 `Content-Disposition`의 `filename*`, `filename`, URL 경로의 마지막 부분, `response-<id>` 순서로 이름을 정한다. 요청 본문은 `Content-Disposition`이 없으면 `request-<id>`를 쓴다. 확장자가 없거나 `Content-Type`과 맞지 않으면 MIME 표로 보정한다(예: `video/mp2t`는 `.ts`, `application/pdf`는 `.pdf`). `text/plain`, `application/json`처럼 일반적인 형식은 확장자가 없을 때만 붙인다.

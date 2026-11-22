@@ -88,8 +88,12 @@ impl InspectorApp {
             ) {
                 self.ca_panel.refresh();
             }
-            if self.save.menu(ui, self.full_log.as_ref()) {
-                self.har_dialog.open(self.save.suggested_path("har"));
+            match self.save.menu(ui, self.full_log.as_ref()) {
+                Some(crate::ui::save::SaveMenuAction::ExportHar) => {
+                    self.har_dialog.open(self.save.suggested_path("har"));
+                }
+                Some(crate::ui::save::SaveMenuAction::SaveBodies) => self.body_saving.open_bulk(),
+                None => {}
             }
             ui.menu_button("Settings", |ui| {
                 self.theme.menu(ui);

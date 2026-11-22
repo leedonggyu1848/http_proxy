@@ -7,8 +7,8 @@ pub use engine::{
     is_previewable_image_media_type,
 };
 pub use engine::{
-    BODY_STORE_LIMIT_BYTES, BODY_STORE_MIN_FREE_BYTES, BodyStore, SaveBody, SaveFormat, SavedBody,
-    StoreGap, StoredBody,
+    BODY_STORE_LIMIT_BYTES, BODY_STORE_MIN_FREE_BYTES, BodyLayout, BodyStore, BulkProgress,
+    BulkSave, BulkSummary, SaveBody, SaveFormat, SavedBody, StoreGap, StoredBody,
 };
 pub use engine::{
     BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, CaptureSource, CapturedHeader,

@@ -13,6 +13,13 @@ static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 
 type SaveCompletion = io::Result<PathBuf>;
 
+/// A `Save` menu item that opens a dialog owned by the app.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::ui) enum SaveMenuAction {
+    ExportHar,
+    SaveBodies,
+}
+
 pub(in crate::ui) struct SaveControls {
     directory: String,
     pending: Option<Receiver<SaveCompletion>>,
@@ -29,9 +36,13 @@ impl SaveControls {
         }
     }
 
-    /// Shows the `Save` menu in the toolbar and reports whether the user
-    /// asked to export a HAR file.
-    pub(in crate::ui) fn menu(&mut self, ui: &mut egui::Ui, log: Option<&FullLog>) -> bool {
+    /// Shows the `Save` menu in the toolbar and reports a chosen item that
+    /// opens a dialog.
+    pub(in crate::ui) fn menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        log: Option<&FullLog>,
+    ) -> Option<SaveMenuAction> {
         self.poll();
         if self.pending.is_some() {
             ui.spinner();
@@ -40,7 +51,7 @@ impl SaveControls {
         ui.add_enabled_ui(self.pending.is_none(), |ui| {
             ui.menu_button("Save ▼", |ui| self.menu_items(ui, log))
                 .inner
-                .unwrap_or_default()
+                .flatten()
         })
         .inner
     }
@@ -81,7 +92,7 @@ impl SaveControls {
         }
     }
 
-    fn menu_items(&mut self, ui: &mut egui::Ui, log: Option<&FullLog>) -> bool {
+    fn menu_items(&mut self, ui: &mut egui::Ui, log: Option<&FullLog>) -> Option<SaveMenuAction> {
         ui.label("Save directory");
         ui.add(
             egui::TextEdit::singleline(&mut self.directory)
@@ -115,10 +126,23 @@ impl SaveControls {
                 "Save the requests in the list as a HAR 1.2 file. Bodies and sensitive headers are left out unless you include them.",
             )
             .clicked();
-        if export_har {
+        let save_bodies = ui
+            .button("Save bodies…")
+            .on_hover_text(
+                "Save the request and response bodies of many requests into a new folder with a manifest.json.",
+            )
+            .clicked();
+        let action = if export_har {
+            Some(SaveMenuAction::ExportHar)
+        } else if save_bodies {
+            Some(SaveMenuAction::SaveBodies)
+        } else {
+            None
+        };
+        if action.is_some() {
             ui.close();
         }
-        export_har
+        action
     }
 
     /// Shows the result of the last save in the status bar.

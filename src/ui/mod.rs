@@ -4,6 +4,7 @@ mod body_format;
 mod body_saving;
 mod body_view;
 mod browser_panel;
+mod bulk_save;
 mod ca_panel;
 mod copy_curl;
 mod detail_tabs;
@@ -276,6 +277,7 @@ impl eframe::App for InspectorApp {
             }
         }
         self.har_export(ui.ctx());
+        self.bulk_body_save(ui.ctx());
         let shortcuts_allowed = request_shortcuts_allowed(ui.ctx());
         let viewport_height = ui.available_height();
         egui::ScrollArea::vertical()
