@@ -5,6 +5,7 @@ use bytes::Bytes;
 use http::HeaderMap;
 use http_body::{Body, Frame, SizeHint};
 
+use crate::engine::body_store::BodyRecorder;
 use crate::engine::domain::BodyLifecycle;
 use crate::engine::domain::RetentionBudget;
 use crate::engine::domain::{BodyPreview, CapturedHeader, HeaderPreview};
@@ -131,24 +132,52 @@ impl BodyLog {
     }
 }
 
+/// Where the bytes of one forwarded body are copied besides its preview.
+pub(in crate::engine) struct BodySinks {
+    pub(in crate::engine) log: Option<BodyLog>,
+    pub(in crate::engine) store: Option<BodyRecorder>,
+}
+
+impl BodySinks {
+    fn observe(&mut self, data: &[u8]) {
+        if let Some(log) = self.log.as_mut() {
+            log.observe(data);
+        }
+        if let Some(store) = self.store.as_mut() {
+            store.observe(data);
+        }
+    }
+
+    fn end(&mut self, state: BodyLifecycle) {
+        if let Some(log) = self.log.as_mut() {
+            log.end(state);
+        }
+        if let Some(store) = self.store.as_mut() {
+            store.end(state);
+        }
+    }
+}
+
 pub(in crate::engine) struct ObservedBody<B> {
     body: B,
     preview: BodyPreview,
-    log: Option<BodyLog>,
+    sinks: BodySinks,
 }
 
 impl<B> ObservedBody<B>
 where
     B: Body,
 {
-    pub(in crate::engine) fn new(body: B, preview: BodyPreview, mut log: Option<BodyLog>) -> Self {
+    pub(in crate::engine) fn new(body: B, preview: BodyPreview, mut sinks: BodySinks) -> Self {
         if body.is_end_stream() {
             preview.complete();
-            if let Some(log) = log.as_mut() {
-                log.end(BodyLifecycle::Complete);
-            }
+            sinks.end(BodyLifecycle::Complete);
         }
-        Self { body, preview, log }
+        Self {
+            body,
+            preview,
+            sinks,
+        }
     }
 }
 
@@ -169,33 +198,25 @@ where
             Poll::Ready(Some(Ok(frame))) => {
                 if let Some(data) = frame.data_ref() {
                     this.preview.observe(data);
-                    if let Some(log) = this.log.as_mut() {
-                        log.observe(data);
-                    }
+                    this.sinks.observe(data);
                 }
                 if let Some(trailers) = frame.trailers_ref()
-                    && let Some(log) = this.log.as_ref()
+                    && let Some(log) = this.sinks.log.as_ref()
                 {
                     log.log.trailers(log.id, log.side, trailers);
                 }
                 if this.body.is_end_stream() {
                     this.preview.complete();
-                    if let Some(log) = this.log.as_mut() {
-                        log.end(BodyLifecycle::Complete);
-                    }
+                    this.sinks.end(BodyLifecycle::Complete);
                 }
             }
             Poll::Ready(Some(Err(_))) => {
                 this.preview.interrupt();
-                if let Some(log) = this.log.as_mut() {
-                    log.end(BodyLifecycle::Interrupted);
-                }
+                this.sinks.end(BodyLifecycle::Interrupted);
             }
             Poll::Ready(None) => {
                 this.preview.complete();
-                if let Some(log) = this.log.as_mut() {
-                    log.end(BodyLifecycle::Complete);
-                }
+                this.sinks.end(BodyLifecycle::Complete);
             }
             Poll::Pending => {}
         }
@@ -214,9 +235,7 @@ where
 impl<B> Drop for ObservedBody<B> {
     fn drop(&mut self) {
         self.preview.cancel();
-        if let Some(log) = self.log.as_mut() {
-            log.end(BodyLifecycle::Cancelled);
-        }
+        self.sinks.end(BodyLifecycle::Cancelled);
     }
 }
 

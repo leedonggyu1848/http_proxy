@@ -1,3 +1,4 @@
+mod body_store;
 mod browser;
 mod capture;
 mod curl;
@@ -7,6 +8,10 @@ mod proxy;
 mod tls;
 mod trust;
 
+pub use body_store::{
+    BODY_STORE_LIMIT_BYTES, BODY_STORE_MIN_FREE_BYTES, BodyStore, SaveBody, SaveFormat, SavedBody,
+    StoreGap, StoredBody,
+};
 pub use browser::{Browser, BrowserEvent, BrowserSession};
 pub use capture::{
     BODY_PREVIEW_BYTES, IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES,
@@ -21,7 +26,7 @@ pub use domain::{
     CapturedRequest, CapturedResponse, Exchange, FailureStage, HeaderPreview, ImageFormat,
     MediaType, Outcome, RecordId, SessionId, Timing, TunnelPreview, TunnelSnapshot, TunnelState,
 };
-pub use journal::{FullLog, SESSION_BODY_LIMIT_BYTES};
+pub use journal::{BodySide, FullLog, SESSION_BODY_LIMIT_BYTES};
 pub use proxy::{
     EngineState, ProxyConfig, ProxyHandle, REPLAY_BODY_FILE_LIMIT_BYTES, ReplayDraft, ReplayField,
     ReplayTask, StartError, StopError,

@@ -159,6 +159,10 @@ pub(in crate::ui) struct RequestTable {
     pub(in crate::ui) replay: Option<Exchange>,
     /// Record whose "Copy as cURL" menu item was chosen this frame.
     pub(in crate::ui) copy_curl: Option<Exchange>,
+    /// A body save chosen from a row's context menu.
+    pub(in crate::ui) save_body: Option<(Exchange, http_proxy::BodySide)>,
+    /// Whether a body save is running, which disables the save menu items.
+    pub(in crate::ui) saving_body: bool,
     sort: Sort,
     follow_newest: bool,
     keyboard_row: Option<usize>,
@@ -175,6 +179,8 @@ impl RequestTable {
             follow_newest: true,
             replay: None,
             copy_curl: None,
+            save_body: None,
+            saving_body: false,
             keyboard_row: None,
             page_rows: 1,
         }
@@ -298,7 +304,7 @@ impl RequestTable {
 }
 
 impl RequestTable {
-    /// Offers resending or copying the row's request on right click.
+    /// Offers resending, copying, or saving a body of the row's request on right click.
     fn row_menu(&mut self, response: &egui::Response, record: &Exchange) {
         response.context_menu(|ui| {
             if ui
@@ -315,8 +321,48 @@ impl RequestTable {
                 self.copy_curl = Some(record.clone());
                 ui.close();
             }
+            ui.separator();
+            if let Some(side) = save_body_items(ui, record, !self.saving_body) {
+                self.save_body = Some((record.clone(), side));
+                ui.close();
+            }
         });
     }
+}
+
+/// The body save items of the row menu; returns the side chosen.
+/// They are disabled while `idle` is false, when another save is running.
+fn save_body_items(
+    ui: &mut egui::Ui,
+    record: &Exchange,
+    idle: bool,
+) -> Option<http_proxy::BodySide> {
+    let has_response = matches!(record.outcome(), http_proxy::Outcome::Response(_));
+    let mut chosen = None;
+    for (side, label, enabled) in [
+        (
+            http_proxy::BodySide::Response,
+            "Save response body",
+            has_response,
+        ),
+        (
+            http_proxy::BodySide::Request,
+            "Save request body",
+            record.request().body().is_some(),
+        ),
+    ] {
+        if ui
+            .add_enabled(enabled && idle, egui::Button::new(label))
+            .on_hover_text("Save the decoded body to the Save directory.")
+            .on_disabled_hover_text(
+                "Unavailable while another body is being saved, or when the body was not observed.",
+            )
+            .clicked()
+        {
+            chosen = Some(side);
+        }
+    }
+    chosen
 }
 
 fn show_cells(

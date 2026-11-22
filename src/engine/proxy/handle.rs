@@ -76,6 +76,7 @@ impl ProxyHandle {
             connect_timeout,
             response_timeout,
             max_connections,
+            body_store,
         } = config;
         let (inspector, ca_info) = match https_inspection.as_ref() {
             Some(settings) => {
@@ -102,6 +103,7 @@ impl ProxyHandle {
             dropped: Arc::clone(&dropped),
             notifier: Arc::clone(&notifier),
             log,
+            body_store,
         };
         let stopped = Arc::new(AtomicBool::new(false));
         let engine = Arc::new(Engine {

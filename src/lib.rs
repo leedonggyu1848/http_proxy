@@ -7,10 +7,15 @@ pub use engine::{
     is_previewable_image_media_type,
 };
 pub use engine::{
+    BODY_STORE_LIMIT_BYTES, BODY_STORE_MIN_FREE_BYTES, BodyStore, SaveBody, SaveFormat, SavedBody,
+    StoreGap, StoredBody,
+};
+pub use engine::{
     BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, CaptureSource, CapturedHeader,
     CapturedRequest, CapturedResponse, Exchange, FailureStage, HeaderPreview, ImageFormat,
     MediaType, Outcome, RecordId, SessionId, Timing, TunnelPreview, TunnelSnapshot, TunnelState,
 };
+pub use engine::{BodySide, FullLog, SESSION_BODY_LIMIT_BYTES};
 pub use engine::{Browser, BrowserEvent, BrowserSession};
 pub use engine::{
     CURL_REDACTED_PLACEHOLDER, CurlCommand, CurlUnavailable, RedactedHeaders, curl_command,
@@ -22,7 +27,6 @@ pub use engine::{
     EngineState, ProxyConfig, ProxyHandle, REPLAY_BODY_FILE_LIMIT_BYTES, ReplayDraft, ReplayField,
     ReplayTask, StartError, StopError,
 };
-pub use engine::{FullLog, SESSION_BODY_LIMIT_BYTES};
 
 /// Application display name.
 pub const APP_NAME: &str = "HTTP Inspector";

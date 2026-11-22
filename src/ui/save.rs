@@ -152,14 +152,20 @@ impl SaveControls {
         self.status = Some(result);
     }
 
-    fn destination(&self, extension: &str) -> io::Result<PathBuf> {
+    /// Returns the chosen save directory when it exists.
+    pub(in crate::ui) fn directory(&self) -> io::Result<PathBuf> {
         let directory = Path::new(&self.directory);
         if !directory.is_dir() {
             return Err(io::Error::new(
                 io::ErrorKind::NotADirectory,
-                "Choose an existing save directory",
+                "Choose an existing save directory in the Save menu",
             ));
         }
+        Ok(directory.to_path_buf())
+    }
+
+    fn destination(&self, extension: &str) -> io::Result<PathBuf> {
+        let directory = self.directory()?;
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(io::Error::other)?;

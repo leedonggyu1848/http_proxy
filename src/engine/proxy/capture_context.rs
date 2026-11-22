@@ -1,5 +1,6 @@
 use super::handle::Engine;
-use crate::engine::capture::BodyLog;
+use crate::engine::body_store::{BodyRecorder, BodyStore};
+use crate::engine::capture::{BodyLog, BodySinks};
 use crate::engine::capture::{ERROR_BYTES, TARGET_BYTES, bounded_text, capture_headers};
 use crate::engine::domain::{
     CaptureSource, CapturedRequest, Exchange, FailureStage, Outcome, RecordId, TunnelSnapshot,
@@ -22,6 +23,7 @@ pub(super) struct EventSink {
     pub(super) dropped: Arc<AtomicU64>,
     pub(super) notifier: Arc<OnceLock<EventNotifier>>,
     pub(super) log: Option<FullLog>,
+    pub(super) body_store: Option<BodyStore>,
 }
 
 impl EventSink {
@@ -45,6 +47,7 @@ impl EventSink {
 pub(super) struct CaptureContext {
     pub(super) exchange: Exchange,
     pub(super) log: Option<FullLog>,
+    body_store: Option<BodyStore>,
     stopped: Arc<AtomicBool>,
 }
 
@@ -83,6 +86,7 @@ impl CaptureContext {
         Self {
             exchange,
             log,
+            body_store: engine.events.body_store.clone(),
             stopped: Arc::clone(&engine.stopped),
         }
     }
@@ -91,10 +95,18 @@ impl CaptureContext {
         self.exchange.id().value()
     }
 
-    pub(super) fn body_log(&self, side: BodySide) -> Option<BodyLog> {
-        self.log
-            .as_ref()
-            .map(|log| BodyLog::new(log.clone(), self.id(), side))
+    /// Returns the full-log and body-store writers for one body.
+    pub(super) fn body_sinks(&self, side: BodySide) -> BodySinks {
+        BodySinks {
+            log: self
+                .log
+                .as_ref()
+                .map(|log| BodyLog::new(log.clone(), self.id(), side)),
+            store: self
+                .body_store
+                .as_ref()
+                .map(|store| BodyRecorder::new(store.clone(), self.id(), side)),
+        }
     }
 
     /// Records a failure and returns the bounded message shown to the client.

@@ -28,6 +28,19 @@ pub(in crate::ui) fn ca_directory(
     directory.map(|directory| directory.join("ca"))
 }
 
+/// Returns the body store root: a cache directory, because `/tmp` is often
+/// RAM-backed and too small for video, and the bodies are disposable.
+pub(in crate::ui) fn body_store_directory(
+    mut lookup: impl FnMut(&str) -> Option<OsString>,
+) -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    let directory =
+        absolute_path(lookup("HOME")).map(|home| home.join("Library/Caches/http-inspector"));
+    #[cfg(not(target_os = "macos"))]
+    let directory = xdg_directory(&mut lookup, "XDG_CACHE_HOME", ".cache");
+    directory.map(|directory| directory.join("bodies"))
+}
+
 fn absolute_path(value: Option<OsString>) -> Option<PathBuf> {
     value.map(PathBuf::from).filter(|path| path.is_absolute())
 }
@@ -67,6 +80,7 @@ mod tests {
         for (variable, fallback) in [
             ("XDG_CONFIG_HOME", ".config"),
             ("XDG_DATA_HOME", ".local/share"),
+            ("XDG_CACHE_HOME", ".cache"),
         ] {
             for override_value in [None, Some(""), Some("relative"), Some("/custom")] {
                 let mut values = vec![("HOME", "/home/test")];
@@ -140,7 +154,13 @@ mod tests {
         #[cfg(not(target_os = "macos"))]
         let ca = PathBuf::from("/home/test/.local/share/http-inspector/ca");
         assert_eq!(ca_directory(environment(&values)), Some(ca));
+        #[cfg(target_os = "macos")]
+        let bodies = PathBuf::from("/home/test/Library/Caches/http-inspector/bodies");
+        #[cfg(not(target_os = "macos"))]
+        let bodies = PathBuf::from("/home/test/.cache/http-inspector/bodies");
+        assert_eq!(body_store_directory(environment(&values)), Some(bodies));
         assert_eq!(settings_directory(environment(&[])), None);
         assert_eq!(ca_directory(environment(&[])), None);
+        assert_eq!(body_store_directory(environment(&[])), None);
     }
 }
