@@ -155,7 +155,7 @@ impl TreeView {
     /// Shows the controls and the visible rows, colored for `theme`.
     pub(in crate::ui) fn show(&mut self, ui: &mut egui::Ui, theme: Theme, font: &FontId) {
         ui.weak("Right-click a node to copy its path or value.");
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if ui.button("Expand all").clicked() {
                 self.set_all(true);
             }
@@ -164,7 +164,11 @@ impl TreeView {
             }
             ui.label("Search:");
             let mut query = self.query.clone();
-            if ui.text_edit_singleline(&mut query).changed() {
+            let search_width = ui.available_width().clamp(100.0, 180.0);
+            if ui
+                .add(egui::TextEdit::singleline(&mut query).desired_width(search_width))
+                .changed()
+            {
                 self.search(&query);
             }
         });

@@ -53,10 +53,15 @@ impl ReplayPanel {
         latest: Option<&Exchange>,
     ) -> bool {
         let mut open = true;
+        let viewport = context.content_rect();
+        let max_width = (viewport.width() - 24.0).max(280.0);
+        let max_height = (viewport.height() - 48.0).max(220.0);
         egui::Window::new("Edit and Resend")
             .open(&mut open)
-            .default_width(650.0)
-            .default_height(600.0)
+            .default_width(650.0_f32.min(max_width))
+            .default_height(600.0_f32.min(max_height))
+            .max_width(max_width)
+            .max_height(max_height)
             .vscroll(true)
             .show(context, |ui| self.contents(ui, proxy, latest));
         open
@@ -78,7 +83,8 @@ impl ReplayPanel {
                         ui.selectable_value(&mut self.draft.method, method.to_owned(), method);
                     }
                 });
-            ui.text_edit_singleline(&mut self.draft.url);
+            let url_width = ui.available_width().max(120.0);
+            ui.add(egui::TextEdit::singleline(&mut self.draft.url).desired_width(url_width));
         });
         self.query_ui(ui);
         ui.checkbox(&mut self.draft.automatic_host, "Update Host from URL");
@@ -176,8 +182,9 @@ impl ReplayPanel {
             self.body.json = None;
             self.body_source = None;
         }
-        ui.horizontal(|ui| {
-            ui.text_edit_singleline(&mut self.file);
+        ui.horizontal_wrapped(|ui| {
+            let file_width = (ui.available_width() - 180.0).clamp(140.0, 320.0);
+            ui.add(egui::TextEdit::singleline(&mut self.file).desired_width(file_width));
             if ui.button("Load complete body file").clicked() {
                 match self.draft.load_body_file(Path::new(&self.file)) {
                     Ok(()) => {
@@ -207,7 +214,7 @@ impl ReplayPanel {
             }
         }
         let running = self.task.as_ref().is_some_and(|task| !task.is_finished());
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             let approved =
                 !self.draft.needs_confirmation() || self.confirmed || self.skip_confirmation;
             if ui
@@ -294,18 +301,29 @@ impl Drop for ReplayPanel {
     }
 }
 
+fn pair_input_widths(ui: &egui::Ui) -> (f32, f32) {
+    let controls_width = ui.spacing().item_spacing.x.mul_add(3.0, 64.0);
+    let inputs = (ui.available_width() - controls_width).max(140.0);
+    let name_width = (inputs * 0.36).clamp(72.0, 200.0);
+    let value_width = (inputs - name_width).max(72.0);
+    (name_width, value_width)
+}
+
 fn fields(ui: &mut egui::Ui, fields: &mut Vec<ReplayField>) {
+    let (name_width, value_width) = pair_input_widths(ui);
     let mut remove = None;
     for (index, field) in fields.iter_mut().enumerate() {
         ui.push_id(index, |ui| {
             ui.horizontal(|ui| {
                 ui.checkbox(&mut field.enabled, "");
-                ui.text_edit_singleline(&mut field.name);
+                ui.add(egui::TextEdit::singleline(&mut field.name).desired_width(name_width));
                 ui.add(
-                    egui::TextEdit::singleline(&mut field.value).password(matches!(
-                        field.name.to_lowercase().as_str(),
-                        "authorization" | "cookie" | "proxy-authorization" | "set-cookie"
-                    )),
+                    egui::TextEdit::singleline(&mut field.value)
+                        .desired_width(value_width)
+                        .password(matches!(
+                            field.name.to_lowercase().as_str(),
+                            "authorization" | "cookie" | "proxy-authorization" | "set-cookie"
+                        )),
                 );
                 if ui.button("−").clicked() {
                     remove = Some(index);
@@ -459,15 +477,22 @@ impl PairTable {
 }
 
 fn pair_rows(ui: &mut egui::Ui, rows: &mut Vec<PairRow>, mask: bool, add: &str) -> bool {
+    let (name_width, value_width) = pair_input_widths(ui);
     let mut changed = false;
     let mut remove = None;
     for (index, row) in rows.iter_mut().enumerate() {
         ui.push_id(index, |ui| {
             ui.horizontal(|ui| {
                 changed |= ui.checkbox(&mut row.enabled, "").changed();
-                let mut edited = ui.text_edit_singleline(&mut row.name).changed();
+                let mut edited = ui
+                    .add(egui::TextEdit::singleline(&mut row.name).desired_width(name_width))
+                    .changed();
                 edited |= ui
-                    .add(egui::TextEdit::singleline(&mut row.value).password(mask))
+                    .add(
+                        egui::TextEdit::singleline(&mut row.value)
+                            .desired_width(value_width)
+                            .password(mask),
+                    )
                     .changed();
                 if edited {
                     row.raw = None;

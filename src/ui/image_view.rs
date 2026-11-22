@@ -159,7 +159,7 @@ impl ImagePanel {
         if view == View::Source && !svg {
             view = View::Image;
         }
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.selectable_value(&mut view, View::Image, "Image");
             if svg {
                 ui.selectable_value(&mut view, View::Source, "Source");
@@ -214,7 +214,7 @@ fn show_image(ui: &mut egui::Ui, loaded: &Loaded, received_bytes: u64, svg: bool
         }
         Err(message) => {
             ui.colored_label(Palette::of(ui).error, message);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let source =
                     (svg && ui.button("Show SVG source").clicked()).then_some(View::Source);
                 let hex = ui

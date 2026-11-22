@@ -377,6 +377,7 @@ fn render(ui: &mut egui::Ui, content: &mut Content, key: &Key, trees: &mut TreeC
     let output = egui::TextEdit::multiline(&mut text)
         .font(egui::TextStyle::Monospace)
         .desired_rows(8)
+        .desired_width(f32::INFINITY)
         .interactive(false)
         .layouter(&mut layouter)
         .show(ui);

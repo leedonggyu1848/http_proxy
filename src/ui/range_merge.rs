@@ -108,28 +108,35 @@ fn gap_lines(plan: &RangePlan) -> Vec<String> {
 /// Shows the plan and returns `Some(true)` to save, `Some(false)` to cancel.
 fn dialog(context: &egui::Context, plan: &RangePlan) -> Option<bool> {
     let mut choice = None;
+    let viewport = context.content_rect();
+    let max_width = (viewport.width() - 48.0).clamp(240.0, 460.0);
+    let max_scroll_height = (viewport.height() - 140.0).max(120.0);
     egui::Modal::new(egui::Id::unique("merge-ranges")).show(context, |ui| {
-        ui.set_max_width(460.0);
+        ui.set_max_width(max_width);
         ui.heading("Merge ranges");
-        ui.label(plan_text(plan));
-        let palette = Palette::of(ui);
-        if plan.validator().is_none() {
-            ui.colored_label(
-                palette.warning,
-                "Without ETag or Last-Modified, parts of different versions of this URL may be mixed.",
-            );
-        }
-        for line in gap_lines(plan) {
-            ui.colored_label(palette.warning, line);
-        }
-        if let Some(reason) = plan.incomplete_reason() {
-            ui.colored_label(
-                palette.warning,
-                format!("{reason} The file name will end in .partial."),
-            );
-        }
-        ui.label(PRIVACY_NOTICE);
-        ui.horizontal(|ui| {
+        egui::ScrollArea::vertical()
+            .max_height(max_scroll_height)
+            .show(ui, |ui| {
+                ui.label(plan_text(plan));
+                let palette = Palette::of(ui);
+                if plan.validator().is_none() {
+                    ui.colored_label(
+                        palette.warning,
+                        "Without ETag or Last-Modified, parts of different versions of this URL may be mixed.",
+                    );
+                }
+                for line in gap_lines(plan) {
+                    ui.colored_label(palette.warning, line);
+                }
+                if let Some(reason) = plan.incomplete_reason() {
+                    ui.colored_label(
+                        palette.warning,
+                        format!("{reason} The file name will end in .partial."),
+                    );
+                }
+                ui.label(PRIVACY_NOTICE);
+            });
+        ui.horizontal_wrapped(|ui| {
             let save = if plan.is_complete() {
                 "Save"
             } else {

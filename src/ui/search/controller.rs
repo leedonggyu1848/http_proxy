@@ -107,9 +107,10 @@ impl RequestSearch {
 
     /// The search text box, scope, and options.
     pub(in crate::ui) fn controls(&mut self, ui: &mut egui::Ui) {
+        let search_width = ui.available_width().clamp(120.0, 260.0);
         ui.add(
             egui::TextEdit::singleline(&mut self.text)
-                .desired_width(260.0)
+                .desired_width(search_width)
                 .hint_text(self.scope.hint()),
         );
         egui::ComboBox::from_id_salt("search-scope")

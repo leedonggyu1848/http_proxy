@@ -87,10 +87,16 @@ impl BulkControls {
     fn show(&mut self, context: &egui::Context, counts: ScopeCounts) -> Option<BulkChoice> {
         let mut choice = self.dialog?;
         let mut confirmed = None;
+        let viewport = context.content_rect();
+        let max_width = (viewport.width() - 48.0).clamp(240.0, 460.0);
+        let max_scroll_height = (viewport.height() - 140.0).max(120.0);
         egui::Modal::new(egui::Id::unique("save-bodies")).show(context, |ui| {
-            ui.set_max_width(460.0);
+            ui.set_max_width(max_width);
             ui.heading("Save bodies");
-            confirmed = choice_controls(ui, &mut choice, counts);
+            egui::ScrollArea::vertical()
+                .max_height(max_scroll_height)
+                .show(ui, |ui| choice_options(ui, &mut choice, counts));
+            confirmed = confirm_buttons(ui);
         });
         match confirmed {
             Some(true) => {
@@ -177,11 +183,7 @@ impl BulkControls {
     }
 }
 
-fn choice_controls(
-    ui: &mut egui::Ui,
-    choice: &mut BulkChoice,
-    counts: ScopeCounts,
-) -> Option<bool> {
+fn choice_options(ui: &mut egui::Ui, choice: &mut BulkChoice, counts: ScopeCounts) {
     ui.label("Requests");
     ui.horizontal_wrapped(|ui| {
         ui.radio_value(
@@ -222,8 +224,11 @@ fn choice_controls(
     });
     ui.weak("Files go into a new folder inside the Save directory, with a manifest.json that lists each URL, status, size and SHA-256. Empty bodies are skipped.");
     ui.label(PRIVACY_NOTICE);
+}
+
+fn confirm_buttons(ui: &mut egui::Ui) -> Option<bool> {
     let mut confirmed = None;
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         if ui.button("Save").clicked() {
             confirmed = Some(true);
         }
