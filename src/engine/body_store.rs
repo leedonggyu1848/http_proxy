@@ -7,6 +7,7 @@
 //! When the queue is full or a limit is reached, the body is marked
 //! incomplete and forwarding continues.
 
+mod bulk;
 mod export;
 mod file_name;
 mod index;
@@ -23,6 +24,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+pub use bulk::{BodyLayout, BulkProgress, BulkSave, BulkSummary};
 pub use export::SaveFormat;
 pub use index::{StoreGap, StoredBody};
 
@@ -267,6 +269,11 @@ impl BodyStore {
 
     fn save_now(&self, request: &SaveBody) -> io::Result<SavedBody> {
         self.wait_for_writer()?;
+        self.write_body(request, &request.directory)
+    }
+
+    /// Writes one stored body into `directory`; the writer must have caught up.
+    fn write_body(&self, request: &SaveBody, directory: &Path) -> io::Result<SavedBody> {
         let key = BodyKey {
             record: request.record.value(),
             side: request.side,
@@ -305,11 +312,13 @@ impl BodyStore {
             decode,
             incomplete: !complete,
         };
-        let (path, bytes) = export::save(plan, &request.directory, &name)?;
+        let (path, bytes, sha256) = export::save(plan, directory, &name)?;
         Ok(SavedBody {
             path,
             bytes,
+            sha256,
             complete,
+            incomplete_reason: body.incomplete_reason(),
         })
     }
 
@@ -433,6 +442,8 @@ pub struct SaveBody {
     format: SaveFormat,
     directory: PathBuf,
     target: String,
+    method: String,
+    status: Option<u16>,
     disposition: Option<String>,
     media_type: Option<MediaType>,
     encodings: Vec<String>,
@@ -450,12 +461,16 @@ impl SaveBody {
         directory: PathBuf,
     ) -> Option<Self> {
         let request = exchange.request();
-        let (headers, media_type) = match side {
-            BodySide::Request => (request.headers(), request.media_type()),
-            BodySide::Response => match exchange.outcome() {
-                Outcome::Response(response) => (response.headers(), response.media_type()),
-                _ => return None,
-            },
+        let status = match exchange.outcome() {
+            Outcome::Response(response) => Some(response.status().as_u16()),
+            _ => None,
+        };
+        let (headers, media_type) = match (side, exchange.outcome()) {
+            (BodySide::Request, _) => (request.headers(), request.media_type()),
+            (BodySide::Response, Outcome::Response(response)) => {
+                (response.headers(), response.media_type())
+            }
+            (BodySide::Response, _) => return None,
         };
         Some(Self {
             record: exchange.id(),
@@ -463,6 +478,8 @@ impl SaveBody {
             format,
             directory,
             target: request.target().to_owned(),
+            method: request.method().as_str().to_owned(),
+            status,
             disposition: headers.get("content-disposition").next().map(str::to_owned),
             media_type: media_type.cloned(),
             encodings: headers.get("content-encoding").map(str::to_owned).collect(),
@@ -475,7 +492,9 @@ impl SaveBody {
 pub struct SavedBody {
     path: PathBuf,
     bytes: u64,
+    sha256: String,
     complete: bool,
+    incomplete_reason: Option<String>,
 }
 
 impl SavedBody {
@@ -489,6 +508,18 @@ impl SavedBody {
     #[must_use]
     pub const fn bytes(&self) -> u64 {
         self.bytes
+    }
+
+    /// Returns the SHA-256 of the written bytes in lowercase hexadecimal.
+    #[must_use]
+    pub fn sha256(&self) -> &str {
+        &self.sha256
+    }
+
+    /// Explains why the saved body is incomplete, or `None` when it is complete.
+    #[must_use]
+    pub fn incomplete_reason(&self) -> Option<&str> {
+        self.incomplete_reason.as_deref()
     }
 
     /// Reports whether the whole body was saved; otherwise the name ends in `.partial`.

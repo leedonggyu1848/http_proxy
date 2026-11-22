@@ -18,7 +18,7 @@ const MIB: u64 = 1024 * 1024;
 const SETTINGS_FILE: &str = "body-store";
 const LIMIT_KEY: &str = "limit_mib";
 const MAX_LIMIT_MIB: u64 = 1024 * 1024;
-const PRIVACY_NOTICE: &str = "Saved bodies can contain cookies, tokens and personal data. \
+pub(in crate::ui) const PRIVACY_NOTICE: &str = "Saved bodies can contain cookies, tokens and personal data. \
      Files are created readable only by you; keep them private.";
 
 /// A save waiting for the user to confirm a warning.
@@ -39,6 +39,8 @@ pub(in crate::ui) struct BodySaving {
     status: Option<Result<SavedBody, String>>,
     confirmation: Option<Confirmation>,
     privacy_acknowledged: bool,
+    /// The `Save bodies…` dialog and a running bulk save.
+    pub(in crate::ui) bulk: crate::ui::bulk_save::BulkControls,
 }
 
 impl BodySaving {
@@ -70,6 +72,7 @@ impl BodySaving {
             status: None,
             confirmation: None,
             privacy_acknowledged: false,
+            bulk: crate::ui::bulk_save::BulkControls::default(),
         }
     }
 
@@ -77,6 +80,11 @@ impl BodySaving {
     /// another save cannot start until it finishes.
     pub(in crate::ui) const fn is_busy(&self) -> bool {
         self.pending.is_some() || self.confirmation.is_some()
+    }
+
+    /// Opens the `Save bodies…` dialog.
+    pub(in crate::ui) fn open_bulk(&mut self) {
+        self.bulk.open();
     }
 
     pub(in crate::ui) const fn store(&self) -> Option<&BodyStore> {
@@ -314,6 +322,7 @@ impl BodySaving {
             ui.spinner();
             ui.label("Saving body…");
         }
+        self.bulk.status(ui);
         match &self.status {
             Some(Ok(saved)) => {
                 ui.separator();
@@ -389,7 +398,7 @@ fn stored_text(stored: &StoredBody) -> String {
     )
 }
 
-fn format_size(bytes: u64) -> String {
+pub(in crate::ui) fn format_size(bytes: u64) -> String {
     const GIB: u64 = 1024 * MIB;
     #[expect(
         clippy::cast_precision_loss,
@@ -431,6 +440,7 @@ mod tests {
             status: Some(Err("earlier".to_owned())),
             confirmation: None,
             privacy_acknowledged: true,
+            bulk: crate::ui::bulk_save::BulkControls::default(),
         };
         assert!(saving.is_busy());
         let runtime = tokio::runtime::Builder::new_current_thread()

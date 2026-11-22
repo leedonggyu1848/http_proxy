@@ -1,0 +1,366 @@
+//! The `Save bodies…` dialog and the progress of a running bulk save.
+
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use eframe::egui;
+use http_proxy::{
+    BodyLayout, BodySide, BodyStore, BulkSave, BulkSummary, Exchange, SaveBody, SaveFormat,
+};
+
+use crate::ui::InspectorApp;
+use crate::ui::body_saving::{PRIVACY_NOTICE, format_size};
+use crate::ui::theme::Palette;
+
+/// Which requests a bulk save covers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::ui) enum BulkScope {
+    All,
+    Filtered,
+    Selected,
+}
+
+/// Which bodies of each request are saved.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::ui) enum BulkSides {
+    Responses,
+    Requests,
+    Both,
+}
+
+impl BulkSides {
+    const fn sides(self) -> &'static [BodySide] {
+        match self {
+            Self::Responses => &[BodySide::Response],
+            Self::Requests => &[BodySide::Request],
+            Self::Both => &[BodySide::Request, BodySide::Response],
+        }
+    }
+}
+
+/// Choices made in the dialog.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::ui) struct BulkChoice {
+    pub(in crate::ui) scope: BulkScope,
+    pub(in crate::ui) sides: BulkSides,
+    pub(in crate::ui) format: SaveFormat,
+    pub(in crate::ui) layout: BodyLayout,
+}
+
+impl Default for BulkChoice {
+    fn default() -> Self {
+        Self {
+            scope: BulkScope::Filtered,
+            sides: BulkSides::Responses,
+            format: SaveFormat::Decoded,
+            layout: BodyLayout::Flat,
+        }
+    }
+}
+
+/// How many requests each scope covers, shown next to the choices.
+#[derive(Clone, Copy, Debug)]
+pub(in crate::ui) struct ScopeCounts {
+    pub(in crate::ui) all: usize,
+    pub(in crate::ui) filtered: usize,
+    pub(in crate::ui) selected: usize,
+}
+
+/// The bulk save dialog, the running save and its last result.
+#[derive(Default)]
+pub(in crate::ui) struct BulkControls {
+    dialog: Option<BulkChoice>,
+    last_choice: Option<BulkChoice>,
+    running: Option<BulkSave>,
+    result: Option<Result<BulkSummary, String>>,
+}
+
+impl BulkControls {
+    /// Opens the dialog unless a bulk save is already running.
+    pub(in crate::ui) fn open(&mut self) {
+        if self.running.is_none() {
+            self.dialog = Some(self.last_choice.unwrap_or_default());
+        }
+    }
+
+    /// Shows the dialog and returns the choice once the user confirms it.
+    fn show(&mut self, context: &egui::Context, counts: ScopeCounts) -> Option<BulkChoice> {
+        let mut choice = self.dialog?;
+        let mut confirmed = None;
+        egui::Modal::new(egui::Id::unique("save-bodies")).show(context, |ui| {
+            ui.set_max_width(460.0);
+            ui.heading("Save bodies");
+            confirmed = choice_controls(ui, &mut choice, counts);
+        });
+        match confirmed {
+            Some(true) => {
+                self.dialog = None;
+                self.last_choice = Some(choice);
+                Some(choice)
+            }
+            Some(false) => {
+                self.dialog = None;
+                None
+            }
+            None => {
+                self.dialog = Some(choice);
+                None
+            }
+        }
+    }
+
+    /// Collects a finished save; call once per frame.
+    pub(in crate::ui) fn poll(&mut self, context: &egui::Context) {
+        let Some(running) = self.running.as_ref() else {
+            return;
+        };
+        match running.try_finish() {
+            Some(result) => {
+                self.result = Some(result.map_err(|error| error.to_string()));
+                self.running = None;
+            }
+            None => context.request_repaint_after(Duration::from_millis(200)),
+        }
+    }
+
+    /// Shows progress with a Cancel button, or the last result, in the status bar.
+    pub(in crate::ui) fn status(&self, ui: &mut egui::Ui) {
+        if let Some(running) = self.running.as_ref() {
+            let progress = running.progress();
+            ui.separator();
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "The fraction only sizes a progress bar"
+            )]
+            let fraction = progress.done() as f32 / progress.total().max(1) as f32;
+            ui.add(
+                egui::ProgressBar::new(fraction)
+                    .desired_width(120.0)
+                    .text(format!("{}/{}", progress.done(), progress.total())),
+            );
+            ui.label(format!("Saving bodies · {}", format_size(progress.bytes())));
+            if progress.is_cancelled() {
+                ui.weak("Cancelling…");
+            } else if ui.small_button("Cancel").clicked() {
+                running.cancel();
+            }
+            return;
+        }
+        match &self.result {
+            Some(Ok(summary)) => {
+                ui.separator();
+                ui.label(summary_text(summary));
+            }
+            Some(Err(error)) => {
+                ui.separator();
+                ui.colored_label(
+                    Palette::of(ui).error,
+                    format!("Saving bodies failed: {error}"),
+                );
+            }
+            None => {}
+        }
+    }
+
+    fn start(
+        &mut self,
+        store: &BodyStore,
+        bodies: Vec<SaveBody>,
+        layout: BodyLayout,
+        folder: PathBuf,
+    ) {
+        self.result = None;
+        match store.save_all(bodies, layout, folder) {
+            Ok(running) => self.running = Some(running),
+            Err(error) => self.result = Some(Err(error.to_string())),
+        }
+    }
+}
+
+fn choice_controls(
+    ui: &mut egui::Ui,
+    choice: &mut BulkChoice,
+    counts: ScopeCounts,
+) -> Option<bool> {
+    ui.label("Requests");
+    ui.horizontal_wrapped(|ui| {
+        ui.radio_value(
+            &mut choice.scope,
+            BulkScope::Filtered,
+            format!("Filtered list ({})", counts.filtered),
+        );
+        ui.radio_value(
+            &mut choice.scope,
+            BulkScope::All,
+            format!("All ({})", counts.all),
+        );
+        ui.add_enabled_ui(counts.selected > 0, |ui| {
+            ui.radio_value(&mut choice.scope, BulkScope::Selected, "Selected request");
+        });
+    });
+    ui.label("Bodies");
+    ui.horizontal_wrapped(|ui| {
+        ui.radio_value(&mut choice.sides, BulkSides::Responses, "Responses");
+        ui.radio_value(&mut choice.sides, BulkSides::Requests, "Requests");
+        ui.radio_value(&mut choice.sides, BulkSides::Both, "Both");
+    });
+    ui.label("Format");
+    ui.horizontal_wrapped(|ui| {
+        ui.radio_value(&mut choice.format, SaveFormat::Decoded, "Decoded")
+            .on_hover_text("Remove gzip, deflate, br and zstd Content-Encoding.");
+        ui.radio_value(&mut choice.format, SaveFormat::AsReceived, "As received")
+            .on_hover_text("Keep the exact bytes that were received.");
+    });
+    ui.label("Folders");
+    ui.horizontal_wrapped(|ui| {
+        ui.radio_value(&mut choice.layout, BodyLayout::Flat, "One folder");
+        ui.radio_value(
+            &mut choice.layout,
+            BodyLayout::HostPath,
+            "host/path folders",
+        );
+    });
+    ui.weak("Files go into a new folder inside the Save directory, with a manifest.json that lists each URL, status, size and SHA-256. Empty bodies are skipped.");
+    ui.label(PRIVACY_NOTICE);
+    let mut confirmed = None;
+    ui.horizontal(|ui| {
+        if ui.button("Save").clicked() {
+            confirmed = Some(true);
+        }
+        if ui.button("Cancel").clicked() {
+            confirmed = Some(false);
+        }
+    });
+    confirmed
+}
+
+fn summary_text(summary: &BulkSummary) -> String {
+    let mut parts = vec![format!(
+        "Saved {} bodies to {}",
+        summary.saved(),
+        summary.directory().display()
+    )];
+    if summary.incomplete() > 0 {
+        parts.push(format!("{} incomplete", summary.incomplete()));
+    }
+    if summary.failed() > 0 {
+        parts.push(format!("{} failed (see manifest.json)", summary.failed()));
+    }
+    if summary.cancelled() {
+        parts.push("cancelled".to_owned());
+    }
+    parts.join(" · ")
+}
+
+/// Builds the bodies to save, skipping empty complete bodies and responses
+/// that never arrived. Bodies the store never saw are kept so the manifest
+/// can report them.
+pub(in crate::ui) fn bodies_to_save(
+    records: &[&Exchange],
+    choice: BulkChoice,
+    store: &BodyStore,
+    folder: &Path,
+) -> Vec<SaveBody> {
+    records
+        .iter()
+        .flat_map(|record| {
+            choice
+                .sides
+                .sides()
+                .iter()
+                .map(move |&side| (*record, side))
+        })
+        .filter(|(record, side)| {
+            store
+                .body(record.id(), *side)
+                .is_none_or(|stored| stored.stored_bytes() > 0 || !stored.is_complete())
+        })
+        .filter_map(|(record, side)| {
+            SaveBody::new(record, side, choice.format, folder.to_path_buf())
+        })
+        .collect()
+}
+
+/// Returns a new folder name inside `directory` for one bulk save.
+pub(in crate::ui) fn new_folder(directory: &Path) -> PathBuf {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let base = format!("http-inspector-bodies-{seconds}");
+    (0..10_000)
+        .map(|attempt| {
+            if attempt == 0 {
+                directory.join(&base)
+            } else {
+                directory.join(format!("{base}-{attempt}"))
+            }
+        })
+        .find(|path| !path.exists())
+        .unwrap_or_else(|| directory.join(base))
+}
+
+impl InspectorApp {
+    /// Shows the `Save bodies…` dialog and starts the save it confirms.
+    pub(in crate::ui) fn bulk_body_save(&mut self, context: &egui::Context) {
+        self.body_saving.bulk.poll(context);
+        let counts = ScopeCounts {
+            all: self.records.len(),
+            filtered: self.filtered_records().len(),
+            selected: usize::from(self.selected.is_some()),
+        };
+        let Some(choice) = self.body_saving.bulk.show(context, counts) else {
+            return;
+        };
+        let directory = match self.save.directory() {
+            Ok(directory) => directory,
+            Err(error) => {
+                self.body_saving.bulk.result = Some(Err(error.to_string()));
+                return;
+            }
+        };
+        let Some(store) = self.body_saving.store().cloned() else {
+            self.body_saving.bulk.result = Some(Err("Saving bodies is unavailable".to_owned()));
+            return;
+        };
+        let records: Vec<&Exchange> = match choice.scope {
+            BulkScope::All => self.records.iter().collect(),
+            BulkScope::Filtered => self.filtered_records(),
+            BulkScope::Selected => self
+                .records
+                .iter()
+                .filter(|record| Some(record.id()) == self.selected)
+                .collect(),
+        };
+        let folder = new_folder(&directory);
+        let bodies = bodies_to_save(&records, choice, &store, &folder);
+        self.body_saving
+            .bulk
+            .start(&store, bodies, choice.layout, folder);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_folders_never_reuse_an_existing_name() -> std::io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let first = new_folder(directory.path());
+        std::fs::create_dir(&first)?;
+        let second = new_folder(directory.path());
+        assert_ne!(first, second);
+        assert!(second.starts_with(directory.path()));
+        Ok(())
+    }
+
+    #[test]
+    fn sides_cover_the_chosen_bodies() {
+        assert_eq!(BulkSides::Responses.sides(), [BodySide::Response]);
+        assert_eq!(BulkSides::Requests.sides(), [BodySide::Request]);
+        assert_eq!(
+            BulkSides::Both.sides(),
+            [BodySide::Request, BodySide::Response]
+        );
+    }
+}
