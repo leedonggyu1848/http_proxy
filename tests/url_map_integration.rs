@@ -4,10 +4,12 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use http_proxy::interop::map_export::{
+    export_graph_dot, export_graph_mermaid, export_tree_json, export_tree_text,
+};
 use http_proxy::url_map::{
     EdgeKind, OriginKey, PathSegmentPattern, SortDirection, TreeFilter, TreeSortField, UrlMap,
-    ViewNodeKey, build_view_roots, export_graph_dot, export_graph_mermaid, export_tree_json,
-    export_tree_text,
+    ViewNodeKey, build_view_roots,
 };
 use http_proxy::{Exchange, ProxyConfig, ProxyHandle};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};

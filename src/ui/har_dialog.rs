@@ -3,8 +3,7 @@
 use std::path::PathBuf;
 
 use eframe::egui;
-
-use crate::ui::har::HarOptions;
+use http_proxy::interop::har::HarOptions;
 
 /// Which records an export contains.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

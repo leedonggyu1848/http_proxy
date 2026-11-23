@@ -144,15 +144,6 @@ pub(in crate::ui) const fn timing_label(outcome: &Outcome) -> &'static str {
     }
 }
 
-pub(in crate::ui) fn tunnel_detail(state: &TunnelState) -> String {
-    match state {
-        TunnelState::Open => "Open".to_owned(),
-        TunnelState::Closed => "Closed".to_owned(),
-        TunnelState::Failed { stage, message } => format!("Failed at {stage}: {message}"),
-        TunnelState::Incomplete => "Incomplete: the proxy stopped while it was open".to_owned(),
-    }
-}
-
 /// Converts a duration to milliseconds for UI timing displays.
 pub(in crate::ui) fn elapsed_millis(duration: std::time::Duration) -> f64 {
     duration.as_secs_f64() * 1_000.0

@@ -5,10 +5,10 @@
 //! could be removed. Otherwise the text is left out. Every body that is not
 //! the whole body gets a `comment` saying why.
 
-use http_proxy::{BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, HeaderPreview};
 use serde_json::{Map, Value, json};
 
-use http_proxy::content::decode as body_view;
+use crate::content::decode as body_view;
+use crate::exchange::{BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, HeaderPreview};
 
 /// Most decoded bytes one compressed body may expand to in the export.
 const DECODED_LIMIT: usize = 16 * 1024 * 1024;

@@ -477,7 +477,7 @@ fn elapsed_text(record: &Exchange) -> String {
 
 fn render_tunnel(ui: &mut egui::Ui, tunnel: &TunnelPreview) {
     let snapshot = tunnel.snapshot();
-    let state = outcome_view::tunnel_detail(snapshot.state());
+    let state = snapshot.state().to_string();
     let bounds = GridBounds::from_ui(ui);
     egui::Grid::new("tunnel-details")
         .num_columns(2)

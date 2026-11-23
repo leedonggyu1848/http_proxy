@@ -450,13 +450,18 @@ impl MapPanel {
                 }
                 ui.separator();
                 if ui.button("Copy Mermaid to clipboard").clicked() {
-                    let mermaid =
-                        http_proxy::url_map::export_graph_mermaid(map, self.layout.max_domains());
+                    let mermaid = http_proxy::interop::map_export::export_graph_mermaid(
+                        map,
+                        self.layout.max_domains(),
+                    );
                     ui.ctx().copy_text(mermaid);
                     ui.close();
                 }
                 if ui.button("Copy DOT to clipboard").clicked() {
-                    let dot = http_proxy::url_map::export_graph_dot(map, self.layout.max_domains());
+                    let dot = http_proxy::interop::map_export::export_graph_dot(
+                        map,
+                        self.layout.max_domains(),
+                    );
                     ui.ctx().copy_text(dot);
                     ui.close();
                 }

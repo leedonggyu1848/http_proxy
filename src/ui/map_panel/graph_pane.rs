@@ -2,8 +2,9 @@
 //! [`egui::Painter`].
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
+use http_proxy::interop::map_export::format_bytes;
 use http_proxy::url_map::{
-    EdgeKind, ForceLayout, GraphEdge, GraphNode, RelationshipGraph, STEPS_PER_FRAME, format_bytes,
+    EdgeKind, ForceLayout, GraphEdge, GraphNode, RelationshipGraph, STEPS_PER_FRAME,
 };
 
 use super::EdgeVisibility;

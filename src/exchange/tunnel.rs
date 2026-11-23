@@ -133,6 +133,17 @@ pub enum TunnelState {
     Incomplete,
 }
 
+impl std::fmt::Display for TunnelState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Open => f.write_str("Open"),
+            Self::Closed => f.write_str("Closed"),
+            Self::Failed { stage, message } => write!(f, "Failed at {stage}: {message}"),
+            Self::Incomplete => f.write_str("Incomplete: the proxy stopped while it was open"),
+        }
+    }
+}
+
 /// Immutable view of a tunnel at one instant.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TunnelSnapshot {
@@ -188,5 +199,23 @@ mod tests {
         assert_eq!(first.client_to_upstream(), 3);
         assert_eq!(first.upstream_to_client(), 5);
         assert_eq!(view.snapshot().duration(), first.duration());
+    }
+
+    #[test]
+    fn formats_every_tunnel_state() {
+        assert_eq!(TunnelState::Open.to_string(), "Open");
+        assert_eq!(TunnelState::Closed.to_string(), "Closed");
+        assert_eq!(
+            TunnelState::Failed {
+                stage: FailureStage::Tunnel,
+                message: "reset".to_owned(),
+            }
+            .to_string(),
+            "Failed at Tunnel relay: reset"
+        );
+        assert_eq!(
+            TunnelState::Incomplete.to_string(),
+            "Incomplete: the proxy stopped while it was open"
+        );
     }
 }

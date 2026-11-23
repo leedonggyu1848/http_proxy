@@ -25,33 +25,26 @@ use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use http_proxy::{CaptureSource, Exchange, HeaderPreview, Outcome, TunnelState};
+use crate::exchange::{CaptureSource, Exchange, HeaderPreview, Outcome, TunnelState};
+use crate::http_semantics::is_sensitive_header;
 use serde_json::{Map, Value, json};
 
 use self::timings::{Phases, iso8601, millis};
-use crate::ui::outcome_view::tunnel_detail;
-
-/// Header fields whose values the engine never retains.
-const SENSITIVE_HEADERS: [&str; 4] = [
-    "authorization",
-    "proxy-authorization",
-    "cookie",
-    "set-cookie",
-];
 
 /// What an export adds on top of the default, which leaves out bodies and
 /// sensitive header fields.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(in crate::ui) struct HarOptions {
+pub struct HarOptions {
     /// Writes body previews, which may be truncated, as `postData` and
     /// `content.text`.
-    pub(in crate::ui) include_bodies: bool,
+    pub include_bodies: bool,
     /// Writes sensitive header fields with their `[REDACTED]` marker.
-    pub(in crate::ui) include_sensitive_headers: bool,
+    pub include_sensitive_headers: bool,
 }
 
 /// Builds the HAR document for `records` in the given order, as observed at `now`.
-pub(in crate::ui) fn document(records: &[Exchange], options: HarOptions, now: SystemTime) -> Value {
+#[must_use]
+pub fn document(records: &[Exchange], options: HarOptions, now: SystemTime) -> Value {
     let entries: Vec<Value> = records
         .iter()
         .map(|record| entry(record, options, now))
@@ -60,7 +53,7 @@ pub(in crate::ui) fn document(records: &[Exchange], options: HarOptions, now: Sy
         "log": {
             "version": "1.2",
             "creator": {
-                "name": http_proxy::APP_NAME,
+                "name": crate::APP_NAME,
                 "version": env!("CARGO_PKG_VERSION"),
             },
             "pages": [],
@@ -74,7 +67,7 @@ pub(in crate::ui) fn document(records: &[Exchange], options: HarOptions, now: Sy
 ///
 /// The file is written to a temporary file in the same directory first, so a
 /// failed export leaves no partial file, and is readable only by its owner.
-pub(in crate::ui) fn write(path: &Path, document: &Value) -> io::Result<PathBuf> {
+pub fn write(path: &Path, document: &Value) -> io::Result<PathBuf> {
     let directory = match path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent,
         _ => Path::new("."),
@@ -111,7 +104,7 @@ fn log_comment(options: HarOptions) -> String {
     };
     format!(
         "Exported by {}. {bodies} {headers} Cookie values are never exported.",
-        http_proxy::APP_NAME
+        crate::APP_NAME
     )
 }
 
@@ -250,15 +243,9 @@ fn headers(headers: &HeaderPreview, options: HarOptions) -> Value {
     headers
         .entries()
         .iter()
-        .filter(|header| options.include_sensitive_headers || !is_sensitive(header.name()))
+        .filter(|header| options.include_sensitive_headers || !is_sensitive_header(header.name()))
         .map(|header| json!({ "name": header.name(), "value": header.value() }))
         .collect()
-}
-
-fn is_sensitive(name: &str) -> bool {
-    SENSITIVE_HEADERS
-        .iter()
-        .any(|sensitive| sensitive.eq_ignore_ascii_case(name))
 }
 
 fn entry_notes(record: &Exchange) -> Vec<String> {
@@ -291,7 +278,7 @@ fn outcome_note(record: &Exchange) -> Option<String> {
                 record.request().target(),
                 snapshot.client_to_upstream(),
                 snapshot.upstream_to_client(),
-                tunnel_detail(snapshot.state()),
+                snapshot.state(),
             )
         }
         Outcome::InspectionEstablished => format!(
@@ -315,7 +302,7 @@ fn error_text(outcome: &Outcome) -> Option<String> {
         Outcome::Incomplete => Some("Incomplete because the proxy stopped".into()),
         Outcome::Tunnel(tunnel) => match tunnel.snapshot().state() {
             state @ (TunnelState::Failed { .. } | TunnelState::Incomplete) => {
-                Some(tunnel_detail(state))
+                Some(state.to_string())
             }
             TunnelState::Open | TunnelState::Closed => None,
         },

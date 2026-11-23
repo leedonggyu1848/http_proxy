@@ -8,8 +8,9 @@ use std::collections::HashSet;
 use std::time::SystemTime;
 
 use eframe::egui::{self, RichText};
+use http_proxy::interop::map_export::format_bytes;
 use http_proxy::url_map::{
-    NodeStats, RequestScope, ViewNode, format_bytes, parse_exchange_target, percent_decode_display,
+    NodeStats, RequestScope, ViewNode, parse_exchange_target, percent_decode_display,
 };
 use http_proxy::{Exchange, RecordId};
 

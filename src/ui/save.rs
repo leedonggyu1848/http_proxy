@@ -5,9 +5,8 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use eframe::egui::{self, Color32, ColorImage};
+use http_proxy::interop::har::{self, HarOptions};
 use http_proxy::{Exchange, FullLog};
-
-use crate::ui::har::{self, HarOptions};
 
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 

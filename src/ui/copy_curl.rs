@@ -3,9 +3,10 @@
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use http_proxy::{
-    CURL_REDACTED_PLACEHOLDER, CurlCommand, CurlUnavailable, Exchange, RedactedHeaders,
-    curl_command, curl_unavailable_reason,
+use http_proxy::Exchange;
+use http_proxy::interop::curl::{
+    CURL_REDACTED_PLACEHOLDER, CurlCommand, CurlUnavailable, RedactedHeaders, curl_command,
+    curl_unavailable_reason,
 };
 
 use crate::ui::theme::Palette;
