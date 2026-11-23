@@ -205,12 +205,14 @@ pub fn resolve_location(base: &NormalizedUrl, location: &str) -> Option<Normaliz
     if trimmed.is_empty() {
         return None;
     }
-    if trimmed.contains("://") {
+    if let Some(scheme_end) = trimmed.find("://")
+        && let Some(scheme) = trimmed.get(..scheme_end)
+        && is_valid_scheme(scheme)
+    {
         return parse_url(trimmed);
     }
-    if let Some(rest) = trimmed.strip_prefix("//") {
+    if trimmed.starts_with("//") {
         let synthetic = format!("{}:{trimmed}", base.origin.scheme());
-        let _ = rest;
         return parse_url(&synthetic);
     }
     let without_fragment = trimmed.split('#').next()?.trim();
@@ -304,14 +306,31 @@ fn strip_userinfo(authority: &str) -> &str {
         .map_or(authority, |(_, host_port)| host_port)
 }
 
+fn is_valid_host(host: &str) -> bool {
+    if host.is_empty() {
+        return false;
+    }
+    if let Some(inner) = host.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        return !inner.is_empty()
+            && inner
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b':' | b'.' | b'%' | b'-'));
+    }
+    !host.bytes().any(|b| {
+        b <= 0x20 || b == 0x7f || matches!(b, b'/' | b'?' | b'#' | b'\\' | b'@' | b'[' | b']')
+    })
+}
+
 fn split_authority(authority: &str) -> Option<(&str, Option<u16>)> {
-    let trimmed = authority.trim();
-    if trimmed.is_empty() {
+    if authority.is_empty() || authority.bytes().any(|b| b <= 0x20 || b == 0x7f) {
         return None;
     }
-    if let Some(after_open) = trimmed.strip_prefix('[') {
+    if let Some(after_open) = authority.strip_prefix('[') {
         let end = after_open.find(']')?;
-        let host = trimmed.get(..end + 2)?;
+        let host = authority.get(..end + 2)?;
+        if !is_valid_host(host) {
+            return None;
+        }
         let rest = after_open.get(end + 1..)?;
         if rest.is_empty() {
             return Some((host, None));
@@ -320,14 +339,17 @@ fn split_authority(authority: &str) -> Option<(&str, Option<u16>)> {
         let port = parse_optional_port(port_str).ok()?;
         return Some((host, port));
     }
-    if let Some((host, port_str)) = trimmed.rsplit_once(':') {
-        if host.is_empty() {
+    if let Some((host, port_str)) = authority.rsplit_once(':') {
+        if !is_valid_host(host) {
             return None;
         }
         let port = parse_optional_port(port_str).ok()?;
         return Some((host, port));
     }
-    Some((trimmed, None))
+    if !is_valid_host(authority) {
+        return None;
+    }
+    Some((authority, None))
 }
 
 fn parse_optional_port(port_str: &str) -> Result<Option<u16>, std::num::ParseIntError> {
@@ -504,6 +526,41 @@ mod tests {
             rel.as_ref().map(NormalizedUrl::path_only).as_deref(),
             Some("https://app.example.com/welcome")
         );
+
+        // Relative Location with `://` inside a query parameter value must resolve as relative
+        // and strip all query values cleanly (e.g. OAuth / login `?next=https://...`).
+        let oauth_rel = resolve_location(
+            &base,
+            "/login?next=https://app.example.com/home?token=SECRET_REDIRECT",
+        );
+        assert_eq!(
+            oauth_rel.as_ref().map(NormalizedUrl::path_only).as_deref(),
+            Some("https://app.example.com/login")
+        );
+        assert_eq!(
+            oauth_rel.as_ref().map(NormalizedUrl::query_param_names),
+            Some(&["next".to_owned()][..])
+        );
+        assert!(
+            oauth_rel
+                .as_ref()
+                .is_none_or(|url| !format!("{url:?}").contains("SECRET_REDIRECT"))
+        );
+
+        let dir_rel = resolve_location(&base, "callback?return_to=https://app.example.com/done");
+        assert_eq!(
+            dir_rel.as_ref().map(NormalizedUrl::path_only).as_deref(),
+            Some("https://app.example.com/auth/callback")
+        );
+    }
+
+    #[test]
+    fn rejects_hosts_with_whitespace_or_control_characters() {
+        assert_eq!(parse_url("http://bad host.example/path"), None);
+        assert_eq!(parse_url("http://evil\r\n.example/path"), None);
+        assert_eq!(parse_url("http://tab\t.example:8080/path"), None);
+        assert_eq!(parse_url("http://[::1 bad]/path"), None);
+        assert_eq!(parse_origin_header("https://bad host.example"), None);
     }
 
     #[test]

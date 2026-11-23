@@ -4,13 +4,14 @@
 //! pane. Matching requests display path-only URLs with query parameter *names*
 //! only.
 
+use std::collections::HashSet;
 use std::time::SystemTime;
 
 use eframe::egui::{self, RichText};
-use http_proxy::Exchange;
 use http_proxy::url_map::{
-    NodeStats, ViewNode, format_bytes, parse_exchange_target, percent_decode_display,
+    NodeStats, ViewNode, ViewNodeKey, format_bytes, parse_exchange_target, percent_decode_display,
 };
+use http_proxy::{Exchange, RecordId};
 
 use super::MapAction;
 use crate::ui::outcome_view::outcome_text;
@@ -20,10 +21,101 @@ use crate::ui::theme::Palette;
 /// Maximum matching retained requests listed directly inside the node detail pane.
 const MAX_INLINE_REQUESTS: usize = 100;
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct RecordListStamp {
+    len: usize,
+    first: Option<RecordId>,
+    last: Option<RecordId>,
+}
+
+impl RecordListStamp {
+    fn of(records: &RecordList<Exchange>) -> Self {
+        let len = records.len();
+        let first = records.get(0).map(Exchange::id);
+        let last = len
+            .checked_sub(1)
+            .and_then(|idx| records.get(idx))
+            .map(Exchange::id);
+        Self { len, first, last }
+    }
+}
+
+/// Caches which retained [`Exchange`]s in [`RecordList`] match a [`ViewNodeKey`]
+/// so steady UI frames never re-parse up to 2,000 request URLs.
+#[derive(Default)]
+pub(in crate::ui) struct RecordMatchCache {
+    key: Option<ViewNodeKey>,
+    stamp: Option<RecordListStamp>,
+    matched_count: usize,
+    matched_ids: HashSet<RecordId>,
+    newest_previews: Vec<(usize, String)>,
+}
+
+impl RecordMatchCache {
+    pub(in crate::ui) fn clear(&mut self) {
+        self.key = None;
+        self.stamp = None;
+        self.matched_count = 0;
+        self.matched_ids.clear();
+        self.newest_previews.clear();
+    }
+
+    pub(in crate::ui) fn sync(
+        &mut self,
+        key: &ViewNodeKey,
+        records: &RecordList<Exchange>,
+        build_previews: bool,
+    ) {
+        let stamp = RecordListStamp::of(records);
+        let previews_ready =
+            !build_previews || !self.newest_previews.is_empty() || self.matched_count == 0;
+        if self.key.as_ref() == Some(key) && self.stamp == Some(stamp) && previews_ready {
+            return;
+        }
+        self.key = Some(key.clone());
+        self.stamp = Some(stamp);
+        self.matched_ids.clear();
+        self.newest_previews.clear();
+        let mut matched_indices = Vec::new();
+        for (idx, record) in records.iter().enumerate() {
+            if key.matches_exchange(record) {
+                let _ = self.matched_ids.insert(record.id());
+                matched_indices.push(idx);
+            }
+        }
+        self.matched_count = matched_indices.len();
+        if build_previews {
+            for idx in matched_indices.into_iter().rev().take(MAX_INLINE_REQUESTS) {
+                if let Some(record) = records.get(idx) {
+                    self.newest_previews
+                        .push((idx, safe_display_target(record)));
+                }
+            }
+        }
+    }
+
+    pub(in crate::ui) const fn matched_count(&self) -> usize {
+        self.matched_count
+    }
+
+    pub(in crate::ui) fn is_fresh_for(
+        &self,
+        key: &ViewNodeKey,
+        records: &RecordList<Exchange>,
+    ) -> bool {
+        self.key.as_ref() == Some(key) && self.stamp == Some(RecordListStamp::of(records))
+    }
+
+    pub(in crate::ui) fn contains(&self, id: RecordId) -> bool {
+        self.matched_ids.contains(&id)
+    }
+}
+
 pub(super) fn show(
     ui: &mut egui::Ui,
     node: Option<&ViewNode>,
     records: &RecordList<Exchange>,
+    cache: &mut RecordMatchCache,
 ) -> Option<MapAction> {
     let Some(node) = node else {
         ui.centered_and_justified(|ui| {
@@ -40,16 +132,13 @@ pub(super) fn show(
         return None;
     };
 
+    cache.sync(&node.key, records, true);
     let mut action = None;
     egui::ScrollArea::vertical()
         .id_salt("url-map-detail-scroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            let matching: Vec<&Exchange> = records
-                .iter()
-                .filter(|record| node.key.matches_exchange(record))
-                .collect();
-            let retained = matching.len();
+            let retained = cache.matched_count();
             let evicted = node
                 .subtree
                 .request_count
@@ -63,7 +152,7 @@ pub(super) fn show(
             ui.separator();
             render_query_params_section(ui, node);
             ui.separator();
-            if let Some(req_action) = render_requests_section(ui, &matching, evicted) {
+            if let Some(req_action) = render_requests_section(ui, records, cache, evicted) {
                 action = Some(req_action);
             }
         });
@@ -272,11 +361,13 @@ fn render_query_params_section(ui: &mut egui::Ui, node: &ViewNode) {
 
 fn render_requests_section(
     ui: &mut egui::Ui,
-    matching: &[&Exchange],
+    records: &RecordList<Exchange>,
+    cache: &RecordMatchCache,
     evicted: u64,
 ) -> Option<MapAction> {
     let palette = Palette::of(ui);
-    ui.label(RichText::new(format!("Requests under this node ({})", matching.len())).strong());
+    let total_retained = cache.matched_count();
+    ui.label(RichText::new(format!("Requests under this node ({total_retained})")).strong());
     if evicted > 0 {
         ui.label(
             RichText::new(format!(
@@ -286,20 +377,22 @@ fn render_requests_section(
             .small(),
         );
     }
-    if matching.is_empty() {
+    if total_retained == 0 {
         ui.weak("No retained requests remain for this node.");
         return None;
     }
 
     let mut action = None;
-    for record in matching.iter().rev().take(MAX_INLINE_REQUESTS) {
+    for (idx, safe_path) in &cache.newest_previews {
+        let Some(record) = records.get(*idx) else {
+            continue;
+        };
         let (status_label, status_color) = outcome_text(record.outcome(), &palette);
-        let safe_path = safe_display_target(record);
         ui.horizontal(|ui| {
             ui.monospace(record.request().method().as_str());
             ui.label(RichText::new(status_label).color(status_color).small());
             let link = ui.add(
-                egui::Label::new(RichText::new(safe_path).monospace())
+                egui::Label::new(RichText::new(safe_path.as_str()).monospace())
                     .wrap_mode(egui::TextWrapMode::Truncate)
                     .sense(egui::Sense::click()),
             );
@@ -311,10 +404,9 @@ fn render_requests_section(
             }
         });
     }
-    if matching.len() > MAX_INLINE_REQUESTS {
+    if total_retained > MAX_INLINE_REQUESTS {
         ui.weak(format!(
-            "Showing newest {MAX_INLINE_REQUESTS} of {} retained requests. Use Show in Requests to inspect all.",
-            matching.len()
+            "Showing newest {MAX_INLINE_REQUESTS} of {total_retained} retained requests. Use Show in Requests to inspect all."
         ));
     }
     action

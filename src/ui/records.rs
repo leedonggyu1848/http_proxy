@@ -72,6 +72,10 @@ impl<T> RecordList<T> {
         self.records.len()
     }
 
+    pub(in crate::ui) fn get(&self, index: usize) -> Option<&T> {
+        self.records.get(index)
+    }
+
     pub(in crate::ui) fn iter(&self) -> impl DoubleEndedIterator<Item = &T> {
         self.records.iter()
     }

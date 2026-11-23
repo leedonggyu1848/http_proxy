@@ -696,23 +696,33 @@ fn build_projected_children(
     children
 }
 
+fn stats_match_filter(stats: &NodeStats, filter: &TreeFilter) -> bool {
+    filter.status.matches(stats)
+        && filter.content_type.matches(stats)
+        && filter.party.matches(stats)
+}
+
 fn filter_and_sort_node(
     mut node: ViewNode,
     filter: &TreeFilter,
     sort: TreeSortField,
     direction: SortDirection,
 ) -> Option<ViewNode> {
-    let matches_self = filter.status.matches(&node.subtree)
-        && filter.content_type.matches(&node.subtree)
-        && filter.party.matches(&node.subtree);
-    if !matches_self {
+    if !stats_match_filter(&node.subtree, filter) {
         return None;
     }
+    let had_children = !node.children.is_empty();
     let mut kept_children = Vec::with_capacity(node.children.len());
     for child in node.children {
         if let Some(kept) = filter_and_sort_node(child, filter, sort, direction) {
             kept_children.push(kept);
         }
+    }
+    if kept_children.is_empty()
+        && had_children
+        && (node.direct.request_count == 0 || !stats_match_filter(&node.direct, filter))
+    {
+        return None;
     }
     sort_siblings(&mut kept_children, sort, direction);
     node.children = kept_children;
@@ -907,5 +917,45 @@ mod tests {
             only_html.first().map(|r| r.label.as_str()),
             Some("https://app.example.com")
         );
+    }
+
+    #[test]
+    fn compound_filter_drops_empty_parent_nodes_unless_direct_matches() {
+        let mut map = UrlMap::new();
+        // Child /a is 200 JSON; child /b is 500 text/plain; root has no direct requests.
+        let _ = map.observe(obs(
+            "https://api.example.com/a",
+            StatusBucket::S2xx,
+            "application/json",
+            100,
+        ));
+        let _ = map.observe(obs(
+            "https://api.example.com/b",
+            StatusBucket::S5xx,
+            "text/plain",
+            100,
+        ));
+
+        let compound = TreeFilter {
+            status: StatusFilter::S5xx,
+            content_type: ContentTypeFilter::Json,
+            ..TreeFilter::default()
+        };
+        let roots = build_view_roots(&map, &compound, TreeSortField::Name, SortDirection::Asc);
+        assert!(
+            roots.is_empty(),
+            "parent origin must be pruned when no child or direct request satisfies all compound filters"
+        );
+
+        // Once the root itself receives a direct 500 JSON response, it should be kept.
+        let _ = map.observe(obs(
+            "https://api.example.com/",
+            StatusBucket::S5xx,
+            "application/json",
+            50,
+        ));
+        let roots = build_view_roots(&map, &compound, TreeSortField::Name, SortDirection::Asc);
+        assert_eq!(roots.len(), 1);
+        assert!(roots.first().is_some_and(|root| root.children.is_empty()));
     }
 }

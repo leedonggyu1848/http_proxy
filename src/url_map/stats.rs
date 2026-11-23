@@ -374,7 +374,8 @@ impl NodeStats {
         self.request_count > self.third_party_hits
     }
 
-    /// Reports whether this node represents only opaque `CONNECT` tunnels.
+    /// Reports whether this node represents only non-failing, settled opaque
+    /// `CONNECT` tunnels.
     #[must_use]
     pub const fn is_tunnel_only(&self) -> bool {
         self.has_tunnel
@@ -382,6 +383,8 @@ impl NodeStats {
             && self.status.s3xx == 0
             && self.status.s4xx == 0
             && self.status.s5xx == 0
+            && self.status.failed == 0
+            && self.status.pending == 0
     }
 
     /// Merges another `NodeStats` into `self` (used when folding ID nodes).
@@ -465,5 +468,23 @@ mod tests {
         assert_eq!(a.first_seen, Some(now));
         assert_eq!(a.last_seen, Some(later));
         assert!(a.is_third_party());
+    }
+
+    #[test]
+    fn failed_or_pending_tunnel_is_not_tunnel_only() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+
+        let mut clean_tunnel = NodeStats::default();
+        clean_tunnel.record_request(&Method::CONNECT, StatusBucket::Tunnel, now, false, true);
+        assert!(clean_tunnel.is_tunnel_only());
+
+        let mut failed_tunnel = NodeStats::default();
+        failed_tunnel.record_request(&Method::CONNECT, StatusBucket::Failed, now, false, true);
+        assert!(!failed_tunnel.is_tunnel_only());
+        assert_eq!(failed_tunnel.status.errors(), 1);
+
+        let mut pending_tunnel = NodeStats::default();
+        pending_tunnel.record_request(&Method::CONNECT, StatusBucket::Pending, now, false, true);
+        assert!(!pending_tunnel.is_tunnel_only());
     }
 }

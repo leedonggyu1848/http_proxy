@@ -39,6 +39,7 @@ pub(in crate::ui) fn record_matches(record: &Exchange, filter: RecordFilter) -> 
 }
 
 use crate::ui::InspectorApp;
+use crate::ui::map_panel::RecordMatchCache;
 use crate::ui::records::RecordList;
 use crate::ui::replay_panel;
 use crate::ui::search::RequestSearch;
@@ -77,12 +78,9 @@ impl InspectorApp {
         let Some(key) = self.map_path_filter.clone() else {
             return;
         };
+        self.map_filter_cache.sync(&key, &self.records, false);
         let palette = Palette::of(ui);
-        let retained = self
-            .records
-            .iter()
-            .filter(|record| key.matches_exchange(record))
-            .count();
+        let retained = self.map_filter_cache.matched_count();
         let total = self.url_map.matching_request_count(&key);
         let evicted = total.saturating_sub(u64::try_from(retained).unwrap_or(u64::MAX));
         let mut clear = false;
@@ -111,16 +109,21 @@ impl InspectorApp {
         });
         if clear {
             self.map_path_filter = None;
+            self.map_filter_cache.clear();
         }
     }
 
     pub(in crate::ui) fn request_table(&mut self, ui: &mut egui::Ui, shortcuts_allowed: bool) {
         self.search.update(&self.records, ui.ctx());
+        if let Some(key) = self.map_path_filter.as_ref() {
+            self.map_filter_cache.sync(key, &self.records, false);
+        }
         let rows = visible_records(
             &self.records,
             self.record_filter,
             &self.search,
             self.map_path_filter.as_ref(),
+            Some(&self.map_filter_cache),
         );
         if rows.is_empty() {
             let message = empty_list_text(
@@ -159,11 +162,20 @@ pub(in crate::ui) fn visible_records<'a>(
     filter: RecordFilter,
     search: &RequestSearch,
     map_filter: Option<&ViewNodeKey>,
+    map_cache: Option<&RecordMatchCache>,
 ) -> Vec<&'a Exchange> {
+    let fresh_cache = map_filter
+        .zip(map_cache)
+        .filter(|(key, cache)| cache.is_fresh_for(key, records))
+        .map(|(_, cache)| cache);
     records
         .iter()
         .filter(|record| record_matches(record, filter))
-        .filter(|record| map_filter.is_none_or(|key| key.matches_exchange(record)))
+        .filter(|record| match (map_filter, fresh_cache) {
+            (None, _) => true,
+            (Some(_), Some(cache)) => cache.contains(record.id()),
+            (Some(key), None) => key.matches_exchange(record),
+        })
         .filter(|record| search.shows(record.id()))
         .collect()
 }

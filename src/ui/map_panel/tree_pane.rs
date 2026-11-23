@@ -171,6 +171,10 @@ fn render_row_badges(ui: &mut egui::Ui, row: &VisibleRow, palette: &Palette) {
         return;
     }
 
+    if stats.has_tunnel {
+        ui.label(RichText::new("[Tunnel]").color(palette.info).small());
+    }
+
     ui.label(
         RichText::new(format!("{} req", stats.request_count))
             .color(palette.muted)
@@ -269,13 +273,14 @@ fn paint_status_bar(ui: &mut egui::Ui, stats: &NodeStats, palette: &Palette) {
     );
 
     let _ = response.on_hover_text(format!(
-        "2xx: {} · 3xx: {} · 4xx: {} · 5xx: {} · Failed: {} · Tunnel: {}",
+        "2xx: {} · 3xx: {} · 4xx: {} · 5xx: {} · Failed: {} · Tunnel: {} · Pending: {}",
         stats.status.s2xx,
         stats.status.s3xx,
         stats.status.s4xx,
         stats.status.s5xx,
         stats.status.failed,
         stats.status.tunnel,
+        stats.status.pending,
     ));
 }
 
@@ -290,6 +295,12 @@ fn compact_status_numbers(stats: &NodeStats) -> String {
     let errs = stats.status.errors();
     if errs > 0 {
         parts.push(format!("err:{errs}"));
+    }
+    if stats.status.tunnel > 0 {
+        parts.push(format!("tun:{}", stats.status.tunnel));
+    }
+    if stats.status.pending > 0 {
+        parts.push(format!("pend:{}", stats.status.pending));
     }
     parts.join(" ")
 }
@@ -428,4 +439,23 @@ fn handle_keyboard(panel: &mut MapPanel, ui: &egui::Ui) {
     }
     ui.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
     ui.ctx().request_repaint();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http::Method;
+    use http_proxy::url_map::StatusBucket;
+    use std::time::SystemTime;
+
+    #[test]
+    fn compact_status_numbers_includes_tunnel_and_pending_for_accessibility() {
+        let now = SystemTime::UNIX_EPOCH;
+        let mut stats = NodeStats::default();
+        stats.record_request(&Method::GET, StatusBucket::S2xx, now, false, false);
+        stats.record_request(&Method::CONNECT, StatusBucket::Tunnel, now, false, true);
+        stats.record_request(&Method::GET, StatusBucket::Pending, now, false, false);
+        stats.record_request(&Method::CONNECT, StatusBucket::Failed, now, false, true);
+        assert_eq!(compact_status_numbers(&stats), "2xx:1 err:1 tun:1 pend:1");
+    }
 }

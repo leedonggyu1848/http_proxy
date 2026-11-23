@@ -4,6 +4,8 @@ mod detail_pane;
 mod graph_pane;
 mod tree_pane;
 
+pub(in crate::ui) use detail_pane::RecordMatchCache;
+
 use std::collections::{HashMap, HashSet};
 
 use eframe::egui;
@@ -118,6 +120,7 @@ pub(in crate::ui) struct MapPanel {
     layout: ForceLayout,
     edge_visibility: EdgeVisibility,
     dragged_node: Option<usize>,
+    detail_match_cache: RecordMatchCache,
 }
 
 impl Default for MapPanel {
@@ -147,6 +150,7 @@ impl MapPanel {
             layout: ForceLayout::new(DEFAULT_MAX_GRAPH_DOMAINS),
             edge_visibility: EdgeVisibility::default(),
             dragged_node: None,
+            detail_match_cache: RecordMatchCache::default(),
         }
     }
 
@@ -158,6 +162,7 @@ impl MapPanel {
         self.cached_rows.clear();
         self.cached_version = u64::MAX;
         self.rows_dirty = true;
+        self.detail_match_cache.clear();
         self.keyboard_scroll_to = None;
         self.dragged_node = None;
         self.layout = ForceLayout::new(self.layout.max_domains());
@@ -251,7 +256,7 @@ impl MapPanel {
             .selected
             .as_ref()
             .and_then(|key| find_view_node(&self.cached_roots, key));
-        detail_pane::show(ui, selected_node, records)
+        detail_pane::show(ui, selected_node, records, &mut self.detail_match_cache)
     }
 
     /// Renders the interactive domain relationship graph.
@@ -268,9 +273,11 @@ impl MapPanel {
     }
 
     /// Jumps from the relationship graph to the first origin matching `host` in Tree view.
+    ///
+    /// If `host` exists in `map` but is hidden by the active tree filters, clears
+    /// the blocking filters so the host is visible, expanded, and selected.
     pub(in crate::ui) fn jump_to_host(&mut self, map: &UrlMap, host: &str) {
         self.sub_view = MapSubView::Tree;
-        // Clear filters that could hide the clicked host.
         if !self.filter.host_query.is_empty()
             && !host
                 .to_ascii_lowercase()
@@ -279,12 +286,28 @@ impl MapPanel {
             self.filter.host_query.clear();
         }
         self.ensure_projection(map);
-        if let Some(root) = self
+
+        let exists_in_map = map.origins().keys().any(|origin| origin.host() == host);
+        let mut target_key = self
             .cached_roots
             .iter()
             .find(|root| root.key.origin.host() == host)
-        {
-            let key = root.key.clone();
+            .map(|root| root.key.clone());
+
+        if target_key.is_none() && exists_in_map {
+            self.filter.host_query.clear();
+            self.filter.status = StatusFilter::All;
+            self.filter.content_type = ContentTypeFilter::All;
+            self.filter.party = PartyFilter::All;
+            self.ensure_projection(map);
+            target_key = self
+                .cached_roots
+                .iter()
+                .find(|root| root.key.origin.host() == host)
+                .map(|root| root.key.clone());
+        }
+
+        if let Some(key) = target_key {
             let _ = self.expanded_overrides.insert(key.clone(), true);
             self.selected = Some(key.clone());
             self.rows_dirty = true;
@@ -433,5 +456,65 @@ fn collect_branch_keys(nodes: &[ViewNode], out: &mut HashSet<ViewNodeKey>) {
             let _ = out.insert(node.key.clone());
             collect_branch_keys(&node.children, out);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http::Method;
+    use http_proxy::url_map::{ObservedInput, StatusBucket, parse_url};
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn jump_to_host_clears_blocking_filters_so_clicked_domain_is_selected() {
+        let mut map = UrlMap::new();
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let Some(first_party) = parse_url("https://app.example.test/home") else {
+            unreachable!("valid url");
+        };
+        let Some(third_party) = parse_url("https://cdn.other.net/app.js") else {
+            unreachable!("valid url");
+        };
+        let _ = map.observe(ObservedInput {
+            target: first_party.clone(),
+            method: Method::GET,
+            status: StatusBucket::S2xx,
+            content_type: Some("text/html".to_owned()),
+            bytes: 100,
+            duration: None,
+            started_at: now,
+            referer: None,
+            origin_header: None,
+            redirect_location: None,
+        });
+        let _ = map.observe(ObservedInput {
+            target: third_party,
+            method: Method::GET,
+            status: StatusBucket::S5xx,
+            content_type: Some("application/javascript".to_owned()),
+            bytes: 200,
+            duration: None,
+            started_at: now,
+            referer: Some(first_party),
+            origin_header: None,
+            redirect_location: None,
+        });
+
+        let mut panel = MapPanel::new();
+        panel.sub_view = MapSubView::Graph;
+        panel.filter.status = StatusFilter::S5xx;
+        panel.filter.content_type = ContentTypeFilter::Script;
+        panel.filter.party = PartyFilter::ThirdParty;
+
+        panel.jump_to_host(&map, "app.example.test");
+        assert_eq!(panel.sub_view, MapSubView::Tree);
+        assert_eq!(panel.filter.status, StatusFilter::All);
+        assert_eq!(panel.filter.content_type, ContentTypeFilter::All);
+        assert_eq!(panel.filter.party, PartyFilter::All);
+        assert_eq!(
+            panel.selected.as_ref().map(|k| k.origin.host()),
+            Some("app.example.test")
+        );
     }
 }

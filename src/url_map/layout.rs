@@ -121,34 +121,39 @@ impl ForceLayout {
         self.settled
     }
 
+    fn refresh_counts(&mut self, graph: &RelationshipGraph) {
+        for node in &mut self.nodes {
+            if let Some(summary) = graph.domains().get(&node.host) {
+                node.request_count = summary.request_count;
+                node.error_count = summary.error_count;
+                node.third_party = summary.is_third_party();
+            }
+        }
+        for edge in &mut self.edges {
+            if let (Some(from), Some(to)) = (self.nodes.get(edge.from), self.nodes.get(edge.to)) {
+                let key = crate::url_map::edges::DomainEdgeKey {
+                    from_host: from.host.clone(),
+                    to_host: to.host.clone(),
+                    kind: edge.kind,
+                };
+                if let Some(stats) = graph.domain_edges().get(&key) {
+                    edge.count = stats.count;
+                }
+            }
+        }
+    }
+
     /// Synchronizes nodes and edges with `graph`.
     ///
-    /// Recomputes node positions only when `graph.topology_version()` changes.
-    /// Existing node positions are preserved across updates for visual stability.
+    /// Recomputes node positions when `graph.topology_version()` changes or when
+    /// Top-N membership shifts among domains exceeding `max_domains`. Existing
+    /// node positions are preserved across updates for visual stability.
     pub fn sync(&mut self, graph: &RelationshipGraph) {
         self.total_domains = graph.domains().len();
-        if self.topology_version == graph.topology_version() {
-            // Refresh live request/error counts without resetting layout.
-            for node in &mut self.nodes {
-                if let Some(summary) = graph.domains().get(&node.host) {
-                    node.request_count = summary.request_count;
-                    node.error_count = summary.error_count;
-                    node.third_party = summary.is_third_party();
-                }
-            }
-            for edge in &mut self.edges {
-                if let (Some(from), Some(to)) = (self.nodes.get(edge.from), self.nodes.get(edge.to))
-                {
-                    let key = crate::url_map::edges::DomainEdgeKey {
-                        from_host: from.host.clone(),
-                        to_host: to.host.clone(),
-                        kind: edge.kind,
-                    };
-                    if let Some(stats) = graph.domain_edges().get(&key) {
-                        edge.count = stats.count;
-                    }
-                }
-            }
+        let top_n_changed = self.total_domains > self.max_domains
+            && top_n_membership_changed(&self.nodes, graph, self.max_domains);
+        if self.topology_version == graph.topology_version() && !top_n_changed {
+            self.refresh_counts(graph);
             return;
         }
 
@@ -326,6 +331,29 @@ impl ForceLayout {
     }
 }
 
+fn top_n_membership_changed(
+    current: &[GraphNode],
+    graph: &RelationshipGraph,
+    max_domains: usize,
+) -> bool {
+    let limit = max_domains.max(1);
+    let mut ranked: Vec<_> = graph.domains().values().collect();
+    ranked.sort_by(|left, right| {
+        right
+            .request_count
+            .cmp(&left.request_count)
+            .then_with(|| left.host.cmp(&right.host))
+    });
+    ranked.truncate(limit);
+    ranked.sort_by(|left, right| left.host.cmp(&right.host));
+
+    ranked.len() != current.len()
+        || ranked
+            .iter()
+            .zip(current.iter())
+            .any(|(summary, node)| summary.host != node.host)
+}
+
 #[allow(
     clippy::cast_precision_loss,
     reason = "small node index for circle angle"
@@ -381,5 +409,36 @@ mod tests {
             assert!(node.x.is_finite() && node.x.abs() <= 0.95);
             assert!(node.y.is_finite() && node.y.abs() <= 0.95);
         }
+    }
+
+    #[test]
+    fn updates_top_n_when_existing_domain_surpasses_shown_nodes_without_topology_change() {
+        let mut graph = RelationshipGraph::default();
+        let a = OriginKey::new("https", "a.example.com", None);
+        let b = OriginKey::new("https", "b.example.com", None);
+        let c = OriginKey::new("https", "c.example.com", None);
+        for _ in 0..5 {
+            graph.record_request(&a, false);
+        }
+        for _ in 0..3 {
+            graph.record_request(&b, false);
+        }
+        graph.record_request(&c, false);
+
+        let mut layout = ForceLayout::new(2);
+        layout.sync(&graph);
+        let topo_before = graph.topology_version();
+        let hosts_before: Vec<&str> = layout.nodes().iter().map(|n| n.host.as_str()).collect();
+        assert_eq!(hosts_before, vec!["a.example.com", "b.example.com"]);
+
+        // Traffic surges on `c.example.com` without adding any new host or edge.
+        for _ in 0..10 {
+            graph.record_request(&c, false);
+        }
+        assert_eq!(graph.topology_version(), topo_before);
+
+        layout.sync(&graph);
+        let hosts_after: Vec<&str> = layout.nodes().iter().map(|n| n.host.as_str()).collect();
+        assert_eq!(hosts_after, vec!["a.example.com", "c.example.com"]);
     }
 }

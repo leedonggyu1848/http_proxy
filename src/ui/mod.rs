@@ -108,6 +108,7 @@ struct InspectorApp {
     url_map: UrlMap,
     map_panel: map_panel::MapPanel,
     map_path_filter: Option<ViewNodeKey>,
+    map_filter_cache: map_panel::RecordMatchCache,
     selected: Option<RecordId>,
     search: search::RequestSearch,
     record_filter: RecordFilter,
@@ -157,6 +158,7 @@ impl InspectorApp {
             url_map: UrlMap::new(),
             map_panel: map_panel::MapPanel::new(),
             map_path_filter: None,
+            map_filter_cache: map_panel::RecordMatchCache::default(),
             selected: None,
             search: search::RequestSearch::new(&context),
             record_filter: RecordFilter::All,
@@ -287,6 +289,7 @@ impl InspectorApp {
         self.url_map.clear();
         self.map_panel.clear();
         self.map_path_filter = None;
+        self.map_filter_cache.clear();
     }
 
     /// Reports whether any displayed value still changes over time.
@@ -394,6 +397,7 @@ impl InspectorApp {
     fn handle_map_action(&mut self, ctx: &egui::Context, action: MapAction) {
         match action {
             MapAction::ShowInRequests(key) => {
+                self.map_filter_cache.sync(&key, &self.records, false);
                 self.map_path_filter = Some(key);
                 self.main_view = MainView::Requests;
                 self.selected = None;
@@ -459,6 +463,7 @@ impl InspectorApp {
             self.record_filter,
             &self.search,
             self.map_path_filter.as_ref(),
+            Some(&self.map_filter_cache),
         )
     }
 
@@ -672,6 +677,7 @@ mod layout_tests {
             url_map: UrlMap::new(),
             map_panel: map_panel::MapPanel::new(),
             map_path_filter: None,
+            map_filter_cache: map_panel::RecordMatchCache::default(),
             selected: None,
             search: search::RequestSearch::new(&context),
             record_filter: RecordFilter::All,
@@ -1612,37 +1618,125 @@ mod layout_tests {
         samples
     }
 
-    #[test]
+    async fn capture_bulk_exchanges(
+        count: usize,
+    ) -> Result<(Vec<Exchange>, http_proxy::url_map::OriginKey), Box<dyn std::error::Error>> {
+        let upstream = TcpListener::bind("127.0.0.1:0").await?;
+        let address = upstream.local_addr()?;
+        let server_task = tokio::spawn(async move {
+            let Ok((mut socket, _)) = upstream.accept().await else {
+                return;
+            };
+            let body = b"{\"ok\":true}";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
+                body.len()
+            );
+            let mut head = Vec::with_capacity(512);
+            let mut byte = [0; 1];
+            for _ in 0..count {
+                head.clear();
+                while !head.ends_with(b"\r\n\r\n") {
+                    if socket.read_exact(&mut byte).await.is_err() {
+                        return;
+                    }
+                    head.extend_from_slice(&byte);
+                }
+                if socket.write_all(response.as_bytes()).await.is_err()
+                    || socket.write_all(body).await.is_err()
+                {
+                    return;
+                }
+            }
+        });
+
+        let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0))?;
+        let mut client = TcpStream::connect(proxy.local_addr()).await?;
+        let mut captured = Vec::with_capacity(count);
+        let mut resp_buf = Vec::with_capacity(256);
+        let mut byte = [0; 1];
+        for i in 0..count {
+            let req = format!(
+                "GET http://{address}/api/v1/users/{i}/orders?page={} HTTP/1.1\r\nHost: {address}\r\nConnection: keep-alive\r\n\r\n",
+                i % 10
+            );
+            client.write_all(req.as_bytes()).await?;
+            resp_buf.clear();
+            while !resp_buf.ends_with(b"\r\n\r\n") {
+                client.read_exact(&mut byte).await?;
+                resp_buf.extend_from_slice(&byte);
+            }
+            let mut body_sink = [0; 11];
+            client.read_exact(&mut body_sink).await?;
+            if let Some(record) = proxy.receive().await {
+                captured.push(record);
+            }
+        }
+        drop(client);
+        let _ = server_task.await;
+        proxy.stop()?;
+        let origin = http_proxy::url_map::OriginKey::new("http", "127.0.0.1", Some(address.port()));
+        Ok((captured, origin))
+    }
+
+    #[tokio::test]
     #[ignore = "manual performance measurement; run in release mode with --ignored --nocapture"]
     #[allow(clippy::print_stderr, reason = "manual performance measurement output")]
-    fn measure_map_ui_frame_time_at_scale() {
+    async fn measure_map_ui_frame_time_at_scale() -> Result<(), Box<dyn std::error::Error>> {
         let mut app = test_app(egui::Context::default());
-        let insert_elapsed = seed_scale_workload(&mut app.url_map, 5_000);
+        let (exchanges, local_origin) = capture_bulk_exchanges(MAX_RECORDS).await?;
+        for record in exchanges {
+            let _ = app.url_map.observe_exchange(&record);
+            let _evicted = app.records.push(record);
+        }
+        let _ = app.url_map.sync_live();
+        let insert_elapsed = seed_scale_workload(&mut app.url_map, 3_000);
         let node_count = app.url_map.node_count();
+        let retained_count = app.records.len();
 
+        let selected_key = http_proxy::url_map::ViewNodeKey {
+            origin: local_origin,
+            path: Vec::new(),
+        };
         app.main_view = MainView::Map;
         app.map_panel.sub_view = super::MapSubView::Tree;
+        app.map_panel.selected = Some(selected_key.clone());
+
         let mut time = 0.0;
-        let _ = measure_frames(&mut app, &mut time, 5);
+        let tree_cold = measure_frames(&mut app, &mut time, 1);
         let tree_frames = measure_frames(&mut app, &mut time, 60);
 
         app.map_panel.sub_view = super::MapSubView::Graph;
         let graph_frames = measure_frames(&mut app, &mut time, 60);
 
+        app.handle_map_action(
+            &app.context.clone(),
+            super::MapAction::ShowInRequests(selected_key),
+        );
+        let req_cold = measure_frames(&mut app, &mut time, 1);
+        let req_frames = measure_frames(&mut app, &mut time, 60);
+
         let ms = |d: Option<&Duration>| d.map_or(0.0, |dur| dur.as_secs_f64() * 1_000.0);
         eprintln!(
-            "URL map scale measurement (5,000 requests, {node_count} nodes):\n  \
-             insert_total={:.2}ms ({:.2}us/req)\n  \
-             tree_frame_p50={:.3}ms tree_frame_p95={:.3}ms tree_frame_max={:.3}ms\n  \
-             graph_frame_p50={:.3}ms graph_frame_p95={:.3}ms graph_frame_max={:.3}ms",
+            "URL map realistic scale measurement ({retained_count} retained records + 3,000 synthetic = 5,000 requests, {node_count} nodes):\n  \
+             insert_3000_synth={:.2}ms ({:.2}us/req)\n  \
+             tree_selected_cold={:.3}ms | steady p50={:.3}ms p95={:.3}ms max={:.3}ms\n  \
+             graph_steady p50={:.3}ms p95={:.3}ms max={:.3}ms\n  \
+             requests_map_filter_cold={:.3}ms | steady p50={:.3}ms p95={:.3}ms max={:.3}ms",
             insert_elapsed.as_secs_f64() * 1_000.0,
-            insert_elapsed.as_secs_f64() * 1_000_000.0 / 5_000.0,
+            insert_elapsed.as_secs_f64() * 1_000_000.0 / 3_000.0,
+            ms(tree_cold.first()),
             ms(tree_frames.get(30)),
             ms(tree_frames.get(57)),
             ms(tree_frames.last()),
             ms(graph_frames.get(30)),
             ms(graph_frames.get(57)),
             ms(graph_frames.last()),
+            ms(req_cold.first()),
+            ms(req_frames.get(30)),
+            ms(req_frames.get(57)),
+            ms(req_frames.last()),
         );
+        Ok(())
     }
 }

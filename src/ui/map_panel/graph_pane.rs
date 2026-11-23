@@ -30,7 +30,7 @@ pub(super) fn show(
     }
 
     let palette = Palette::of(ui);
-    render_legend(ui, layout, &palette);
+    render_legend(ui, layout, visibility, &palette);
 
     if layout.nodes().is_empty() {
         ui.centered_and_justified(|ui| {
@@ -116,28 +116,50 @@ pub(super) fn show(
     clicked_host
 }
 
-fn render_legend(ui: &mut egui::Ui, layout: &ForceLayout, palette: &Palette) {
+fn legend_summary_text(layout: &ForceLayout, visibility: EdgeVisibility) -> (String, bool) {
+    let shown = layout.nodes().len();
+    let total = layout.total_domains();
+    let total_edges = layout.edges().len();
+    let visible_edges = layout
+        .edges()
+        .iter()
+        .filter(|edge| visibility.allows(edge.kind))
+        .count();
+    let edge_text = if visible_edges == total_edges {
+        format!("{total_edges} edges")
+    } else {
+        format!("{visible_edges}/{total_edges} edges")
+    };
+    if total > shown {
+        (
+            format!("Showing top {shown} of {total} domains · {edge_text}"),
+            true,
+        )
+    } else {
+        (format!("{shown} domains · {edge_text}"), false)
+    }
+}
+
+fn render_legend(
+    ui: &mut egui::Ui,
+    layout: &ForceLayout,
+    visibility: EdgeVisibility,
+    palette: &Palette,
+) {
     let chip = |ui: &mut egui::Ui, text: egui::RichText| {
         ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend));
     };
+    let (summary, capped) = legend_summary_text(layout, visibility);
+    let summary_color = if capped {
+        palette.warning
+    } else {
+        palette.muted
+    };
     ui.horizontal_wrapped(|ui| {
-        let shown = layout.nodes().len();
-        let total = layout.total_domains();
-        if total > shown {
-            chip(
-                ui,
-                egui::RichText::new(format!("Showing top {shown} of {total} domains"))
-                    .color(palette.warning)
-                    .small(),
-            );
-        } else {
-            chip(
-                ui,
-                egui::RichText::new(format!("{shown} domains · {} edges", layout.edges().len()))
-                    .color(palette.muted)
-                    .small(),
-            );
-        }
+        chip(
+            ui,
+            egui::RichText::new(summary).color(summary_color).small(),
+        );
         ui.separator();
         chip(
             ui,
@@ -465,4 +487,48 @@ fn format_node_tooltip(graph: &RelationshipGraph, node: &GraphNode) -> String {
         node.error_count,
         format_bytes(bytes),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http_proxy::url_map::OriginKey;
+
+    #[test]
+    fn legend_reflects_filtered_edge_count() {
+        let mut graph = RelationshipGraph::default();
+        let a = OriginKey::new("https", "app.example.com", None);
+        let b = OriginKey::new("https", "cdn.other.net", None);
+        graph.record_request(&a, false);
+        graph.record_request(&b, true);
+        graph.record_edge(
+            "app.example.com",
+            "cdn.other.net",
+            "https://app.example.com/".to_owned(),
+            "https://cdn.other.net/a.js".to_owned(),
+            EdgeKind::Referer,
+        );
+        graph.record_edge(
+            "app.example.com",
+            "cdn.other.net",
+            "https://app.example.com/".to_owned(),
+            "https://cdn.other.net/a.js".to_owned(),
+            EdgeKind::Origin,
+        );
+
+        let mut layout = ForceLayout::new(40);
+        layout.sync(&graph);
+
+        let (all_text, capped) = legend_summary_text(&layout, EdgeVisibility::default());
+        assert!(!capped);
+        assert_eq!(all_text, "2 domains · 2 edges");
+
+        let only_referer = EdgeVisibility {
+            referer: true,
+            origin: false,
+            redirect: false,
+        };
+        let (filtered_text, _) = legend_summary_text(&layout, only_referer);
+        assert_eq!(filtered_text, "2 domains · 1/2 edges");
+    }
 }
