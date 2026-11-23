@@ -1,20 +1,16 @@
-//! Explicit, validated manual replay using the normal forwarding path.
-use super::capture_context::CaptureContext;
-use super::forward::forward_http;
-use super::inspect::forward_https;
-use super::upstream::{connect_deadline, resolve_within};
-use super::{EngineState, ProxyHandle, failed_response, infallible_to_hyper};
-use crate::exchange::{BodyPreview, CaptureSource, Exchange, FailureStage};
-use crate::http_semantics::{REDACTED_VALUE, is_sensitive_header, remove_hop_by_hop_headers};
-use crate::https::Destination;
-use bytes::Bytes;
-use http::HeaderMap;
-use http::{Method, Request, StatusCode, Uri, header::HOST};
-use http_body_util::{BodyExt, Full};
+//! Explicit, validated manual replay drafts.
+
 use std::io::Read as _;
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
-use std::sync::Arc;
+
+use bytes::Bytes;
+use http::header::HOST;
+use http::{HeaderMap, Method, Request, Uri};
+use http_body_util::Full;
+
+use crate::exchange::{BodyLifecycle, BodyPreview, CaptureSource, Exchange};
+use crate::http_semantics::{REDACTED_VALUE, is_sensitive_header, remove_hop_by_hop_headers};
 
 /// Largest replacement body file the editor loads into memory.
 pub const REPLAY_BODY_FILE_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
@@ -57,7 +53,7 @@ impl ReplayDraft {
         }
         let snapshot = original.request().body().and_then(BodyPreview::snapshot);
         let body_missing = snapshot.as_ref().is_none_or(|body| {
-            body.lifecycle() != crate::exchange::BodyLifecycle::Complete
+            body.lifecycle() != BodyLifecycle::Complete
                 || body.observed_bytes() != body.bytes().len() as u64
         }) || original.request().headers().omitted();
         let entries = original.request().headers().entries();
@@ -235,91 +231,4 @@ fn framing_header_names<'a>(fields: impl Iterator<Item = (&'a str, &'a str)>) ->
         .collect();
     removed.push(http::header::CONTENT_LENGTH.as_str().to_owned());
     removed
-}
-
-/// Running replay; cancelling aborts the engine task.
-pub struct ReplayTask(tokio::task::JoinHandle<()>);
-
-impl ReplayTask {
-    /// Cancels pending forwarding and response consumption.
-    pub fn cancel(&self) {
-        self.0.abort();
-    }
-    /// Whether forwarding and response consumption ended.
-    #[must_use]
-    pub fn is_finished(&self) -> bool {
-        self.0.is_finished()
-    }
-}
-
-impl ProxyHandle {
-    /// Sends a user-approved draft on the running engine, recording a new exchange.
-    pub fn replay(&self, draft: &ReplayDraft) -> Result<ReplayTask, String> {
-        let request = draft.request(self.local_addr)?;
-        if !matches!(self.state(), EngineState::Running) {
-            return Err("Start the proxy before sending".to_owned());
-        }
-        if request.uri().scheme_str() == Some("https") && self.engine.inspector.is_none() {
-            return Err("Enable HTTPS inspection before replaying HTTPS".to_owned());
-        }
-        let engine = Arc::clone(&self.engine);
-        Ok(ReplayTask(self.runtime.spawn(async move {
-            let Ok(_permit) = Arc::clone(&engine.connections).acquire_owned().await else {
-                return;
-            };
-            let target = request.uri().to_string();
-            let source = if request.uri().scheme_str() == Some("https") {
-                CaptureSource::InspectedHttps
-            } else {
-                CaptureSource::HttpProxy
-            };
-            let capture = CaptureContext::start(
-                request.method(),
-                request.headers(),
-                request
-                    .extensions()
-                    .get::<crate::exchange::RecordId>()
-                    .copied(),
-                source,
-                &target,
-                &engine,
-            );
-            let request = request.map(|body| body.map_err(infallible_to_hyper).boxed());
-            // Resolve before HTTPS as well, preserving the loop guard.
-            let response = if source == CaptureSource::InspectedHttps {
-                let reject = |message: &str| {
-                    failed_response(
-                        &capture,
-                        FailureStage::Request,
-                        StatusCode::BAD_REQUEST,
-                        message,
-                    );
-                };
-                let Some(authority) = request.uri().authority() else {
-                    return reject("the replay URL has no authority");
-                };
-                if let Err(failure) =
-                    resolve_within(connect_deadline(&engine), authority, 443, &engine).await
-                {
-                    failure.respond(&capture);
-                    return;
-                }
-                let Ok(destination) = Destination::from_authority(authority) else {
-                    return reject("the replay URL authority is not a valid destination");
-                };
-                let Some(inspector) = engine.inspector.as_ref() else {
-                    return reject("HTTPS inspection was disabled before the replay started");
-                };
-                forward_https(request, &engine, &capture, inspector, &destination).await
-            } else {
-                forward_http(request, &engine, &capture).await
-            };
-            let mut body = response.into_body();
-            while let Some(frame) = body.frame().await {
-                if frame.is_err() {
-                    break;
-                }
-            }
-        })))
-    }
 }

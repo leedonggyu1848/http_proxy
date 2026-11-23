@@ -18,9 +18,14 @@ mod http_semantics;
     reason = "crate-wide items of a private module; `pub` would trip `unreachable_pub`"
 )]
 mod https;
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-wide items of a private module; `pub` would trip `unreachable_pub`"
+)]
 mod interception;
 mod launcher;
 pub mod recording;
+mod replay;
 pub mod settings;
 pub mod text_search;
 pub mod url_map;
@@ -44,10 +49,7 @@ pub use interception::{
 };
 #[cfg(feature = "test-support")]
 pub use interception::{ConnectExchangeBuilder, ExchangeBuilder, FixtureError, ResponseFixture};
-pub use interception::{
-    EngineState, ProxyConfig, ProxyHandle, REPLAY_BODY_FILE_LIMIT_BYTES, ReplayDraft, ReplayField,
-    ReplayTask, StartError, StopError,
-};
+pub use interception::{EngineState, ProxyConfig, ProxyHandle, StartError, StopError};
 pub use launcher::{Browser, BrowserEvent, BrowserSession};
 pub use recording::body_store::{
     BODY_STORE_LIMIT_BYTES, BODY_STORE_MIN_FREE_BYTES, BodyLayout, BodyStore, BulkProgress,
@@ -55,6 +57,7 @@ pub use recording::body_store::{
     SavedBody, StoreGap, StoredBody, read_captured_body,
 };
 pub use recording::journal::{FullLog, SESSION_BODY_LIMIT_BYTES};
+pub use replay::{REPLAY_BODY_FILE_LIMIT_BYTES, ReplayDraft, ReplayField, ReplayTask};
 
 /// Application display name.
 pub const APP_NAME: &str = "HTTP Inspector";

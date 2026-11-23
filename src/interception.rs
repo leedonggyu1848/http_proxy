@@ -1,3 +1,5 @@
+//! Local HTTP/HTTPS proxy listener, forwarding, CONNECT tunneling, and capture.
+
 use crate::exchange::FailureStage;
 use bytes::Bytes;
 use capture_context::CaptureContext;
@@ -11,10 +13,10 @@ mod capture_context;
 mod config;
 #[cfg(feature = "test-support")]
 mod exchange_builder;
+mod execute;
 mod forward;
 mod handle;
 mod inspect;
-mod replay;
 mod status;
 mod target;
 mod tunnel;
@@ -29,8 +31,9 @@ pub use config::ProxyConfig;
 pub use exchange_builder::{
     ConnectExchangeBuilder, ExchangeBuilder, FixtureError, ResponseFixture,
 };
+pub use execute::ReplayTask;
+pub(crate) use execute::execute_replay;
 pub use handle::{ProxyHandle, StartError, StopError};
-pub use replay::{REPLAY_BODY_FILE_LIMIT_BYTES, ReplayDraft, ReplayField, ReplayTask};
 pub use status::EngineState;
 
 type ProxyBody = BoxBody<Bytes, hyper::Error>;
