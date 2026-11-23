@@ -10,10 +10,8 @@ use std::fmt::Write as _;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, Uri};
 
 use crate::exchange::{BodyLifecycle, BodyRetention, CaptureSource, CapturedRequest, Exchange};
-use crate::http_semantics::remove_hop_by_hop_headers;
+use crate::http_semantics::{is_sensitive_request_header, remove_hop_by_hop_headers};
 
-/// Headers whose original values are never retained by the capture.
-const REDACTED_HEADERS: [&str; 2] = ["authorization", "cookie"];
 /// Value written for a redacted header when placeholders are requested.
 pub const CURL_REDACTED_PLACEHOLDER: &str = "<REDACTED>";
 /// Separator between command arguments, continuing the command on a new line.
@@ -206,10 +204,9 @@ fn end_to_end_headers<'a>(
         {
             continue;
         }
-        if REDACTED_HEADERS
-            .iter()
-            .any(|redacted| name.eq_ignore_ascii_case(redacted))
-        {
+        // The capture never retains these values. `Proxy-Authorization` is
+        // hop-by-hop and was already dropped above.
+        if is_sensitive_request_header(name) {
             fields.push(Field { name, value: None });
             continue;
         }

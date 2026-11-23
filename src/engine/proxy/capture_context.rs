@@ -4,8 +4,8 @@ use crate::engine::capture::{BodyLog, BodySinks};
 use crate::engine::capture::{
     ERROR_BYTES, TARGET_BYTES, bounded_text, capture_auth_schemes, capture_headers,
 };
-use crate::engine::journal::BodySide;
 use crate::engine::journal::FullLog;
+use crate::exchange::BodySide;
 use crate::exchange::{
     CaptureSource, CapturedRequest, Exchange, FailureStage, Outcome, RecordId, TunnelSnapshot,
 };

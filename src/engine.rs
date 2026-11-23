@@ -7,6 +7,7 @@ mod proxy;
 mod tls;
 mod trust;
 
+pub use crate::exchange::BodySide;
 pub use crate::exchange::{
     AuthScheme, BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, CaptureSource,
     CapturedHeader, CapturedRequest, CapturedResponse, Exchange, FailureStage, HeaderPreview,
@@ -27,7 +28,7 @@ pub use curl::{
     CURL_REDACTED_PLACEHOLDER, CurlCommand, CurlUnavailable, RedactedHeaders, curl_command,
     curl_unavailable_reason,
 };
-pub use journal::{BodySide, FullLog, SESSION_BODY_LIMIT_BYTES};
+pub use journal::{FullLog, SESSION_BODY_LIMIT_BYTES};
 pub use proxy::{
     EngineState, ProxyConfig, ProxyHandle, REPLAY_BODY_FILE_LIMIT_BYTES, ReplayDraft, ReplayField,
     ReplayTask, StartError, StopError,

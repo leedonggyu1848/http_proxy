@@ -15,7 +15,7 @@ use tempfile::NamedTempFile;
 
 use super::file_name::{numbered, url_directories};
 use super::{BodyStore, SaveBody, SaveFormat, SavedBody};
-use crate::engine::journal::BodySide;
+use crate::exchange::BodySide;
 
 const MANIFEST: &str = "manifest.json";
 /// Numbered names tried for one folder before giving up.

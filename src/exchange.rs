@@ -2,11 +2,13 @@ use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, TryLockError};
 use std::time::Instant;
 
+mod body_side;
 mod image_format;
 mod media_type;
 mod record;
 mod tunnel;
 
+pub use body_side::BodySide;
 pub use image_format::ImageFormat;
 pub use media_type::MediaType;
 pub use record::{

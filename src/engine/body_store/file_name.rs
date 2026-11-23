@@ -3,7 +3,7 @@
 //! Names come from untrusted headers and URLs, so every candidate is reduced
 //! to one plain path component before it is used.
 
-use crate::engine::journal::BodySide;
+use crate::exchange::BodySide;
 use crate::exchange::MediaType;
 
 /// Longest file name, in bytes, before format suffixes are added. Common

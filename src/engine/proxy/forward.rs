@@ -7,7 +7,7 @@ use crate::engine::capture::{
     BODY_PREVIEW_BYTES, ERROR_BYTES, ObservedBody, bounded_text, capture_headers,
     response_body_preview,
 };
-use crate::engine::journal::BodySide;
+use crate::exchange::BodySide;
 use crate::exchange::{BodyPreview, CapturedResponse, FailureStage, Outcome};
 use crate::http_semantics::remove_hop_by_hop_headers;
 use http::{Request, Response, StatusCode, Uri};

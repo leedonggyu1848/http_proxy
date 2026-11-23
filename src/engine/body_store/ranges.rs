@@ -11,8 +11,8 @@ use super::export::{self, Part};
 use super::file_name::{self, NameSource};
 use super::index::{BodyKey, Segment};
 use super::{BodyStore, SaveBody, SavedBody, encoding_layers};
-use crate::engine::journal::BodySide;
 use crate::exchange::BodyLifecycle;
+use crate::exchange::BodySide;
 
 /// Gaps listed in an incomplete reason before the rest are counted.
 const LISTED_GAPS: usize = 5;
