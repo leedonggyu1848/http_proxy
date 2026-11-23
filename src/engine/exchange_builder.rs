@@ -56,14 +56,12 @@ impl RequestHead {
         if let Some(original) = replay_of {
             writer.set_replay_of(original);
         }
-        if let Some(connect) = self.connect {
-            writer.record_connect(connect);
-        }
         writer
     }
 
-    /// Records the upstream connection, which the proxy always does before
-    /// it forwards a request or opens a tunnel.
+    /// Records the upstream connection. The proxy does this only after the
+    /// connection succeeded, right before it forwards a request or opens a
+    /// tunnel, so no other state carries a connect time.
     fn connected(&self, writer: &ExchangeWriter) {
         writer.record_connect(self.connect.unwrap_or_default());
     }
@@ -86,17 +84,32 @@ fn end_body(body: &BodyPreviewWriter, end: BodyLifecycle) {
     }
 }
 
+/// A `CONNECT` request given to an HTTP fixture constructor.
+///
+/// The proxy never captures `CONNECT` as a plain or decrypted HTTP request:
+/// it routes `CONNECT` to the tunnel path and rejects one inside an
+/// inspected session. Build it with [`ExchangeBuilder::connect`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("CONNECT requests are built with ExchangeBuilder::connect")]
+pub struct ConnectMethodError;
+
 /// Builds an HTTP exchange, from a plain proxy request or one decrypted
 /// inside an inspected `CONNECT` session, in any state the proxy records.
 ///
-/// Use [`ExchangeBuilder::connect`] for a `CONNECT` request itself.
+/// Use [`ExchangeBuilder::connect`] for a `CONNECT` request itself; the
+/// HTTP constructors refuse that method, as the proxy always routes it to
+/// its own path.
 ///
 /// ```
 /// use http_proxy::{BodyLifecycle, ExchangeBuilder, ResponseFixture};
 ///
-/// let exchange = ExchangeBuilder::http(http::Method::GET, "http://example.test/")
+/// # fn main() -> Result<(), http_proxy::ConnectMethodError> {
+/// let exchange = ExchangeBuilder::http(http::Method::GET, "http://example.test/")?
 ///     .respond(ResponseFixture::new(http::StatusCode::OK).body("hello", BodyLifecycle::Complete));
 /// assert!(!exchange.is_live());
+/// assert!(ExchangeBuilder::http(http::Method::CONNECT, "example.test:443").is_err());
+/// # Ok(())
+/// # }
 /// ```
 #[derive(Clone, Debug)]
 #[must_use]
@@ -109,13 +122,26 @@ pub struct ExchangeBuilder {
 impl ExchangeBuilder {
     /// Starts a plain `http://` request forwarded by the proxy. `target` is
     /// the absolute request target the client sent.
-    pub fn http(method: Method, target: impl Into<String>) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConnectMethodError`] for `CONNECT`, which the proxy never
+    /// forwards as a plain request; use [`ExchangeBuilder::connect`].
+    pub fn http(method: Method, target: impl Into<String>) -> Result<Self, ConnectMethodError> {
         Self::with_source(CaptureSource::HttpProxy, method, target.into())
     }
 
     /// Starts a request decrypted inside an inspected `CONNECT` session.
     /// `target` is the absolute `https://` URL the proxy reconstructed.
-    pub fn inspected_https(method: Method, target: impl Into<String>) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConnectMethodError`] for `CONNECT`, which the proxy rejects
+    /// inside an inspected session before capturing it.
+    pub fn inspected_https(
+        method: Method,
+        target: impl Into<String>,
+    ) -> Result<Self, ConnectMethodError> {
         Self::with_source(CaptureSource::InspectedHttps, method, target.into())
     }
 
@@ -126,12 +152,19 @@ impl ExchangeBuilder {
         }
     }
 
-    fn with_source(source: CaptureSource, method: Method, target: String) -> Self {
-        Self {
+    fn with_source(
+        source: CaptureSource,
+        method: Method,
+        target: String,
+    ) -> Result<Self, ConnectMethodError> {
+        if method == Method::CONNECT {
+            return Err(ConnectMethodError);
+        }
+        Ok(Self {
             head: RequestHead::new(source, method, target),
             replay_of: None,
             request_body: None,
-        }
+        })
     }
 
     /// Assigns the exchange to `session` instead of the shared fixture session.
@@ -146,9 +179,11 @@ impl ExchangeBuilder {
         self
     }
 
-    /// Sets how long connecting to the upstream server took. The proxy
-    /// always records it once it forwards a request; when it is not set,
-    /// forwarded fixtures record zero.
+    /// Sets how long connecting to the upstream server took. As in the
+    /// proxy, it is recorded only once the request is forwarded (a response,
+    /// a `Response` or `ResponseTimeout` failure, or any state with a request
+    /// body); forwarded fixtures without one record zero, and every other
+    /// state, such as a `Connect` failure, has no connect time.
     pub const fn connect_time(mut self, duration: Duration) -> Self {
         self.head.connect = Some(duration);
         self
@@ -240,9 +275,7 @@ impl ExchangeBuilder {
     /// no body set is forwarded with an empty one.
     fn forward(self) -> ExchangeWriter {
         let writer = self.head.start(self.replay_of);
-        if self.head.connect.is_none() {
-            self.head.connected(&writer);
-        }
+        self.head.connected(&writer);
         let (bytes, end) = self
             .request_body
             .unwrap_or((Vec::new(), BodyLifecycle::Complete));
@@ -274,8 +307,8 @@ impl ConnectExchangeBuilder {
         self
     }
 
-    /// Sets how long connecting to the upstream server took. A relayed
-    /// tunnel without one records zero.
+    /// Sets how long connecting to the upstream server took. Only a relayed
+    /// tunnel records it, as the proxy does; without one it records zero.
     pub const fn connect_time(mut self, duration: Duration) -> Self {
         self.head.connect = Some(duration);
         self
@@ -297,9 +330,7 @@ impl ConnectExchangeBuilder {
         state: TunnelState,
     ) -> Exchange {
         let writer = self.head.start(None);
-        if self.head.connect.is_none() {
-            self.head.connected(&writer);
-        }
+        self.head.connected(&writer);
         let tunnel = TunnelWriter::new();
         writer.settle(Outcome::Tunnel(tunnel.preview()));
         tunnel.add_client_to_upstream(client_to_upstream);
@@ -422,6 +453,8 @@ mod tests {
     use super::*;
     use crate::exchange::{BodyPreview, BodyRetention, CapturedResponse, Timing};
 
+    type TestResult = Result<(), ConnectMethodError>;
+
     fn response_of(exchange: &Exchange) -> Option<&CapturedResponse> {
         match exchange.outcome() {
             Outcome::Response(response) => Some(response),
@@ -430,9 +463,9 @@ mod tests {
     }
 
     #[test]
-    fn redacts_and_bounds_request_heads_like_the_capture_path() {
+    fn redacts_and_bounds_request_heads_like_the_capture_path() -> TestResult {
         let long_target = format!("http://example.test/{}", "a".repeat(8 * 1024));
-        let exchange = ExchangeBuilder::http(Method::GET, long_target)
+        let exchange = ExchangeBuilder::http(Method::GET, long_target)?
             .header(
                 AUTHORIZATION,
                 HeaderValue::from_static("Bearer secret-token"),
@@ -451,11 +484,12 @@ mod tests {
         assert!(exchange.outcome().is_in_flight());
         assert!(request.body().is_none());
         assert_eq!(exchange.timing(), Timing::default());
+        Ok(())
     }
 
     #[test]
-    fn forwards_an_empty_request_body_before_a_response() {
-        let exchange = ExchangeBuilder::http(Method::GET, "http://example.test/")
+    fn forwards_an_empty_request_body_before_a_response() -> TestResult {
+        let exchange = ExchangeBuilder::http(Method::GET, "http://example.test/")?
             .respond(ResponseFixture::new(StatusCode::NO_CONTENT));
         let body = exchange.request().body().and_then(BodyPreview::snapshot);
         assert_eq!(
@@ -468,18 +502,19 @@ mod tests {
             Some("No Content")
         );
         assert!(!exchange.is_live());
+        Ok(())
     }
 
     #[test]
-    fn keeps_response_bodies_streaming_or_truncated() {
-        let streaming = ExchangeBuilder::http(Method::GET, "http://example.test/").respond(
+    fn keeps_response_bodies_streaming_or_truncated() -> TestResult {
+        let streaming = ExchangeBuilder::http(Method::GET, "http://example.test/")?.respond(
             ResponseFixture::new(StatusCode::OK).body("partial", BodyLifecycle::Streaming),
         );
         assert!(streaming.is_live());
         assert_eq!(streaming.received_bytes(), Some(7));
 
         let large = vec![b'x'; BODY_PREVIEW_BYTES + 1];
-        let truncated = ExchangeBuilder::http(Method::GET, "http://example.test/").respond(
+        let truncated = ExchangeBuilder::http(Method::GET, "http://example.test/")?.respond(
             ResponseFixture::new(StatusCode::OK)
                 .header(CONTENT_TYPE, HeaderValue::from_static("text/plain"))
                 .body(large, BodyLifecycle::Complete),
@@ -489,34 +524,88 @@ mod tests {
             snapshot.map(|body| body.retention()),
             Some(BodyRetention::Truncated)
         );
+        Ok(())
     }
 
     #[test]
-    fn attaches_the_request_body_only_once_forwarding_began() {
-        let before = ExchangeBuilder::http(Method::POST, "http://example.test/")
+    fn attaches_the_request_body_only_once_forwarding_began() -> TestResult {
+        let before = ExchangeBuilder::http(Method::POST, "http://example.test/")?
             .request_body("a=1", BodyLifecycle::Complete)
             .fail(FailureStage::Connect, "refused");
         assert!(before.request().body().is_none());
         assert_eq!(before.timing().connect(), None);
 
-        let after = ExchangeBuilder::http(Method::POST, "http://example.test/")
+        let after = ExchangeBuilder::http(Method::POST, "http://example.test/")?
             .request_body("a=1", BodyLifecycle::Complete)
             .fail(FailureStage::ResponseTimeout, "no response");
         assert!(after.request().body().is_some());
         assert!(after.outcome().is_failure());
+        assert_eq!(after.timing().connect(), Some(Duration::ZERO));
+        Ok(())
     }
 
     #[test]
-    fn records_replays_cancellations_and_stops() {
-        let original = ExchangeBuilder::http(Method::GET, "http://example.test/").cancel();
+    fn records_a_connect_time_only_after_connecting() -> TestResult {
+        let connect = Duration::from_millis(7);
+        for stage in [
+            FailureStage::Request,
+            FailureStage::Connect,
+            FailureStage::ConnectTimeout,
+            FailureStage::UpstreamTls,
+        ] {
+            let failed = ExchangeBuilder::http(Method::GET, "http://example.test/")?
+                .connect_time(connect)
+                .fail(stage, "failed");
+            assert_eq!(failed.timing().connect(), None, "{stage}");
+        }
+        for unforwarded in [
+            ExchangeBuilder::http(Method::GET, "http://example.test/")?
+                .connect_time(connect)
+                .in_flight(),
+            ExchangeBuilder::connect("example.test:443")
+                .connect_time(connect)
+                .fail(FailureStage::Connect, "refused"),
+            ExchangeBuilder::connect("example.test:443")
+                .connect_time(connect)
+                .inspection_established(),
+        ] {
+            assert_eq!(unforwarded.timing().connect(), None);
+        }
+        let responded = ExchangeBuilder::http(Method::GET, "http://example.test/")?
+            .connect_time(connect)
+            .respond(ResponseFixture::new(StatusCode::OK));
+        assert_eq!(responded.timing().connect(), Some(connect));
+        let tunnel = ExchangeBuilder::connect("example.test:443")
+            .connect_time(connect)
+            .tunnel(0, 0, TunnelState::Closed);
+        assert_eq!(tunnel.timing().connect(), Some(connect));
+        Ok(())
+    }
+
+    #[test]
+    fn refuses_connect_on_the_http_paths() {
+        assert_eq!(
+            ExchangeBuilder::http(Method::CONNECT, "example.test:443").err(),
+            Some(ConnectMethodError)
+        );
+        assert_eq!(
+            ExchangeBuilder::inspected_https(Method::CONNECT, "example.test:443").err(),
+            Some(ConnectMethodError)
+        );
+    }
+
+    #[test]
+    fn records_replays_cancellations_and_stops() -> TestResult {
+        let original = ExchangeBuilder::http(Method::GET, "http://example.test/")?.cancel();
         assert!(matches!(original.outcome(), Outcome::Cancelled));
-        let replay = ExchangeBuilder::http(Method::GET, "http://example.test/")
+        let replay = ExchangeBuilder::http(Method::GET, "http://example.test/")?
             .replay_of(original.id())
             .stop();
         assert_eq!(replay.replay_of(), Some(original.id()));
         assert!(matches!(replay.outcome(), Outcome::Incomplete));
         assert_ne!(replay.id(), original.id());
         assert_eq!(replay.session(), original.session());
+        Ok(())
     }
 
     #[test]

@@ -40,7 +40,7 @@ pub use engine::{
     curl_unavailable_reason,
 };
 #[cfg(feature = "test-support")]
-pub use engine::{ConnectExchangeBuilder, ExchangeBuilder, ResponseFixture};
+pub use engine::{ConnectExchangeBuilder, ConnectMethodError, ExchangeBuilder, ResponseFixture};
 pub use engine::{
     EngineState, ProxyConfig, ProxyHandle, REPLAY_BODY_FILE_LIMIT_BYTES, ReplayDraft, ReplayField,
     ReplayTask, StartError, StopError,

@@ -326,7 +326,7 @@ fn failures_tunnels_and_pending_requests_follow_the_documented_mapping() -> Test
                 format!("GET http://{address}/slow HTTP/1.1\r\nHost: {address}\r\n\r\n").as_bytes(),
             )
             .await?;
-        let (pending_server, _) = upstream.accept().await?;
+        let (_pending_server, _) = upstream.accept().await?;
         let pending = proxy.receive().await.ok_or("missing pending request")?;
 
         drop(upstream);
@@ -503,7 +503,7 @@ fn fixtures(
         ExchangeBuilder::http(
             Method::POST,
             format!("http://{response_address}/login?user=alice&empty"),
-        ),
+        )?,
         sensitive_request_headers(response_address),
         ExchangeBuilder::header,
     )?
@@ -520,11 +520,11 @@ fn fixtures(
     let tunnel = ExchangeBuilder::connect(address.to_string())
         .header(HOST, host.clone())
         .tunnel(4, 5, TunnelState::Closed);
-    let pending = ExchangeBuilder::http(Method::GET, format!("http://{address}/slow"))
+    let pending = ExchangeBuilder::http(Method::GET, format!("http://{address}/slow"))?
         .header(HOST, host.clone())
         .request_body(Vec::new(), BodyLifecycle::Complete)
         .in_flight();
-    let failed = ExchangeBuilder::http(Method::GET, format!("http://{address}/"))
+    let failed = ExchangeBuilder::http(Method::GET, format!("http://{address}/"))?
         .header(HOST, host)
         .header(CONNECTION, HeaderValue::from_static("close"))
         .fail(*stage, message);
@@ -616,7 +616,7 @@ fn search_results(records: &[Exchange]) -> Result<Vec<SearchResult>, Box<dyn Err
 fn builder_records_export_search_and_map_like_proxy_captures() -> TestResult {
     run(|| async {
         let Captures {
-            mut proxy,
+            proxy,
             address,
             records: captured,
             _waiting,

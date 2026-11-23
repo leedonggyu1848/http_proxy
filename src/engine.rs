@@ -22,7 +22,9 @@ pub use curl::{
     curl_unavailable_reason,
 };
 #[cfg(feature = "test-support")]
-pub use exchange_builder::{ConnectExchangeBuilder, ExchangeBuilder, ResponseFixture};
+pub use exchange_builder::{
+    ConnectExchangeBuilder, ConnectMethodError, ExchangeBuilder, ResponseFixture,
+};
 pub use proxy::{
     EngineState, ProxyConfig, ProxyHandle, REPLAY_BODY_FILE_LIMIT_BYTES, ReplayDraft, ReplayField,
     ReplayTask, StartError, StopError,
