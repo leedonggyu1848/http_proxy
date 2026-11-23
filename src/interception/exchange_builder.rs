@@ -16,7 +16,7 @@ use http::uri::Authority;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, Response, StatusCode, Uri, Version};
 use hyper::ext::ReasonPhrase;
 
-use crate::engine::capture::{
+use super::capture::{
     BODY_PREVIEW_BYTES, ERROR_BYTES, bounded_text, captured_request, captured_response,
     response_body_preview,
 };

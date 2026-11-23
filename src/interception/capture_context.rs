@@ -1,6 +1,6 @@
+use super::capture::{BodyLog, BodySinks};
+use super::capture::{ERROR_BYTES, bounded_text, captured_request};
 use super::handle::Engine;
-use crate::engine::capture::{BodyLog, BodySinks};
-use crate::engine::capture::{ERROR_BYTES, bounded_text, captured_request};
 use crate::exchange::BodySide;
 use crate::exchange::{
     CaptureSource, Exchange, ExchangeWriter, FailureStage, Outcome, RecordId, TunnelSnapshot,

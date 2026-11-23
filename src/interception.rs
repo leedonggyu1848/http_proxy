@@ -6,8 +6,11 @@ use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Empty, Full};
 use std::convert::Infallible;
 
+mod capture;
 mod capture_context;
 mod config;
+#[cfg(feature = "test-support")]
+mod exchange_builder;
 mod forward;
 mod handle;
 mod inspect;
@@ -17,7 +20,15 @@ mod target;
 mod tunnel;
 mod upstream;
 
+pub use capture::{
+    BODY_PREVIEW_BYTES, IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES,
+    is_previewable_image_media_type,
+};
 pub use config::ProxyConfig;
+#[cfg(feature = "test-support")]
+pub use exchange_builder::{
+    ConnectExchangeBuilder, ExchangeBuilder, FixtureError, ResponseFixture,
+};
 pub use handle::{ProxyHandle, StartError, StopError};
 pub use replay::{REPLAY_BODY_FILE_LIMIT_BYTES, ReplayDraft, ReplayField, ReplayTask};
 pub use status::EngineState;
