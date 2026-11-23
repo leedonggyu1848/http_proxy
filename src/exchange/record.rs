@@ -1,12 +1,14 @@
 //! One HTTP exchange, published when the request starts and settled once.
 
+use std::future::poll_fn;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
+use std::task::Poll;
 use std::time::{Duration, Instant, SystemTime};
 
 use http::{Method, StatusCode, Version};
-use tokio::sync::Notify;
 
+use super::wakers::WakerSet;
 use super::{
     AuthScheme, BodyLifecycle, BodyPreview, FailureStage, HeaderPreview, MediaType, RecordId,
     TunnelPreview, TunnelState,
@@ -330,7 +332,7 @@ struct ExchangeInner {
     connect: OnceLock<Duration>,
     send_started: OnceLock<Instant>,
     settlement: OnceLock<Settlement>,
-    settled_signal: Notify,
+    settled_wakers: WakerSet,
 }
 
 /// One HTTP exchange observed by the proxy.
@@ -361,7 +363,7 @@ impl Exchange {
                 connect: OnceLock::new(),
                 send_started: OnceLock::new(),
                 settlement: OnceLock::new(),
-                settled_signal: Notify::new(),
+                settled_wakers: WakerSet::default(),
             }),
         }
     }
@@ -488,14 +490,22 @@ impl Exchange {
 
     /// Waits until the exchange leaves [`Outcome::InFlight`] and returns the result.
     pub async fn settled(&self) -> &Outcome {
-        loop {
-            // Created before the check so a settlement in between still wakes it.
-            let notified = self.inner.settled_signal.notified();
-            if let Some(settlement) = self.inner.settlement.get() {
-                return &settlement.outcome;
+        poll_fn(|cx| {
+            let outcome = || {
+                self.inner
+                    .settlement
+                    .get()
+                    .map(|settlement| &settlement.outcome)
+            };
+            if let Some(outcome) = outcome() {
+                return Poll::Ready(outcome);
             }
-            notified.await;
-        }
+            self.inner.settled_wakers.register(cx.waker());
+            // Checked again so a settlement between the check and the
+            // registration still completes this wait.
+            outcome().map_or(Poll::Pending, Poll::Ready)
+        })
+        .await
     }
 
     /// Attaches the request-body preview as the request is handed to the
@@ -518,7 +528,7 @@ impl Exchange {
         };
         let settled = self.inner.settlement.set(settlement).is_ok();
         if settled {
-            self.inner.settled_signal.notify_waiters();
+            self.inner.settled_wakers.wake_all();
         }
         settled
     }
@@ -531,6 +541,10 @@ fn between(start: Option<Duration>, end: Option<Duration>) -> Option<Duration> {
 
 #[cfg(test)]
 mod tests {
+    use std::pin::pin;
+    use std::sync::atomic::AtomicBool;
+    use std::task::{Context, Wake, Waker};
+
     use super::*;
 
     fn exchange() -> Exchange {
@@ -740,16 +754,39 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn wakes_a_waiter_when_settled() -> Result<(), tokio::time::error::Elapsed> {
+    struct WokenFlag(AtomicBool);
+
+    impl Wake for WokenFlag {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn wakes_a_waiter_when_settled() {
         let exchange = exchange();
-        let waiter = exchange.clone();
-        let waiting =
-            tokio::spawn(async move { matches!(waiter.settled().await, Outcome::Incomplete) });
-        tokio::task::yield_now().await;
+        let woken = Arc::new(WokenFlag(AtomicBool::new(false)));
+        let waker = Waker::from(Arc::clone(&woken));
+        let mut cx = Context::from_waker(&waker);
+        let mut waiting = pin!(exchange.settled());
+        assert!(waiting.as_mut().poll(&mut cx).is_pending());
+        assert!(!woken.0.load(Ordering::SeqCst));
         assert!(exchange.settle(Outcome::Incomplete));
-        let woke = tokio::time::timeout(Duration::from_secs(1), waiting).await?;
-        assert!(matches!(woke, Ok(true)));
-        Ok(())
+        assert!(woken.0.load(Ordering::SeqCst));
+        assert!(matches!(
+            waiting.as_mut().poll(&mut cx),
+            Poll::Ready(Outcome::Incomplete)
+        ));
+    }
+
+    #[test]
+    fn returns_at_once_when_already_settled() {
+        let exchange = exchange();
+        assert!(exchange.settle(Outcome::Cancelled));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            pin!(exchange.settled()).poll(&mut cx),
+            Poll::Ready(Outcome::Cancelled)
+        ));
     }
 }

@@ -7,6 +7,7 @@ mod image_format;
 mod media_type;
 mod record;
 mod tunnel;
+mod wakers;
 
 pub use body_side::BodySide;
 pub use image_format::ImageFormat;
