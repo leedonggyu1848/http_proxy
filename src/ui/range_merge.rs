@@ -6,6 +6,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
 use eframe::egui;
+use http_proxy::recording::body_store::response_range;
 use http_proxy::{BodySide, Exchange, RangePlan, SaveBody, SaveFormat};
 
 use crate::ui::InspectorApp;
@@ -37,7 +38,7 @@ impl MergeControls {
             return false;
         };
         ui.separator();
-        ui.weak(range_text(range.0, range.1, range.2));
+        ui.weak(range_text(range.start(), range.end(), range.total()));
         let clicked = ui
             .button("Merge ranges…")
             .on_hover_text(
@@ -49,18 +50,6 @@ impl MergeControls {
         }
         clicked
     }
-}
-
-/// Returns `(start, end, total)` of a `206` response body.
-fn response_range(record: &Exchange) -> Option<(u64, u64, Option<u64>)> {
-    let body = SaveBody::new(
-        record,
-        BodySide::Response,
-        SaveFormat::AsReceived,
-        PathBuf::new(),
-    )?;
-    let range = body.content_range()?;
-    Some((range.start(), range.end(), range.total()))
 }
 
 fn range_text(start: u64, end: u64, total: Option<u64>) -> String {
@@ -86,14 +75,10 @@ fn plan_text(plan: &RangePlan) -> String {
 
 fn gap_lines(plan: &RangePlan) -> Vec<String> {
     let mut lines: Vec<String> = plan
-        .gaps()
-        .iter()
+        .gaps_with_lengths()
         .take(SHOWN_GAPS)
-        .map(|(first, last)| {
-            format!(
-                "Missing bytes {first}-{last} ({})",
-                format_size(last - first + 1)
-            )
+        .map(|(first, last, length)| {
+            format!("Missing bytes {first}-{last} ({})", format_size(length))
         })
         .collect();
     if plan.gaps().len() > SHOWN_GAPS {

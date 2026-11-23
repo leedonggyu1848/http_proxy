@@ -30,6 +30,18 @@ pub use export::{ReadBodyOutcome, SaveFormat};
 pub use index::{StoreGap, StoredBody};
 pub use ranges::{ContentRange, RangePlan};
 
+/// Returns the byte range of a captured `206` response, if one is present.
+#[must_use]
+pub fn response_range(record: &Exchange) -> Option<ContentRange> {
+    SaveBody::new(
+        record,
+        BodySide::Response,
+        SaveFormat::AsReceived,
+        PathBuf::new(),
+    )?
+    .content_range()
+}
+
 /// Reads one complete body of a finished exchange, decoded and bounded by
 /// `max_decoded_bytes`.
 ///
