@@ -208,13 +208,7 @@ impl TreeView {
         let matched = self.matched.get(index).copied().unwrap_or_default();
         let mut toggled = false;
         ui.horizontal(|ui| {
-            let depth = u16::try_from(node.depth.min(MAX_INDENT)).unwrap_or(0);
-            ui.add_space(f32::from(depth) * 12.0);
-            if expandable {
-                toggled = ui.small_button(if open { "▼" } else { "▶" }).clicked();
-            } else {
-                ui.add_space(20.0);
-            }
+            toggled = tree_row_prefix(ui, node.depth, expandable, open);
             let job = if matched {
                 Arc::new(highlighted(job, ui.visuals().selection.bg_fill))
             } else {
@@ -251,6 +245,24 @@ impl TreeView {
         if toggled {
             self.toggle(index);
         }
+    }
+}
+
+/// Draws indentation and the expand/collapse disclosure control shared by
+/// body trees and the URL map tree. Returns `true` when the toggle was clicked.
+pub(in crate::ui) fn tree_row_prefix(
+    ui: &mut egui::Ui,
+    depth: usize,
+    expandable: bool,
+    open: bool,
+) -> bool {
+    let clamped = u16::try_from(depth.min(MAX_INDENT)).unwrap_or(0);
+    ui.add_space(f32::from(clamped) * 12.0);
+    if expandable {
+        ui.small_button(if open { "▼" } else { "▶" }).clicked()
+    } else {
+        ui.add_space(20.0);
+        false
     }
 }
 

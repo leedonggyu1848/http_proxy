@@ -11,6 +11,7 @@ HTTP Inspector는 로컬 HTTP 프록시를 통해 요청·응답 기록을 보�
 - **검사 브라우저:** 설치된 Firefox·Chrome·Chromium을 프록시와 CA가 설정된 비공개 창으로 연다.
 - **요청 목록과 상세:** 메서드, 대상, 상태, 시간을 목록으로 보고, 선택한 요청의 헤더와 본문을 확인한다. 본문까지 찾는 검색과 결과 필터를 제공한다.
 - **본문 보기:** 압축을 푼 본문을 JSON·HTML·XML·CSS·JavaScript·form 형식별로 정리해 보여 주고, 이미지 응답은 그림으로 그린다.
+- **URL 맵과 관계 그래프:** 캡처한 요청을 호스트·경로 트리로 묶고 동적 ID(`/{id}`)를 접어 요약한다. `Referer`·`Origin`·리다이렉트 헤더로 도메인 간 호출 관계와 서드파티를 시각화하며 텍스트·JSON·Mermaid·Graphviz DOT로 내보낸다.
 - **요청 재전송:** 기록한 요청을 수정해 다시 보내고 원본과 비교한다.
 - **저장:** 앱 창을 PNG로, 세션의 모든 요청을 텍스트 로그나 HAR 파일로, 선택한 요청·응답 본문을 원본 파일로 저장한다.
 
@@ -149,6 +150,11 @@ CA 상태 표시의 의미, OS별 CA 저장 위치, 직접 실행한 Chrome 설�
 - **본문 파일 저장:** **Body** 탭의 **Save request body ▼**·**Save response body ▼**에서 **Decoded**(압축 해제) 또는 **As received**(받은 그대로)를 고르거나, 요청을 우클릭해 **Save response body**를 누른다. 파일은 **Save** 메뉴의 저장 폴더에 소유자 전용 권한(`0600`)으로 만들어진다. 본문 저장소는 세션당 기본 2GiB까지 캐시 폴더에 보관하고 앱을 종료하면 지운다. **Save** 메뉴의 **Save bodies…**는 필터 결과·전체·선택한 요청의 본문을 새 폴더에 한꺼번에 저장하고 URL, 상태, 크기, SHA-256을 담은 `manifest.json`을 함께 만든다. `206` 부분 응답은 **Merge ranges…**로 위치 순서대로 합친다. [본문 파일 저장](docs/guide/logs.md#본문-파일-저장)을 참고한다.
 
   ![Body 탭의 Save request body·Save response body 메뉴](docs/screenshots/body-save-menu.png)
+- **URL 맵과 관계 그래프:** 상단에서 **Map**으로 전환하면 호스트·경로 계층 트리(**Tree**)와 도메인 호출 관계(**Relationships**)를 실시간으로 본다. 트리에서는 동적 ID 접기(`Fold IDs`), 정렬(이름·요청 수·오류 수·크기), 필터(호스트·상태·Content-Type·서드파티), 키보드 탐색(`↑`·`↓`·`←`·`→`), **Show in Requests** 연동을 제공하며, 쿼리 매개변수는 **이름만** 수집해 쿼리 값을 남기지 않는다. **Export ▼**로 텍스트(`.txt`), JSON(`.json`), Mermaid(`.mmd`), Graphviz DOT(`.dot`) 내보내기가 가능하다. 자세한 내용은 [URL 맵과 관계 그래프](docs/guide/url-map.md)를 참고한다.
+
+  ![URL 맵 트리 보기에서 동적 ID 접기와 오른쪽 상세 패널을 표시한 화면](docs/screenshots/url-map-tree.png)
+
+  ![도메인 간 Referer, Origin, Redirect 호출 관계와 서드파티를 표시한 관계 그래프 화면](docs/screenshots/url-map-graph.png)
 - **포트 변경:** 프록시를 멈추고 툴바의 `Port` 칸에 번호를 입력해 **Start**를 누르거나, `cargo run --release -- --port 18080` 또는 `HTTP_INSPECTOR_PORT`로 실행한다. [프록시 포트와 캡처 범위](docs/guide/proxy-and-capture.md)를 참고한다.
 - **단축키:** 요청 목록에서 `↑`·`↓`·`Home`·`End`·`PageUp`·`PageDown`으로 요청을 고르고, `F6` 또는 `Ctrl+PageDown`·`Ctrl+PageUp`으로 **Headers**·**Body** 탭을 바꾼다. 전체 표와 테마·접근성 설정은 [화면과 조작](docs/guide/interface.md)에 있다.
 

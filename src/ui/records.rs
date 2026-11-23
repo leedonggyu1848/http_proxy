@@ -14,6 +14,7 @@ pub(in crate::ui) struct RecordList<T> {
     evicted: u64,
     dropped_carried: u64,
     dropped_baseline: u64,
+    revision: u64,
 }
 
 impl<T> RecordList<T> {
@@ -24,6 +25,7 @@ impl<T> RecordList<T> {
             evicted: 0,
             dropped_carried: 0,
             dropped_baseline: 0,
+            revision: 0,
         }
     }
 
@@ -36,6 +38,7 @@ impl<T> RecordList<T> {
             None
         };
         self.records.push_back(record);
+        self.revision = self.revision.wrapping_add(1);
         removed
     }
 
@@ -48,6 +51,7 @@ impl<T> RecordList<T> {
         self.evicted = 0;
         self.dropped_carried = 0;
         self.dropped_baseline = engine_dropped;
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// Keeps the drops of a proxy that is being stopped, because the next
@@ -70,6 +74,15 @@ impl<T> RecordList<T> {
 
     pub(in crate::ui) fn len(&self) -> usize {
         self.records.len()
+    }
+
+    pub(in crate::ui) fn get(&self, index: usize) -> Option<&T> {
+        self.records.get(index)
+    }
+
+    /// Monotonic counter incremented on every `push` or `clear`.
+    pub(in crate::ui) const fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub(in crate::ui) fn iter(&self) -> impl DoubleEndedIterator<Item = &T> {

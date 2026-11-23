@@ -3,6 +3,13 @@ all-features = true
 
 [advisories]
 yanked = "deny"
+ignore = [
+	# Transitive dependencies of eframe 0.37 -> accesskit_unix -> zbus 5.19.
+	# No safe upgrade is available until accesskit_unix migrates to zbus 6.
+	{ id = "RUSTSEC-2026-0370", reason = "zvariant is pulled in transitively by eframe 0.37 / accesskit_unix (zbus 5); remove once accesskit_unix upgrades to zbus 6" },
+	{ id = "RUSTSEC-2026-0371", reason = "zbus_names is pulled in transitively by eframe 0.37 / accesskit_unix (zbus 5); remove once accesskit_unix upgrades to zbus 6" },
+	{ id = "RUSTSEC-2026-0372", reason = "zvariant_derive is pulled in transitively by eframe 0.37 / accesskit_unix (zbus 5); remove once accesskit_unix upgrades to zbus 6" },
+]
 
 [licenses]
 confidence-threshold = 0.8

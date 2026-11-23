@@ -2,6 +2,7 @@
 
 mod engine;
 pub mod text_search;
+pub mod url_map;
 
 pub use engine::{
     BODY_PREVIEW_BYTES, IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES,
