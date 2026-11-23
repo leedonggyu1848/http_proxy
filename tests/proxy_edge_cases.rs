@@ -4,7 +4,6 @@
 
 use std::collections::HashSet;
 use std::convert::Infallible;
-use std::error::Error;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -17,24 +16,26 @@ use http_body::{Body, Frame, SizeHint};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use http_proxy::{
-    BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, Exchange, FailureStage, HeaderPreview,
-    Outcome, ProxyConfig, ProxyHandle, TunnelState,
+    BodyLifecycle, BodyRetention, FailureStage, HeaderPreview, Outcome, ProxyConfig, ProxyHandle,
+    TunnelState,
 };
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+pub mod common;
+
+use common::{TEST_TIMEOUT, TestError, next_record, read_headers, settled, wait_for_body_end};
+
 const CHUNK_BYTES: usize = 64 * 1024;
 const CHUNK_COUNT: usize = 64;
 const LARGE_BODY_BYTES: u64 = (CHUNK_BYTES * CHUNK_COUNT) as u64;
 
 type TestBody = BoxBody<Bytes, Infallible>;
-type TestError = Box<dyn Error + Send + Sync>;
 
 // Linux drops SYNs when the accept queue is full; macOS resets the connection.
 #[cfg(target_os = "linux")]
@@ -567,26 +568,6 @@ async fn exchange_raw(proxy_addr: SocketAddr, request: &str) -> Result<String, T
     Ok(String::from_utf8(response)?)
 }
 
-async fn next_record(proxy: &mut ProxyHandle) -> Result<Exchange, TestError> {
-    Ok(timeout(TEST_TIMEOUT, proxy.receive())
-        .await?
-        .ok_or("capture channel closed")?)
-}
-
-async fn wait_for_body_end(body: &BodyPreview) -> Result<BodySnapshot, TestError> {
-    let poll = async {
-        loop {
-            if let Some(snapshot) = body.snapshot()
-                && snapshot.lifecycle() != BodyLifecycle::Streaming
-            {
-                return snapshot;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    };
-    Ok(timeout(TEST_TIMEOUT, poll).await?)
-}
-
 fn field_values<'a>(message: &'a str, name: &str) -> Vec<&'a str> {
     message
         .split("\r\n")
@@ -603,25 +584,4 @@ fn captured_values<'a>(headers: &'a HeaderPreview, name: &str) -> Vec<&'a str> {
         .filter(|header| header.name() == name)
         .map(http_proxy::CapturedHeader::value)
         .collect()
-}
-
-async fn settled(exchange: &Exchange) -> Result<&Outcome, TestError> {
-    Ok(timeout(TEST_TIMEOUT, exchange.settled()).await?)
-}
-
-async fn read_headers<S>(stream: &mut S) -> std::io::Result<Vec<u8>>
-where
-    S: AsyncRead + Unpin,
-{
-    let mut data = Vec::new();
-    while !data.ends_with(b"\r\n\r\n") {
-        data.push(stream.read_u8().await?);
-        if data.len() > 16 * 1024 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "headers exceeded the test limit",
-            ));
-        }
-    }
-    Ok(data)
 }

@@ -1,22 +1,23 @@
 //! How the end of a streamed body, its size, and the exchange's timing
 //! phases are recorded without delaying the forwarded stream.
 
-use std::error::Error;
-use std::net::SocketAddr;
 use std::time::Duration;
 
 use http_proxy::{
-    BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, CapturedResponse, Exchange, Outcome,
-    ProxyConfig, ProxyHandle,
+    BodyLifecycle, BodyRetention, CapturedResponse, Exchange, Outcome, ProxyConfig, ProxyHandle,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
-type TestError = Box<dyn Error + Send + Sync>;
+pub mod common;
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+use common::{
+    TEST_TIMEOUT, TestError, exchange_through, next_record, read_headers, settled,
+    wait_for_body_end,
+};
+
 const LARGE_BODY: usize = 4 * 1024 * 1024;
 const REQUEST_BODY: usize = 100 * 1024;
 
@@ -50,10 +51,11 @@ async fn records_size_and_every_phase_of_a_large_exchange() -> Result<(), TestEr
 
     let exchange = next_record(&mut proxy).await?;
     let response = settled_response(&exchange).await?;
-    let request_body = wait_for_end(exchange.request().body().ok_or("no request body")?).await?;
+    let request_body =
+        wait_for_body_end(exchange.request().body().ok_or("no request body")?).await?;
     assert_eq!(request_body.observed_bytes(), REQUEST_BODY as u64);
     assert_eq!(request_body.lifecycle(), BodyLifecycle::Complete);
-    let response_body = wait_for_end(response.body()).await?;
+    let response_body = wait_for_body_end(response.body()).await?;
     assert_eq!(response_body.observed_bytes(), LARGE_BODY as u64);
     assert_eq!(response_body.lifecycle(), BodyLifecycle::Complete);
 
@@ -90,7 +92,7 @@ async fn records_the_size_of_a_body_the_upstream_cut_short() -> Result<(), TestE
 
     let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0))?;
     let exchange = exchange_through(&mut proxy, upstream_addr, "/cut").await?;
-    let body = wait_for_end(settled_response(&exchange).await?.body()).await?;
+    let body = wait_for_body_end(settled_response(&exchange).await?.body()).await?;
     assert_eq!(body.lifecycle(), BodyLifecycle::Interrupted);
     assert_eq!(body.observed_bytes(), 300_000);
     assert!(exchange.timing().receive().is_some());
@@ -129,7 +131,7 @@ async fn records_a_body_cancelled_by_a_departing_client() -> Result<(), TestErro
     let exchange = next_record(&mut proxy).await?;
     let response = settled_response(&exchange).await?;
     drop(client);
-    let body = wait_for_end(response.body()).await?;
+    let body = wait_for_body_end(response.body()).await?;
     assert_eq!(body.lifecycle(), BodyLifecycle::Cancelled);
     assert_eq!(body.observed_bytes(), 5);
 
@@ -173,7 +175,7 @@ async fn relays_each_chunk_before_the_body_ends() -> Result<(), TestError> {
     let _finished = finish_sender.send(());
     let mut rest = Vec::new();
     timeout(TEST_TIMEOUT, client.read_to_end(&mut rest)).await??;
-    let body = wait_for_end(response.body()).await?;
+    let body = wait_for_body_end(response.body()).await?;
     assert_eq!(body.lifecycle(), BodyLifecycle::Complete);
     assert_eq!(body.bytes(), b"firstlast");
 
@@ -202,12 +204,12 @@ async fn keeps_a_whole_png_response_but_only_a_prefix_of_other_bodies() -> Resul
 
     let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0))?;
     let png = exchange_through(&mut proxy, upstream_addr, "/image.png").await?;
-    let png_body = wait_for_end(settled_response(&png).await?.body()).await?;
+    let png_body = wait_for_body_end(settled_response(&png).await?.body()).await?;
     assert_eq!(png_body.bytes().len(), BODY);
     assert_eq!(png_body.retention(), BodyRetention::Prefix);
 
     let other = exchange_through(&mut proxy, upstream_addr, "/data.bin").await?;
-    let other_body = wait_for_end(settled_response(&other).await?.body()).await?;
+    let other_body = wait_for_body_end(settled_response(&other).await?.body()).await?;
     assert_eq!(other_body.bytes().len(), 8 * 1024);
     assert_eq!(other_body.retention(), BodyRetention::Truncated);
 
@@ -216,47 +218,11 @@ async fn keeps_a_whole_png_response_but_only_a_prefix_of_other_bodies() -> Resul
     Ok(())
 }
 
-async fn exchange_through(
-    proxy: &mut ProxyHandle,
-    upstream: SocketAddr,
-    path: &str,
-) -> Result<Exchange, TestError> {
-    let mut client = TcpStream::connect(proxy.local_addr()).await?;
-    let request = format!(
-        "GET http://{upstream}{path} HTTP/1.1\r\nHost: {upstream}\r\nConnection: close\r\n\r\n"
-    );
-    client.write_all(request.as_bytes()).await?;
-    let mut response = Vec::new();
-    // A cut body ends with a reset; only the end of the exchange matters here.
-    let _read = timeout(TEST_TIMEOUT, client.read_to_end(&mut response)).await?;
-    next_record(proxy).await
-}
-
-async fn next_record(proxy: &mut ProxyHandle) -> Result<Exchange, TestError> {
-    Ok(timeout(TEST_TIMEOUT, proxy.receive())
-        .await?
-        .ok_or("capture channel closed")?)
-}
-
 async fn settled_response(exchange: &Exchange) -> Result<&CapturedResponse, TestError> {
-    match timeout(TEST_TIMEOUT, exchange.settled()).await? {
+    match settled(exchange).await? {
         Outcome::Response(response) => Ok(response),
         other => Err(format!("expected a response, got {other:?}").into()),
     }
-}
-
-async fn wait_for_end(body: &BodyPreview) -> Result<BodySnapshot, TestError> {
-    let poll = async {
-        loop {
-            if let Some(snapshot) = body.snapshot()
-                && snapshot.lifecycle() != BodyLifecycle::Streaming
-            {
-                return snapshot;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    };
-    Ok(timeout(TEST_TIMEOUT, poll).await?)
 }
 
 async fn read_until<S>(stream: &mut S, marker: &[u8]) -> std::io::Result<Vec<u8>>
@@ -266,23 +232,6 @@ where
     let mut data = Vec::new();
     while !data.ends_with(marker) {
         data.push(stream.read_u8().await?);
-    }
-    Ok(data)
-}
-
-async fn read_headers<S>(stream: &mut S) -> std::io::Result<Vec<u8>>
-where
-    S: AsyncRead + Unpin,
-{
-    let mut data = Vec::new();
-    while !data.ends_with(b"\r\n\r\n") {
-        data.push(stream.read_u8().await?);
-        if data.len() > 16 * 1024 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "headers exceeded the test limit",
-            ));
-        }
     }
     Ok(data)
 }

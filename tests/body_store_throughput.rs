@@ -5,14 +5,15 @@
 //! `BODY_STORE_BENCH_MIB` changes the response size (default 1024 MiB) and
 //! `BODY_STORE_BENCH_RATE_MIBPS` paces the upstream server (default unpaced).
 
-use std::error::Error;
 use std::time::{Duration, Instant};
 
 use http_proxy::{BodySide, BodyStore, ProxyConfig, ProxyHandle};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-type TestResult<T = ()> = Result<T, Box<dyn Error>>;
+pub mod common;
+
+use common::{TestResult, read_headers};
 
 const CHUNK: usize = 64 * 1024;
 const RUNS: usize = 3;
@@ -22,12 +23,8 @@ async fn serve(listener: TcpListener, length: u64, rate: Option<u64>) {
     while let Ok((mut stream, _)) = listener.accept().await {
         let chunk = chunk.clone();
         tokio::spawn(async move {
-            let mut head = Vec::new();
-            while !head.ends_with(b"\r\n\r\n") {
-                let Ok(byte) = stream.read_u8().await else {
-                    return;
-                };
-                head.push(byte);
+            if read_headers(&mut stream).await.is_err() {
+                return;
             }
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n"
