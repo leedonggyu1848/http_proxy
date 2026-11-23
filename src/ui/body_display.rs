@@ -417,14 +417,17 @@ fn clamp_leading_space(job: &mut LayoutJob, wrap_width: f32) -> bool {
     has_indent
 }
 
-/// Detects epaint's fallback that inserts an empty zero-height row and resets
-/// `leading_space` to zero when a single unbreakable token exceeds the space
-/// remaining after the indent.
+/// Detects epaint's fallback that inserts a non-final zero-height empty row and
+/// resets `leading_space` to zero when a single unbreakable token exceeds the
+/// space remaining after the indent. Normal empty rows at a trailing `\n` are
+/// final and have `row.size().y > 0.0`.
 fn dropped_leading_indent(galley: &Galley) -> bool {
+    let check_len = galley.rows.len().saturating_sub(1);
     galley
         .rows
         .iter()
-        .any(|row| !row.ends_with_newline && row.glyphs.is_empty())
+        .take(check_len)
+        .any(|row| !row.ends_with_newline && row.glyphs.is_empty() && row.size.y == 0.0)
 }
 
 /// Scrolls the enclosing scroll area so the match `hit` in `text` is in view.
@@ -1226,6 +1229,92 @@ mod tests {
         assert!(
             (x_second - x_third).abs() < 0.5,
             "clamped continuations must still align: x_second={x_second}, x_third={x_third}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn trailing_newline_does_not_enable_break_anywhere_on_wide_viewport() -> Result<(), String> {
+        let ctx = egui::Context::default();
+        let mut cache = BodyViewCache::default();
+        let truncated_xml = BodySource {
+            media_type: media("application/xml"),
+            capture: Capture::Truncated,
+            ..source(
+                22,
+                b"<root><note>first\nsecond\nalpha beta gamma delta epsilon zeta\n",
+            )
+        };
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1000.0, 600.0),
+            )),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            ui.set_max_width(300.0);
+            cache.show(ui, &truncated_xml, ViewMode::Pretty);
+        });
+        output.textures_delta.clear();
+
+        let (job, galley) = cached_text_galley(&cache)?;
+        assert!(
+            !galley.job.wrap.break_anywhere,
+            "normal trailing newline row must not trigger break_anywhere"
+        );
+        let first_x = glyph_x(&galley, &job.text, "first")?;
+        let second_x = glyph_x(&galley, &job.text, "second")?;
+        assert!((first_x - second_x).abs() < 0.5, "{first_x} vs {second_x}");
+        let row_texts: Vec<String> = galley.rows.iter().map(|row| row.text()).collect();
+        assert!(
+            row_texts.iter().any(|row| row.contains("epsilon")),
+            "words should stay intact on word-boundary wraps: {row_texts:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn aligns_closing_tag_when_source_tail_indent_is_shorter_than_depth() -> Result<(), String> {
+        let ctx = egui::Context::default();
+        let mut cache = BodyViewCache::default();
+
+        let xml = BodySource {
+            media_type: media("application/xml"),
+            ..source(
+                23,
+                b"<root><outer><note>first\nsecond\nthird\n  </note><next>ok</next></outer></root>",
+            )
+        };
+        run(&mut cache, &ctx, &xml, ViewMode::Pretty);
+        let (job, galley) = cached_text_galley(&cache)?;
+        assert!(job.text.contains("\n  </note>"), "{}", job.text);
+        let open_x = glyph_x(&galley, &job.text, "<note>")?;
+        let close_x = glyph_x(&galley, &job.text, "</note>")?;
+        let next_x = glyph_x(&galley, &job.text, "<next>")?;
+        assert!((open_x - close_x).abs() < 0.5, "{open_x} vs {close_x}");
+        assert!((open_x - next_x).abs() < 0.5, "{open_x} vs {next_x}");
+
+        let html = BodySource {
+            media_type: media("text/html"),
+            ..source(
+                24,
+                b"<div><section><textarea>\nline1\nline2\n  </textarea><p>next</p></section></div>",
+            )
+        };
+        run(&mut cache, &ctx, &html, ViewMode::Pretty);
+        let (job, galley) = cached_text_galley(&cache)?;
+        assert!(job.text.contains("\n  </textarea>"), "{}", job.text);
+        let html_open_x = glyph_x(&galley, &job.text, "<textarea>")?;
+        let html_close_x = glyph_x(&galley, &job.text, "</textarea>")?;
+        let html_next_x = glyph_x(&galley, &job.text, "<p>")?;
+        assert!(
+            (html_open_x - html_close_x).abs() < 0.5,
+            "{html_open_x} vs {html_close_x}"
+        );
+        assert!(
+            (html_open_x - html_next_x).abs() < 0.5,
+            "{html_open_x} vs {html_next_x}"
         );
         Ok(())
     }

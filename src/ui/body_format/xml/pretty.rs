@@ -69,8 +69,8 @@ impl Printer<'_, '_> {
             let align = self.verbatim_align(element, depth);
             let last_index = element.children.len().saturating_sub(1);
             for (pos, &child) in element.children.iter().enumerate() {
-                let before_close = element.end_tag.is_some() && pos == last_index;
-                self.verbatim(child, &align, before_close);
+                let close_depth = (element.end_tag.is_some() && pos == last_index).then_some(depth);
+                self.verbatim(child, &align, close_depth);
             }
         } else {
             self.nodes(&element.children, depth + 1);
@@ -107,7 +107,7 @@ impl Printer<'_, '_> {
 
     /// Appends a node and its descendants exactly as written while recording
     /// visual continuation indents for multiline content.
-    fn verbatim(&mut self, index: usize, align: &str, before_close: bool) {
+    fn verbatim(&mut self, index: usize, align: &str, close_depth: Option<usize>) {
         let Some(node) = self.document.node(index) else {
             return;
         };
@@ -117,7 +117,7 @@ impl Printer<'_, '_> {
                 self.out.indent_line_if_at_start(align);
                 push_raw_tag(&mut self.out, raw);
                 for &child in &element.children {
-                    self.verbatim(child, align, false);
+                    self.verbatim(child, align, None);
                 }
                 if let Some(end_tag) = &element.end_tag {
                     self.out.indent_line_if_at_start(align);
@@ -128,10 +128,12 @@ impl Printer<'_, '_> {
                 if !raw.is_empty() && !raw.starts_with('\n') && !raw.starts_with("\r\n") {
                     self.out.indent_line_if_at_start(align);
                 }
-                if before_close && *kind == NodeKind::Text {
+                if let Some(close_depth) = close_depth
+                    && *kind == NodeKind::Text
+                {
                     let (body, tail) = split_trailing_blank_line(raw);
                     push_leaf_multiline(&mut self.out, kind, body, align);
-                    self.out.push(tail, TokenKind::Text);
+                    self.out.push_closing_tail(tail, close_depth);
                 } else {
                     push_leaf_multiline(&mut self.out, kind, raw, align);
                 }
@@ -425,6 +427,44 @@ mod tests {
         assert_eq!(align_for("line2"), Some("      "));
         assert_eq!(align_for("line3"), Some("      "));
         assert_eq!(align_for("</note>"), Some("    "));
+        Ok(())
+    }
+
+    #[test]
+    fn pads_short_trailing_indent_before_closing_tag_without_mutating_text() -> Result<(), String> {
+        let short_tail =
+            "<root><outer><note>first\nsecond\nthird\n  </note><next>ok</next></outer></root>";
+        let styled = pretty(short_tail)?.styled;
+        assert!(
+            styled
+                .text()
+                .contains("    <note>first\nsecond\nthird\n  </note>")
+        );
+        let tail_start = styled
+            .text()
+            .find("\n  </note>")
+            .map(|pos| pos + 1)
+            .ok_or("missing closing tag tail")?;
+        let tail_indent = styled
+            .indents()
+            .iter()
+            .find(|indent| indent.offset == tail_start)
+            .map(|indent| indent.align_to.as_str());
+        assert_eq!(tail_indent, Some("  "));
+
+        let full_tail =
+            "<root><outer><note>first\nsecond\n    </note><next>ok</next></outer></root>";
+        let full = pretty(full_tail)?.styled;
+        let full_start = full
+            .text()
+            .find("\n    </note>")
+            .map(|pos| pos + 1)
+            .ok_or("missing full closing tag tail")?;
+        assert!(
+            full.indents()
+                .iter()
+                .all(|indent| indent.offset != full_start)
+        );
         Ok(())
     }
 }

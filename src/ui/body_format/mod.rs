@@ -254,6 +254,23 @@ impl Styled {
         }
     }
 
+    /// Appends the trailing horizontal-whitespace slice before a closing tag
+    /// verbatim while visually padding any shortfall below `depth * 2` spaces
+    /// so the closing tag never protrudes into an outer nesting column.
+    pub(super) fn push_closing_tail(&mut self, tail: &str, depth: usize) {
+        if tail.is_empty() {
+            return;
+        }
+        if !tail.contains('\t') {
+            let spaces = tail.bytes().filter(|&b| b == b' ').count();
+            let missing = (depth * 2).saturating_sub(spaces);
+            if missing > 0 {
+                self.indent_line_if_at_start(&" ".repeat(missing));
+            }
+        }
+        self.push(tail, TokenKind::Text);
+    }
+
     fn add_indent(&mut self, offset: usize, align_to: &str) {
         if align_to.is_empty() {
             return;
