@@ -365,6 +365,11 @@ mod tests {
 
     #[test]
     fn body_tab_and_map_classify_bodies_alike() {
+        let late_json = [
+            vec![b' '; content_detect::SNIFF_BYTES],
+            br#"{"a":1}"#.to_vec(),
+        ]
+        .concat();
         let multipart = b"--B\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nx\r\n--B--";
         for (content_type, body, expected) in [
             (
@@ -396,6 +401,8 @@ mod tests {
             (Some("application/xml"), b"<a>1</a>", BodyFormat::Xml),
             (Some("application/atom+xml"), b"<feed/>", BodyFormat::Xml),
             (None, b"<a>1</a>", BodyFormat::Text),
+            (Some("jsonish"), br#"{"a":1}"#, BodyFormat::Json),
+            (None, &late_json, BodyFormat::Text),
         ] {
             let media = content_type.and_then(MediaType::parse);
             let body_tab = content_detect::settle(media.as_ref(), body);
