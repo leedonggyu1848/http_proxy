@@ -11,8 +11,7 @@ use tokio::process::Command;
 use tokio::sync::oneshot;
 
 use super::{Browser, BrowserEvent, BrowserSession, Kind};
-use crate::engine::tls::CaInfo;
-use crate::engine::trust::CaTrustStore;
+use crate::https::{CaInfo, CaTrustStore};
 use crate::settings::paths;
 
 type LaunchResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -177,7 +176,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
-    use crate::engine::trust::CaTrustStatus;
+    use crate::https::CaTrustStatus;
 
     fn firefox(executable: PathBuf) -> Browser {
         Browser {

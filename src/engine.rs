@@ -2,8 +2,6 @@ mod browser;
 mod capture;
 mod curl;
 mod proxy;
-mod tls;
-mod trust;
 
 pub use crate::exchange::BodySide;
 pub use crate::exchange::{
@@ -25,5 +23,3 @@ pub use proxy::{
     EngineState, ProxyConfig, ProxyHandle, REPLAY_BODY_FILE_LIMIT_BYTES, ReplayDraft, ReplayField,
     ReplayTask, StartError, StopError,
 };
-pub use tls::{CaInfo, HttpsInspection, HttpsSetupError};
-pub use trust::{CaTrustError, CaTrustStatus, CaTrustStore};

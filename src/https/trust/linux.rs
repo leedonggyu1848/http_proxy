@@ -262,7 +262,7 @@ async fn lock_exclusive_within(lock: &File, wait: Duration) -> Result<(), CaTrus
 fn nickname(certificate: &CertificateDer<'_>) -> String {
     format!(
         "HTTP Inspector {}",
-        crate::engine::tls::fingerprint(certificate).replace(':', "")
+        crate::https::ca::fingerprint(certificate).replace(':', "")
     )
 }
 
@@ -360,8 +360,8 @@ mod tests {
     use std::fs;
 
     use super::{CaTrustError, CaTrustStatus, PlatformStore, nickname};
-    use crate::engine::tls::CaInfo;
-    use crate::engine::trust::{CaTrustStore, public_certificate};
+    use crate::https::ca::CaInfo;
+    use crate::https::trust::{CaTrustStore, public_certificate};
 
     #[test]
     fn selects_chromium_database_with_legacy_precedence() -> Result<(), Box<dyn Error>> {

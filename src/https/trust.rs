@@ -6,7 +6,7 @@ use rustls::pki_types::CertificateDer;
 use rustls::pki_types::pem::PemObject;
 use thiserror::Error;
 
-use crate::engine::tls::CaInfo;
+use super::ca::{CaInfo, fingerprint};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod linux;
@@ -106,7 +106,7 @@ fn public_certificate(ca: &CaInfo) -> Result<CertificateDer<'static>, CaTrustErr
         return Err(CaTrustError::CertificateChanged);
     }
     let der = CertificateDer::from_pem_slice(&pem).map_err(|_| CaTrustError::CertificateChanged)?;
-    if crate::engine::tls::fingerprint(&der) != ca.fingerprint_sha256() {
+    if fingerprint(&der) != ca.fingerprint_sha256() {
         return Err(CaTrustError::CertificateChanged);
     }
     Ok(der)

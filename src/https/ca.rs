@@ -102,23 +102,23 @@ pub enum HttpsSetupError {
     InvalidAdditionalRoot(PathBuf),
 }
 
-pub(in crate::engine) struct TlsInspector {
+pub(crate) struct TlsInspector {
     issuer: Issuer<'static, KeyPair>,
     connector: TlsConnector,
 }
 
-pub(in crate::engine) struct Destination {
+pub(crate) struct Destination {
     host: String,
     port: u16,
     server_name: ServerName<'static>,
 }
 
-pub(in crate::engine) struct PreparedInspection {
+pub(crate) struct PreparedInspection {
     acceptor: TlsAcceptor,
 }
 
 #[derive(Debug, Error)]
-pub(in crate::engine) enum DestinationError {
+pub(crate) enum DestinationError {
     #[error("CONNECT authority has no host")]
     MissingHost,
     #[error("CONNECT authority has an invalid TLS server name: {0}")]
@@ -126,7 +126,7 @@ pub(in crate::engine) enum DestinationError {
 }
 
 #[derive(Debug, Error)]
-pub(in crate::engine) enum PrepareError {
+pub(crate) enum PrepareError {
     #[error("failed to create a leaf key: {0}")]
     Key(rcgen::Error),
     #[error("failed to create leaf parameters: {0}")]
@@ -138,15 +138,13 @@ pub(in crate::engine) enum PrepareError {
 }
 
 #[derive(Debug, Error)]
-pub(in crate::engine) enum UpstreamTlsError {
+pub(crate) enum UpstreamTlsError {
     #[error("upstream TLS verification or handshake failed: {0}")]
     Handshake(std::io::Error),
 }
 
 impl TlsInspector {
-    pub(in crate::engine) fn open(
-        settings: &HttpsInspection,
-    ) -> Result<(Arc<Self>, CaInfo), HttpsSetupError> {
+    pub(crate) fn open(settings: &HttpsInspection) -> Result<(Arc<Self>, CaInfo), HttpsSetupError> {
         let authority = CertificateAuthority::load_or_create(&settings.ca_directory)?;
         let connector = build_upstream_connector(settings.additional_upstream_root.as_deref())?;
         let info = authority.info.clone();
@@ -159,7 +157,7 @@ impl TlsInspector {
         ))
     }
 
-    pub(in crate::engine) fn prepare(
+    pub(crate) fn prepare(
         &self,
         destination: &Destination,
     ) -> Result<PreparedInspection, PrepareError> {
@@ -190,7 +188,7 @@ impl TlsInspector {
         })
     }
 
-    pub(in crate::engine) async fn handshake(
+    pub(crate) async fn handshake(
         &self,
         destination: &Destination,
         stream: TcpStream,
@@ -203,9 +201,7 @@ impl TlsInspector {
 }
 
 impl Destination {
-    pub(in crate::engine) fn from_authority(
-        authority: &Authority,
-    ) -> Result<Self, DestinationError> {
+    pub(crate) fn from_authority(authority: &Authority) -> Result<Self, DestinationError> {
         let host = authority.host();
         if host.is_empty() {
             return Err(DestinationError::MissingHost);
@@ -219,7 +215,7 @@ impl Destination {
         })
     }
 
-    pub(in crate::engine) fn socket_target(&self) -> String {
+    pub(crate) fn socket_target(&self) -> String {
         if self.host.parse::<IpAddr>().is_ok_and(|ip| ip.is_ipv6()) {
             format!("[{}]:{}", self.host, self.port)
         } else {
@@ -227,7 +223,7 @@ impl Destination {
         }
     }
 
-    pub(in crate::engine) fn absolute_target(&self, path_and_query: &str) -> String {
+    pub(crate) fn absolute_target(&self, path_and_query: &str) -> String {
         let authority = if self.port == 443 {
             self.host.clone()
         } else if self.host.parse::<IpAddr>().is_ok_and(|ip| ip.is_ipv6()) {
@@ -238,17 +234,14 @@ impl Destination {
         format!("https://{authority}{path_and_query}")
     }
 
-    pub(in crate::engine) fn matches_authority(&self, authority: &Authority) -> bool {
+    pub(crate) fn matches_authority(&self, authority: &Authority) -> bool {
         authority.host().eq_ignore_ascii_case(&self.host)
             && authority.port_u16().unwrap_or(443) == self.port
     }
 }
 
 impl PreparedInspection {
-    pub(in crate::engine) async fn accept<IO>(
-        &self,
-        io: IO,
-    ) -> Result<ServerTlsStream<IO>, std::io::Error>
+    pub(crate) async fn accept<IO>(&self, io: IO) -> Result<ServerTlsStream<IO>, std::io::Error>
     where
         IO: AsyncRead + AsyncWrite + Unpin,
     {
@@ -449,7 +442,7 @@ fn parse_identity(
     Ok((issuer, certificate))
 }
 
-pub(in crate::engine) fn fingerprint(certificate: &CertificateDer<'_>) -> String {
+pub(crate) fn fingerprint(certificate: &CertificateDer<'_>) -> String {
     Sha256::digest(certificate)
         .iter()
         .map(|byte| format!("{byte:02X}"))

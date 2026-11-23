@@ -1,4 +1,4 @@
-use crate::engine::tls::HttpsInspection;
+use crate::https::HttpsInspection;
 use crate::recording::body_store::BodyStore;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
