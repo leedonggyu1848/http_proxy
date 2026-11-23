@@ -45,7 +45,7 @@ use crate::ui::replay_panel;
 use crate::ui::search::RequestSearch;
 use crate::ui::theme::Palette;
 use eframe::egui;
-use http_proxy::url_map::ViewNodeKey;
+use http_proxy::url_map::RequestScope;
 
 impl InspectorApp {
     /// Filter, list options, and Clear, shown right above the request list.
@@ -81,12 +81,12 @@ impl InspectorApp {
         self.map_filter_cache.sync(&key, &self.records, false);
         let palette = Palette::of(ui);
         let retained = self.map_filter_cache.matched_count();
-        let total = self.url_map.matching_request_count(&key);
+        let total = self.map_scope_total(&key, retained);
         let evicted = total.saturating_sub(u64::try_from(retained).unwrap_or(u64::MAX));
         let mut clear = false;
         ui.horizontal_wrapped(|ui| {
             ui.label(
-                egui::RichText::new(format!("Map filter: {}", key.display_url()))
+                egui::RichText::new(format!("Map filter: {}", key.display()))
                     .monospace()
                     .color(palette.info),
             );
@@ -111,6 +111,20 @@ impl InspectorApp {
             self.map_path_filter = None;
             self.map_filter_cache.clear();
         }
+    }
+
+    /// Requests the Map counted for `scope` since the last `Clear`, never
+    /// fewer than the `retained` ones still listed.
+    fn map_scope_total(&self, scope: &RequestScope, retained: usize) -> u64 {
+        let counted = scope.method.as_ref().map_or_else(
+            || self.url_map.matching_request_count(&scope.key),
+            |method| {
+                self.endpoints
+                    .schemas()
+                    .request_count(&self.url_map.matching_node_ids(&scope.key), method)
+            },
+        );
+        counted.max(u64::try_from(retained).unwrap_or(u64::MAX))
     }
 
     pub(in crate::ui) fn request_table(&mut self, ui: &mut egui::Ui, shortcuts_allowed: bool) {
@@ -161,7 +175,7 @@ pub(in crate::ui) fn visible_records<'a>(
     records: &'a RecordList<Exchange>,
     filter: RecordFilter,
     search: &RequestSearch,
-    map_filter: Option<&ViewNodeKey>,
+    map_filter: Option<&RequestScope>,
     map_cache: Option<&RecordMatchCache>,
 ) -> Vec<&'a Exchange> {
     let fresh_cache = map_filter

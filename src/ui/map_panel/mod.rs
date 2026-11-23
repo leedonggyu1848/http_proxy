@@ -1,6 +1,7 @@
 //! URL Map panel: Tree view (host -> path hierarchy) and Relationship Graph view.
 
 mod detail_pane;
+mod endpoint_view;
 mod graph_pane;
 mod tree_pane;
 
@@ -9,8 +10,9 @@ pub(in crate::ui) use detail_pane::RecordMatchCache;
 use std::collections::{HashMap, HashSet};
 
 use eframe::egui;
+use http_proxy::endpoint_schema::EndpointSchemas;
 use http_proxy::url_map::{
-    ContentTypeFilter, DEFAULT_MAX_GRAPH_DOMAINS, EdgeKind, ForceLayout, PartyFilter,
+    ContentTypeFilter, DEFAULT_MAX_GRAPH_DOMAINS, EdgeKind, ForceLayout, PartyFilter, RequestScope,
     SortDirection, StatusFilter, TreeFilter, TreeSortField, UrlMap, ViewNode, ViewNodeKey,
     VisibleRow, build_view_roots, find_view_node, flatten_visible,
 };
@@ -62,8 +64,8 @@ impl MapExportFormat {
 /// Actions emitted by [`MapPanel`] for [`crate::ui::InspectorApp`] to handle.
 #[derive(Clone, Debug)]
 pub(in crate::ui) enum MapAction {
-    /// Filter the Requests view to exchanges under this node and switch to it.
-    ShowInRequests(ViewNodeKey),
+    /// Filter the Requests view to a node's subtree or one endpoint and switch to it.
+    ShowInRequests(RequestScope),
     /// Select a specific retained exchange and switch to the Requests view.
     SelectRequest(RecordId),
     /// Save an exported representation into the configured `Save directory`.
@@ -121,6 +123,7 @@ pub(in crate::ui) struct MapPanel {
     edge_visibility: EdgeVisibility,
     dragged_node: Option<usize>,
     detail_match_cache: RecordMatchCache,
+    endpoint_cache: endpoint_view::EndpointCache,
 }
 
 impl Default for MapPanel {
@@ -151,6 +154,7 @@ impl MapPanel {
             edge_visibility: EdgeVisibility::default(),
             dragged_node: None,
             detail_match_cache: RecordMatchCache::default(),
+            endpoint_cache: endpoint_view::EndpointCache::default(),
         }
     }
 
@@ -163,6 +167,7 @@ impl MapPanel {
         self.cached_version = u64::MAX;
         self.rows_dirty = true;
         self.detail_match_cache.clear();
+        self.endpoint_cache.clear();
         self.keyboard_scroll_to = None;
         self.dragged_node = None;
         self.layout = ForceLayout::new(self.layout.max_domains());
@@ -250,13 +255,24 @@ impl MapPanel {
         ui: &mut egui::Ui,
         map: &UrlMap,
         records: &RecordList<Exchange>,
+        schemas: &EndpointSchemas,
     ) -> Option<MapAction> {
         self.ensure_projection(map);
         let selected_node = self
             .selected
             .as_ref()
             .and_then(|key| find_view_node(&self.cached_roots, key));
-        detail_pane::show(ui, selected_node, records, &mut self.detail_match_cache)
+        let endpoints = detail_pane::Endpoints {
+            merged: selected_node.map_or(&[], |node| self.endpoint_cache.sync(node, schemas)),
+            skipped: schemas.skipped_requests(),
+        };
+        detail_pane::show(
+            ui,
+            selected_node,
+            records,
+            &mut self.detail_match_cache,
+            &endpoints,
+        )
     }
 
     /// Renders the interactive domain relationship graph.

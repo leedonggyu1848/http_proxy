@@ -9,23 +9,24 @@ use std::time::SystemTime;
 
 use eframe::egui::{self, RichText};
 use http_proxy::url_map::{
-    NodeStats, ViewNode, ViewNodeKey, format_bytes, parse_exchange_target, percent_decode_display,
+    NodeStats, RequestScope, ViewNode, format_bytes, parse_exchange_target, percent_decode_display,
 };
 use http_proxy::{Exchange, RecordId};
 
-use super::MapAction;
+use super::{MapAction, endpoint_view};
 use crate::ui::outcome_view::outcome_text;
 use crate::ui::records::RecordList;
 use crate::ui::theme::Palette;
+use http_proxy::endpoint_schema::EndpointSchema;
 
 /// Maximum matching retained requests listed directly inside the node detail pane.
 const MAX_INLINE_REQUESTS: usize = 100;
 
-/// Caches which retained [`Exchange`]s in [`RecordList`] match a [`ViewNodeKey`]
-/// so steady UI frames never re-parse up to 2,000 request URLs.
+/// Caches which retained [`Exchange`]s in [`RecordList`] fall in a
+/// [`RequestScope`] so steady UI frames never re-parse up to 2,000 request URLs.
 #[derive(Default)]
 pub(in crate::ui) struct RecordMatchCache {
-    key: Option<ViewNodeKey>,
+    key: Option<RequestScope>,
     revision: Option<u64>,
     has_previews: bool,
     matched_count: usize,
@@ -45,7 +46,7 @@ impl RecordMatchCache {
 
     pub(in crate::ui) fn sync(
         &mut self,
-        key: &ViewNodeKey,
+        key: &RequestScope,
         records: &RecordList<Exchange>,
         build_previews: bool,
     ) {
@@ -83,7 +84,7 @@ impl RecordMatchCache {
 
     pub(in crate::ui) fn is_fresh_for(
         &self,
-        key: &ViewNodeKey,
+        key: &RequestScope,
         records: &RecordList<Exchange>,
     ) -> bool {
         self.key.as_ref() == Some(key) && self.revision == Some(records.revision())
@@ -94,11 +95,19 @@ impl RecordMatchCache {
     }
 }
 
+/// Endpoint aggregates merged for the selected node.
+pub(super) struct Endpoints<'a> {
+    pub(super) merged: &'a [(String, EndpointSchema)],
+    /// Requests never analyzed because the analysis queue was full.
+    pub(super) skipped: u64,
+}
+
 pub(super) fn show(
     ui: &mut egui::Ui,
     node: Option<&ViewNode>,
     records: &RecordList<Exchange>,
     cache: &mut RecordMatchCache,
+    endpoints: &Endpoints<'_>,
 ) -> Option<MapAction> {
     let Some(node) = node else {
         ui.centered_and_justified(|ui| {
@@ -115,7 +124,7 @@ pub(super) fn show(
         return None;
     };
 
-    cache.sync(&node.key, records, true);
+    cache.sync(&RequestScope::subtree(node.key.clone()), records, true);
     let mut action = None;
     egui::ScrollArea::vertical()
         .id_salt("url-map-detail-scroll")
@@ -132,6 +141,12 @@ pub(super) fn show(
             }
             ui.separator();
             render_stats_section(ui, node, retained, evicted);
+            ui.separator();
+            if let Some(endpoint_action) =
+                endpoint_view::show(ui, node, endpoints.merged, endpoints.skipped)
+            {
+                action = Some(endpoint_action);
+            }
             ui.separator();
             render_query_params_section(ui, node);
             ui.separator();
@@ -204,7 +219,9 @@ fn render_header(
             .on_hover_text("Switch to Requests view filtered to this origin and path prefix.")
             .clicked()
         {
-            action = Some(MapAction::ShowInRequests(node.key.clone()));
+            action = Some(MapAction::ShowInRequests(RequestScope::subtree(
+                node.key.clone(),
+            )));
         }
         let retention_note = if evicted > 0 {
             format!("{retained} retained · {evicted} older removed")
@@ -447,7 +464,7 @@ fn format_wall_time(time: Option<SystemTime>) -> String {
 mod tests {
     use std::time::Duration;
 
-    use http_proxy::url_map::{OriginKey, PathSegmentPattern};
+    use http_proxy::url_map::{OriginKey, PathSegmentPattern, ViewNodeKey};
     use http_proxy::{ProxyConfig, ProxyHandle};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::{TcpListener, TcpStream};
@@ -491,14 +508,14 @@ mod tests {
         Ok((exchanges, origin))
     }
 
-    fn literal_key(origin: &OriginKey, segs: &[&str]) -> ViewNodeKey {
-        ViewNodeKey {
+    fn literal_key(origin: &OriginKey, segs: &[&str]) -> RequestScope {
+        RequestScope::subtree(ViewNodeKey {
             origin: origin.clone(),
             path: segs
                 .iter()
                 .map(|s| PathSegmentPattern::Literal((*s).to_owned()))
                 .collect(),
-        }
+        })
     }
 
     #[tokio::test]

@@ -10,6 +10,7 @@ mod ca_panel;
 mod copy_curl;
 mod detail_tabs;
 mod detail_view;
+mod endpoint_analysis;
 mod filter;
 mod fonts;
 mod har;
@@ -40,7 +41,8 @@ use std::time::Duration;
 
 use eframe::egui;
 use http_proxy::url_map::{
-    UrlMap, ViewNodeKey, export_graph_dot, export_graph_mermaid, export_tree_json, export_tree_text,
+    RequestScope, UrlMap, export_graph_dot, export_graph_mermaid, export_tree_json,
+    export_tree_text,
 };
 use http_proxy::{
     EngineState, Exchange, FullLog, HttpsInspection, ProxyConfig, ProxyHandle, RecordId,
@@ -107,8 +109,9 @@ struct InspectorApp {
     records: records::RecordList<Exchange>,
     url_map: UrlMap,
     map_panel: map_panel::MapPanel,
-    map_path_filter: Option<ViewNodeKey>,
+    map_path_filter: Option<RequestScope>,
     map_filter_cache: map_panel::RecordMatchCache,
+    endpoints: endpoint_analysis::EndpointAnalysis,
     selected: Option<RecordId>,
     search: search::RequestSearch,
     record_filter: RecordFilter,
@@ -149,6 +152,7 @@ impl InspectorApp {
                 Some(format!("Full-session logging is unavailable: {error}")),
             ),
         };
+        let body_saving = body_saving::BodySaving::open();
         let mut app = Self {
             main_view: MainView::Requests,
             replay: None,
@@ -159,6 +163,7 @@ impl InspectorApp {
             map_panel: map_panel::MapPanel::new(),
             map_path_filter: None,
             map_filter_cache: map_panel::RecordMatchCache::default(),
+            endpoints: endpoint_analysis::EndpointAnalysis::start(body_saving.store(), &context),
             selected: None,
             search: search::RequestSearch::new(&context),
             record_filter: RecordFilter::All,
@@ -172,7 +177,7 @@ impl InspectorApp {
             log_init_error,
             save: save::SaveControls::new(),
             har_dialog: har_dialog::HarDialog::default(),
-            body_saving: body_saving::BodySaving::open(),
+            body_saving,
             port: PortChoice::from_launch(),
             table: request_table::RequestTable::new(),
             detail_tab: DetailTab::Headers,
@@ -274,7 +279,9 @@ impl InspectorApp {
             return;
         };
         while let Some(record) = proxy.try_receive() {
-            let _ = self.url_map.observe_exchange(&record);
+            if let Some(node) = self.url_map.observe_exchange(&record) {
+                self.endpoints.submit(node, &record);
+            }
             if let Some(removed) = self.records.push(record)
                 && self.selected == Some(removed.id())
             {
@@ -287,6 +294,7 @@ impl InspectorApp {
         self.records.clear(self.engine_dropped());
         self.selected = None;
         self.url_map.clear();
+        self.endpoints.clear();
         self.map_panel.clear();
         self.map_path_filter = None;
         self.map_filter_cache.clear();
@@ -313,6 +321,7 @@ impl InspectorApp {
     pub(in crate::ui) fn render_ui(&mut self, ui: &mut egui::Ui) {
         self.receive_records();
         let _ = self.url_map.sync_live();
+        self.endpoints.update();
         self.release_failed_proxy();
         self.body_saving.update(ui.ctx());
         if let Some(panel) = self.replay.as_mut() {
@@ -521,8 +530,12 @@ impl InspectorApp {
             |left_ui, right_ui| {
                 self.map_panel
                     .show_tree_pane(left_ui, &self.url_map, shortcuts_allowed);
-                self.map_panel
-                    .show_detail_pane(right_ui, &self.url_map, &self.records)
+                self.map_panel.show_detail_pane(
+                    right_ui,
+                    &self.url_map,
+                    &self.records,
+                    self.endpoints.schemas(),
+                )
             },
         );
         self.detail_share = share;
@@ -655,8 +668,9 @@ mod layout_tests {
         DEFAULT_DETAIL_SHARE, DEFAULT_WINDOW, DetailTab, InspectorApp, MAX_RECORDS,
         MIN_DETAIL_WIDTH, MIN_MAIN_HEIGHT, MIN_TABLE_WIDTH, MIN_WINDOW, MainView, PortChoice,
         RecordFilter, UrlMap, body_display, body_format, body_saving, browser_panel, ca_panel,
-        copy_curl, fonts, har_dialog, image_view, main_height, map_panel, port_settings, records,
-        replay_panel, request_table, save, search, split_detail_width, theme, toolbar,
+        copy_curl, endpoint_analysis, fonts, har_dialog, image_view, main_height, map_panel,
+        port_settings, records, replay_panel, request_table, save, search, split_detail_width,
+        theme, toolbar,
     };
     use eframe::egui;
     use http_proxy::{Exchange, ProxyConfig, ProxyHandle};
@@ -678,6 +692,7 @@ mod layout_tests {
             map_panel: map_panel::MapPanel::new(),
             map_path_filter: None,
             map_filter_cache: map_panel::RecordMatchCache::default(),
+            endpoints: endpoint_analysis::EndpointAnalysis::disabled(),
             selected: None,
             search: search::RequestSearch::new(&context),
             record_filter: RecordFilter::All,
@@ -1462,6 +1477,72 @@ mod layout_tests {
     }
 
     #[tokio::test]
+    async fn map_detail_shows_endpoint_structure_without_values()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let exchanges = timeout(Duration::from_secs(5), capture_sample_exchanges()).await??;
+        let context = egui::Context::default();
+        let mut app = test_app(context.clone());
+        app.endpoints = endpoint_analysis::EndpointAnalysis::start(None, &context);
+        for exchange in exchanges {
+            if let Some(node) = app.url_map.observe_exchange(&exchange) {
+                app.endpoints.submit(node, &exchange);
+            }
+            let _evicted = app.records.push(exchange);
+        }
+        timeout(Duration::from_secs(5), async {
+            while app.endpoints.schemas().version() < 3 {
+                app.endpoints.update();
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await?;
+
+        let origin = app
+            .url_map
+            .origins()
+            .keys()
+            .next()
+            .cloned()
+            .ok_or("missing origin")?;
+        app.main_view = MainView::Map;
+        app.map_panel.sub_view = super::MapSubView::Tree;
+        app.map_panel.selected = Some(http_proxy::url_map::ViewNodeKey {
+            origin,
+            path: ["api", "v2", "users"]
+                .into_iter()
+                .map(|segment| http_proxy::url_map::PathSegmentPattern::Literal(segment.to_owned()))
+                .collect(),
+        });
+        let tall = [DEFAULT_WINDOW[0], 2_000.0];
+        for size in [DEFAULT_WINDOW, MIN_WINDOW, tall] {
+            let viewport =
+                egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size[0], size[1]));
+            let drawn = render_settled(&mut app, size);
+            assert_no_text_overlap(&drawn, viewport, &format!("map-endpoints@{size:?}"));
+            assert_no_secrets_painted(&drawn, &format!("map-endpoints@{size:?}"));
+            for value in ["Alice", "Bob", "active", "created_at_desc"] {
+                assert!(
+                    drawn.iter().all(|item| !item.text.contains(value)),
+                    "painted value {value:?}"
+                );
+            }
+        }
+        let drawn = render_settled(&mut app, tall);
+        let texts: Vec<&str> = drawn.iter().map(|item| item.text.as_str()).collect();
+        for expected in ["Endpoints", "GET · 1 request(s)", "OPTIONS · 1 request(s)"] {
+            assert!(
+                texts.contains(&expected),
+                "missing {expected:?} in {texts:?}"
+            );
+        }
+        assert!(
+            texts.iter().any(|text| text.starts_with("users: array")),
+            "missing users field in {texts:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn map_views_avoid_overlap_never_leak_query_values_and_filter_requests()
     -> Result<(), Box<dyn std::error::Error>> {
         let exchanges = timeout(Duration::from_secs(5), capture_sample_exchanges()).await??;
@@ -1526,7 +1607,7 @@ mod layout_tests {
         };
         app.handle_map_action(
             &app.context.clone(),
-            super::MapAction::ShowInRequests(users_key),
+            super::MapAction::ShowInRequests(http_proxy::url_map::RequestScope::subtree(users_key)),
         );
         assert_eq!(app.main_view, MainView::Requests);
         assert_eq!(app.filtered_records().len(), 2);
@@ -1711,7 +1792,9 @@ mod layout_tests {
 
         app.handle_map_action(
             &app.context.clone(),
-            super::MapAction::ShowInRequests(selected_key),
+            super::MapAction::ShowInRequests(http_proxy::url_map::RequestScope::subtree(
+                selected_key,
+            )),
         );
         let req_cold = measure_frames(&mut app, &mut time, 1);
         let req_frames = measure_frames(&mut app, &mut time, 60);
