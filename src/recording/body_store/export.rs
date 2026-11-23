@@ -11,6 +11,7 @@ use tempfile::NamedTempFile;
 
 use super::file_name::numbered;
 use super::index::Segment;
+use crate::exchange::ReadBodyOutcome;
 
 /// Most `Content-Encoding` layers decoded for one body.
 const MAX_ENCODINGS: usize = 4;
@@ -32,24 +33,6 @@ pub enum SaveFormat {
     Decoded,
     /// Keep the bytes exactly as they were received, content encoding included.
     AsReceived,
-}
-
-/// Outcome of reading and decoding a complete body within a byte limit.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ReadBodyOutcome {
-    /// Complete decoded bytes within the requested size cap.
-    Complete(Vec<u8>),
-    /// Some bytes of the body are missing: the stream was interrupted or
-    /// cancelled, is still arriving, or the store skipped later bytes.
-    Incomplete,
-    /// The decoded body is larger than the requested size cap.
-    TooLarge,
-    /// The body could not be decompressed due to invalid or unsupported `Content-Encoding`.
-    DecodeFailed,
-    /// The store could not be read (writer stopped or file I/O failed).
-    Unavailable,
-    /// No stored body was found for this exchange side.
-    NotFound,
 }
 
 /// A supported `Content-Encoding` layer.

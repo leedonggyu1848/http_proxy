@@ -9,8 +9,8 @@ use super::endpoint::{BodyObservation, EndpointObservation, ResponseObservation}
 use super::value::ValueShape;
 use crate::url_map::{classify_id_segment, parse_exchange_target, visit_query_values};
 use crate::{
-    BodyLifecycle, BodyPreview, BodySide, BodyStore, Exchange, HeaderPreview, MediaType, Outcome,
-    ReadBodyOutcome, read_captured_body,
+    BodyLifecycle, BodyPreview, BodySide, BodySource, BodyStore, Exchange, HeaderPreview,
+    MediaType, Outcome, PreviewBodies, ReadBodyOutcome,
 };
 
 /// Largest decoded body described; larger bodies are excluded as too large.
@@ -90,7 +90,8 @@ impl CapturedBodies {
     }
 
     fn read(&self, exchange: &Exchange, side: BodySide) -> ReadBodyOutcome {
-        read_captured_body(exchange, side, self.store.as_ref(), MAX_ANALYZED_BODY_BYTES)
+        let source: &dyn BodySource = self.store.as_ref().map_or(&PreviewBodies, |store| store);
+        source.read(exchange, side, MAX_ANALYZED_BODY_BYTES)
     }
 }
 

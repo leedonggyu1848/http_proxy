@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
 use std::time::Instant;
 
 mod body_side;
+mod body_source;
 mod image_format;
 mod media_type;
 mod record;
@@ -18,6 +19,7 @@ fn lock_recovering<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 pub use body_side::BodySide;
+pub use body_source::{BodySource, ReadBodyOutcome};
 pub use image_format::ImageFormat;
 pub use media_type::MediaType;
 pub(crate) use record::ExchangeWriter;

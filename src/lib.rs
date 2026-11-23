@@ -37,6 +37,7 @@ pub use exchange::{
     ImageFormat, MediaType, Outcome, RecordId, SessionId, Timing, TunnelPreview, TunnelSnapshot,
     TunnelState,
 };
+pub use exchange::{BodySource, ReadBodyOutcome};
 pub use https::{CaInfo, HttpsInspection, HttpsSetupError};
 pub use https::{CaTrustError, CaTrustStatus, CaTrustStore};
 pub use interception::{
@@ -53,8 +54,8 @@ pub use interop::curl::{
 pub use launcher::{Browser, BrowserEvent, BrowserSession};
 pub use recording::body_store::{
     BODY_STORE_LIMIT_BYTES, BODY_STORE_MIN_FREE_BYTES, BodyLayout, BodyStore, BulkProgress,
-    BulkSave, BulkSummary, ContentRange, RangePlan, ReadBodyOutcome, SaveBody, SaveFormat,
-    SavedBody, StoreGap, StoredBody, read_captured_body,
+    BulkSave, BulkSummary, ContentRange, PreviewBodies, RangePlan, SaveBody, SaveFormat, SavedBody,
+    StoreGap, StoredBody,
 };
 pub use recording::journal::{FullLog, SESSION_BODY_LIMIT_BYTES};
 pub use replay::{REPLAY_BODY_FILE_LIMIT_BYTES, ReplayDraft, ReplayField, ReplayTask};

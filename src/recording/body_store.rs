@@ -26,7 +26,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 pub use bulk::{BodyLayout, BulkProgress, BulkSave, BulkSummary};
-pub use export::{ReadBodyOutcome, SaveFormat};
+pub use export::SaveFormat;
 pub use index::{StoreGap, StoredBody};
 pub use ranges::{ContentRange, RangePlan};
 
@@ -42,14 +42,35 @@ pub fn response_range(record: &Exchange) -> Option<ContentRange> {
     .content_range()
 }
 
+/// Reads complete bodies from the in-memory preview only, for sessions
+/// without a body store.
+///
+/// A body whose preview kept only a prefix is reported as
+/// [`ReadBodyOutcome::Incomplete`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PreviewBodies;
+
+impl BodySource for PreviewBodies {
+    fn read(&self, record: &Exchange, side: BodySide, max_decoded_bytes: usize) -> ReadBodyOutcome {
+        read_captured_body(record, side, None, max_decoded_bytes)
+    }
+}
+
+/// Reads from the in-memory preview when it kept every byte, and otherwise
+/// from the stored file.
+impl BodySource for BodyStore {
+    fn read(&self, record: &Exchange, side: BodySide, max_decoded_bytes: usize) -> ReadBodyOutcome {
+        read_captured_body(record, side, Some(self), max_decoded_bytes)
+    }
+}
+
 /// Reads one complete body of a finished exchange, decoded and bounded by
 /// `max_decoded_bytes`.
 ///
 /// The in-memory preview is used when it kept every byte; otherwise the
 /// body is read from `store`. Reading from the store waits for its writer
 /// and reads a file, so call this only from a background thread.
-#[must_use]
-pub fn read_captured_body(
+fn read_captured_body(
     exchange: &Exchange,
     side: BodySide,
     store: Option<&BodyStore>,
@@ -90,7 +111,10 @@ use self::location::SessionDirectory;
 use self::writer::Command;
 use super::lock_recovering;
 use crate::exchange::BodySide;
-use crate::exchange::{BodyLifecycle, BodyRetention, Exchange, MediaType, Outcome, RecordId};
+use crate::exchange::{
+    BodyLifecycle, BodyRetention, BodySource, Exchange, MediaType, Outcome, ReadBodyOutcome,
+    RecordId,
+};
 
 /// Default limit on body bytes one session stores.
 pub const BODY_STORE_LIMIT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
