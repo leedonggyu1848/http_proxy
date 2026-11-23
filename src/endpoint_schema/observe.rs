@@ -9,8 +9,7 @@ use super::endpoint::{BodyObservation, EndpointObservation, ResponseObservation}
 use super::value::ValueShape;
 use crate::url_map::{classify_id_segment, parse_exchange_target, visit_query_values};
 use crate::{
-    BodyLifecycle, BodyPreview, BodySide, BodySource, BodyStore, Exchange, HeaderPreview,
-    MediaType, Outcome, PreviewBodies, ReadBodyOutcome,
+    BodyLifecycle, BodyPreview, BodySide, BodySource, Exchange, HeaderPreview, MediaType, Outcome,
 };
 
 /// Largest decoded body described; larger bodies are excluded as too large.
@@ -72,32 +71,10 @@ const CREDENTIAL_HEADERS: &[&str] = &[
     "x-access-token",
 ];
 
-/// Reads complete bodies of finished exchanges from their in-memory
-/// preview, or from the body store when the preview kept only a prefix.
-///
-/// Reading from the store waits for its writer and reads a file, so this is
-/// only used on the schema analysis thread.
-#[derive(Clone, Debug, Default)]
-pub struct CapturedBodies {
-    store: Option<BodyStore>,
-}
-
-impl CapturedBodies {
-    /// Reads bodies from previews and, when given, from `store`.
-    #[must_use]
-    pub const fn new(store: Option<BodyStore>) -> Self {
-        Self { store }
-    }
-
-    fn read(&self, exchange: &Exchange, side: BodySide) -> ReadBodyOutcome {
-        let source: &dyn BodySource = self.store.as_ref().map_or(&PreviewBodies, |store| store);
-        source.read(exchange, side, MAX_ANALYZED_BODY_BYTES)
-    }
-}
-
-/// Describes the structure of a finished exchange.
+/// Describes the structure of a finished exchange, reading structured
+/// bodies from `bodies`.
 #[must_use]
-pub fn observe_exchange(exchange: &Exchange, bodies: &CapturedBodies) -> EndpointObservation {
+pub fn observe_exchange(exchange: &Exchange, bodies: &dyn BodySource) -> EndpointObservation {
     let request = exchange.request();
     let path_ids =
         parse_exchange_target(request.target(), exchange.source()).map_or_default(|url| {
@@ -151,7 +128,7 @@ pub fn observe_exchange(exchange: &Exchange, bodies: &CapturedBodies) -> Endpoin
 }
 
 fn describe_body(
-    bodies: &CapturedBodies,
+    bodies: &dyn BodySource,
     exchange: &Exchange,
     side: BodySide,
     preview: Option<&BodyPreview>,
@@ -160,7 +137,10 @@ fn describe_body(
 ) -> BodyObservation {
     let format = BodyFormat::detect(media, headers.get("content-type").next());
     let analysis = if format.needs_bytes() {
-        BodyAnalysis::describe(&format, bodies.read(exchange, side))
+        BodyAnalysis::describe(
+            &format,
+            bodies.read(exchange, side, MAX_ANALYZED_BODY_BYTES),
+        )
     } else {
         unread_body(preview)
     };

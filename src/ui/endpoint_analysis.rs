@@ -2,9 +2,11 @@
 //! exchanges to the background analyzer and keeps the merged results.
 
 use eframe::egui;
-use http_proxy::endpoint_schema::{CapturedBodies, EndpointKey, EndpointSchemas, SchemaAnalyzer};
+use std::sync::Arc;
+
+use http_proxy::endpoint_schema::{EndpointKey, EndpointSchemas, SchemaAnalyzer};
 use http_proxy::url_map::NodeId;
-use http_proxy::{BodyStore, CaptureSource, Exchange};
+use http_proxy::{BodySource, BodyStore, CaptureSource, Exchange, PreviewBodies};
 
 pub(in crate::ui) struct EndpointAnalysis {
     schemas: EndpointSchemas,
@@ -17,7 +19,11 @@ impl EndpointAnalysis {
     /// endpoint structure but keeps working.
     pub(in crate::ui) fn start(store: Option<&BodyStore>, context: &egui::Context) -> Self {
         let context = context.clone();
-        let analyzer = SchemaAnalyzer::spawn(CapturedBodies::new(store.cloned()), move || {
+        let bodies: Arc<dyn BodySource> = match store {
+            Some(store) => Arc::new(store.clone()),
+            None => Arc::new(PreviewBodies),
+        };
+        let analyzer = SchemaAnalyzer::spawn(bodies, move || {
             context.request_repaint();
         });
         if let Err(error) = &analyzer {

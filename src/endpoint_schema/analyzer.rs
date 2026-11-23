@@ -1,7 +1,7 @@
 //! Background thread that describes finished exchanges.
 //!
 //! The UI thread only queues exchanges and merges finished observations.
-//! Waiting for bodies to finish, reading them from the body store and
+//! Waiting for bodies to finish, reading them from the [`BodySource`] and
 //! parsing them all happen on this thread, so neither the UI nor the
 //! forwarding path waits for disk or parsing.
 
@@ -15,9 +15,9 @@ use std::thread;
 use std::time::Duration;
 
 use super::endpoint::EndpointObservation;
-use super::observe::{CapturedBodies, observe_exchange};
+use super::observe::observe_exchange;
 use super::store::{EndpointKey, EndpointSchemas};
-use crate::Exchange;
+use crate::{BodySource, Exchange};
 
 /// Exchanges that may wait in the queue to the analysis thread.
 const JOB_CAPACITY: usize = 4_096;
@@ -69,9 +69,13 @@ impl std::fmt::Debug for Finished {
 }
 
 impl SchemaAnalyzer {
-    /// Starts the analysis thread. `wake` is called after each finished
-    /// exchange so the UI can merge it.
-    pub fn spawn(bodies: CapturedBodies, wake: impl Fn() + Send + 'static) -> io::Result<Self> {
+    /// Starts the analysis thread, which reads structured bodies from
+    /// `bodies`. `wake` is called after each finished exchange so the UI
+    /// can merge it.
+    pub fn spawn(
+        bodies: Arc<dyn BodySource>,
+        wake: impl Fn() + Send + 'static,
+    ) -> io::Result<Self> {
         let (jobs, job_receiver) = sync_channel(JOB_CAPACITY);
         let (result_sender, results) = sync_channel(RESULT_CAPACITY);
         let generation = Arc::new(AtomicU64::new(0));
@@ -142,7 +146,7 @@ struct Worker {
     jobs: Receiver<Job>,
     results: SyncSender<Finished>,
     generation: Arc<AtomicU64>,
-    bodies: CapturedBodies,
+    bodies: Arc<dyn BodySource>,
     watched: Vec<Job>,
 }
 
@@ -200,7 +204,7 @@ impl Worker {
             if generation != self.generation.load(Ordering::Acquire) {
                 continue;
             }
-            let observation = observe_exchange(&exchange, &self.bodies);
+            let observation = observe_exchange(&exchange, self.bodies.as_ref());
             let finished = Finished {
                 generation,
                 key,
