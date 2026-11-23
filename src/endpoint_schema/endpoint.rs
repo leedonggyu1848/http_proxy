@@ -351,7 +351,7 @@ impl EndpointSchema {
 mod tests {
     use super::*;
     use crate::ReadBodyOutcome;
-    use crate::endpoint_schema::body::BodyFormat;
+    use crate::endpoint_schema::body::BodyParse;
     use crate::endpoint_schema::value::ValueKind;
 
     fn observation(status: u16, response: &str) -> EndpointObservation {
@@ -372,7 +372,7 @@ mod tests {
                 body: BodyObservation {
                     content_type: Some("application/json".to_owned()),
                     analysis: BodyAnalysis::describe(
-                        &BodyFormat::Json,
+                        &BodyParse::Json,
                         ReadBodyOutcome::Complete(response.as_bytes().to_vec()),
                     ),
                 },

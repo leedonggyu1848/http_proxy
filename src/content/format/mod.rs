@@ -1,6 +1,6 @@
-//! Display-only formatting of decoded body previews: format detection, the
-//! Pretty and Raw view modes, and format-specific pretty printers that emit
-//! classified tokens for syntax highlighting.
+//! Display-only formatting of decoded body previews: the Pretty and Raw view
+//! modes, and format-specific pretty printers that emit classified tokens for
+//! syntax highlighting.
 //!
 //! Each format lives in its own module and only turns text into a [`Styled`]
 //! token stream; UI highlighting maps the shared [`TokenKind`]s to theme colors.
@@ -16,14 +16,13 @@ mod tag;
 pub mod tree;
 mod xml;
 
-use crate::MediaType;
-
-/// Body syntax detected from `Content-Type`.
+/// Body syntax, as decided by [`super::detect`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum BodyFormat {
     Json,
     Css,
     Form,
+    Multipart,
     Markup,
     Xml,
     JavaScript,
@@ -31,29 +30,6 @@ pub enum BodyFormat {
 }
 
 impl BodyFormat {
-    /// Detects the format from the body's media type. Unknown or missing
-    /// types are plain text.
-    #[must_use]
-    pub fn from_media_type(media_type: Option<&MediaType>) -> Self {
-        let Some(media_type) = media_type else {
-            return Self::Text;
-        };
-        match media_type.essence() {
-            _ if media_type.is_json() => Self::Json,
-            "text/css" => Self::Css,
-            "application/x-www-form-urlencoded" => Self::Form,
-            "text/html" | "application/xhtml+xml" => Self::Markup,
-            "application/xml" | "text/xml" => Self::Xml,
-            _ if media_type.has_xml_suffix() => Self::Xml,
-            "text/javascript"
-            | "application/javascript"
-            | "application/x-javascript"
-            | "application/ecmascript"
-            | "text/ecmascript" => Self::JavaScript,
-            _ => Self::Text,
-        }
-    }
-
     /// What this format supports, declared in [`FormatSpec`].
     pub const fn spec(self) -> &'static FormatSpec {
         match self {
@@ -72,6 +48,12 @@ impl BodyFormat {
             Self::Form => &FormatSpec {
                 label: "Form",
                 pretty: Some(|text| Ok(Formatted::plain(form::pretty(text)))),
+                tree: None,
+                numbered: false,
+            },
+            Self::Multipart => &FormatSpec {
+                label: "Multipart",
+                pretty: None,
                 tree: None,
                 numbered: false,
             },
@@ -453,42 +435,6 @@ fn split_while(text: &str, accept: impl Fn(char) -> bool) -> (&str, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn detects_formats_from_media_type() {
-        for (value, expected) in [
-            (Some("application/json"), BodyFormat::Json),
-            (Some("Text/CSS; charset=utf-8"), BodyFormat::Css),
-            (Some("Application/JSON; charset=utf-8"), BodyFormat::Json),
-            (Some("application/problem+json"), BodyFormat::Json),
-            (Some("application/x-www-form-urlencoded"), BodyFormat::Form),
-            (Some("text/html; charset=UTF-8"), BodyFormat::Markup),
-            (Some("application/xhtml+xml"), BodyFormat::Markup),
-            (Some("application/xml"), BodyFormat::Xml),
-            (Some("text/xml; charset=utf-8"), BodyFormat::Xml),
-            (Some("application/atom+xml"), BodyFormat::Xml),
-            (Some("application/soap+xml"), BodyFormat::Xml),
-            (Some("image/svg+xml"), BodyFormat::Xml),
-            (Some("text/plain"), BodyFormat::Text),
-            (Some("application/javascript"), BodyFormat::JavaScript),
-            (
-                Some("text/javascript; charset=utf-8"),
-                BodyFormat::JavaScript,
-            ),
-            (Some("application/x-javascript"), BodyFormat::JavaScript),
-            (Some("application/ecmascript"), BodyFormat::JavaScript),
-            (Some("Text/ECMAScript"), BodyFormat::JavaScript),
-            (Some("jsonish"), BodyFormat::Text),
-            (None, BodyFormat::Text),
-        ] {
-            let media_type = value.and_then(MediaType::parse);
-            assert_eq!(
-                BodyFormat::from_media_type(media_type.as_ref()),
-                expected,
-                "{value:?}"
-            );
-        }
-    }
 
     #[test]
     fn raw_keeps_original_text() {

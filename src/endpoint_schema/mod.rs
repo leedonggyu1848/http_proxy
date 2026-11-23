@@ -28,7 +28,7 @@ mod store;
 mod value;
 
 pub use analyzer::SchemaAnalyzer;
-pub use body::{BodyAnalysis, BodyFormat, BodySchema, ExclusionReason, PartStats};
+pub use body::{BodyAnalysis, BodyParse, BodySchema, ExclusionReason, PartStats};
 pub use endpoint::{
     BodyObservation, EndpointObservation, EndpointSchema, MAX_BODY_GROUPS, MAX_HEADER_NAMES,
     MAX_QUERY_PARAMS, NO_CONTENT_TYPE, ParamStats, ResponseKey, ResponseObservation,

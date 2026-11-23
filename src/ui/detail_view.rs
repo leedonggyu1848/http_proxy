@@ -9,6 +9,7 @@ use crate::ui::search::highlight::{self, MatchColors};
 use crate::ui::theme::Palette;
 use crate::ui::{image_view, outcome_view, replay_panel, scope_help};
 use eframe::egui;
+use http_proxy::content::detect;
 use http_proxy::content::format::{BodyFormat, ViewMode, form};
 use http_proxy::{
     BodyLifecycle, BodyPreview, BodyRetention, CapturedRequest, Exchange, HeaderPreview, MediaType,
@@ -135,14 +136,14 @@ fn render_title(ui: &mut egui::Ui, record: &Exchange, search: Option<&Query>) {
     ui.add(label.wrap());
 }
 
+/// Whether a body of `media_type` may be shown as a tree: its `Content-Type`
+/// names JSON or XML, or does not name a format and the body may sniff as JSON.
 fn has_tree(media_type: Option<&MediaType>) -> bool {
-    matches!(
-        BodyFormat::from_media_type(media_type),
-        BodyFormat::Json | BodyFormat::Xml
-    )
+    detect::from_content_type(media_type)
+        .is_none_or(|detection| matches!(detection.format, BodyFormat::Json | BodyFormat::Xml))
 }
 
-/// Shows Tree only as an enabled option when either body has JSON or XML content type.
+/// Shows Tree only as an enabled option when either body may be JSON or XML.
 fn view_mode_bar(ui: &mut egui::Ui, mode: &mut ViewMode, has_tree: bool) -> ViewMode {
     if !has_tree && *mode == ViewMode::Tree {
         *mode = ViewMode::Pretty;

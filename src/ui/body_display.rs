@@ -9,6 +9,7 @@ use crate::ui::theme::{Palette, Theme};
 use crate::ui::tree_view::TreeView;
 use eframe::egui::{self, Galley, text::LayoutJob};
 use http_proxy::content::decode::{self as body_view, BodyText};
+use http_proxy::content::detect;
 use http_proxy::content::format::{
     self as body_format, BodyFormat, Notice, NoticeLevel, ViewMode, tree,
 };
@@ -265,7 +266,7 @@ fn build(
             BodyText::Ready { text, notice } => (text, notice),
             BodyText::Unavailable(message) => return Content::Unavailable(message),
         };
-    let format = BodyFormat::from_media_type(source.media_type);
+    let format = detect::settle(source.media_type, text.as_bytes());
     let mut notices = capture_notices(decoding, source.capture);
     if key.mode == ViewMode::Tree {
         match trees.get(source, format, &text) {
