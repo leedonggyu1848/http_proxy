@@ -884,6 +884,33 @@ mod tests {
     }
 
     #[test]
+    fn preview_bodies_read_only_previews_that_kept_every_byte()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::{BODY_PREVIEW_BYTES, ExchangeBuilder, ResponseFixture};
+
+        let respond = |body: Vec<u8>| {
+            ExchangeBuilder::http(http::Method::GET, "http://example.test/")?.respond(
+                ResponseFixture::new(http::StatusCode::OK).body(body, BodyLifecycle::Complete),
+            )
+        };
+        let short = respond(b"hello".to_vec())?;
+        assert_eq!(
+            PreviewBodies.read(&short, BodySide::Response, 1024),
+            ReadBodyOutcome::Complete(b"hello".to_vec())
+        );
+        assert_eq!(
+            PreviewBodies.read(&short, BodySide::Response, 2),
+            ReadBodyOutcome::TooLarge
+        );
+        let long = respond(vec![b'a'; BODY_PREVIEW_BYTES + 1])?;
+        assert_eq!(
+            PreviewBodies.read(&long, BodySide::Response, usize::MAX),
+            ReadBodyOutcome::Incomplete
+        );
+        Ok(())
+    }
+
+    #[test]
     fn poisoned_index_recovers_recorded_bodies_and_accepts_new_updates() -> io::Result<()> {
         let root = tempfile::tempdir()?;
         let store = BodyStore::with_limits(root.path(), 1024, 0)?;

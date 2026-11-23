@@ -194,7 +194,113 @@ fn bounded(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error;
+
+    use http::header::CONTENT_TYPE;
+    use http::{HeaderValue, Method, StatusCode};
+    use serde_json::json;
+
     use super::*;
+    use crate::endpoint_schema::FieldShape;
+    use crate::{ExchangeBuilder, MemoryBodySource, ReadBodyOutcome, ResponseFixture};
+
+    type TestResult = Result<(), Box<dyn Error>>;
+
+    /// A finished `POST` whose request and response bodies have `content_type`.
+    fn exchange(content_type: &'static str) -> Result<Exchange, Box<dyn Error>> {
+        let media = HeaderValue::from_static(content_type);
+        Ok(
+            ExchangeBuilder::http(Method::POST, "http://api.example.test/users/42")?
+                .header(CONTENT_TYPE, media.clone())
+                .request_body("preview", BodyLifecycle::Complete)
+                .respond(
+                    ResponseFixture::new(StatusCode::OK)
+                        .header(CONTENT_TYPE, media)
+                        .body("preview", BodyLifecycle::Complete),
+                )?,
+        )
+    }
+
+    fn response_analysis(observation: &EndpointObservation) -> Option<&BodyAnalysis> {
+        match &observation.response {
+            ResponseObservation::Received { body, .. } => Some(&body.analysis),
+            ResponseObservation::Missing => None,
+        }
+    }
+
+    #[test]
+    fn structured_bodies_are_described_from_the_body_source() -> TestResult {
+        let exchange = exchange("application/json")?;
+        let bodies = MemoryBodySource::new()
+            .with_body(exchange.id(), BodySide::Request, r#"{"name":"SECRET"}"#)
+            .with_body(exchange.id(), BodySide::Response, r#"{"id":7}"#);
+
+        let observation = observe_exchange(&exchange, &bodies);
+
+        assert_eq!(
+            observation.request_body.analysis,
+            BodyAnalysis::Fields(FieldShape::from_json(&json!({ "name": "value" })))
+        );
+        assert_eq!(
+            response_analysis(&observation),
+            Some(&BodyAnalysis::Fields(FieldShape::from_json(
+                &json!({ "id": 0 })
+            )))
+        );
+        assert_eq!(
+            observation.request_body.content_type.as_deref(),
+            Some("application/json")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unreadable_bodies_are_excluded_with_the_source_reason() -> TestResult {
+        let exchange = exchange("application/json")?;
+        let bodies = MemoryBodySource::new()
+            .with_outcome(
+                exchange.id(),
+                BodySide::Request,
+                ReadBodyOutcome::DecodeFailed,
+            )
+            .with_body(
+                exchange.id(),
+                BodySide::Response,
+                vec![b' '; MAX_ANALYZED_BODY_BYTES + 1],
+            );
+
+        let observation = observe_exchange(&exchange, &bodies);
+        assert_eq!(
+            observation.request_body.analysis,
+            BodyAnalysis::Excluded(ExclusionReason::DecodeFailed)
+        );
+        assert_eq!(
+            response_analysis(&observation),
+            Some(&BodyAnalysis::Excluded(ExclusionReason::TooLarge))
+        );
+
+        let missing = observe_exchange(&exchange, &MemoryBodySource::new());
+        assert_eq!(
+            missing.request_body.analysis,
+            BodyAnalysis::Excluded(ExclusionReason::Unavailable)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn bodies_without_field_structure_are_not_read() -> TestResult {
+        let exchange = exchange("text/html")?;
+        let observation = observe_exchange(&exchange, &MemoryBodySource::new());
+        assert_eq!(
+            observation.request_body.analysis,
+            BodyAnalysis::Unstructured
+        );
+        assert_eq!(
+            response_analysis(&observation),
+            Some(&BodyAnalysis::Unstructured)
+        );
+        Ok(())
+    }
 
     #[test]
     fn custom_headers_skip_standard_credential_and_fetch_metadata_names() {

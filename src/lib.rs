@@ -31,6 +31,8 @@ pub mod text_search;
 pub mod url_map;
 
 pub use exchange::BodySide;
+#[cfg(feature = "test-support")]
+pub use exchange::MemoryBodySource;
 pub use exchange::{
     AuthScheme, BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, CaptureSource,
     CapturedHeader, CapturedRequest, CapturedResponse, Exchange, FailureStage, HeaderPreview,
