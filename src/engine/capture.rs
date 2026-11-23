@@ -3,13 +3,17 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
-use http::HeaderMap;
+use http::{HeaderMap, Method, Response};
 use http_body::{Body, Frame, SizeHint};
+use hyper::ext::ReasonPhrase;
 
 use crate::exchange::AuthScheme;
 use crate::exchange::BodyLifecycle;
 use crate::exchange::RetentionBudget;
-use crate::exchange::{BodyPreview, CapturedHeader, HeaderPreview};
+use crate::exchange::{
+    BodyPreview, BodyPreviewWriter, CapturedHeader, CapturedRequest, CapturedResponse,
+    HeaderPreview,
+};
 use crate::exchange::{BodySide, ImageFormat, MediaType};
 use crate::http_semantics::redacted_value;
 use crate::recording::body_store::BodyRecorder;
@@ -24,10 +28,10 @@ pub const IMAGE_PREVIEW_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 static IMAGE_PREVIEW_BUDGET: RetentionBudget = RetentionBudget::new(IMAGE_PREVIEW_BUDGET_BYTES);
 const HEADER_PREVIEW_BYTES: usize = 16 * 1024;
 const HEADER_PREVIEW_FIELDS: usize = 64;
-pub(in crate::engine) const TARGET_BYTES: usize = 4 * 1024;
+const TARGET_BYTES: usize = 4 * 1024;
 pub(in crate::engine) const ERROR_BYTES: usize = 1024;
 
-pub(in crate::engine) fn capture_headers(headers: &HeaderMap) -> HeaderPreview {
+fn capture_headers(headers: &HeaderMap) -> HeaderPreview {
     let mut entries = Vec::new();
     let mut retained_bytes: usize = 0;
     let mut omitted = false;
@@ -54,11 +58,44 @@ pub fn is_previewable_image_media_type(media_type: &MediaType) -> bool {
     ImageFormat::from_media_type(media_type).is_some()
 }
 
+/// Captures the request line and headers as they arrived from the client.
+pub(in crate::engine) fn captured_request(
+    method: &Method,
+    target: &str,
+    headers: &HeaderMap,
+) -> CapturedRequest {
+    CapturedRequest::new(
+        method.clone(),
+        bounded_text(target, TARGET_BYTES),
+        capture_headers(headers),
+        capture_auth_schemes(headers),
+    )
+}
+
+/// Captures the response head received from the upstream server.
+pub(in crate::engine) fn captured_response<B>(
+    response: &Response<B>,
+    body: BodyPreview,
+) -> CapturedResponse {
+    let status = response.status();
+    let reason = response.extensions().get::<ReasonPhrase>().map_or_else(
+        || status.canonical_reason().unwrap_or_default().to_owned(),
+        |phrase| String::from_utf8_lossy(phrase.as_bytes()).into_owned(),
+    );
+    CapturedResponse::new(
+        status,
+        response.version(),
+        bounded_text(&reason, ERROR_BYTES),
+        capture_headers(response.headers()),
+        body,
+    )
+}
+
 /// Creates the response-body preview: image responses keep enough bytes to be
 /// drawn, within the shared image budget; others keep the default prefix.
 /// An image whose declared length already exceeds the per-image limit could
 /// never be drawn, so it keeps the default prefix without using the budget.
-pub(in crate::engine) fn response_body_preview(headers: &HeaderMap) -> BodyPreview {
+pub(in crate::engine) fn response_body_preview(headers: &HeaderMap) -> BodyPreviewWriter {
     let header = |name| headers.get(name).and_then(|value| value.to_str().ok());
     let image = header(http::header::CONTENT_TYPE)
         .and_then(MediaType::parse)
@@ -67,9 +104,9 @@ pub(in crate::engine) fn response_body_preview(headers: &HeaderMap) -> BodyPrevi
         .and_then(|value| value.trim().parse::<u64>().ok())
         .is_none_or(|length| length <= IMAGE_PREVIEW_BYTES as u64);
     if image && fits {
-        BodyPreview::with_budget(IMAGE_PREVIEW_BYTES, Some(&IMAGE_PREVIEW_BUDGET))
+        BodyPreviewWriter::with_budget(IMAGE_PREVIEW_BYTES, Some(&IMAGE_PREVIEW_BUDGET))
     } else {
-        BodyPreview::new(BODY_PREVIEW_BYTES)
+        BodyPreviewWriter::new(BODY_PREVIEW_BYTES)
     }
 }
 
@@ -83,7 +120,7 @@ pub(in crate::engine) fn bounded_text(value: &str, max_bytes: usize) -> String {
 
 /// Extracts recognized authentication scheme names from raw request headers
 /// before values are redacted. No credential, token, or cookie bytes are kept.
-pub(in crate::engine) fn capture_auth_schemes(headers: &HeaderMap) -> Vec<AuthScheme> {
+fn capture_auth_schemes(headers: &HeaderMap) -> Vec<AuthScheme> {
     let mut schemes = BTreeSet::new();
     for value in headers.get_all(http::header::AUTHORIZATION) {
         let _ = schemes.insert(classify_authorization_value(value.as_bytes()));
@@ -200,7 +237,7 @@ impl BodySinks {
 
 pub(in crate::engine) struct ObservedBody<B> {
     body: B,
-    preview: BodyPreview,
+    preview: BodyPreviewWriter,
     sinks: BodySinks,
 }
 
@@ -208,7 +245,11 @@ impl<B> ObservedBody<B>
 where
     B: Body,
 {
-    pub(in crate::engine) fn new(body: B, preview: BodyPreview, mut sinks: BodySinks) -> Self {
+    pub(in crate::engine) fn new(
+        body: B,
+        preview: BodyPreviewWriter,
+        mut sinks: BodySinks,
+    ) -> Self {
         if body.is_end_stream() {
             preview.complete();
             sinks.end(BodyLifecycle::Complete);
@@ -353,7 +394,10 @@ mod tests {
         let retained = |map: &HeaderMap| {
             let preview = response_body_preview(map);
             preview.observe(&vec![0; BODY_PREVIEW_BYTES + 1]);
-            preview.snapshot().map(|snapshot| snapshot.bytes().len())
+            preview
+                .preview()
+                .snapshot()
+                .map(|snapshot| snapshot.bytes().len())
         };
         let too_large = (IMAGE_PREVIEW_BYTES + 1).to_string();
         assert_eq!(

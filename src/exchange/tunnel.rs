@@ -21,29 +21,51 @@ struct TunnelEnd {
 }
 
 /// Shared, updating view of one CONNECT tunnel.
+///
+/// This is a read handle: only the relay that owns the tunnel writer
+/// counts bytes and ends the tunnel.
+///
+/// ```compile_fail,E0599
+/// fn close(tunnel: &http_proxy::TunnelPreview) {
+///     tunnel.close();
+/// }
+/// ```
 #[derive(Clone, Debug)]
 pub struct TunnelPreview {
     inner: Arc<TunnelInner>,
 }
 
-impl TunnelPreview {
+/// Write side of one [`TunnelPreview`], owned by the relay.
+#[derive(Debug)]
+pub(crate) struct TunnelWriter {
+    preview: TunnelPreview,
+}
+
+impl TunnelWriter {
     pub(crate) fn new() -> Self {
         Self {
-            inner: Arc::new(TunnelInner {
-                opened: Instant::now(),
-                client_to_upstream: AtomicU64::new(0),
-                upstream_to_client: AtomicU64::new(0),
-                end: Mutex::new(None),
-            }),
+            preview: TunnelPreview {
+                inner: Arc::new(TunnelInner {
+                    opened: Instant::now(),
+                    client_to_upstream: AtomicU64::new(0),
+                    upstream_to_client: AtomicU64::new(0),
+                    end: Mutex::new(None),
+                }),
+            },
         }
     }
 
+    /// Returns a read handle that follows this writer.
+    pub(crate) fn preview(&self) -> TunnelPreview {
+        self.preview.clone()
+    }
+
     pub(crate) fn add_client_to_upstream(&self, bytes: usize) {
-        add(&self.inner.client_to_upstream, bytes);
+        add(&self.preview.inner.client_to_upstream, bytes);
     }
 
     pub(crate) fn add_upstream_to_client(&self, bytes: usize) {
-        add(&self.inner.upstream_to_client, bytes);
+        add(&self.preview.inner.upstream_to_client, bytes);
     }
 
     pub(crate) fn close(&self) {
@@ -61,6 +83,7 @@ impl TunnelPreview {
 
     fn finish(&self, state: TunnelState) {
         let mut end = self
+            .preview
             .inner
             .end
             .lock()
@@ -72,7 +95,9 @@ impl TunnelPreview {
             });
         }
     }
+}
 
+impl TunnelPreview {
     /// Returns the transfer totals and state at this instant.
     #[must_use]
     pub fn snapshot(&self) -> TunnelSnapshot {
@@ -159,18 +184,19 @@ mod tests {
 
     #[test]
     fn keeps_the_first_end_and_freezes_duration() {
-        let tunnel = TunnelPreview::new();
+        let tunnel = TunnelWriter::new();
+        let view = tunnel.preview();
         tunnel.add_client_to_upstream(3);
         tunnel.add_upstream_to_client(5);
-        assert_eq!(tunnel.snapshot().state(), &TunnelState::Open);
+        assert_eq!(view.snapshot().state(), &TunnelState::Open);
 
         tunnel.close();
         tunnel.fail(FailureStage::Tunnel, "late".to_owned());
         tunnel.abandon();
-        let first = tunnel.snapshot();
+        let first = view.snapshot();
         assert_eq!(first.state(), &TunnelState::Closed);
         assert_eq!(first.client_to_upstream(), 3);
         assert_eq!(first.upstream_to_client(), 5);
-        assert_eq!(tunnel.snapshot().duration(), first.duration());
+        assert_eq!(view.snapshot().duration(), first.duration());
     }
 }
