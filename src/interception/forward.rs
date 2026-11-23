@@ -1,11 +1,9 @@
+use super::capture::{BODY_PREVIEW_BYTES, ObservedBody, captured_response, response_body_preview};
 use super::capture_context::CaptureContext;
 use super::handle::Engine;
 use super::target::upstream_target;
 use super::upstream::connect_upstream;
 use super::{ProxyBody, failed_response};
-use crate::engine::capture::{
-    BODY_PREVIEW_BYTES, ObservedBody, captured_response, response_body_preview,
-};
 use crate::exchange::BodySide;
 use crate::exchange::{BodyPreviewWriter, FailureStage, Outcome};
 use crate::http_semantics::remove_hop_by_hop_headers;

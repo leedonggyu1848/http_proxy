@@ -29,7 +29,7 @@ static IMAGE_PREVIEW_BUDGET: RetentionBudget = RetentionBudget::new(IMAGE_PREVIE
 const HEADER_PREVIEW_BYTES: usize = 16 * 1024;
 const HEADER_PREVIEW_FIELDS: usize = 64;
 const TARGET_BYTES: usize = 4 * 1024;
-pub(in crate::engine) const ERROR_BYTES: usize = 1024;
+pub(super) const ERROR_BYTES: usize = 1024;
 
 fn capture_headers(headers: &HeaderMap) -> HeaderPreview {
     let mut entries = Vec::new();
@@ -59,7 +59,7 @@ pub fn is_previewable_image_media_type(media_type: &MediaType) -> bool {
 }
 
 /// Captures the request line and headers as they arrived from the client.
-pub(in crate::engine) fn captured_request(
+pub(super) fn captured_request(
     method: &Method,
     target: &str,
     headers: &HeaderMap,
@@ -73,10 +73,7 @@ pub(in crate::engine) fn captured_request(
 }
 
 /// Captures the response head received from the upstream server.
-pub(in crate::engine) fn captured_response<B>(
-    response: &Response<B>,
-    body: BodyPreview,
-) -> CapturedResponse {
+pub(super) fn captured_response<B>(response: &Response<B>, body: BodyPreview) -> CapturedResponse {
     let status = response.status();
     let reason = response.extensions().get::<ReasonPhrase>().map_or_else(
         || status.canonical_reason().unwrap_or_default().to_owned(),
@@ -95,7 +92,7 @@ pub(in crate::engine) fn captured_response<B>(
 /// drawn, within the shared image budget; others keep the default prefix.
 /// An image whose declared length already exceeds the per-image limit could
 /// never be drawn, so it keeps the default prefix without using the budget.
-pub(in crate::engine) fn response_body_preview(headers: &HeaderMap) -> BodyPreviewWriter {
+pub(super) fn response_body_preview(headers: &HeaderMap) -> BodyPreviewWriter {
     let header = |name| headers.get(name).and_then(|value| value.to_str().ok());
     let image = header(http::header::CONTENT_TYPE)
         .and_then(MediaType::parse)
@@ -110,7 +107,7 @@ pub(in crate::engine) fn response_body_preview(headers: &HeaderMap) -> BodyPrevi
     }
 }
 
-pub(in crate::engine) fn bounded_text(value: &str, max_bytes: usize) -> String {
+pub(super) fn bounded_text(value: &str, max_bytes: usize) -> String {
     if value.len() <= max_bytes {
         return value.to_owned();
     }
@@ -170,7 +167,7 @@ fn classify_authorization_value(raw: &[u8]) -> AuthScheme {
     }
 }
 
-pub(in crate::engine) struct BodyLog {
+pub(super) struct BodyLog {
     log: FullLog,
     id: u64,
     side: BodySide,
@@ -179,7 +176,7 @@ pub(in crate::engine) struct BodyLog {
 }
 
 impl BodyLog {
-    pub(in crate::engine) const fn new(log: FullLog, id: u64, side: BodySide) -> Self {
+    pub(super) const fn new(log: FullLog, id: u64, side: BodySide) -> Self {
         Self {
             log,
             id,
@@ -210,9 +207,9 @@ impl BodyLog {
 }
 
 /// Where the bytes of one forwarded body are copied besides its preview.
-pub(in crate::engine) struct BodySinks {
-    pub(in crate::engine) log: Option<BodyLog>,
-    pub(in crate::engine) store: Option<BodyRecorder>,
+pub(super) struct BodySinks {
+    pub(super) log: Option<BodyLog>,
+    pub(super) store: Option<BodyRecorder>,
 }
 
 impl BodySinks {
@@ -235,7 +232,7 @@ impl BodySinks {
     }
 }
 
-pub(in crate::engine) struct ObservedBody<B> {
+pub(super) struct ObservedBody<B> {
     body: B,
     preview: BodyPreviewWriter,
     sinks: BodySinks,
@@ -245,11 +242,7 @@ impl<B> ObservedBody<B>
 where
     B: Body,
 {
-    pub(in crate::engine) fn new(
-        body: B,
-        preview: BodyPreviewWriter,
-        mut sinks: BodySinks,
-    ) -> Self {
+    pub(super) fn new(body: B, preview: BodyPreviewWriter, mut sinks: BodySinks) -> Self {
         if body.is_end_stream() {
             preview.complete();
             sinks.end(BodyLifecycle::Complete);
