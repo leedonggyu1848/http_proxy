@@ -29,7 +29,6 @@ use http_proxy::{CaptureSource, Exchange, HeaderPreview, Outcome, TunnelState};
 use serde_json::{Map, Value, json};
 
 use self::timings::{Phases, iso8601, millis};
-use crate::ui::outcome_view::tunnel_detail;
 
 /// Header fields whose values the engine never retains.
 const SENSITIVE_HEADERS: [&str; 4] = [
@@ -291,7 +290,7 @@ fn outcome_note(record: &Exchange) -> Option<String> {
                 record.request().target(),
                 snapshot.client_to_upstream(),
                 snapshot.upstream_to_client(),
-                tunnel_detail(snapshot.state()),
+                snapshot.state(),
             )
         }
         Outcome::InspectionEstablished => format!(
@@ -315,7 +314,7 @@ fn error_text(outcome: &Outcome) -> Option<String> {
         Outcome::Incomplete => Some("Incomplete because the proxy stopped".into()),
         Outcome::Tunnel(tunnel) => match tunnel.snapshot().state() {
             state @ (TunnelState::Failed { .. } | TunnelState::Incomplete) => {
-                Some(tunnel_detail(state))
+                Some(state.to_string())
             }
             TunnelState::Open | TunnelState::Closed => None,
         },
