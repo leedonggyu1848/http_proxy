@@ -965,4 +965,244 @@ mod layout_tests {
 
         Ok(())
     }
+
+    async fn capture_post_with_json_bodies() -> Result<Vec<Exchange>, Box<dyn std::error::Error>> {
+        let upstream = TcpListener::bind("127.0.0.1:0").await?;
+        let address = upstream.local_addr()?;
+        let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0))?;
+        let mut captured = Vec::new();
+
+        // First exchange so ArrowUp can switch away from the second exchange.
+        let cases: [(&str, &str, &str, &str); 2] = [
+            (
+                "GET",
+                "/api/v2/health",
+                "",
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\nConnection: close\r\n\r\n{\"status\":\"ok\"}",
+            ),
+            (
+                "POST",
+                "/api/v2/messages",
+                "{\"sender\":\"alice\",\"text\":\"hello  world\"}",
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 39\r\nConnection: close\r\n\r\n{\"accepted\":true,\"reply\":\"saved  item\"}",
+            ),
+        ];
+
+        for (method, path, req_body, response) in cases {
+            let mut client = TcpStream::connect(proxy.local_addr()).await?;
+            let request = format!(
+                "{method} http://{address}{path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{req_body}",
+                req_body.len()
+            );
+            client.write_all(request.as_bytes()).await?;
+            let (mut server, _) = upstream.accept().await?;
+            let record = proxy.receive().await.ok_or("missing captured exchange")?;
+            read_head(&mut server).await?;
+            if !req_body.is_empty() {
+                let mut body_buf = vec![0; req_body.len()];
+                server.read_exact(&mut body_buf).await?;
+            }
+            server.write_all(response.as_bytes()).await?;
+            drop(server);
+            let mut sink = Vec::new();
+            client.read_to_end(&mut sink).await?;
+            while record.outcome().is_in_flight() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            captured.push(record);
+        }
+
+        proxy.stop()?;
+        Ok(captured)
+    }
+
+    fn run_app_frame(
+        app: &mut InspectorApp,
+        size: [f32; 2],
+        time: f64,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size[0], size[1]));
+        let input = egui::RawInput {
+            time: Some(time),
+            screen_rect: Some(viewport),
+            events,
+            ..Default::default()
+        };
+        let mut output = app.context.clone().run_ui(input, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| app.render_ui(ui));
+        });
+        output.textures_delta.clear();
+        output
+    }
+
+    fn find_galley(
+        shapes: &[egui::epaint::ClippedShape],
+        needle: &str,
+    ) -> Option<(egui::Pos2, std::sync::Arc<egui::Galley>)> {
+        fn walk(
+            shape: &egui::Shape,
+            needle: &str,
+        ) -> Option<(egui::Pos2, std::sync::Arc<egui::Galley>)> {
+            match shape {
+                egui::Shape::Text(text) if text.galley.text().contains(needle) => {
+                    Some((text.pos, std::sync::Arc::clone(&text.galley)))
+                }
+                egui::Shape::Vec(items) => items.iter().find_map(|item| walk(item, needle)),
+                _ => None,
+            }
+        }
+        shapes
+            .iter()
+            .find_map(|clipped| walk(&clipped.shape, needle))
+    }
+
+    fn galley_cursor_pos(
+        origin: egui::Pos2,
+        galley: &egui::Galley,
+        byte: usize,
+    ) -> Result<egui::Pos2, String> {
+        let ch = galley
+            .text()
+            .get(..byte)
+            .ok_or_else(|| format!("invalid offset {byte}"))?
+            .chars()
+            .count();
+        let rect = galley.pos_from_cursor(egui::text::CCursor::new(ch));
+        Ok(egui::pos2(
+            origin.x + rect.min.x,
+            origin.y + rect.center().y,
+        ))
+    }
+
+    fn drag_copy_in_app(
+        app: &mut InspectorApp,
+        size: [f32; 2],
+        time: &mut f64,
+        shapes: &[egui::epaint::ClippedShape],
+        slice: &str,
+    ) -> Result<Vec<String>, String> {
+        let (origin, galley) = find_galley(shapes, slice)
+            .ok_or_else(|| format!("missing galley containing {slice:?}"))?;
+        let start = galley
+            .text()
+            .find(slice)
+            .ok_or_else(|| format!("missing slice {slice:?}"))?;
+        let from = galley_cursor_pos(origin, &galley, start)?;
+        let to = galley_cursor_pos(origin, &galley, start + slice.len())?;
+        for events in [
+            vec![egui::Event::PointerMoved(from)],
+            vec![egui::Event::PointerButton {
+                pos: from,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            vec![egui::Event::PointerMoved(to)],
+            vec![egui::Event::PointerButton {
+                pos: to,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        ] {
+            *time += 0.05;
+            let _ = run_app_frame(app, size, *time, events);
+        }
+        *time += 0.05;
+        let out = run_app_frame(app, size, *time, vec![egui::Event::Copy]);
+        Ok(out
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|cmd| match cmd {
+                egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect())
+    }
+
+    fn press_key(app: &mut InspectorApp, size: [f32; 2], time: &mut f64, key: egui::Key) {
+        *time += 0.05;
+        let _ = run_app_frame(
+            app,
+            size,
+            *time,
+            vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+    }
+
+    #[tokio::test]
+    async fn body_tab_copy_and_focus_shortcuts_do_not_conflict()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let exchanges = timeout(Duration::from_secs(5), capture_post_with_json_bodies()).await??;
+        let first_id = exchanges.first().ok_or("missing first exchange")?.id();
+        let post_id = exchanges.get(1).ok_or("missing post exchange")?.id();
+
+        let mut app = test_app(egui::Context::default());
+        for exchange in exchanges {
+            let _evicted = app.records.push(exchange);
+        }
+        app.selected = Some(post_id);
+        app.detail_tab = DetailTab::Body;
+        app.body_mode = body_format::ViewMode::Pretty;
+
+        let size = DEFAULT_WINDOW;
+        let mut time = 0.0;
+        let mut initial = None;
+        for _ in 0..3 {
+            time += 0.05;
+            initial = Some(run_app_frame(&mut app, size, time, Vec::new()));
+        }
+        let initial = initial.ok_or("missing initial frame")?;
+
+        let req_target = "\"sender\": \"alice\",\n  \"text\": \"hello  world\"";
+        assert_eq!(
+            drag_copy_in_app(&mut app, size, &mut time, &initial.shapes, req_target)?,
+            vec![req_target.to_owned()]
+        );
+
+        let resp_target = "\"accepted\": true,\n  \"reply\": \"saved  item\"";
+        assert_eq!(
+            drag_copy_in_app(&mut app, size, &mut time, &initial.shapes, resp_target)?,
+            vec![resp_target.to_owned()]
+        );
+
+        // Focused body text blocks request-list navigation shortcuts so arrows stay in the body.
+        assert!(!super::request_shortcuts_allowed(&app.context));
+        press_key(&mut app, size, &mut time, egui::Key::ArrowUp);
+        assert_eq!(
+            app.selected,
+            Some(post_id),
+            "ArrowUp while body text is focused must not switch selected request"
+        );
+
+        // Narrow window with focused body selection must remain overlap-free.
+        let min_viewport =
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(MIN_WINDOW[0], MIN_WINDOW[1]));
+        time += 0.05;
+        let narrow = run_app_frame(&mut app, MIN_WINDOW, time, Vec::new());
+        assert_no_text_overlap(
+            &collect_text_shapes(&narrow.shapes),
+            min_viewport,
+            "body-selected@640x420",
+        );
+
+        // Escape surrenders body focus and restores request-list keyboard navigation.
+        press_key(&mut app, size, &mut time, egui::Key::Escape);
+        assert!(super::request_shortcuts_allowed(&app.context));
+        press_key(&mut app, size, &mut time, egui::Key::ArrowUp);
+        assert_eq!(
+            app.selected,
+            Some(first_id),
+            "ArrowUp after Escape must resume navigating the request list"
+        );
+        Ok(())
+    }
 }
