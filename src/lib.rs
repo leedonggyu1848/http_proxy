@@ -1,22 +1,24 @@
 #![forbid(unsafe_code)]
 
+pub mod endpoint_schema;
 mod engine;
 pub mod text_search;
 pub mod url_map;
 
+pub use engine::{
+    AuthScheme, BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, CaptureSource,
+    CapturedHeader, CapturedRequest, CapturedResponse, Exchange, FailureStage, HeaderPreview,
+    ImageFormat, MediaType, Outcome, RecordId, SessionId, Timing, TunnelPreview, TunnelSnapshot,
+    TunnelState,
+};
 pub use engine::{
     BODY_PREVIEW_BYTES, IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES,
     is_previewable_image_media_type,
 };
 pub use engine::{
     BODY_STORE_LIMIT_BYTES, BODY_STORE_MIN_FREE_BYTES, BodyLayout, BodyStore, BulkProgress,
-    BulkSave, BulkSummary, ContentRange, RangePlan, SaveBody, SaveFormat, SavedBody, StoreGap,
-    StoredBody,
-};
-pub use engine::{
-    BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, CaptureSource, CapturedHeader,
-    CapturedRequest, CapturedResponse, Exchange, FailureStage, HeaderPreview, ImageFormat,
-    MediaType, Outcome, RecordId, SessionId, Timing, TunnelPreview, TunnelSnapshot, TunnelState,
+    BulkSave, BulkSummary, ContentRange, RangePlan, ReadBodyOutcome, SaveBody, SaveFormat,
+    SavedBody, StoreGap, StoredBody, read_captured_body,
 };
 pub use engine::{BodySide, FullLog, SESSION_BODY_LIMIT_BYTES};
 pub use engine::{Browser, BrowserEvent, BrowserSession};

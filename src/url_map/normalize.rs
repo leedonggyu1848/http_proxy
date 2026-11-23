@@ -404,6 +404,28 @@ fn extract_query_param_names(query: &str) -> Vec<String> {
     names
 }
 
+/// Calls `visit` with each query parameter name of the absolute or
+/// origin-form `target` (bounded exactly as [`NormalizedUrl::query_param_names`])
+/// and its percent-decoded value.
+///
+/// The value is lent only for the duration of the call so callers can
+/// classify it without keeping it.
+pub fn visit_query_values(target: &str, mut visit: impl FnMut(String, &str)) {
+    let without_fragment = target.split('#').next().unwrap_or_default();
+    let Some((_, query)) = without_fragment.split_once('?') else {
+        return;
+    };
+    for pair in query.split('&') {
+        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let value = percent_decode_display(&value.replace('+', " "));
+        visit(bounded_str(name, MAX_QUERY_NAME_BYTES), &value);
+    }
+}
+
 fn bounded_str(raw: &str, max_bytes: usize) -> String {
     if raw.len() <= max_bytes {
         return raw.to_owned();

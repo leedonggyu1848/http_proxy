@@ -10,8 +10,8 @@ mod trust;
 
 pub use body_store::{
     BODY_STORE_LIMIT_BYTES, BODY_STORE_MIN_FREE_BYTES, BodyLayout, BodyStore, BulkProgress,
-    BulkSave, BulkSummary, ContentRange, RangePlan, SaveBody, SaveFormat, SavedBody, StoreGap,
-    StoredBody,
+    BulkSave, BulkSummary, ContentRange, RangePlan, ReadBodyOutcome, SaveBody, SaveFormat,
+    SavedBody, StoreGap, StoredBody, read_captured_body,
 };
 pub use browser::{Browser, BrowserEvent, BrowserSession};
 pub use capture::{
@@ -23,9 +23,10 @@ pub use curl::{
     curl_unavailable_reason,
 };
 pub use domain::{
-    BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, CaptureSource, CapturedHeader,
-    CapturedRequest, CapturedResponse, Exchange, FailureStage, HeaderPreview, ImageFormat,
-    MediaType, Outcome, RecordId, SessionId, Timing, TunnelPreview, TunnelSnapshot, TunnelState,
+    AuthScheme, BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, CaptureSource,
+    CapturedHeader, CapturedRequest, CapturedResponse, Exchange, FailureStage, HeaderPreview,
+    ImageFormat, MediaType, Outcome, RecordId, SessionId, Timing, TunnelPreview, TunnelSnapshot,
+    TunnelState,
 };
 pub use journal::{BodySide, FullLog, SESSION_BODY_LIMIT_BYTES};
 pub use proxy::{

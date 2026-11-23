@@ -190,8 +190,20 @@ impl UrlMap {
     /// prefix (including folded `{id}` patterns) without rebuilding the view.
     #[must_use]
     pub fn matching_request_count(&self, key: &crate::url_map::view::ViewNodeKey) -> u64 {
+        self.matching_node_ids(key)
+            .into_iter()
+            .filter_map(|id| self.nodes.get(id.0))
+            .fold(0_u64, |acc, node| {
+                acc.saturating_add(node.subtree.request_count)
+            })
+    }
+
+    /// Returns the raw nodes whose path matches `key` exactly, with each
+    /// folded `{id}` pattern matching every ID-like segment.
+    #[must_use]
+    pub fn matching_node_ids(&self, key: &crate::url_map::view::ViewNodeKey) -> Vec<NodeId> {
         let Some(&origin_id) = self.origins.get(&key.origin) else {
-            return 0;
+            return Vec::new();
         };
         let mut frontier = vec![origin_id];
         for pattern in &key.path {
@@ -217,15 +229,10 @@ impl UrlMap {
             }
             frontier = next;
             if frontier.is_empty() {
-                return 0;
+                break;
             }
         }
         frontier
-            .into_iter()
-            .filter_map(|id| self.nodes.get(id.0))
-            .fold(0_u64, |acc, node| {
-                acc.saturating_add(node.subtree.request_count)
-            })
     }
 
     /// Inserts a newly received [`Exchange`] into the map and registers it for

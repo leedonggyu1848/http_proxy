@@ -34,6 +34,24 @@ pub enum SaveFormat {
     AsReceived,
 }
 
+/// Outcome of reading and decoding a complete body within a byte limit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReadBodyOutcome {
+    /// Complete decoded bytes within the requested size cap.
+    Complete(Vec<u8>),
+    /// Some bytes of the body are missing: the stream was interrupted or
+    /// cancelled, is still arriving, or the store skipped later bytes.
+    Incomplete,
+    /// The decoded body is larger than the requested size cap.
+    TooLarge,
+    /// The body could not be decompressed due to invalid or unsupported `Content-Encoding`.
+    DecodeFailed,
+    /// The store could not be read (writer stopped or file I/O failed).
+    Unavailable,
+    /// No stored body was found for this exchange side.
+    NotFound,
+}
+
 /// A supported `Content-Encoding` layer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ContentEncoding {
@@ -340,6 +358,65 @@ fn copy_decoded(
         output.write_all(buffer.get(..read).unwrap_or_default())?;
         written = written.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
     }
+}
+
+/// Reads stored body segments and removes `decode` layers up to `max_decoded_bytes`.
+pub(super) fn read_decoded_segments(
+    data: File,
+    segments: Vec<Segment>,
+    decode: &[ContentEncoding],
+    max_decoded_bytes: usize,
+) -> ReadBodyOutcome {
+    let reader: Box<dyn Read> = Box::new(io::BufReader::new(SegmentReader::new(data, segments)));
+    read_decoded_bounded(reader, decode, max_decoded_bytes)
+}
+
+/// Decodes an in-memory complete body buffer up to `max_decoded_bytes`.
+pub(super) fn decode_complete_bytes(
+    bytes: &[u8],
+    encodings: &[String],
+    max_decoded_bytes: usize,
+) -> ReadBodyOutcome {
+    let Ok(decode) = ContentEncoding::parse_all(encodings) else {
+        return ReadBodyOutcome::DecodeFailed;
+    };
+    if decode.is_empty() {
+        return if bytes.len() > max_decoded_bytes {
+            ReadBodyOutcome::TooLarge
+        } else {
+            ReadBodyOutcome::Complete(bytes.to_vec())
+        };
+    }
+    let reader: Box<dyn Read + '_> = Box::new(bytes);
+    read_decoded_bounded(reader, &decode, max_decoded_bytes)
+}
+
+fn read_decoded_bounded<'a>(
+    mut reader: Box<dyn Read + 'a>,
+    decode: &[ContentEncoding],
+    max_decoded_bytes: usize,
+) -> ReadBodyOutcome {
+    let limit = u64::try_from(max_decoded_bytes).unwrap_or(u64::MAX);
+    let probe = limit.saturating_add(1);
+    for layer in decode.iter().rev() {
+        let Ok(wrapped) = layer.decoder(reader) else {
+            return ReadBodyOutcome::DecodeFailed;
+        };
+        reader = Box::new(wrapped.take(probe));
+    }
+    let mut out = Vec::new();
+    let mut bounded = reader.take(probe);
+    if bounded.read_to_end(&mut out).is_err() {
+        return if decode.is_empty() {
+            ReadBodyOutcome::Unavailable
+        } else {
+            ReadBodyOutcome::DecodeFailed
+        };
+    }
+    if out.len() > max_decoded_bytes {
+        return ReadBodyOutcome::TooLarge;
+    }
+    ReadBodyOutcome::Complete(out)
 }
 
 /// Moves the finished file to `name`, or `name (1)`, `name (2)`, …, never

@@ -5,6 +5,8 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::time::Instant;
 
+use http::Method;
+
 use crate::Exchange;
 use crate::url_map::id_fold::{ID_FOLD_THRESHOLD, PathSegmentPattern, classify_id_segment};
 use crate::url_map::normalize::{
@@ -70,6 +72,61 @@ impl ViewNodeKey {
     pub fn matches_exchange(&self, exchange: &Exchange) -> bool {
         parse_exchange_target(exchange.request().target(), exchange.source())
             .is_some_and(|url| self.matches_url(&url))
+    }
+
+    /// Reports whether `url` lands exactly on this node, not below it.
+    #[must_use]
+    pub fn matches_exact_url(&self, url: &NormalizedUrl) -> bool {
+        !url.is_tunnel() && url.segments().len() == self.path.len() && self.matches_url(url)
+    }
+}
+
+/// Requests chosen from the Map view: a node's whole subtree, or one
+/// endpoint (requests landing exactly on the node with one method).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RequestScope {
+    /// Node the scope starts from.
+    pub key: ViewNodeKey,
+    /// Method of an endpoint scope, or `None` for the whole subtree.
+    pub method: Option<Method>,
+}
+
+impl RequestScope {
+    /// Every request under `key`.
+    #[must_use]
+    pub const fn subtree(key: ViewNodeKey) -> Self {
+        Self { key, method: None }
+    }
+
+    /// Requests with `method` whose path lands exactly on `key`.
+    #[must_use]
+    pub const fn endpoint(key: ViewNodeKey, method: Method) -> Self {
+        Self {
+            key,
+            method: Some(method),
+        }
+    }
+
+    /// Reports whether `exchange` falls in this scope.
+    #[must_use]
+    pub fn matches_exchange(&self, exchange: &Exchange) -> bool {
+        let Some(url) = parse_exchange_target(exchange.request().target(), exchange.source())
+        else {
+            return false;
+        };
+        self.method.as_ref().map_or_else(
+            || self.key.matches_url(&url),
+            |method| exchange.request().method() == method && self.key.matches_exact_url(&url),
+        )
+    }
+
+    /// Formats the scope as `GET https://host/path/{id}` or the node URL.
+    #[must_use]
+    pub fn display(&self) -> String {
+        let url = self.key.display_url();
+        self.method
+            .as_ref()
+            .map_or_else(|| url.clone(), |method| format!("{method} {url}"))
     }
 }
 
