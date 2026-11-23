@@ -21,31 +21,13 @@ use crate::ui::theme::Palette;
 /// Maximum matching retained requests listed directly inside the node detail pane.
 const MAX_INLINE_REQUESTS: usize = 100;
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-struct RecordListStamp {
-    len: usize,
-    first: Option<RecordId>,
-    last: Option<RecordId>,
-}
-
-impl RecordListStamp {
-    fn of(records: &RecordList<Exchange>) -> Self {
-        let len = records.len();
-        let first = records.get(0).map(Exchange::id);
-        let last = len
-            .checked_sub(1)
-            .and_then(|idx| records.get(idx))
-            .map(Exchange::id);
-        Self { len, first, last }
-    }
-}
-
 /// Caches which retained [`Exchange`]s in [`RecordList`] match a [`ViewNodeKey`]
 /// so steady UI frames never re-parse up to 2,000 request URLs.
 #[derive(Default)]
 pub(in crate::ui) struct RecordMatchCache {
     key: Option<ViewNodeKey>,
-    stamp: Option<RecordListStamp>,
+    revision: Option<u64>,
+    has_previews: bool,
     matched_count: usize,
     matched_ids: HashSet<RecordId>,
     newest_previews: Vec<(usize, String)>,
@@ -54,7 +36,8 @@ pub(in crate::ui) struct RecordMatchCache {
 impl RecordMatchCache {
     pub(in crate::ui) fn clear(&mut self) {
         self.key = None;
-        self.stamp = None;
+        self.revision = None;
+        self.has_previews = false;
         self.matched_count = 0;
         self.matched_ids.clear();
         self.newest_previews.clear();
@@ -66,14 +49,14 @@ impl RecordMatchCache {
         records: &RecordList<Exchange>,
         build_previews: bool,
     ) {
-        let stamp = RecordListStamp::of(records);
-        let previews_ready =
-            !build_previews || !self.newest_previews.is_empty() || self.matched_count == 0;
-        if self.key.as_ref() == Some(key) && self.stamp == Some(stamp) && previews_ready {
+        let revision = records.revision();
+        let previews_ready = !build_previews || self.has_previews;
+        if self.key.as_ref() == Some(key) && self.revision == Some(revision) && previews_ready {
             return;
         }
         self.key = Some(key.clone());
-        self.stamp = Some(stamp);
+        self.revision = Some(revision);
+        self.has_previews = build_previews;
         self.matched_ids.clear();
         self.newest_previews.clear();
         let mut matched_indices = Vec::new();
@@ -103,7 +86,7 @@ impl RecordMatchCache {
         key: &ViewNodeKey,
         records: &RecordList<Exchange>,
     ) -> bool {
-        self.key.as_ref() == Some(key) && self.stamp == Some(RecordListStamp::of(records))
+        self.key.as_ref() == Some(key) && self.revision == Some(records.revision())
     }
 
     pub(in crate::ui) fn contains(&self, id: RecordId) -> bool {
@@ -458,4 +441,143 @@ fn format_wall_time(time: Option<SystemTime>) -> String {
     let minutes = (secs % 3_600) / 60;
     let seconds = secs % 60;
     format!("{hours:02}:{minutes:02}:{seconds:02} UTC")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use http_proxy::url_map::{OriginKey, PathSegmentPattern};
+    use http_proxy::{ProxyConfig, ProxyHandle};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::time::timeout;
+
+    use super::*;
+    use crate::ui::filter::{RecordFilter, visible_records};
+    use crate::ui::search::RequestSearch;
+
+    async fn capture_paths(
+        paths: &[&str],
+    ) -> Result<(Vec<Exchange>, OriginKey), Box<dyn std::error::Error>> {
+        let upstream = TcpListener::bind("127.0.0.1:0").await?;
+        let address = upstream.local_addr()?;
+        let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0))?;
+        let mut exchanges = Vec::with_capacity(paths.len());
+        for path in paths {
+            let mut client = TcpStream::connect(proxy.local_addr()).await?;
+            let req = format!(
+                "GET http://{address}{path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+            );
+            client.write_all(req.as_bytes()).await?;
+            let (mut server, _) = upstream.accept().await?;
+            let record = proxy.receive().await.ok_or("missing exchange")?;
+            let mut head = Vec::new();
+            let mut byte = [0; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                server.read_exact(&mut byte).await?;
+                head.extend_from_slice(&byte);
+            }
+            server
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await?;
+            drop(server);
+            let mut sink = Vec::new();
+            client.read_to_end(&mut sink).await?;
+            exchanges.push(record);
+        }
+        proxy.stop()?;
+        let origin = OriginKey::new("http", "127.0.0.1", Some(address.port()));
+        Ok((exchanges, origin))
+    }
+
+    fn literal_key(origin: &OriginKey, segs: &[&str]) -> ViewNodeKey {
+        ViewNodeKey {
+            origin: origin.clone(),
+            path: segs
+                .iter()
+                .map(|s| PathSegmentPattern::Literal((*s).to_owned()))
+                .collect(),
+        }
+    }
+
+    #[tokio::test]
+    async fn record_match_cache_invalidates_on_push_eviction_clear_key_and_preview_changes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (exchanges, origin) = timeout(
+            Duration::from_secs(5),
+            capture_paths(&[
+                "/api/users?token=SECRET_CACHE_1",
+                "/api/orders?page=1",
+                "/api/users?token=SECRET_CACHE_2",
+            ]),
+        )
+        .await??;
+        let [first, second, third]: [Exchange; 3] = exchanges
+            .try_into()
+            .map_err(|_| "expected exactly 3 exchanges")?;
+        let users_key = literal_key(&origin, &["api", "users"]);
+        let orders_key = literal_key(&origin, &["api", "orders"]);
+
+        let mut records = RecordList::new(2);
+        let (first_id, second_id, third_id) = (first.id(), second.id(), third.id());
+        let _ = records.push(first);
+        let _ = records.push(second);
+
+        let mut cache = RecordMatchCache::default();
+        assert!(!cache.is_fresh_for(&users_key, &records));
+
+        // Hit without previews, then transition build_previews false -> true.
+        cache.sync(&users_key, &records, false);
+        assert!(cache.is_fresh_for(&users_key, &records));
+        assert_eq!(cache.matched_count(), 1);
+        assert!(cache.contains(first_id) && !cache.contains(second_id));
+        assert_eq!(cache.newest_previews.len(), 0);
+
+        cache.sync(&users_key, &records, true);
+        assert!(cache.has_previews && cache.newest_previews.len() == 1);
+        assert!(
+            cache
+                .newest_previews
+                .iter()
+                .all(|(_, text)| !text.contains("SECRET_CACHE_1") && text.contains("?token"))
+        );
+
+        // Overflow eviction invalidates cache; stale visible_records falls back accurately.
+        assert_eq!(records.push(third).map(|e| e.id()), Some(first_id));
+        assert!(!cache.is_fresh_for(&users_key, &records));
+        let search = RequestSearch::new(&egui::Context::default());
+        let fallback = visible_records(
+            &records,
+            RecordFilter::All,
+            &search,
+            Some(&users_key),
+            Some(&cache),
+        );
+        assert_eq!(fallback.len(), 1);
+        assert_eq!(fallback.first().map(|r| r.id()), Some(third_id));
+
+        cache.sync(&users_key, &records, true);
+        assert!(cache.is_fresh_for(&users_key, &records));
+        assert!(!cache.contains(first_id) && cache.contains(third_id));
+        assert!(
+            cache
+                .newest_previews
+                .iter()
+                .all(|(_, text)| !text.contains("SECRET_CACHE_2"))
+        );
+
+        // Key change + clear invalidation.
+        assert!(!cache.is_fresh_for(&orders_key, &records));
+        cache.sync(&orders_key, &records, false);
+        assert_eq!(cache.matched_count(), 1);
+        assert!(cache.contains(second_id));
+
+        records.clear(0);
+        assert!(!cache.is_fresh_for(&orders_key, &records));
+        cache.sync(&orders_key, &records, true);
+        assert_eq!(cache.matched_count(), 0);
+        assert_eq!(cache.newest_previews.len(), 0);
+        Ok(())
+    }
 }

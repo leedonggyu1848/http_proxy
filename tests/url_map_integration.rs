@@ -74,16 +74,31 @@ async fn run_live_traffic(
         captured.push(record);
     }
 
+    run_tunnel_exchange(proxy, upstream, address, map).await?;
+    Ok(captured)
+}
+
+async fn run_tunnel_exchange(
+    proxy: &mut ProxyHandle,
+    upstream: &TcpListener,
+    address: std::net::SocketAddr,
+    map: &mut UrlMap,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut tunnel_client = TcpStream::connect(proxy.local_addr()).await?;
     tunnel_client
         .write_all(format!("CONNECT {address} HTTP/1.1\r\nHost: {address}\r\n\r\n").as_bytes())
         .await?;
-    let (tunnel_server, _) = upstream.accept().await?;
+    let (mut tunnel_server, _) = upstream.accept().await?;
+    read_head(&mut tunnel_client).await?;
     let tunnel_record = proxy.receive().await.ok_or("missing tunnel exchange")?;
     let _ = map.observe_exchange(&tunnel_record);
-    while tunnel_record.outcome().is_in_flight() {
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
+    // Exchange one byte through the live tunnel so hyper upgrade has completed
+    // before closing both halves with FIN instead of TCP RST.
+    tunnel_client.write_all(b"x").await?;
+    let mut ping = [0; 1];
+    tunnel_server.read_exact(&mut ping).await?;
+    tunnel_client.shutdown().await?;
+    tunnel_server.shutdown().await?;
     drop(tunnel_server);
     drop(tunnel_client);
     while tunnel_record.is_live() {
@@ -91,7 +106,7 @@ async fn run_live_traffic(
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
     let _ = map.sync_live();
-    Ok(captured)
+    Ok(())
 }
 
 fn assert_exports_omit_secrets(map: &UrlMap) {

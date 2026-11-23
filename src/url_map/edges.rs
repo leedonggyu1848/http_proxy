@@ -114,6 +114,7 @@ pub struct RelationshipGraph {
     domain_edges: BTreeMap<DomainEdgeKey, DomainEdgeStats>,
     url_edges: BTreeMap<UrlEdgeKey, u64>,
     topology_version: u64,
+    version: u64,
 }
 
 impl RelationshipGraph {
@@ -123,12 +124,19 @@ impl RelationshipGraph {
         self.domain_edges.clear();
         self.url_edges.clear();
         self.topology_version = self.topology_version.saturating_add(1);
+        self.version = self.version.saturating_add(1);
     }
 
     /// Monotonic counter bumped whenever the set of domains or domain edges changes.
     #[must_use]
     pub const fn topology_version(&self) -> u64 {
         self.topology_version
+    }
+
+    /// Monotonic counter bumped on any change to domains, counts, or edges.
+    #[must_use]
+    pub const fn version(&self) -> u64 {
+        self.version
     }
 
     /// Returns all known domains keyed by host name.
@@ -167,12 +175,14 @@ impl RelationshipGraph {
         if is_new {
             self.topology_version = self.topology_version.saturating_add(1);
         }
+        self.version = self.version.saturating_add(1);
     }
 
     /// Increments the error count for `host`.
     pub fn record_error(&mut self, host: &str) {
         if let Some(summary) = self.domains.get_mut(host) {
             summary.error_count = summary.error_count.saturating_add(1);
+            self.version = self.version.saturating_add(1);
         }
     }
 
@@ -180,6 +190,7 @@ impl RelationshipGraph {
     pub fn add_bytes(&mut self, host: &str, delta: u64) {
         if let Some(summary) = self.domains.get_mut(host) {
             summary.total_bytes = summary.total_bytes.saturating_add(delta);
+            self.version = self.version.saturating_add(1);
         }
     }
 
@@ -229,6 +240,7 @@ impl RelationshipGraph {
         } else if self.url_edges.len() < MAX_URL_EDGES {
             let _ = self.url_edges.insert(url_key, 1);
         }
+        self.version = self.version.saturating_add(1);
     }
 
     fn ensure_domain(&mut self, host: &str) {

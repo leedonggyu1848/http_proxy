@@ -54,6 +54,7 @@ pub struct GraphEdge {
 #[derive(Clone, Debug)]
 pub struct ForceLayout {
     topology_version: u64,
+    synced_graph_version: u64,
     max_domains: usize,
     total_domains: usize,
     nodes: Vec<GraphNode>,
@@ -74,6 +75,7 @@ impl ForceLayout {
     pub const fn new(max_domains: usize) -> Self {
         Self {
             topology_version: u64::MAX,
+            synced_graph_version: u64::MAX,
             max_domains,
             total_domains: 0,
             nodes: Vec::new(),
@@ -112,6 +114,7 @@ impl ForceLayout {
         if self.max_domains != max_domains {
             self.max_domains = max_domains;
             self.topology_version = u64::MAX;
+            self.synced_graph_version = u64::MAX;
         }
     }
 
@@ -145,15 +148,20 @@ impl ForceLayout {
 
     /// Synchronizes nodes and edges with `graph`.
     ///
-    /// Recomputes node positions when `graph.topology_version()` changes or when
-    /// Top-N membership shifts among domains exceeding `max_domains`. Existing
-    /// node positions are preserved across updates for visual stability.
+    /// Returns immediately in O(1) when `graph.version()` has not changed since
+    /// the last sync. Recomputes node positions when `graph.topology_version()`
+    /// changes or when Top-N membership shifts among domains exceeding
+    /// `max_domains`, preserving existing node positions for visual stability.
     pub fn sync(&mut self, graph: &RelationshipGraph) {
+        if self.synced_graph_version == graph.version() {
+            return;
+        }
         self.total_domains = graph.domains().len();
         let top_n_changed = self.total_domains > self.max_domains
             && top_n_membership_changed(&self.nodes, graph, self.max_domains);
         if self.topology_version == graph.topology_version() && !top_n_changed {
             self.refresh_counts(graph);
+            self.synced_graph_version = graph.version();
             return;
         }
 
@@ -213,6 +221,7 @@ impl ForceLayout {
         }
 
         self.topology_version = graph.topology_version();
+        self.synced_graph_version = graph.version();
         self.nodes = nodes;
         self.edges = edges;
         self.steps_done = 0;
@@ -428,17 +437,35 @@ mod tests {
         let mut layout = ForceLayout::new(2);
         layout.sync(&graph);
         let topo_before = graph.topology_version();
+        let version_before = graph.version();
         let hosts_before: Vec<&str> = layout.nodes().iter().map(|n| n.host.as_str()).collect();
         assert_eq!(hosts_before, vec!["a.example.com", "b.example.com"]);
+
+        // Settling and calling sync again while graph.version() is unchanged is a no-op.
+        let mut rounds = 0;
+        while !layout.is_settled() && rounds < 20 {
+            let _ = layout.step(STEPS_PER_FRAME);
+            rounds += 1;
+        }
+        assert!(layout.is_settled());
+        layout.sync(&graph);
+        assert!(layout.is_settled());
+        assert_eq!(graph.version(), version_before);
 
         // Traffic surges on `c.example.com` without adding any new host or edge.
         for _ in 0..10 {
             graph.record_request(&c, false);
         }
         assert_eq!(graph.topology_version(), topo_before);
+        assert!(graph.version() > version_before);
 
         layout.sync(&graph);
         let hosts_after: Vec<&str> = layout.nodes().iter().map(|n| n.host.as_str()).collect();
         assert_eq!(hosts_after, vec!["a.example.com", "c.example.com"]);
+
+        // Changing max_domains forces a rebuild even when graph.version() is unchanged.
+        layout.set_max_domains(3);
+        layout.sync(&graph);
+        assert_eq!(layout.nodes().len(), 3);
     }
 }
