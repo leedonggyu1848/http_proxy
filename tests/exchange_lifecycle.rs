@@ -1,22 +1,21 @@
 //! How an exchange is published, settled, and told apart from other endings.
 
-use std::error::Error;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
-use http_proxy::{
-    BodyLifecycle, BodyPreview, BodySnapshot, CaptureSource, Exchange, FailureStage, Outcome,
-    ProxyConfig, ProxyHandle,
-};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use http_proxy::{BodyLifecycle, CaptureSource, FailureStage, Outcome, ProxyConfig, ProxyHandle};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
 
-type TestError = Box<dyn Error + Send + Sync>;
+pub mod common;
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+use common::{
+    TEST_TIMEOUT, TestError, exchange_through, next_record, read_headers, settled,
+    wait_for_body_end,
+};
 
 #[tokio::test]
 async fn publishes_an_exchange_before_its_response_arrives() -> Result<(), TestError> {
@@ -91,7 +90,7 @@ async fn distinguishes_no_response_empty_response_connect_failure_and_cut_body()
     let config = ProxyConfig::loopback(0).with_response_timeout(Duration::from_millis(200));
     let mut proxy = ProxyHandle::start(config)?;
 
-    let no_response = exchange_through(&mut proxy, silent).await?;
+    let no_response = exchange_through(&mut proxy, silent, "/").await?;
     assert!(matches!(
         settled(&no_response).await?,
         Outcome::Failed {
@@ -101,7 +100,7 @@ async fn distinguishes_no_response_empty_response_connect_failure_and_cut_body()
     ));
     assert!(no_response.timing().connect().is_some());
 
-    let empty_response = exchange_through(&mut proxy, empty).await?;
+    let empty_response = exchange_through(&mut proxy, empty, "/").await?;
     let Outcome::Response(response) = settled(&empty_response).await? else {
         return Err("expected an empty response".into());
     };
@@ -110,7 +109,7 @@ async fn distinguishes_no_response_empty_response_connect_failure_and_cut_body()
     assert_eq!(body.lifecycle(), BodyLifecycle::Complete);
     assert_eq!(body.observed_bytes(), 0);
 
-    let connect_failure = exchange_through(&mut proxy, refused).await?;
+    let connect_failure = exchange_through(&mut proxy, refused, "/").await?;
     assert!(matches!(
         settled(&connect_failure).await?,
         Outcome::Failed {
@@ -121,7 +120,7 @@ async fn distinguishes_no_response_empty_response_connect_failure_and_cut_body()
     assert_eq!(connect_failure.timing().connect(), None);
     assert!(connect_failure.request().body().is_none());
 
-    let cut_body = exchange_through(&mut proxy, cut).await?;
+    let cut_body = exchange_through(&mut proxy, cut, "/").await?;
     let Outcome::Response(response) = settled(&cut_body).await? else {
         return Err("expected a response whose body was cut".into());
     };
@@ -166,7 +165,7 @@ async fn tags_exchanges_with_their_session_and_source() -> Result<(), TestError>
     let tunnel_addr = tunnel_target.local_addr()?;
 
     let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0))?;
-    let http = exchange_through(&mut proxy, first).await?;
+    let http = exchange_through(&mut proxy, first, "/").await?;
     let mut client = TcpStream::connect(proxy.local_addr()).await?;
     let connect = format!("CONNECT {tunnel_addr} HTTP/1.1\r\nHost: {tunnel_addr}\r\n\r\n");
     client.write_all(connect.as_bytes()).await?;
@@ -180,7 +179,7 @@ async fn tags_exchanges_with_their_session_and_source() -> Result<(), TestError>
     proxy.stop()?;
 
     let mut restarted = ProxyHandle::start(ProxyConfig::loopback(0))?;
-    let later = exchange_through(&mut restarted, second).await?;
+    let later = exchange_through(&mut restarted, second, "/").await?;
     assert_ne!(later.session(), http.session());
     restarted.stop()?;
     Ok(())
@@ -200,7 +199,7 @@ async fn notifies_after_each_queued_exchange() -> Result<(), TestError> {
     }));
     assert!(!proxy.notify_on_event(|| {}));
 
-    let exchange = exchange_through(&mut proxy, upstream).await?;
+    let exchange = exchange_through(&mut proxy, upstream, "/").await?;
     assert!(matches!(settled(&exchange).await?, Outcome::Response(_)));
     assert_eq!(notified.load(Ordering::SeqCst), 1);
     proxy.stop()?;
@@ -227,61 +226,4 @@ async fn upstream_replying(reply: Option<&'static [u8]>) -> std::io::Result<Sock
         }
     });
     Ok(address)
-}
-
-/// Sends one request to `upstream` through the proxy, reads the reply to
-/// the end, and returns the exchange the proxy published for it.
-async fn exchange_through(
-    proxy: &mut ProxyHandle,
-    upstream: SocketAddr,
-) -> Result<Exchange, TestError> {
-    let mut client = TcpStream::connect(proxy.local_addr()).await?;
-    let request =
-        format!("GET http://{upstream}/ HTTP/1.1\r\nHost: {upstream}\r\nConnection: close\r\n\r\n");
-    client.write_all(request.as_bytes()).await?;
-    let mut response = Vec::new();
-    // A cut body ends with a reset; only the end of the exchange matters here.
-    let _read = timeout(TEST_TIMEOUT, client.read_to_end(&mut response)).await?;
-    next_record(proxy).await
-}
-
-async fn next_record(proxy: &mut ProxyHandle) -> Result<Exchange, TestError> {
-    Ok(timeout(TEST_TIMEOUT, proxy.receive())
-        .await?
-        .ok_or("capture channel closed")?)
-}
-
-async fn settled(exchange: &Exchange) -> Result<&Outcome, TestError> {
-    Ok(timeout(TEST_TIMEOUT, exchange.settled()).await?)
-}
-
-async fn wait_for_body_end(body: &BodyPreview) -> Result<BodySnapshot, TestError> {
-    let poll = async {
-        loop {
-            if let Some(snapshot) = body.snapshot()
-                && snapshot.lifecycle() != BodyLifecycle::Streaming
-            {
-                return snapshot;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    };
-    Ok(timeout(TEST_TIMEOUT, poll).await?)
-}
-
-async fn read_headers<S>(stream: &mut S) -> std::io::Result<Vec<u8>>
-where
-    S: AsyncRead + Unpin,
-{
-    let mut data = Vec::new();
-    while !data.ends_with(b"\r\n\r\n") {
-        data.push(stream.read_u8().await?);
-        if data.len() > 16 * 1024 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "headers exceeded the test limit",
-            ));
-        }
-    }
-    Ok(data)
 }

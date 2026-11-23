@@ -1,20 +1,23 @@
-use std::error::Error;
 use std::fmt::Write as _;
 use std::io;
 use std::path::Path;
-use std::time::Duration;
 
 use http_proxy::{FullLog, ProxyConfig, ProxyHandle};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+pub mod common;
+
+use common::{TEST_TIMEOUT, TestError, read_headers_within};
+
+/// Larger than [`common::HEADER_LIMIT`], as this test always allowed.
+const LARGE_HEADER_LIMIT: usize = 32_768;
 const BODY_SIZE: usize = 20_000;
 
 /// Saves the log like the UI does: a busy queue is retried, never treated as
 /// a lost record.
-fn export(log: &FullLog, path: &Path) -> Result<String, Box<dyn Error>> {
+fn export(log: &FullLog, path: &Path) -> Result<String, TestError> {
     let saved = loop {
         match log.export(path.to_path_buf()) {
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => std::thread::yield_now(),
@@ -32,19 +35,6 @@ fn escaped_body(text: &str, side: &str) -> String {
         .collect()
 }
 
-async fn read_headers(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
-    let mut headers = Vec::new();
-    while !headers.ends_with(b"\r\n\r\n") {
-        headers.push(stream.read_u8().await?);
-        if headers.len() > 32_768 {
-            return Err(io::Error::other(
-                "Test HTTP headers exceed the expected size",
-            ));
-        }
-    }
-    Ok(headers)
-}
-
 async fn serve_large_exchange(
     upstream: TcpListener,
     expected_request: Vec<u8>,
@@ -52,7 +42,7 @@ async fn serve_large_exchange(
     release: tokio::sync::oneshot::Receiver<()>,
 ) -> io::Result<()> {
     let (mut stream, _) = upstream.accept().await?;
-    let headers = read_headers(&mut stream).await?;
+    let headers = read_headers_within(&mut stream, LARGE_HEADER_LIMIT).await?;
     assert!(headers.starts_with(b"POST /large HTTP/1.1\r\n"));
     let mut body = vec![0; BODY_SIZE];
     stream.read_exact(&mut body).await?;
@@ -75,7 +65,7 @@ async fn serve_large_exchange(
 }
 
 #[tokio::test]
-async fn exports_full_bodies_headers_and_a_streaming_snapshot() -> Result<(), Box<dyn Error>> {
+async fn exports_full_bodies_headers_and_a_streaming_snapshot() -> Result<(), TestError> {
     let directory = tempfile::tempdir()?;
     let log = FullLog::new()?;
     let request_body: Vec<u8> = (0..=255).cycle().take(BODY_SIZE).collect();
@@ -103,7 +93,11 @@ async fn exports_full_bodies_headers_and_a_streaming_snapshot() -> Result<(), Bo
     request.push_str("\r\n");
     client.write_all(request.as_bytes()).await?;
     client.write_all(&request_body).await?;
-    let response_headers = timeout(TEST_TIMEOUT, read_headers(&mut client)).await??;
+    let response_headers = timeout(
+        TEST_TIMEOUT,
+        read_headers_within(&mut client, LARGE_HEADER_LIMIT),
+    )
+    .await??;
     assert!(response_headers.starts_with(b"HTTP/1.1 200 OK\r\n"));
     let mut prefix = vec![0; BODY_SIZE / 2];
     timeout(TEST_TIMEOUT, client.read_exact(&mut prefix)).await??;
@@ -151,7 +145,7 @@ async fn exports_full_bodies_headers_and_a_streaming_snapshot() -> Result<(), Bo
 }
 
 #[tokio::test]
-async fn exports_more_than_ui_retention_without_draining_ui_events() -> Result<(), Box<dyn Error>> {
+async fn exports_more_than_ui_retention_without_draining_ui_events() -> Result<(), TestError> {
     const REQUESTS: usize = 2_050;
 
     let directory = tempfile::tempdir()?;

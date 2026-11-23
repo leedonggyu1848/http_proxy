@@ -14,22 +14,16 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
 
-async fn read_head(stream: &mut TcpStream) -> std::io::Result<()> {
-    let mut head = Vec::new();
-    let mut byte = [0; 1];
-    while !head.ends_with(b"\r\n\r\n") {
-        stream.read_exact(&mut byte).await?;
-        head.extend_from_slice(&byte);
-    }
-    Ok(())
-}
+pub mod common;
+
+use common::{TestError, read_headers};
 
 async fn run_live_traffic(
     upstream: &TcpListener,
     address: SocketAddr,
     proxy: &mut ProxyHandle,
     map: &mut UrlMap,
-) -> Result<Vec<Exchange>, Box<dyn std::error::Error>> {
+) -> Result<Vec<Exchange>, TestError> {
     let mut captured = Vec::new();
     let requests = [
         (
@@ -61,7 +55,7 @@ async fn run_live_traffic(
         let (mut server, _) = upstream.accept().await?;
         let record = proxy.receive().await.ok_or("missing exchange")?;
         let _ = map.observe_exchange(&record);
-        read_head(&mut server).await?;
+        let _head = read_headers(&mut server).await?;
         server.write_all(response.as_bytes()).await?;
         drop(server);
         let mut sink = Vec::new();
@@ -83,13 +77,13 @@ async fn run_tunnel_exchange(
     upstream: &TcpListener,
     address: std::net::SocketAddr,
     map: &mut UrlMap,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), TestError> {
     let mut tunnel_client = TcpStream::connect(proxy.local_addr()).await?;
     tunnel_client
         .write_all(format!("CONNECT {address} HTTP/1.1\r\nHost: {address}\r\n\r\n").as_bytes())
         .await?;
     let (mut tunnel_server, _) = upstream.accept().await?;
-    read_head(&mut tunnel_client).await?;
+    let _head = read_headers(&mut tunnel_client).await?;
     let tunnel_record = proxy.receive().await.ok_or("missing tunnel exchange")?;
     let _ = map.observe_exchange(&tunnel_record);
     // Exchange one byte through the live tunnel so hyper upgrade has completed
@@ -130,7 +124,7 @@ fn assert_exports_omit_secrets(map: &UrlMap) {
 
 #[tokio::test]
 async fn live_proxy_traffic_populates_tree_edges_tunnels_without_query_values()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), TestError> {
     timeout(Duration::from_secs(10), async {
         let upstream = TcpListener::bind("127.0.0.1:0").await?;
         let address = upstream.local_addr()?;
@@ -197,7 +191,7 @@ async fn live_proxy_traffic_populates_tree_edges_tunnels_without_query_values()
         assert_exports_omit_secrets(&map);
 
         proxy.stop()?;
-        Ok::<_, Box<dyn std::error::Error>>(())
+        Ok::<_, TestError>(())
     })
     .await??;
     Ok(())

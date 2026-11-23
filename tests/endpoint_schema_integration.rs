@@ -16,6 +16,10 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
 
+pub mod common;
+
+use common::{TestError, read_request};
+
 struct Case {
     method: &'static str,
     path: &'static str,
@@ -85,30 +89,12 @@ fn cases() -> Vec<Case> {
     ]
 }
 
-async fn read_request(stream: &mut TcpStream) -> std::io::Result<()> {
-    let mut head = Vec::new();
-    let mut byte = [0; 1];
-    while !head.ends_with(b"\r\n\r\n") {
-        stream.read_exact(&mut byte).await?;
-        head.extend_from_slice(&byte);
-    }
-    let text = String::from_utf8_lossy(&head).to_ascii_lowercase();
-    let length = text
-        .lines()
-        .find_map(|line| line.strip_prefix("content-length:"))
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .unwrap_or(0);
-    let mut body = vec![0; length];
-    stream.read_exact(&mut body).await?;
-    Ok(())
-}
-
 async fn run_case(
     proxy: &mut ProxyHandle,
     upstream: &TcpListener,
     address: std::net::SocketAddr,
     case: &Case,
-) -> Result<Exchange, Box<dyn std::error::Error>> {
+) -> Result<Exchange, TestError> {
     let mut client = TcpStream::connect(proxy.local_addr()).await?;
     let length = if case.body.is_empty() {
         String::new()
@@ -122,7 +108,7 @@ async fn run_case(
     client.write_all(raw.as_bytes()).await?;
     let (mut server, _) = upstream.accept().await?;
     let record = proxy.receive().await.ok_or("missing exchange")?;
-    read_request(&mut server).await?;
+    let _request = read_request(&mut server).await?;
     server.write_all(case.response.as_bytes()).await?;
     drop(server);
     let mut sink = Vec::new();
@@ -134,7 +120,7 @@ async fn wait_for(
     analyzer: &mut SchemaAnalyzer,
     schemas: &mut EndpointSchemas,
     expected: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), TestError> {
     while schemas.version() < expected {
         let _ = analyzer.drain_into(schemas);
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -142,7 +128,7 @@ async fn wait_for(
     Ok(())
 }
 
-fn folded_node(map: &UrlMap) -> Result<ViewNode, Box<dyn std::error::Error>> {
+fn folded_node(map: &UrlMap) -> Result<ViewNode, TestError> {
     let roots = build_view_roots(
         map,
         &TreeFilter::default(),
@@ -163,7 +149,7 @@ fn field<'a>(shape: &'a FieldShape, name: &str) -> Result<&'a FieldShape, String
         .ok_or_else(|| format!("missing field {name}"))
 }
 
-fn assert_get(get: &EndpointSchema) -> Result<(), Box<dyn std::error::Error>> {
+fn assert_get(get: &EndpointSchema) -> Result<(), TestError> {
     assert_eq!(get.requests(), 4);
     assert_eq!(get.query().get("page").map(ParamStats::seen), Some(2));
     assert!(
@@ -211,8 +197,7 @@ fn assert_post(post: &EndpointSchema) {
 }
 
 #[tokio::test]
-async fn live_traffic_builds_endpoint_structure_without_values()
--> Result<(), Box<dyn std::error::Error>> {
+async fn live_traffic_builds_endpoint_structure_without_values() -> Result<(), TestError> {
     timeout(Duration::from_secs(20), async {
         let root = tempfile::tempdir()?;
         let store = BodyStore::with_limits(root.path(), 64 * 1024 * 1024, 0)?;

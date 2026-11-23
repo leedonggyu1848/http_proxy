@@ -1,6 +1,5 @@
 //! Saving bodies captured through a running proxy from the body store.
 
-use std::error::Error;
 use std::fmt::Write as _;
 use std::io::{self, Write as _};
 use std::path::Path;
@@ -15,9 +14,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
 
-type TestResult<T = ()> = Result<T, Box<dyn Error>>;
+pub mod common;
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+use common::{TEST_TIMEOUT, TestResult, read_headers};
+
 const IMAGE: &[u8] = include_bytes!("fixtures/images/animated.gif");
 const JSON: &[u8] = include_bytes!("fixtures/body-preview.json");
 
@@ -136,21 +136,14 @@ fn sha256(bytes: &[u8]) -> Vec<u8> {
     Sha256::digest(bytes).to_vec()
 }
 
-async fn read_head(stream: &mut TcpStream) -> io::Result<String> {
-    let mut head = Vec::new();
-    while !head.ends_with(b"\r\n\r\n") {
-        head.push(stream.read_u8().await?);
-    }
-    Ok(String::from_utf8_lossy(&head).into_owned())
-}
-
 /// Serves canned replies; a request with `Content-Length` has its body read first.
 async fn serve(listener: TcpListener) {
     while let Ok((mut stream, _)) = listener.accept().await {
         tokio::spawn(async move {
-            let Ok(head) = read_head(&mut stream).await else {
+            let Ok(head) = read_headers(&mut stream).await else {
                 return;
             };
+            let head = String::from_utf8_lossy(&head);
             let length = head
                 .lines()
                 .find_map(|line| {

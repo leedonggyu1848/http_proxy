@@ -1,6 +1,5 @@
 //! A copied `curl` command, run by a real shell, repeats the captured request.
 
-use std::error::Error;
 use std::net::SocketAddr;
 use std::process::Command;
 use std::time::Duration;
@@ -13,19 +12,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
-type TestError = Box<dyn Error + Send + Sync>;
+pub mod common;
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// What the test server received for one request.
-#[derive(Debug, Eq, PartialEq)]
-struct Received {
-    method: String,
-    target: String,
-    /// Lowercase names with values, sorted, so header order does not matter.
-    headers: Vec<(String, Vec<u8>)>,
-    body: Vec<u8>,
-}
+use common::{ReceivedRequest, TEST_TIMEOUT, TestError, next_record, read_request};
 
 #[tokio::test]
 async fn copied_commands_send_the_captured_text_request_again() -> Result<(), TestError> {
@@ -87,9 +76,7 @@ async fn repeat_through_curl(body: &[u8], content_type: &str) -> Result<(), Test
         .await?
         .ok_or("server stopped")?;
 
-    let exchange = timeout(TEST_TIMEOUT, proxy.receive())
-        .await?
-        .ok_or("capture channel closed")?;
+    let exchange = next_record(&mut proxy).await?;
     wait_for_request_body(&exchange).await?;
     let command = curl_command(&exchange, RedactedHeaders::Omit)?;
     assert_eq!(command.redacted_headers(), ["cookie"]);
@@ -123,7 +110,7 @@ async fn repeat_through_curl(body: &[u8], content_type: &str) -> Result<(), Test
         .ok_or("server stopped")?;
 
     // The redacted Cookie is the one intended difference.
-    let without_cookie = |received: &Received| Received {
+    let without_cookie = |received: &ReceivedRequest| ReceivedRequest {
         method: received.method.clone(),
         target: received.target.clone(),
         headers: received
@@ -159,7 +146,7 @@ async fn wait_for_request_body(exchange: &Exchange) -> Result<(), TestError> {
 }
 
 /// Starts a server that records every request and answers `ok`.
-async fn test_server() -> std::io::Result<(SocketAddr, mpsc::Receiver<Received>)> {
+async fn test_server() -> std::io::Result<(SocketAddr, mpsc::Receiver<ReceivedRequest>)> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let (sender, receiver) = mpsc::channel(4);
@@ -179,50 +166,4 @@ async fn test_server() -> std::io::Result<(SocketAddr, mpsc::Receiver<Received>)
         }
     });
     Ok((address, receiver))
-}
-
-/// Reads one HTTP/1.1 request with a `Content-Length` body.
-async fn read_request(stream: &mut TcpStream) -> std::io::Result<Received> {
-    let invalid = |message: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, message);
-    let mut head = Vec::new();
-    while !head.ends_with(b"\r\n\r\n") {
-        head.push(stream.read_u8().await?);
-        if head.len() > 64 * 1024 {
-            return Err(invalid("request head too large"));
-        }
-    }
-    let mut lines = head
-        .split(|&byte| byte == b'\n')
-        .map(|line| line.strip_suffix(b"\r").unwrap_or(line))
-        .filter(|line| !line.is_empty());
-    let request_line = String::from_utf8_lossy(lines.next().ok_or_else(|| invalid("empty"))?);
-    let mut parts = request_line.split(' ');
-    let method = parts.next().unwrap_or_default().to_owned();
-    let target = parts.next().unwrap_or_default().to_owned();
-    let mut headers = Vec::new();
-    let mut length = 0;
-    for line in lines {
-        let colon = line
-            .iter()
-            .position(|&byte| byte == b':')
-            .ok_or_else(|| invalid("header without colon"))?;
-        let (name, value) = line.split_at(colon);
-        let name = String::from_utf8_lossy(name).to_ascii_lowercase();
-        let value = value.get(1..).unwrap_or_default().trim_ascii().to_vec();
-        if name == "content-length" {
-            length = String::from_utf8_lossy(&value)
-                .parse()
-                .map_err(|_| invalid("bad length"))?;
-        }
-        headers.push((name, value));
-    }
-    headers.sort();
-    let mut body = vec![0; length];
-    stream.read_exact(&mut body).await?;
-    Ok(Received {
-        method,
-        target,
-        headers,
-        body,
-    })
 }

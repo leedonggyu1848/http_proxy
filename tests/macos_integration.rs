@@ -1,15 +1,18 @@
 #![cfg(target_os = "macos")]
 
-use std::error::Error;
 use std::time::{Duration, Instant};
 
 use http_proxy::{
     Browser, BrowserEvent, CaInfo, CaTrustStatus, CaTrustStore, ProxyConfig, ProxyHandle,
 };
 
+pub mod common;
+
+use common::TestError;
+
 #[tokio::test]
 #[ignore = "Changes login keychain trust; may require interactive macOS authorization"]
-async fn login_keychain_registration_lifecycle() -> Result<(), Box<dyn Error>> {
+async fn login_keychain_registration_lifecycle() -> Result<(), TestError> {
     let directory = tempfile::tempdir()?;
     let ca = CaInfo::load_or_create(&directory.path().join("ca"))?;
     let store = CaTrustStore::for_current_user()?;
@@ -39,7 +42,7 @@ async fn login_keychain_registration_lifecycle() -> Result<(), Box<dyn Error>> {
 
 #[tokio::test]
 #[ignore = "Opens an installed Chrome inspection window on a graphical macOS session"]
-async fn installed_chrome_launches_and_closes() -> Result<(), Box<dyn Error>> {
+async fn installed_chrome_launches_and_closes() -> Result<(), TestError> {
     let browser = Browser::installed()
         .into_iter()
         .find(|browser| browser.name() == "Google Chrome")

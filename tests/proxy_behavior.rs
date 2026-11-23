@@ -1,10 +1,9 @@
-use std::error::Error;
 use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
 
 use http_proxy::{
-    BodyLifecycle, BodyRetention, Exchange, HeaderPreview, HttpsInspection, Outcome, ProxyConfig,
+    BodyLifecycle, BodyRetention, HeaderPreview, HttpsInspection, Outcome, ProxyConfig,
     ProxyHandle, TunnelPreview, TunnelSnapshot, TunnelState,
 };
 use rcgen::{
@@ -14,15 +13,20 @@ use rcgen::{
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
+pub mod common;
+
+use common::{TestError, read_headers, settled_within};
+
+/// Shorter than [`common::TEST_TIMEOUT`]; these cases expect a prompt answer.
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[tokio::test]
-async fn forwards_http_request_and_records_response() -> Result<(), Box<dyn Error>> {
+async fn forwards_http_request_and_records_response() -> Result<(), TestError> {
     let upstream = TcpListener::bind("127.0.0.1:0").await?;
     let upstream_addr = upstream.local_addr()?;
     let (request_sender, request_receiver) = tokio::sync::oneshot::channel();
@@ -59,7 +63,7 @@ async fn forwards_http_request_and_records_response() -> Result<(), Box<dyn Erro
         .ok_or("capture channel closed")?;
     assert_eq!(record.request().method(), http::Method::GET);
     assert!(matches!(
-        settled(&record).await?,
+        settled_within(&record, TEST_TIMEOUT).await?,
         Outcome::Response(response) if response.status() == 200
     ));
 
@@ -70,7 +74,7 @@ async fn forwards_http_request_and_records_response() -> Result<(), Box<dyn Erro
 }
 
 #[tokio::test]
-async fn strips_fields_named_by_connection_in_both_directions() -> Result<(), Box<dyn Error>> {
+async fn strips_fields_named_by_connection_in_both_directions() -> Result<(), TestError> {
     let upstream = TcpListener::bind("127.0.0.1:0").await?;
     let upstream_addr = upstream.local_addr()?;
     let (request_sender, request_receiver) = tokio::sync::oneshot::channel();
@@ -112,7 +116,7 @@ async fn strips_fields_named_by_connection_in_both_directions() -> Result<(), Bo
 }
 
 #[tokio::test]
-async fn rejects_requests_that_target_the_proxy_itself() -> Result<(), Box<dyn Error>> {
+async fn rejects_requests_that_target_the_proxy_itself() -> Result<(), TestError> {
     let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0))?;
     let proxy_addr = proxy.local_addr();
     let port = proxy_addr.port();
@@ -135,7 +139,7 @@ async fn rejects_requests_that_target_the_proxy_itself() -> Result<(), Box<dyn E
             .await?
             .ok_or("capture channel closed")?;
         assert!(matches!(
-            settled(&record).await?,
+            settled_within(&record, TEST_TIMEOUT).await?,
             Outcome::Failed {
                 stage: http_proxy::FailureStage::Request,
                 ..
@@ -153,7 +157,7 @@ async fn rejects_requests_that_target_the_proxy_itself() -> Result<(), Box<dyn E
 }
 
 #[tokio::test]
-async fn records_a_timeout_when_upstream_never_responds() -> Result<(), Box<dyn Error>> {
+async fn records_a_timeout_when_upstream_never_responds() -> Result<(), TestError> {
     let upstream = TcpListener::bind("127.0.0.1:0").await?;
     let upstream_addr = upstream.local_addr()?;
     let upstream_task = tokio::spawn(async move {
@@ -177,7 +181,7 @@ async fn records_a_timeout_when_upstream_never_responds() -> Result<(), Box<dyn 
         .await?
         .ok_or("capture channel closed")?;
     assert!(matches!(
-        settled(&record).await?,
+        settled_within(&record, TEST_TIMEOUT).await?,
         Outcome::Failed {
             stage: http_proxy::FailureStage::ResponseTimeout,
             ..
@@ -191,7 +195,7 @@ async fn records_a_timeout_when_upstream_never_responds() -> Result<(), Box<dyn 
 }
 
 #[tokio::test]
-async fn holds_new_clients_while_the_connection_limit_is_reached() -> Result<(), Box<dyn Error>> {
+async fn holds_new_clients_while_the_connection_limit_is_reached() -> Result<(), TestError> {
     let upstream = TcpListener::bind("127.0.0.1:0").await?;
     let upstream_addr = upstream.local_addr()?;
     let upstream_task = tokio::spawn(async move {
@@ -228,7 +232,7 @@ async fn holds_new_clients_while_the_connection_limit_is_reached() -> Result<(),
 }
 
 #[tokio::test]
-async fn connect_creates_a_bidirectional_tunnel() -> Result<(), Box<dyn Error>> {
+async fn connect_creates_a_bidirectional_tunnel() -> Result<(), TestError> {
     let upstream = TcpListener::bind("127.0.0.1:0").await?;
     let upstream_addr = upstream.local_addr()?;
     let upstream_task = tokio::spawn(async move {
@@ -258,7 +262,7 @@ async fn connect_creates_a_bidirectional_tunnel() -> Result<(), Box<dyn Error>> 
         .await?
         .ok_or("capture channel closed")?;
     assert_eq!(record.request().method(), http::Method::CONNECT);
-    let Outcome::Tunnel(tunnel) = settled(&record).await? else {
+    let Outcome::Tunnel(tunnel) = settled_within(&record, TEST_TIMEOUT).await? else {
         return Err("expected a tunnel record".into());
     };
 
@@ -273,7 +277,7 @@ async fn connect_creates_a_bidirectional_tunnel() -> Result<(), Box<dyn Error>> 
 }
 
 #[tokio::test]
-async fn records_a_tunnel_reset_by_upstream() -> Result<(), Box<dyn Error>> {
+async fn records_a_tunnel_reset_by_upstream() -> Result<(), TestError> {
     let upstream = TcpListener::bind("127.0.0.1:0").await?;
     let upstream_addr = upstream.local_addr()?;
     let upstream_task = tokio::spawn(async move {
@@ -295,7 +299,7 @@ async fn records_a_tunnel_reset_by_upstream() -> Result<(), Box<dyn Error>> {
     let record = timeout(TEST_TIMEOUT, proxy.receive())
         .await?
         .ok_or("capture channel closed")?;
-    let Outcome::Tunnel(tunnel) = settled(&record).await? else {
+    let Outcome::Tunnel(tunnel) = settled_within(&record, TEST_TIMEOUT).await? else {
         return Err("expected a tunnel record".into());
     };
     timeout(TEST_TIMEOUT, upstream_task).await???;
@@ -315,7 +319,7 @@ async fn records_a_tunnel_reset_by_upstream() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn wait_for_tunnel_end(tunnel: &TunnelPreview) -> Result<TunnelSnapshot, Box<dyn Error>> {
+async fn wait_for_tunnel_end(tunnel: &TunnelPreview) -> Result<TunnelSnapshot, TestError> {
     let poll = async {
         loop {
             let snapshot = tunnel.snapshot();
@@ -329,7 +333,7 @@ async fn wait_for_tunnel_end(tunnel: &TunnelPreview) -> Result<TunnelSnapshot, B
 }
 
 #[tokio::test]
-async fn captures_bounded_headers_and_body_previews() -> Result<(), Box<dyn Error>> {
+async fn captures_bounded_headers_and_body_previews() -> Result<(), TestError> {
     const BODY_SIZE: usize = 9_000;
 
     let upstream = TcpListener::bind("127.0.0.1:0").await?;
@@ -385,7 +389,7 @@ async fn captures_bounded_headers_and_body_previews() -> Result<(), Box<dyn Erro
     assert_eq!(request_body.retention(), BodyRetention::Truncated);
     assert!(request_body.bytes().iter().all(|byte| *byte == b'q'));
 
-    let Outcome::Response(response) = settled(&record).await? else {
+    let Outcome::Response(response) = settled_within(&record, TEST_TIMEOUT).await? else {
         return Err("expected an HTTP response capture".into());
     };
     let (status, headers, body) = (response.status(), response.headers(), response.body());
@@ -404,7 +408,7 @@ async fn captures_bounded_headers_and_body_previews() -> Result<(), Box<dyn Erro
 }
 
 #[tokio::test]
-async fn decrypts_https_with_a_trusted_local_ca() -> Result<(), Box<dyn Error>> {
+async fn decrypts_https_with_a_trusted_local_ca() -> Result<(), TestError> {
     let temporary = tempfile::tempdir()?;
     let upstream_root_path = temporary.path().join("upstream-root.pem");
     let (upstream_acceptor, upstream_root) = test_tls_server()?;
@@ -446,7 +450,7 @@ async fn decrypts_https_with_a_trusted_local_ca() -> Result<(), Box<dyn Error>> 
         .await?
         .ok_or("inspection setup capture missing")?;
     assert!(matches!(
-        settled(&setup).await?,
+        settled_within(&setup, TEST_TIMEOUT).await?,
         Outcome::InspectionEstablished
     ));
     let exchange = timeout(TEST_TIMEOUT, proxy.receive())
@@ -460,7 +464,7 @@ async fn decrypts_https_with_a_trusted_local_ca() -> Result<(), Box<dyn Error>> 
         header_value(exchange.request().headers(), "authorization"),
         Some("[REDACTED]")
     );
-    let Outcome::Response(response) = settled(&exchange).await? else {
+    let Outcome::Response(response) = settled_within(&exchange, TEST_TIMEOUT).await? else {
         return Err("expected a decrypted HTTP response capture".into());
     };
     let (status, headers, body) = (response.status(), response.headers(), response.body());
@@ -476,7 +480,7 @@ async fn decrypts_https_with_a_trusted_local_ca() -> Result<(), Box<dyn Error>> 
 }
 
 #[tokio::test]
-async fn rejects_an_untrusted_upstream_certificate() -> Result<(), Box<dyn Error>> {
+async fn rejects_an_untrusted_upstream_certificate() -> Result<(), TestError> {
     let temporary = tempfile::tempdir()?;
     let (upstream_acceptor, _) = test_tls_server()?;
     let upstream = TcpListener::bind("127.0.0.1:0").await?;
@@ -504,14 +508,14 @@ async fn rejects_an_untrusted_upstream_certificate() -> Result<(), Box<dyn Error
         .await?
         .ok_or("inspection setup capture missing")?;
     assert!(matches!(
-        settled(&setup).await?,
+        settled_within(&setup, TEST_TIMEOUT).await?,
         Outcome::InspectionEstablished
     ));
     let exchange = timeout(TEST_TIMEOUT, proxy.receive())
         .await?
         .ok_or("upstream TLS failure capture missing")?;
     assert!(matches!(
-        settled(&exchange).await?,
+        settled_within(&exchange, TEST_TIMEOUT).await?,
         Outcome::Failed {
             stage: http_proxy::FailureStage::UpstreamTls,
             ..
@@ -524,7 +528,7 @@ async fn rejects_an_untrusted_upstream_certificate() -> Result<(), Box<dyn Error
 }
 
 #[tokio::test]
-async fn rejects_a_host_that_differs_from_connect() -> Result<(), Box<dyn Error>> {
+async fn rejects_a_host_that_differs_from_connect() -> Result<(), TestError> {
     let temporary = tempfile::tempdir()?;
     let unused_listener = TcpListener::bind("127.0.0.1:0").await?;
     let unused_port = unused_listener.local_addr()?.port();
@@ -543,14 +547,14 @@ async fn rejects_a_host_that_differs_from_connect() -> Result<(), Box<dyn Error>
         .await?
         .ok_or("inspection setup capture missing")?;
     assert!(matches!(
-        settled(&setup).await?,
+        settled_within(&setup, TEST_TIMEOUT).await?,
         Outcome::InspectionEstablished
     ));
     let rejected = timeout(TEST_TIMEOUT, proxy.receive())
         .await?
         .ok_or("rejected request capture missing")?;
     assert!(matches!(
-        settled(&rejected).await?,
+        settled_within(&rejected, TEST_TIMEOUT).await?,
         Outcome::Failed {
             stage: http_proxy::FailureStage::Request,
             ..
@@ -564,7 +568,7 @@ async fn rejects_a_host_that_differs_from_connect() -> Result<(), Box<dyn Error>
 async fn connect_to_inspection(
     proxy: &ProxyHandle,
     upstream_port: u16,
-) -> Result<tokio_rustls::client::TlsStream<TcpStream>, Box<dyn Error>> {
+) -> Result<tokio_rustls::client::TlsStream<TcpStream>, TestError> {
     let ca_path = proxy
         .ca_info()
         .ok_or("inspection CA metadata missing")?
@@ -593,7 +597,7 @@ async fn connect_to_inspection(
     Ok(timeout(TEST_TIMEOUT, connector.connect(server_name, client)).await??)
 }
 
-fn test_tls_server() -> Result<(TlsAcceptor, String), Box<dyn Error>> {
+fn test_tls_server() -> Result<(TlsAcceptor, String), TestError> {
     let root_key = KeyPair::generate()?;
     let mut root_params = CertificateParams::default();
     let now = time::OffsetDateTime::now_utc();
@@ -631,31 +635,8 @@ fn header_value<'a>(headers: &'a HeaderPreview, name: &str) -> Option<&'a str> {
         .map(http_proxy::CapturedHeader::value)
 }
 
-async fn settled(exchange: &Exchange) -> Result<&Outcome, Box<dyn Error>> {
-    Ok(timeout(TEST_TIMEOUT, exchange.settled()).await?)
-}
-
-async fn read_headers<S>(stream: &mut S) -> std::io::Result<Vec<u8>>
-where
-    S: AsyncRead + Unpin,
-{
-    let mut data = Vec::new();
-    let mut byte = [0_u8; 1];
-    while !data.ends_with(b"\r\n\r\n") {
-        stream.read_exact(&mut byte).await?;
-        data.push(byte[0]);
-        if data.len() > 16 * 1024 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "headers exceeded the test limit",
-            ));
-        }
-    }
-    Ok(data)
-}
-
 #[tokio::test]
-async fn replays_edited_headers_and_cookie_with_link_and_redaction() -> Result<(), Box<dyn Error>> {
+async fn replays_edited_headers_and_cookie_with_link_and_redaction() -> Result<(), TestError> {
     let upstream = TcpListener::bind("127.0.0.1:0").await?;
     let upstream_addr = upstream.local_addr()?;
     let (request_sender, request_receiver) = tokio::sync::oneshot::channel();
@@ -694,7 +675,7 @@ async fn replays_edited_headers_and_cookie_with_link_and_redaction() -> Result<(
         .ok_or("capture channel closed")?;
     assert_eq!(record.request().method(), http::Method::GET);
     assert!(matches!(
-        settled(&record).await?,
+        settled_within(&record, TEST_TIMEOUT).await?,
         Outcome::Response(response) if response.status() == 200
     ));
 
@@ -731,7 +712,7 @@ async fn replays_edited_headers_and_cookie_with_link_and_redaction() -> Result<(
             .any(|field| field.name() == "cookie" && field.value() == "[REDACTED]")
     );
     assert!(
-        matches!(settled(&replay_record).await?, Outcome::Response(response) if response.status() == 201)
+        matches!(settled_within(&replay_record, TEST_TIMEOUT).await?, Outcome::Response(response) if response.status() == 201)
     );
     assert!(record.replay_of().is_none());
     assert_replay_validation(&mut draft, proxy.local_addr());
@@ -758,7 +739,7 @@ fn add_edited_headers(draft: &mut http_proxy::ReplayDraft) {
 fn disable_unreproducible_header(
     draft: &mut http_proxy::ReplayDraft,
     address: std::net::SocketAddr,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), TestError> {
     assert!(draft.headers.iter().any(|field| {
         field.name.eq_ignore_ascii_case("x-file-name") && field.value == "한글.txt"
     }));
@@ -779,7 +760,7 @@ fn disable_unreproducible_header(
 fn assert_body_file_loading(
     draft: &mut http_proxy::ReplayDraft,
     address: std::net::SocketAddr,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), TestError> {
     let directory = tempfile::tempdir()?;
     let body_path = directory.path().join("body.json");
     std::fs::write(&body_path, br#"{"edited":true}"#)?;
