@@ -107,19 +107,54 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: 14
+
+  package-smoke:
+    # 업로드한 작업이 끝난 뒤 다른 러너에서 artifact를 받아 실행한다.
+    # 같은 작업에서 업로드 직후 이름으로 받으면 artifact 목록 반영이 늦어 실패할 수 있다.
+    name: package-smoke (${{ matrix.os }}, ${{ matrix.target }})
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        # quality에서 package가 true인 대상과 같다. PR은 Linux만, 그 밖의 이벤트는 세 대상 모두다.
+        include: >-
+          ${{ fromJSON(github.event_name == 'pull_request'
+          && '[{"os": "ubuntu-24.04", "target": "x86_64-unknown-linux-gnu"}]'
+          || '[{"os": "ubuntu-24.04", "target": "x86_64-unknown-linux-gnu"},
+          {"os": "macos-15", "target": "aarch64-apple-darwin"},
+          {"os": "macos-15-intel", "target": "x86_64-apple-darwin"}]') }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # smoke-package.py는 tarfile의 filter 인자를 쓴다.
+          python-version: "3.12"
       - uses: actions/download-artifact@v4
-        if: matrix.package
         with:
           name: http-proxy-${{ github.sha }}-${{ matrix.target }}
           path: downloaded
       - name: Install Linux runtime smoke dependencies
-        if: matrix.package && runner.os == 'Linux'
-        run: sudo apt-get install --yes xvfb
+        if: runner.os == 'Linux'
+        # README의 Linux 런타임 라이브러리와 Xvfb만 설치한다.
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            libgl1 \
+            libegl1 \
+            libx11-6 \
+            libxkbcommon0 \
+            libxkbcommon-x11-0 \
+            libxcursor1 \
+            libxi6 \
+            libxrandr2 \
+            libnss3-tools \
+            xvfb
       - name: Run downloaded binary (Linux X11)
-        if: matrix.package && runner.os == 'Linux'
+        if: runner.os == 'Linux'
         run: xvfb-run -a python3 scripts/smoke-package.py downloaded
       - name: Run downloaded binary (macOS)
-        if: matrix.package && runner.os == 'macOS'
+        if: runner.os == 'macOS'
         run: python3 scripts/smoke-package.py downloaded
 
   dependencies:
@@ -135,7 +170,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [quality, dependencies]
+    needs: [quality, package-smoke, dependencies]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
