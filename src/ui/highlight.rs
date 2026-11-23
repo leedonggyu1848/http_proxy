@@ -1,9 +1,9 @@
 //! Theme colors for [`TokenKind`]s and conversion of [`Styled`] text into an
 //! egui [`LayoutJob`].
 
-use super::{Styled, TokenKind};
 use crate::ui::theme::Theme;
 use eframe::egui::{self, Color32, FontId, TextFormat, text::LayoutJob};
+use http_proxy::content::format::{LineIndent, Styled, TokenKind};
 use std::collections::HashMap;
 
 /// Syntax colors that keep at least 4.5:1 contrast on the panel, text field,
@@ -200,7 +200,7 @@ pub(in crate::ui) fn line_jobs(
 }
 
 fn indent_at<'a>(
-    indents: &'a [super::LineIndent],
+    indents: &'a [LineIndent],
     indent_index: &mut usize,
     offset: usize,
     widths: &mut PrefixWidths<'a>,

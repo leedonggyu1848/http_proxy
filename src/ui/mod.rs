@@ -1,8 +1,6 @@
 mod body_display;
-mod body_format;
 mod body_matches;
 mod body_saving;
-mod body_view;
 mod browser_panel;
 mod bulk_save;
 mod ca_panel;
@@ -14,7 +12,7 @@ mod filter;
 mod fonts;
 mod har;
 mod har_dialog;
-mod image_decode;
+mod highlight;
 mod image_view;
 mod map_panel;
 mod outcome_view;
@@ -38,6 +36,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use eframe::egui;
+use http_proxy::content::format as body_format;
 use http_proxy::settings;
 use http_proxy::url_map::{
     RequestScope, UrlMap, export_graph_dot, export_graph_mermaid, export_tree_json,

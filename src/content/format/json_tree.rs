@@ -14,7 +14,7 @@ const COPY: CopyLabels = CopyLabels {
 
 /// Reads `text` as one JSON value. Member order, duplicate keys and number
 /// spelling are kept as written.
-pub(in crate::ui) fn build(text: &str) -> Result<TreeModel, String> {
+pub(super) fn build(text: &str) -> Result<TreeModel, String> {
     let mut parser = Parser {
         text,
         offset: 0,
@@ -220,7 +220,7 @@ fn child_path(parent: &str, key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::body_format::tree::ROW_TEXT;
+    use crate::content::format::tree::ROW_TEXT;
     fn summary(node: &TreeNode) -> &str {
         node.label
             .text()

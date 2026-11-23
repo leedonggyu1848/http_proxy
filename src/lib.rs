@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod content;
 pub mod endpoint_schema;
 mod engine;
 #[expect(

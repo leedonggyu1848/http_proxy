@@ -2,10 +2,10 @@
 //! view are drawn, the open state survives theme and font changes, and
 //! every row can be searched and its path or value copied.
 
-use crate::ui::body_format::highlight::{self, SyntaxPalette};
-use crate::ui::body_format::tree::TreeModel;
+use crate::ui::highlight::{self, SyntaxPalette};
 use crate::ui::theme::Theme;
 use eframe::egui::{self, FontId, text::LayoutJob};
+use http_proxy::content::format::tree::TreeModel;
 use std::sync::Arc;
 
 /// Levels open when a tree is first shown.
@@ -278,7 +278,7 @@ fn highlighted(job: &LayoutJob, background: egui::Color32) -> LayoutJob {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::body_format::{BodyFormat, tree};
+    use http_proxy::content::format::{BodyFormat, tree};
 
     fn view(format: BodyFormat, text: &str) -> Result<TreeView, String> {
         tree::build(format, text)

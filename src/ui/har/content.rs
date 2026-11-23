@@ -8,7 +8,7 @@
 use http_proxy::{BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, HeaderPreview};
 use serde_json::{Map, Value, json};
 
-use crate::ui::body_view;
+use http_proxy::content::decode as body_view;
 
 /// Most decoded bytes one compressed body may expand to in the export.
 const DECODED_LIMIT: usize = 16 * 1024 * 1024;
