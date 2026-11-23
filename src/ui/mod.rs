@@ -16,6 +16,7 @@ mod har;
 mod har_dialog;
 mod image_decode;
 mod image_view;
+mod map_panel;
 mod outcome_view;
 mod port_settings;
 mod range_merge;
@@ -31,12 +32,16 @@ mod tree_view;
 
 use self::detail_tabs::DetailTab;
 use self::filter::RecordFilter;
+use self::map_panel::{MapAction, MapExportFormat, MapSubView};
 use self::toolbar::PortChoice;
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use eframe::egui;
+use http_proxy::url_map::{
+    UrlMap, ViewNodeKey, export_graph_dot, export_graph_mermaid, export_tree_json, export_tree_text,
+};
 use http_proxy::{
     EngineState, Exchange, FullLog, HttpsInspection, ProxyConfig, ProxyHandle, RecordId,
 };
@@ -85,12 +90,24 @@ fn init_tracing() {
         .is_err();
 }
 
+/// Top-level inspector view switcher (`Requests` list vs `Map` site/relationship map).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(in crate::ui) enum MainView {
+    #[default]
+    Requests,
+    Map,
+}
+
 struct InspectorApp {
     theme: theme::ThemeSettings,
+    main_view: MainView,
     replay: Option<replay_panel::ReplayPanel>,
     curl: copy_curl::CurlCopy,
     proxy: Option<ProxyHandle>,
     records: records::RecordList<Exchange>,
+    url_map: UrlMap,
+    map_panel: map_panel::MapPanel,
+    map_path_filter: Option<ViewNodeKey>,
     selected: Option<RecordId>,
     search: search::RequestSearch,
     record_filter: RecordFilter,
@@ -132,10 +149,14 @@ impl InspectorApp {
             ),
         };
         let mut app = Self {
+            main_view: MainView::Requests,
             replay: None,
             curl: copy_curl::CurlCopy::default(),
             proxy: None,
             records: records::RecordList::new(MAX_RECORDS),
+            url_map: UrlMap::new(),
+            map_panel: map_panel::MapPanel::new(),
+            map_path_filter: None,
             selected: None,
             search: search::RequestSearch::new(&context),
             record_filter: RecordFilter::All,
@@ -251,12 +272,21 @@ impl InspectorApp {
             return;
         };
         while let Some(record) = proxy.try_receive() {
+            let _ = self.url_map.observe_exchange(&record);
             if let Some(removed) = self.records.push(record)
                 && self.selected == Some(removed.id())
             {
                 self.selected = None;
             }
         }
+    }
+
+    pub(in crate::ui) fn clear_session(&mut self) {
+        self.records.clear(self.engine_dropped());
+        self.selected = None;
+        self.url_map.clear();
+        self.map_panel.clear();
+        self.map_path_filter = None;
     }
 
     /// Reports whether any displayed value still changes over time.
@@ -279,6 +309,7 @@ impl InspectorApp {
     /// Renders one frame of the inspector inside `ui`.
     pub(in crate::ui) fn render_ui(&mut self, ui: &mut egui::Ui) {
         self.receive_records();
+        let _ = self.url_map.sync_live();
         self.release_failed_proxy();
         self.body_saving.update(ui.ctx());
         if let Some(panel) = self.replay.as_mut() {
@@ -296,6 +327,7 @@ impl InspectorApp {
         self.range_merge(ui.ctx());
         let shortcuts_allowed = request_shortcuts_allowed(ui.ctx());
         let viewport_height = ui.available_height();
+        let mut pending_map_action: Option<MapAction> = None;
         egui::ScrollArea::vertical()
             .id_salt("window-scroll")
             .auto_shrink([false, false])
@@ -304,15 +336,37 @@ impl InspectorApp {
                 self.toolbar(ui);
                 self.notices(ui);
                 ui.separator();
-                self.filters(ui);
-                let used = ui.cursor().top() - top + ui.spacing().item_spacing.y;
-                let height = main_height(viewport_height, used, self.status_bar_height);
-                self.main_area(ui, height, shortcuts_allowed);
+                self.view_switcher(ui);
+                match self.main_view {
+                    MainView::Requests => {
+                        self.filters(ui);
+                        let used = ui.cursor().top() - top + ui.spacing().item_spacing.y;
+                        let height = main_height(viewport_height, used, self.status_bar_height);
+                        self.main_area(ui, height, shortcuts_allowed);
+                    }
+                    MainView::Map => {
+                        if let Some(action) =
+                            self.map_panel
+                                .controls(ui, &self.url_map, self.save.is_busy())
+                        {
+                            pending_map_action = Some(action);
+                        }
+                        let used = ui.cursor().top() - top + ui.spacing().item_spacing.y;
+                        let height = main_height(viewport_height, used, self.status_bar_height);
+                        if let Some(action) = self.map_area(ui, height, shortcuts_allowed) {
+                            pending_map_action = Some(action);
+                        }
+                    }
+                }
                 let status_top = ui.cursor().top();
                 ui.separator();
                 self.status_bar(ui);
                 self.status_bar_height = ui.min_rect().bottom() - status_top;
             });
+
+        if let Some(action) = pending_map_action {
+            self.handle_map_action(ui.ctx(), action);
+        }
 
         // New exchanges wake the UI through the proxy's notifier. Periodic
         // repaints are needed only for values that change without an event
@@ -321,6 +375,59 @@ impl InspectorApp {
             ui.ctx().request_repaint_after(LIVE_REPAINT);
         } else if self.proxy.is_some() {
             ui.ctx().request_repaint_after(IDLE_REPAINT);
+        }
+    }
+
+    fn view_switcher(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            let req_label = format!("Requests ({})", self.records.len());
+            ui.selectable_value(&mut self.main_view, MainView::Requests, req_label);
+            let map_label = format!(
+                "Map ({} hosts · {} nodes)",
+                self.url_map.origins().len(),
+                self.url_map.node_count()
+            );
+            ui.selectable_value(&mut self.main_view, MainView::Map, map_label);
+        });
+    }
+
+    fn handle_map_action(&mut self, ctx: &egui::Context, action: MapAction) {
+        match action {
+            MapAction::ShowInRequests(key) => {
+                self.map_path_filter = Some(key);
+                self.main_view = MainView::Requests;
+                self.selected = None;
+                ctx.request_repaint();
+            }
+            MapAction::SelectRequest(id) => {
+                self.selected = Some(id);
+                self.main_view = MainView::Requests;
+                ctx.request_repaint();
+            }
+            MapAction::Export(format) => {
+                let content = match format {
+                    MapExportFormat::TreeText => {
+                        export_tree_text(&self.url_map, self.map_panel.fold_ids())
+                    }
+                    MapExportFormat::TreeJson => serde_json::to_string_pretty(&export_tree_json(
+                        &self.url_map,
+                        self.map_panel.fold_ids(),
+                    ))
+                    .unwrap_or_else(|_| "{}".to_owned()),
+                    MapExportFormat::GraphMermaid => {
+                        export_graph_mermaid(&self.url_map, self.map_panel.max_graph_domains())
+                    }
+                    MapExportFormat::GraphDot => {
+                        export_graph_dot(&self.url_map, self.map_panel.max_graph_domains())
+                    }
+                };
+                self.save
+                    .save_text_file(ctx, format.file_prefix(), format.extension(), content);
+            }
+            MapAction::ClearAll => {
+                self.clear_session();
+                ctx.request_repaint();
+            }
         }
     }
 
@@ -347,98 +454,169 @@ impl InspectorApp {
     }
 
     fn filtered_records(&self) -> Vec<&Exchange> {
-        filter::visible_records(&self.records, self.record_filter, &self.search)
+        filter::visible_records(
+            &self.records,
+            self.record_filter,
+            &self.search,
+            self.map_path_filter.as_ref(),
+        )
     }
 
     /// Requests on the left and details on the right, split by a draggable
     /// divider. Each pane is strictly clipped to its own disjoint rectangle
     /// so wide content in either pane can never paint over the other.
     fn main_area(&mut self, ui: &mut egui::Ui, height: f32, shortcuts_allowed: bool) {
-        const SPLIT_HANDLE_HALF_WIDTH: f32 = 3.0;
-        const DETAIL_LEFT_MARGIN: f32 = 8.0;
-
-        let size = egui::vec2(ui.available_width(), height);
-        let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-        let mut main = ui.new_child(
-            egui::UiBuilder::new()
-                .id_salt("main-area")
-                .max_rect(rect)
-                .layout(egui::Layout::top_down(egui::Align::Min)),
+        let mut share = self.detail_share;
+        split_panes(
+            ui,
+            height,
+            &mut share,
+            ("main-area", "main-split", "requests-pane", "details-pane"),
+            |left_ui, right_ui| {
+                self.request_table(left_ui, shortcuts_allowed);
+                self.detail_panel(right_ui, shortcuts_allowed);
+            },
         );
-        main.shrink_clip_rect(rect);
-
-        let width = rect.width();
-        let split_id = main.make_persistent_id("main-split");
-        if let Some(prev) = main.ctx().read_response(split_id)
-            && (prev.dragged() || prev.drag_stopped())
-            && let Some(pointer) = prev.interact_pointer_pos()
-            && width > 0.0
-        {
-            let (min_detail, max_detail) = detail_width_bounds(width);
-            let dragged = (rect.right() - pointer.x).clamp(min_detail, max_detail);
-            self.detail_share = (dragged / width).clamp(0.0, 1.0);
-        }
-
-        let detail_width = split_detail_width(width, self.detail_share);
-        let split_x = (rect.right() - detail_width)
-            .round()
-            .clamp(rect.left(), rect.right());
-        let table_rect = egui::Rect::from_min_max(
-            rect.min,
-            egui::pos2((split_x - 1.0).max(rect.left()), rect.max.y),
-        );
-        let detail_outer = egui::Rect::from_min_max(
-            egui::pos2((split_x + 1.0).min(rect.right()), rect.min.y),
-            rect.max,
-        );
-        let detail_rect = egui::Rect::from_min_max(
-            egui::pos2(
-                (detail_outer.left() + DETAIL_LEFT_MARGIN).min(detail_outer.right()),
-                detail_outer.top(),
-            ),
-            detail_outer.max,
-        );
-
-        let mut table_ui = main.new_child(
-            egui::UiBuilder::new()
-                .id_salt("requests-pane")
-                .max_rect(table_rect)
-                .layout(egui::Layout::top_down(egui::Align::Min)),
-        );
-        table_ui.shrink_clip_rect(table_rect);
-        self.request_table(&mut table_ui, shortcuts_allowed);
-
-        let mut detail_ui = main.new_child(
-            egui::UiBuilder::new()
-                .id_salt("details-pane")
-                .max_rect(detail_rect)
-                .layout(egui::Layout::top_down(egui::Align::Min)),
-        );
-        detail_ui.shrink_clip_rect(detail_rect);
-        self.detail_panel(&mut detail_ui, shortcuts_allowed);
-
-        let handle_rect = egui::Rect::from_x_y_ranges(
-            (split_x - SPLIT_HANDLE_HALF_WIDTH).max(rect.left())
-                ..=(split_x + SPLIT_HANDLE_HALF_WIDTH).min(rect.right()),
-            rect.y_range(),
-        );
-        let handle = main.interact(handle_rect, split_id, egui::Sense::drag());
-        if handle.dragged() || handle.drag_stopped() {
-            main.ctx().request_repaint();
-        }
-        if handle.hovered() || handle.dragged() {
-            main.ctx()
-                .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-        }
-        let stroke = if handle.dragged() {
-            main.visuals().widgets.active.fg_stroke
-        } else if handle.hovered() {
-            main.visuals().widgets.hovered.fg_stroke
-        } else {
-            main.visuals().widgets.noninteractive.bg_stroke
-        };
-        main.painter().vline(split_x, rect.y_range(), stroke);
+        self.detail_share = share;
     }
+
+    /// Map main area: split tree + detail panes in Tree sub-view, or full-width
+    /// relationship graph canvas in Graph sub-view.
+    fn map_area(
+        &mut self,
+        ui: &mut egui::Ui,
+        height: f32,
+        shortcuts_allowed: bool,
+    ) -> Option<MapAction> {
+        if self.map_panel.sub_view == MapSubView::Graph {
+            let size = egui::vec2(ui.available_width(), height);
+            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+            let mut main = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt("map-graph-area")
+                    .max_rect(rect)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
+            main.shrink_clip_rect(rect);
+            self.map_panel.show_graph_pane(&mut main, &self.url_map);
+            return None;
+        }
+
+        let mut share = self.detail_share;
+        let action = split_panes(
+            ui,
+            height,
+            &mut share,
+            (
+                "map-main-area",
+                "map-split",
+                "map-tree-pane",
+                "map-detail-pane",
+            ),
+            |left_ui, right_ui| {
+                self.map_panel
+                    .show_tree_pane(left_ui, &self.url_map, shortcuts_allowed);
+                self.map_panel
+                    .show_detail_pane(right_ui, &self.url_map, &self.records)
+            },
+        );
+        self.detail_share = share;
+        action
+    }
+}
+
+fn split_panes<R>(
+    ui: &mut egui::Ui,
+    height: f32,
+    detail_share: &mut f32,
+    ids: (&str, &str, &str, &str),
+    render: impl FnOnce(&mut egui::Ui, &mut egui::Ui) -> R,
+) -> R {
+    const SPLIT_HANDLE_HALF_WIDTH: f32 = 3.0;
+    const DETAIL_LEFT_MARGIN: f32 = 8.0;
+
+    let size = egui::vec2(ui.available_width(), height);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let mut main = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt(ids.0)
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    main.shrink_clip_rect(rect);
+
+    let width = rect.width();
+    let split_id = main.make_persistent_id(ids.1);
+    if let Some(prev) = main.ctx().read_response(split_id)
+        && (prev.dragged() || prev.drag_stopped())
+        && let Some(pointer) = prev.interact_pointer_pos()
+        && width > 0.0
+    {
+        let (min_detail, max_detail) = detail_width_bounds(width);
+        let dragged = (rect.right() - pointer.x).clamp(min_detail, max_detail);
+        *detail_share = (dragged / width).clamp(0.0, 1.0);
+    }
+
+    let detail_width = split_detail_width(width, *detail_share);
+    let split_x = (rect.right() - detail_width)
+        .round()
+        .clamp(rect.left(), rect.right());
+    let left_rect = egui::Rect::from_min_max(
+        rect.min,
+        egui::pos2((split_x - 1.0).max(rect.left()), rect.max.y),
+    );
+    let right_outer = egui::Rect::from_min_max(
+        egui::pos2((split_x + 1.0).min(rect.right()), rect.min.y),
+        rect.max,
+    );
+    let right_rect = egui::Rect::from_min_max(
+        egui::pos2(
+            (right_outer.left() + DETAIL_LEFT_MARGIN).min(right_outer.right()),
+            right_outer.top(),
+        ),
+        right_outer.max,
+    );
+
+    let mut left_ui = main.new_child(
+        egui::UiBuilder::new()
+            .id_salt(ids.2)
+            .max_rect(left_rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    left_ui.shrink_clip_rect(left_rect);
+
+    let mut right_ui = main.new_child(
+        egui::UiBuilder::new()
+            .id_salt(ids.3)
+            .max_rect(right_rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    right_ui.shrink_clip_rect(right_rect);
+    let result = render(&mut left_ui, &mut right_ui);
+
+    let handle_rect = egui::Rect::from_x_y_ranges(
+        (split_x - SPLIT_HANDLE_HALF_WIDTH).max(rect.left())
+            ..=(split_x + SPLIT_HANDLE_HALF_WIDTH).min(rect.right()),
+        rect.y_range(),
+    );
+    let handle = main.interact(handle_rect, split_id, egui::Sense::drag());
+    if handle.dragged() || handle.dragged_by(egui::PointerButton::Primary) || handle.drag_stopped()
+    {
+        main.ctx().request_repaint();
+    }
+    if handle.hovered() || handle.dragged() {
+        main.ctx()
+            .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+    let stroke = if handle.dragged() {
+        main.visuals().widgets.active.fg_stroke
+    } else if handle.hovered() {
+        main.visuals().widgets.hovered.fg_stroke
+    } else {
+        main.visuals().widgets.noninteractive.bg_stroke
+    };
+    main.painter().vline(split_x, rect.y_range(), stroke);
+    result
 }
 
 /// Minimum and maximum width of the right details pane for `total_width`.
@@ -470,10 +648,10 @@ fn request_shortcuts_allowed(ctx: &egui::Context) -> bool {
 mod layout_tests {
     use super::{
         DEFAULT_DETAIL_SHARE, DEFAULT_WINDOW, DetailTab, InspectorApp, MAX_RECORDS,
-        MIN_DETAIL_WIDTH, MIN_MAIN_HEIGHT, MIN_TABLE_WIDTH, MIN_WINDOW, PortChoice, RecordFilter,
-        body_display, body_format, body_saving, browser_panel, ca_panel, copy_curl, fonts,
-        har_dialog, image_view, main_height, port_settings, records, replay_panel, request_table,
-        save, search, split_detail_width, theme, toolbar,
+        MIN_DETAIL_WIDTH, MIN_MAIN_HEIGHT, MIN_TABLE_WIDTH, MIN_WINDOW, MainView, PortChoice,
+        RecordFilter, UrlMap, body_display, body_format, body_saving, browser_panel, ca_panel,
+        copy_curl, fonts, har_dialog, image_view, main_height, map_panel, port_settings, records,
+        replay_panel, request_table, save, search, split_detail_width, theme, toolbar,
     };
     use eframe::egui;
     use http_proxy::{Exchange, ProxyConfig, ProxyHandle};
@@ -486,10 +664,14 @@ mod layout_tests {
         fonts::configure_fonts(&context);
         InspectorApp {
             theme: theme::ThemeSettings::new(&context),
+            main_view: MainView::Requests,
             replay: None,
             curl: copy_curl::CurlCopy::default(),
             proxy: None,
             records: records::RecordList::new(MAX_RECORDS),
+            url_map: UrlMap::new(),
+            map_panel: map_panel::MapPanel::new(),
+            map_path_filter: None,
             selected: None,
             search: search::RequestSearch::new(&context),
             record_filter: RecordFilter::All,
@@ -1204,5 +1386,263 @@ mod layout_tests {
             "ArrowUp after Escape must resume navigating the request list"
         );
         Ok(())
+    }
+
+    fn seed_synthetic_map_data(map: &mut UrlMap) -> Result<(), Box<dyn std::error::Error>> {
+        let synthetic_urls = [
+            (
+                "https://app.example.test/dashboard?session=SECRET_UI_TOKEN_1",
+                None,
+                None,
+                None,
+            ),
+            (
+                "https://api.example.test/v1/users/101/orders?auth=SECRET_UI_TOKEN_2&page=1",
+                Some("https://app.example.test/dashboard?sid=SECRET_UI_REF"),
+                Some("https://app.example.test"),
+                None,
+            ),
+            (
+                "https://api.example.test/v1/users/202/orders?auth=SECRET_UI_TOKEN_3&page=2",
+                Some("https://app.example.test/dashboard?sid=SECRET_UI_REF"),
+                Some("https://app.example.test"),
+                Some("https://auth.example.test/login?next=SECRET_UI_LOC"),
+            ),
+            (
+                "https://cdn.tracker.net/sdk.js?api_key=SECRET_UI_TOKEN_4",
+                Some("https://app.example.test/dashboard"),
+                None,
+                None,
+            ),
+        ];
+        let base_time = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        for (url, referer, origin_hdr, redirect) in synthetic_urls {
+            let target = http_proxy::url_map::parse_url(url).ok_or("valid synthetic url")?;
+            let _ = map.observe(http_proxy::url_map::ObservedInput {
+                target,
+                method: http::Method::GET,
+                status: http_proxy::url_map::StatusBucket::S2xx,
+                content_type: Some("application/json".to_owned()),
+                bytes: 512,
+                duration: Some(Duration::from_millis(18)),
+                started_at: base_time,
+                referer: referer.and_then(http_proxy::url_map::parse_url),
+                origin_header: origin_hdr.and_then(http_proxy::url_map::parse_origin_header),
+                redirect_location: redirect.and_then(http_proxy::url_map::parse_url),
+            });
+        }
+        Ok(())
+    }
+
+    fn assert_no_secrets_painted(drawn: &[DrawnText], label: &str) {
+        let secrets = [
+            "abcdef0123456789",
+            "SECRET_UI_TOKEN_1",
+            "SECRET_UI_TOKEN_2",
+            "SECRET_UI_TOKEN_3",
+            "SECRET_UI_TOKEN_4",
+            "SECRET_UI_REF",
+            "SECRET_UI_LOC",
+        ];
+        for item in drawn {
+            for secret in secrets {
+                assert!(
+                    !item.text.contains(secret),
+                    "{label} leaked query value {secret:?} in {:?}",
+                    item.text
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn map_views_avoid_overlap_never_leak_query_values_and_filter_requests()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let exchanges = timeout(Duration::from_secs(5), capture_sample_exchanges()).await??;
+        let mut app = test_app(egui::Context::default());
+        for exchange in exchanges {
+            let _ = app.url_map.observe_exchange(&exchange);
+            let _evicted = app.records.push(exchange);
+        }
+        let _ = app.url_map.sync_live();
+        seed_synthetic_map_data(&mut app.url_map)?;
+
+        app.main_view = MainView::Map;
+        let first_origin = app
+            .url_map
+            .origins()
+            .keys()
+            .next()
+            .cloned()
+            .ok_or("missing origin")?;
+        app.map_panel.selected = Some(http_proxy::url_map::ViewNodeKey {
+            origin: first_origin,
+            path: Vec::new(),
+        });
+
+        for size in [DEFAULT_WINDOW, MIN_WINDOW] {
+            let viewport =
+                egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size[0], size[1]));
+            for (sub, tag) in [
+                (super::MapSubView::Tree, "map-tree"),
+                (super::MapSubView::Graph, "map-graph"),
+            ] {
+                app.map_panel.sub_view = sub;
+                let drawn = render_settled(&mut app, size);
+                assert!(!drawn.is_empty());
+                assert_no_text_overlap(&drawn, viewport, &format!("{tag}@{size:?}"));
+                assert_no_secrets_painted(&drawn, &format!("{tag}@{size:?}"));
+            }
+        }
+
+        app.map_panel.sub_view = super::MapSubView::Tree;
+        let mut time = 0.0;
+        let _ = run_app_frame(&mut app, DEFAULT_WINDOW, time, Vec::new());
+        press_key(&mut app, DEFAULT_WINDOW, &mut time, egui::Key::ArrowDown);
+        assert!(app.map_panel.selected.is_some());
+        press_key(&mut app, DEFAULT_WINDOW, &mut time, egui::Key::ArrowRight);
+        let _ = run_app_frame(&mut app, DEFAULT_WINDOW, time + 0.05, Vec::new());
+
+        let local_origin = app
+            .url_map
+            .origins()
+            .keys()
+            .find(|origin| origin.host() == "127.0.0.1")
+            .cloned()
+            .ok_or("missing local origin")?;
+        let users_key = http_proxy::url_map::ViewNodeKey {
+            origin: local_origin,
+            path: vec![
+                http_proxy::url_map::PathSegmentPattern::Literal("api".to_owned()),
+                http_proxy::url_map::PathSegmentPattern::Literal("v2".to_owned()),
+                http_proxy::url_map::PathSegmentPattern::Literal("users".to_owned()),
+            ],
+        };
+        app.handle_map_action(
+            &app.context.clone(),
+            super::MapAction::ShowInRequests(users_key),
+        );
+        assert_eq!(app.main_view, MainView::Requests);
+        assert_eq!(app.filtered_records().len(), 2);
+
+        let min_viewport =
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(MIN_WINDOW[0], MIN_WINDOW[1]));
+        let filtered_drawn = render_settled(&mut app, MIN_WINDOW);
+        assert_no_text_overlap(&filtered_drawn, min_viewport, "requests-map-filter@640x420");
+        assert!(
+            filtered_drawn
+                .iter()
+                .any(|item| item.text.contains("Map filter:"))
+        );
+
+        app.clear_session();
+        assert_eq!(app.records.len(), 0);
+        assert_eq!(app.url_map.node_count(), 0);
+        assert!(app.map_path_filter.is_none());
+        Ok(())
+    }
+
+    fn seed_scale_workload(map: &mut UrlMap, count: usize) -> Duration {
+        use http_proxy::url_map::{ObservedInput, StatusBucket, parse_origin_header, parse_url};
+        use std::time::{Instant, SystemTime};
+
+        let hosts = [
+            "app.example.com",
+            "api.example.com",
+            "auth.example.com",
+            "static.example.com",
+            "cdn.tracker.net",
+            "metrics.analytics.io",
+            "payments.partner.org",
+            "media.storage.net",
+        ];
+        let resources = ["users", "orders", "items", "events", "sessions", "comments"];
+        let base_time = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let start = Instant::now();
+        for i in 0..count {
+            let host = hosts
+                .get(i % hosts.len())
+                .copied()
+                .unwrap_or("app.example.com");
+            let resource = resources
+                .get((i / 7) % resources.len())
+                .copied()
+                .unwrap_or("items");
+            let sub_id = i;
+            let url_str = match i % 4 {
+                0 => format!("https://{host}/api/v1/{resource}/{sub_id}?page={}", i % 10),
+                1 => format!("https://{host}/api/v1/{resource}/{sub_id}/details"),
+                2 => format!("https://{host}/assets/chunk-{sub_id:04}.js"),
+                _ => format!("https://{host}/pages/section-{}/view-{}", i % 80, i % 120),
+            };
+            let Some(target) = parse_url(&url_str) else {
+                continue;
+            };
+            let _ = map.observe(ObservedInput {
+                target,
+                method: http::Method::GET,
+                status: StatusBucket::S2xx,
+                content_type: Some("application/json".to_owned()),
+                bytes: 512,
+                duration: Some(Duration::from_millis(20)),
+                started_at: base_time + Duration::from_millis(u64::try_from(i).unwrap_or(0)),
+                referer: (i % 3 == 0)
+                    .then(|| parse_url("https://app.example.com/dashboard"))
+                    .flatten(),
+                origin_header: (i % 5 == 0)
+                    .then(|| parse_origin_header("https://app.example.com"))
+                    .flatten(),
+                redirect_location: (i % 17 == 0)
+                    .then(|| parse_url("https://auth.example.com/login"))
+                    .flatten(),
+            });
+        }
+        start.elapsed()
+    }
+
+    fn measure_frames(app: &mut InspectorApp, time: &mut f64, frames: usize) -> Vec<Duration> {
+        let mut samples = Vec::with_capacity(frames);
+        for _ in 0..frames {
+            *time += 0.016;
+            let start = std::time::Instant::now();
+            let _ = run_app_frame(app, DEFAULT_WINDOW, *time, Vec::new());
+            samples.push(start.elapsed());
+        }
+        samples.sort();
+        samples
+    }
+
+    #[test]
+    #[ignore = "manual performance measurement; run in release mode with --ignored --nocapture"]
+    #[allow(clippy::print_stderr, reason = "manual performance measurement output")]
+    fn measure_map_ui_frame_time_at_scale() {
+        let mut app = test_app(egui::Context::default());
+        let insert_elapsed = seed_scale_workload(&mut app.url_map, 5_000);
+        let node_count = app.url_map.node_count();
+
+        app.main_view = MainView::Map;
+        app.map_panel.sub_view = super::MapSubView::Tree;
+        let mut time = 0.0;
+        let _ = measure_frames(&mut app, &mut time, 5);
+        let tree_frames = measure_frames(&mut app, &mut time, 60);
+
+        app.map_panel.sub_view = super::MapSubView::Graph;
+        let graph_frames = measure_frames(&mut app, &mut time, 60);
+
+        let ms = |d: Option<&Duration>| d.map_or(0.0, |dur| dur.as_secs_f64() * 1_000.0);
+        eprintln!(
+            "URL map scale measurement (5,000 requests, {node_count} nodes):\n  \
+             insert_total={:.2}ms ({:.2}us/req)\n  \
+             tree_frame_p50={:.3}ms tree_frame_p95={:.3}ms tree_frame_max={:.3}ms\n  \
+             graph_frame_p50={:.3}ms graph_frame_p95={:.3}ms graph_frame_max={:.3}ms",
+            insert_elapsed.as_secs_f64() * 1_000.0,
+            insert_elapsed.as_secs_f64() * 1_000_000.0 / 5_000.0,
+            ms(tree_frames.get(30)),
+            ms(tree_frames.get(57)),
+            ms(tree_frames.last()),
+            ms(graph_frames.get(30)),
+            ms(graph_frames.get(57)),
+            ms(graph_frames.last()),
+        );
     }
 }

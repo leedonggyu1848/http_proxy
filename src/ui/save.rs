@@ -92,6 +92,38 @@ impl SaveControls {
         }
     }
 
+    /// Writes `content` to a new, non-clobbering file inside the configured
+    /// `Save directory` on a worker thread.
+    pub(in crate::ui) fn save_text_file(
+        &mut self,
+        context: &egui::Context,
+        prefix: &str,
+        extension: &str,
+        text: String,
+    ) {
+        self.status = None;
+        let path = match self.destination_with_prefix(prefix, extension) {
+            Ok(path) => path,
+            Err(error) => {
+                self.status = Some(Err(error));
+                return;
+            }
+        };
+        let (sender, receiver) = mpsc::channel();
+        let worker_context = context.clone();
+        let spawned = std::thread::Builder::new()
+            .name("save-url-map".to_owned())
+            .spawn(move || {
+                let result = save_text_atomic(&path, text.as_bytes()).map(|()| path);
+                let _receiver_closed = sender.send(result);
+                worker_context.request_repaint();
+            });
+        match spawned {
+            Ok(_worker) => self.pending = Some(receiver),
+            Err(error) => self.status = Some(Err(error)),
+        }
+    }
+
     fn menu_items(&mut self, ui: &mut egui::Ui, log: Option<&FullLog>) -> Option<SaveMenuAction> {
         ui.label("Save directory");
         let input_width = (ui.ctx().content_rect().width() - 48.0).clamp(160.0, 320.0);
@@ -190,13 +222,17 @@ impl SaveControls {
     }
 
     fn destination(&self, extension: &str) -> io::Result<PathBuf> {
+        self.destination_with_prefix("http-inspector", extension)
+    }
+
+    fn destination_with_prefix(&self, prefix: &str, extension: &str) -> io::Result<PathBuf> {
         let directory = self.directory()?;
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(io::Error::other)?;
         let sequence = NEXT_FILE.fetch_add(1, Ordering::Relaxed);
         Ok(directory.join(format!(
-            "http-inspector-{}-{:09}-{}-{sequence}.{extension}",
+            "{prefix}-{}-{:09}-{}-{sequence}.{extension}",
             timestamp.as_secs(),
             timestamp.subsec_nanos(),
             std::process::id(),
@@ -256,6 +292,19 @@ fn save_png(path: &Path, image: &ColorImage) -> io::Result<()> {
     Ok(())
 }
 
+fn save_text_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let directory = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Save path has no directory"))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+    temporary.write_all(bytes)?;
+    temporary.flush()?;
+    temporary
+        .persist_noclobber(path)
+        .map_err(|error| error.error)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,6 +324,17 @@ mod tests {
         assert_eq!(pixels, [255, 0, 0, 255, 0, 0, 255, 255]);
         assert!(save_png(&path, &image).is_err());
         assert_eq!(std::fs::read(&path)?, original);
+        Ok(())
+    }
+
+    #[test]
+    fn text_save_preserves_content_and_existing_files() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("url-map.txt");
+        save_text_atomic(&path, b"first version\n")?;
+        assert_eq!(std::fs::read_to_string(&path)?, "first version\n");
+        assert!(save_text_atomic(&path, b"overwrite attempt\n").is_err());
+        assert_eq!(std::fs::read_to_string(&path)?, "first version\n");
         Ok(())
     }
 }

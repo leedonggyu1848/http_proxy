@@ -200,6 +200,16 @@ impl InspectorApp {
                         "Only the newest {MAX_RECORDS} requests are kept on screen. The full-session log keeps every record."
                     ));
             }
+            if self.url_map.node_limit_reached() {
+                ui.separator();
+                ui.colored_label(
+                    palette.warning,
+                    format!(
+                        "URL map reached its {} node limit; deeper paths are folded into parent nodes.",
+                        self.url_map.max_nodes()
+                    ),
+                );
+            }
             if let Some(error) = self
                 .log_init_error
                 .clone()

@@ -42,7 +42,9 @@ use crate::ui::InspectorApp;
 use crate::ui::records::RecordList;
 use crate::ui::replay_panel;
 use crate::ui::search::RequestSearch;
+use crate::ui::theme::Palette;
 use eframe::egui;
+use http_proxy::url_map::ViewNodeKey;
 
 impl InspectorApp {
     /// Filter, list options, and Clear, shown right above the request list.
@@ -59,19 +61,67 @@ impl InspectorApp {
             self.table.controls(ui);
             if ui
                 .button("Clear")
-                .on_hover_text("Clear the displayed requests. The full-session log is retained.")
+                .on_hover_text(
+                    "Clear the displayed requests and reset the URL map. The full-session log is retained.",
+                )
                 .clicked()
             {
-                self.records.clear(self.engine_dropped());
-                self.selected = None;
+                self.clear_session();
             }
         });
+        self.map_filter_banner(ui);
         self.search.status(ui);
+    }
+
+    fn map_filter_banner(&mut self, ui: &mut egui::Ui) {
+        let Some(key) = self.map_path_filter.clone() else {
+            return;
+        };
+        let palette = Palette::of(ui);
+        let retained = self
+            .records
+            .iter()
+            .filter(|record| key.matches_exchange(record))
+            .count();
+        let total = self.url_map.matching_request_count(&key);
+        let evicted = total.saturating_sub(u64::try_from(retained).unwrap_or(u64::MAX));
+        let mut clear = false;
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                egui::RichText::new(format!("Map filter: {}", key.display_url()))
+                    .monospace()
+                    .color(palette.info),
+            );
+            if evicted > 0 {
+                ui.label(
+                    egui::RichText::new(format!("({retained} retained · {evicted} older removed)"))
+                        .color(palette.warning)
+                        .small(),
+                );
+            } else {
+                ui.label(
+                    egui::RichText::new(format!("({retained} matching)"))
+                        .color(palette.muted)
+                        .small(),
+                );
+            }
+            if ui.small_button("Clear map filter").clicked() {
+                clear = true;
+            }
+        });
+        if clear {
+            self.map_path_filter = None;
+        }
     }
 
     pub(in crate::ui) fn request_table(&mut self, ui: &mut egui::Ui, shortcuts_allowed: bool) {
         self.search.update(&self.records, ui.ctx());
-        let rows = visible_records(&self.records, self.record_filter, &self.search);
+        let rows = visible_records(
+            &self.records,
+            self.record_filter,
+            &self.search,
+            self.map_path_filter.as_ref(),
+        );
         if rows.is_empty() {
             let message = empty_list_text(
                 self.records.len(),
@@ -103,15 +153,17 @@ impl InspectorApp {
     }
 }
 
-/// Records that match the outcome filter and the search, in arrival order.
+/// Records that match the outcome filter, optional Map node prefix, and search, in arrival order.
 pub(in crate::ui) fn visible_records<'a>(
     records: &'a RecordList<Exchange>,
     filter: RecordFilter,
     search: &RequestSearch,
+    map_filter: Option<&ViewNodeKey>,
 ) -> Vec<&'a Exchange> {
     records
         .iter()
         .filter(|record| record_matches(record, filter))
+        .filter(|record| map_filter.is_none_or(|key| key.matches_exchange(record)))
         .filter(|record| search.shows(record.id()))
         .collect()
 }

@@ -15,6 +15,7 @@ README는 설치부터 HTTPS 복호화까지 꼭 필요한 내용만 담는다. 
 | [요청을 cURL 명령으로 복사하기](copy-as-curl.md) | **Copy as cURL** 명령 형식, 셸 인용, 가려진 헤더와 잘린 본문 처리 |
 | [창 캡처와 전체 로그 저장](logs.md) | **Save window PNG**, **Save all logs**, 로그 형식, 한도, 민감정보 |
 | [HAR로 내보내기](har.md) | **Export HAR…**, 기본 제외 항목, 잘린 본문·`CONNECT` 터널·실패 기록 표현, Chrome DevTools 호환 |
+| [URL 맵과 관계 그래프](url-map.md) | 호스트·경로 트리, 동적 ID 접기, 서드파티·호출 관계 그래프, 내보내기, 쿼리 값 비보관 |
 
 ## 전체 기능 목록
 
