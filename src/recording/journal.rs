@@ -528,7 +528,7 @@ mod tests {
             http::Version::HTTP_11,
             "OK".to_owned(),
             crate::exchange::HeaderPreview::default(),
-            crate::exchange::BodyPreview::new(0),
+            crate::exchange::BodyPreviewWriter::new(0).preview(),
         );
         assert_output(
             |log| log.settled(4, &Outcome::Response(response), Duration::from_millis(2)),
@@ -538,11 +538,11 @@ mod tests {
 
     #[test]
     fn tunnel_ended_format() -> io::Result<()> {
-        let tunnel = crate::exchange::TunnelPreview::new();
+        let tunnel = crate::exchange::TunnelWriter::new();
         tunnel.add_client_to_upstream(12);
         tunnel.add_upstream_to_client(34);
         tunnel.close();
-        let snapshot = tunnel.snapshot();
+        let snapshot = tunnel.preview().snapshot();
         assert_output(
             |log| log.tunnel_ended(5, &snapshot),
             &format!(

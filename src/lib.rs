@@ -39,6 +39,8 @@ pub use engine::{
     CURL_REDACTED_PLACEHOLDER, CurlCommand, CurlUnavailable, RedactedHeaders, curl_command,
     curl_unavailable_reason,
 };
+#[cfg(feature = "test-support")]
+pub use engine::{ConnectExchangeBuilder, ExchangeBuilder, FixtureError, ResponseFixture};
 pub use engine::{
     EngineState, ProxyConfig, ProxyHandle, REPLAY_BODY_FILE_LIMIT_BYTES, ReplayDraft, ReplayField,
     ReplayTask, StartError, StopError,

@@ -8,7 +8,7 @@ use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, copy_bidirectional};
 
 use crate::engine::capture::{ERROR_BYTES, bounded_text};
-use crate::exchange::{FailureStage, TunnelPreview};
+use crate::exchange::{FailureStage, TunnelWriter};
 
 /// Waits for the client upgrade, then relays bytes until both sides finish.
 ///
@@ -16,14 +16,15 @@ use crate::exchange::{FailureStage, TunnelPreview};
 /// failure, a relay error a `Tunnel` failure, and a clean finish `Closed`.
 /// When the relay is dropped before it finishes, which happens when the
 /// proxy stops, the tunnel becomes `Incomplete`.
-pub(super) async fn relay<F, C, E, U>(on_upgrade: F, mut upstream: U, tunnel: TunnelPreview)
+pub(super) async fn relay<F, C, E, U>(on_upgrade: F, mut upstream: U, tunnel: TunnelWriter)
 where
     F: Future<Output = Result<C, E>>,
     C: AsyncRead + AsyncWrite + Unpin,
     E: Display,
     U: AsyncRead + AsyncWrite + Unpin,
 {
-    let _abandoned_on_drop = AbandonOnDrop(tunnel.clone());
+    let guard = AbandonOnDrop(tunnel);
+    let tunnel = &guard.0;
     let client = match on_upgrade.await {
         Ok(client) => client,
         Err(error) => {
@@ -33,7 +34,7 @@ where
     };
     let mut client = CountingClient {
         inner: client,
-        tunnel: tunnel.clone(),
+        tunnel,
     };
     match copy_bidirectional(&mut client, &mut upstream).await {
         Ok(_) => tunnel.close(),
@@ -42,7 +43,7 @@ where
 }
 
 /// Marks the tunnel `Incomplete` unless it already ended.
-struct AbandonOnDrop(TunnelPreview);
+struct AbandonOnDrop(TunnelWriter);
 
 impl Drop for AbandonOnDrop {
     fn drop(&mut self) {
@@ -55,12 +56,12 @@ fn failure_text(error: &impl Display) -> String {
 }
 
 /// Client side of a tunnel: reads go upstream, writes came from upstream.
-struct CountingClient<C> {
+struct CountingClient<'tunnel, C> {
     inner: C,
-    tunnel: TunnelPreview,
+    tunnel: &'tunnel TunnelWriter,
 }
 
-impl<C: AsyncRead + Unpin> AsyncRead for CountingClient<C> {
+impl<C: AsyncRead + Unpin> AsyncRead for CountingClient<'_, C> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         context: &mut Context<'_>,
@@ -76,7 +77,7 @@ impl<C: AsyncRead + Unpin> AsyncRead for CountingClient<C> {
     }
 }
 
-impl<C: AsyncWrite + Unpin> AsyncWrite for CountingClient<C> {
+impl<C: AsyncWrite + Unpin> AsyncWrite for CountingClient<'_, C> {
     fn poll_write(
         mut self: Pin<&mut Self>,
         context: &mut Context<'_>,
@@ -107,12 +108,13 @@ mod tests {
 
     #[tokio::test]
     async fn records_an_upgrade_failure() {
-        let tunnel = TunnelPreview::new();
+        let tunnel = TunnelWriter::new();
+        let view = tunnel.preview();
         let (upstream, _far_upstream) = duplex(64);
         let on_upgrade = async { Err::<DuplexStream, _>("connection closed before upgrade") };
-        relay(on_upgrade, upstream, tunnel.clone()).await;
+        relay(on_upgrade, upstream, tunnel).await;
         assert_eq!(
-            tunnel.snapshot().state(),
+            view.snapshot().state(),
             &TunnelState::Failed {
                 stage: FailureStage::Upgrade,
                 message: "connection closed before upgrade".to_owned(),
@@ -122,11 +124,12 @@ mod tests {
 
     #[tokio::test]
     async fn counts_both_directions_until_close() -> io::Result<()> {
-        let tunnel = TunnelPreview::new();
+        let tunnel = TunnelWriter::new();
+        let view = tunnel.preview();
         let (client, mut far_client) = duplex(64);
         let (upstream, mut far_upstream) = duplex(64);
         let on_upgrade = async { Ok::<_, &str>(client) };
-        let relay_task = tokio::spawn(relay(on_upgrade, upstream, tunnel.clone()));
+        let relay_task = tokio::spawn(relay(on_upgrade, upstream, tunnel));
 
         far_client.write_all(b"ping!").await?;
         let mut request = [0_u8; 5];
@@ -138,7 +141,7 @@ mod tests {
         drop(far_upstream);
         relay_task.await.map_err(io::Error::other)?;
 
-        let snapshot = tunnel.snapshot();
+        let snapshot = view.snapshot();
         assert_eq!(snapshot.state(), &TunnelState::Closed);
         assert_eq!(snapshot.client_to_upstream(), 5);
         assert_eq!(snapshot.upstream_to_client(), 4);

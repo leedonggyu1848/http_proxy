@@ -12,18 +12,28 @@ mod wakers;
 pub use body_side::BodySide;
 pub use image_format::ImageFormat;
 pub use media_type::MediaType;
+pub(crate) use record::ExchangeWriter;
 pub use record::{
     CaptureSource, CapturedRequest, CapturedResponse, Exchange, Outcome, SessionId, Timing,
 };
+pub(crate) use tunnel::TunnelWriter;
 pub use tunnel::{TunnelPreview, TunnelSnapshot, TunnelState};
+
+static NEXT_RECORD_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Stable identity of one captured exchange.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct RecordId(u64);
 
 impl RecordId {
+    #[cfg(test)]
     pub(crate) const fn new(value: u64) -> Self {
         Self(value)
+    }
+
+    /// Allocates an identity no other exchange in this process has.
+    pub(crate) fn next() -> Self {
+        Self(NEXT_RECORD_ID.fetch_add(1, Ordering::Relaxed))
     }
 
     /// Returns the numeric record identity used in logs and replay links.
@@ -207,12 +217,30 @@ impl Drop for BodyPreviewInner {
 const INITIAL_PREVIEW_CAPACITY: usize = 8 * 1024;
 
 /// Live, bounded observation of a streamed HTTP body.
+///
+/// This is a read handle: only the code forwarding the body owns the writer
+/// that observes bytes and ends the stream.
+///
+/// ```compile_fail,E0599
+/// fn observe(preview: &http_proxy::BodyPreview) {
+///     preview.observe(b"bytes");
+/// }
+/// ```
 #[derive(Clone, Debug)]
 pub struct BodyPreview {
     inner: Arc<BodyPreviewInner>,
 }
 
-impl BodyPreview {
+/// Write side of one [`BodyPreview`], owned by the code that forwards the body.
+///
+/// Readers only ever receive [`BodyPreview`] handles, so observing bytes or
+/// ending the stream requires owning this writer.
+#[derive(Debug)]
+pub(crate) struct BodyPreviewWriter {
+    preview: BodyPreview,
+}
+
+impl BodyPreviewWriter {
     pub(crate) fn new(limit: usize) -> Self {
         Self::with_budget(limit, None)
     }
@@ -222,57 +250,64 @@ impl BodyPreview {
     /// retained and the preview becomes [`BodyRetention::Truncated`].
     pub(crate) fn with_budget(limit: usize, budget: Option<&'static RetentionBudget>) -> Self {
         Self {
-            inner: Arc::new(BodyPreviewInner {
-                prefix: Mutex::new(Vec::with_capacity(limit.min(INITIAL_PREVIEW_CAPACITY))),
-                observed_bytes: AtomicU64::new(0),
-                lifecycle: AtomicU8::new(BodyLifecycle::Streaming.to_u8()),
-                ended: OnceLock::new(),
-                retention: AtomicU8::new(BodyRetention::Prefix.to_u8()),
-                limit,
-                budget,
-            }),
+            preview: BodyPreview {
+                inner: Arc::new(BodyPreviewInner {
+                    prefix: Mutex::new(Vec::with_capacity(limit.min(INITIAL_PREVIEW_CAPACITY))),
+                    observed_bytes: AtomicU64::new(0),
+                    lifecycle: AtomicU8::new(BodyLifecycle::Streaming.to_u8()),
+                    ended: OnceLock::new(),
+                    retention: AtomicU8::new(BodyRetention::Prefix.to_u8()),
+                    limit,
+                    budget,
+                }),
+            },
         }
+    }
+
+    /// Returns a read handle that follows this writer.
+    pub(crate) fn preview(&self) -> BodyPreview {
+        self.preview.clone()
     }
 
     pub(crate) fn observe(&self, data: &[u8]) {
         if data.is_empty() {
             return;
         }
+        let inner = &self.preview.inner;
         let increment = u64::try_from(data.len()).unwrap_or(u64::MAX);
         let _previous =
-            self.inner
+            inner
                 .observed_bytes
                 .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                     Some(value.saturating_add(increment))
                 });
-        if BodyRetention::from_u8(self.inner.retention.load(Ordering::Acquire))
-            == BodyRetention::Omitted
+        if BodyRetention::from_u8(inner.retention.load(Ordering::Acquire)) == BodyRetention::Omitted
         {
             return;
         }
 
-        match self.inner.prefix.try_lock() {
+        match inner.prefix.try_lock() {
             Ok(mut prefix) => {
-                if BodyRetention::from_u8(self.inner.retention.load(Ordering::Acquire))
+                if BodyRetention::from_u8(inner.retention.load(Ordering::Acquire))
                     != BodyRetention::Prefix
                 {
                     return;
                 }
-                let remaining = self.inner.limit.saturating_sub(prefix.len());
+                let remaining = inner.limit.saturating_sub(prefix.len());
                 let mut retained = remaining.min(data.len());
-                if let Some(budget) = self.inner.budget {
+                if let Some(budget) = inner.budget {
                     retained = budget.reserve_up_to(retained);
                 }
                 let (retained_data, _) = data.split_at(retained);
                 prefix.extend_from_slice(retained_data);
                 if retained < data.len() {
-                    self.inner
+                    inner
                         .retention
                         .store(BodyRetention::Truncated.to_u8(), Ordering::Release);
                 }
             }
             Err(TryLockError::WouldBlock | TryLockError::Poisoned(_)) => {
-                self.inner
+                inner
                     .retention
                     .store(BodyRetention::Omitted.to_u8(), Ordering::Release);
             }
@@ -293,17 +328,20 @@ impl BodyPreview {
 
     /// Records the first end of the stream and when it happened.
     fn end(&self, lifecycle: BodyLifecycle) {
-        let ended = self.inner.lifecycle.compare_exchange(
+        let inner = &self.preview.inner;
+        let ended = inner.lifecycle.compare_exchange(
             BodyLifecycle::Streaming.to_u8(),
             lifecycle.to_u8(),
             Ordering::AcqRel,
             Ordering::Relaxed,
         );
         if ended.is_ok() {
-            let _already_set = self.inner.ended.set(Instant::now()).is_err();
+            let _already_set = inner.ended.set(Instant::now()).is_err();
         }
     }
+}
 
+impl BodyPreview {
     /// Returns the number of body bytes observed so far without copying the preview.
     #[must_use]
     pub fn observed_bytes(&self) -> u64 {
@@ -317,7 +355,7 @@ impl BodyPreview {
     }
 
     /// Returns when the stream ended, or `None` while it is streaming.
-    pub(crate) fn ended_at(&self) -> Option<Instant> {
+    pub(in crate::exchange) fn ended_at(&self) -> Option<Instant> {
         self.inner.ended.get().copied()
     }
 
@@ -537,13 +575,13 @@ mod tests {
     #[test]
     fn budgeted_previews_share_and_return_memory() {
         static BUDGET: RetentionBudget = RetentionBudget::new(10);
-        let first = BodyPreview::with_budget(8, Some(&BUDGET));
+        let first = BodyPreviewWriter::with_budget(8, Some(&BUDGET));
         first.observe(b"abcdef");
         assert_eq!(BUDGET.available(), 4);
 
-        let second = BodyPreview::with_budget(8, Some(&BUDGET));
+        let second = BodyPreviewWriter::with_budget(8, Some(&BUDGET));
         second.observe(b"123456");
-        let snapshot = second.snapshot();
+        let snapshot = second.preview().snapshot();
         assert_eq!(
             snapshot.as_ref().map(BodySnapshot::bytes),
             Some(&b"1234"[..])
@@ -554,7 +592,7 @@ mod tests {
         );
         assert_eq!(BUDGET.available(), 0);
 
-        let view = first.clone();
+        let view = first.preview();
         drop(first);
         assert_eq!(BUDGET.available(), 0, "a clone still holds the bytes");
         drop(view);

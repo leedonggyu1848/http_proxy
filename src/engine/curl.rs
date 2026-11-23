@@ -429,7 +429,9 @@ fn printf_format(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::exchange::{BodyPreview, CapturedHeader, HeaderPreview, RecordId, SessionId};
+    use crate::exchange::{
+        BodyPreviewWriter, CapturedHeader, ExchangeWriter, HeaderPreview, RecordId, SessionId,
+    };
 
     fn exchange(
         method: Method,
@@ -437,6 +439,17 @@ mod tests {
         headers: &[(&str, &str)],
         body: Option<&[u8]>,
     ) -> Exchange {
+        let writer = writer(method, target, headers);
+        if let Some(body) = body {
+            let preview = BodyPreviewWriter::new(8 * 1024);
+            preview.observe(body);
+            preview.complete();
+            writer.attach_request_body(preview.preview());
+        }
+        writer.exchange().clone()
+    }
+
+    fn writer(method: Method, target: &str, headers: &[(&str, &str)]) -> ExchangeWriter {
         let headers = HeaderPreview::new(
             headers
                 .iter()
@@ -444,19 +457,12 @@ mod tests {
                 .collect(),
             false,
         );
-        let exchange = Exchange::new(
+        ExchangeWriter::start(
             RecordId::new(1),
             SessionId::next(),
             CaptureSource::HttpProxy,
             CapturedRequest::new(method, target.to_owned(), headers, Vec::new()),
-        );
-        if let Some(body) = body {
-            let preview = BodyPreview::new(8 * 1024);
-            preview.observe(body);
-            preview.complete();
-            exchange.attach_request_body(preview);
-        }
-        exchange
+        )
     }
 
     fn command(exchange: &Exchange) -> String {
@@ -662,36 +668,37 @@ mod tests {
     #[test]
     fn refuses_bodies_not_complete_in_memory() {
         let headers = [("user-agent", "u")];
-        let long = exchange(Method::POST, "http://h.test/", &headers, None);
-        let preview = BodyPreview::new(4);
+        let long = writer(Method::POST, "http://h.test/", &headers);
+        let preview = BodyPreviewWriter::new(4);
         preview.observe(b"abcdef");
-        long.attach_request_body(preview.clone());
+        long.attach_request_body(preview.preview());
+        let long = long.exchange();
         assert_eq!(
-            curl_command(&long, RedactedHeaders::Omit),
+            curl_command(long, RedactedHeaders::Omit),
             Err(CurlUnavailable::BodyInProgress)
         );
         preview.complete();
         assert_eq!(
-            curl_command(&long, RedactedHeaders::Omit),
+            curl_command(long, RedactedHeaders::Omit),
             Err(CurlUnavailable::BodyTruncated {
                 retained: 4,
                 observed: 6
             })
         );
 
-        let cut = exchange(Method::POST, "http://h.test/", &headers, None);
-        let preview = BodyPreview::new(8);
+        let cut = writer(Method::POST, "http://h.test/", &headers);
+        let preview = BodyPreviewWriter::new(8);
         preview.cancel();
-        cut.attach_request_body(preview);
+        cut.attach_request_body(preview.preview());
         assert_eq!(
-            curl_command(&cut, RedactedHeaders::Omit),
+            curl_command(cut.exchange(), RedactedHeaders::Omit),
             Err(CurlUnavailable::BodyIncomplete)
         );
     }
 
     #[test]
     fn refuses_headerless_and_tunnel_records() {
-        let omitted = Exchange::new(
+        let omitted = ExchangeWriter::start(
             RecordId::new(2),
             SessionId::next(),
             CaptureSource::HttpProxy,
@@ -702,12 +709,13 @@ mod tests {
                 Vec::new(),
             ),
         );
+        let omitted = omitted.exchange();
         assert_eq!(
-            curl_command(&omitted, RedactedHeaders::Omit),
+            curl_command(omitted, RedactedHeaders::Omit),
             Err(CurlUnavailable::OmittedHeaders)
         );
 
-        let tunnel = Exchange::new(
+        let tunnel = ExchangeWriter::start(
             RecordId::new(3),
             SessionId::next(),
             CaptureSource::Connect,
@@ -718,12 +726,13 @@ mod tests {
                 Vec::new(),
             ),
         );
+        let tunnel = tunnel.exchange();
         assert_eq!(
-            curl_unavailable_reason(&tunnel),
+            curl_unavailable_reason(tunnel),
             Some(CurlUnavailable::Tunnel)
         );
         assert_eq!(
-            curl_command(&tunnel, RedactedHeaders::Omit),
+            curl_command(tunnel, RedactedHeaders::Omit),
             Err(CurlUnavailable::Tunnel)
         );
     }

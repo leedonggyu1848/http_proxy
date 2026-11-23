@@ -1,4 +1,5 @@
-//! HAR export tests against exchanges captured by a real proxy.
+//! HAR export tests against exchanges captured by a real proxy, and a check
+//! that fixtures built without a proxy export, search, and map the same way.
 #![expect(
     clippy::indexing_slicing,
     reason = "Reading a serde_json::Value by key yields Null instead of panicking."
@@ -8,13 +9,25 @@ use std::error::Error;
 use std::io::Write as _;
 use std::time::{Duration, SystemTime};
 
-use http_proxy::{Exchange, ProxyConfig, ProxyHandle};
+use http::header::{
+    AUTHORIZATION, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, PROXY_AUTHORIZATION,
+    SET_COOKIE,
+};
+use http::{HeaderName, HeaderValue, Method, StatusCode};
+use http_proxy::text_search::{MatchOptions, Matcher};
+use http_proxy::url_map::{UrlMap, export_graph_mermaid, export_tree_json};
+use http_proxy::{
+    BodyLifecycle, Exchange, ExchangeBuilder, Outcome, ProxyConfig, ProxyHandle, ResponseFixture,
+    TunnelState,
+};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
 
 use super::{HarOptions, document, write};
+use crate::ui::search::SearchScope;
+use crate::ui::search::document::{BodyCache, Coverage, check};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -362,6 +375,289 @@ fn failures_tunnels_and_pending_requests_follow_the_documented_mapping() -> Test
                 .as_str()
                 .is_some_and(|error| error.starts_with("Connection"))
         );
+        Ok(())
+    })
+}
+
+/// Request headers in the order `sensitive_request` sends them.
+fn sensitive_request_headers(address: std::net::SocketAddr) -> Vec<(HeaderName, String)> {
+    vec![
+        (HOST, address.to_string()),
+        (AUTHORIZATION, format!("Bearer {}", SECRETS[0])),
+        (PROXY_AUTHORIZATION, format!("Basic {}", SECRETS[1])),
+        (COOKIE, format!("session={}", SECRETS[2])),
+        (CONTENT_TYPE, "application/x-www-form-urlencoded".to_owned()),
+        (CONTENT_LENGTH, REQUEST_BODY.len().to_string()),
+        (CONNECTION, "close".to_owned()),
+    ]
+}
+
+/// Response headers in the order `sensitive_response` sends them.
+fn sensitive_response_headers() -> Vec<(HeaderName, String)> {
+    vec![
+        (CONTENT_TYPE, "application/json".to_owned()),
+        (SET_COOKIE, format!("id={}; HttpOnly", SECRETS[3])),
+        (CONTENT_LENGTH, RESPONSE_BODY.len().to_string()),
+        (CONNECTION, "close".to_owned()),
+    ]
+}
+
+fn with_headers<T>(
+    target: T,
+    headers: Vec<(HeaderName, String)>,
+    add: impl Fn(T, HeaderName, HeaderValue) -> T,
+) -> Result<T, Box<dyn Error>> {
+    headers
+        .into_iter()
+        .try_fold(target, |target, (name, value)| {
+            Ok(add(target, name, HeaderValue::try_from(value)?))
+        })
+}
+
+/// Relays four bytes up and five bytes down through a tunnel that both
+/// sides then close.
+async fn tunnel_capture(
+    proxy: &mut ProxyHandle,
+    upstream: &TcpListener,
+) -> Result<Exchange, Box<dyn Error>> {
+    let address = upstream.local_addr()?;
+    let mut tunnel_client = TcpStream::connect(proxy.local_addr()).await?;
+    tunnel_client
+        .write_all(format!("CONNECT {address} HTTP/1.1\r\nHost: {address}\r\n\r\n").as_bytes())
+        .await?;
+    let (mut tunnel_server, _) = upstream.accept().await?;
+    let tunnel = proxy.receive().await.ok_or("missing tunnel")?;
+    let _reply = read_head(&mut tunnel_client).await?;
+    tunnel_client.write_all(b"ping").await?;
+    let mut ping = [0; 4];
+    tunnel_server.read_exact(&mut ping).await?;
+    tunnel_server.write_all(b"pong!").await?;
+    drop(tunnel_server);
+    let _read = tunnel_client.read_to_end(&mut Vec::new()).await?;
+    drop(tunnel_client);
+    wait_until_ended(&tunnel).await;
+    Ok(tunnel)
+}
+
+/// Records that a running proxy captured, with the connections that keep
+/// the waiting request in flight.
+struct Captures {
+    proxy: ProxyHandle,
+    address: std::net::SocketAddr,
+    records: Vec<Exchange>,
+    _waiting: [TcpStream; 2],
+}
+
+/// Captures, through a real proxy, a response, a closed tunnel, a request
+/// still waiting for its response, and a connection failure. The proxy keeps
+/// running so the waiting request stays in flight.
+async fn proxy_captures() -> Result<Captures, Box<dyn Error>> {
+    let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0))?;
+    let response = exchange(&mut proxy, sensitive_request, &sensitive_response()).await?;
+    let upstream = TcpListener::bind("127.0.0.1:0").await?;
+    let address = upstream.local_addr()?;
+
+    let tunnel = tunnel_capture(&mut proxy, &upstream).await?;
+
+    let mut pending_client = TcpStream::connect(proxy.local_addr()).await?;
+    pending_client
+        .write_all(
+            format!("GET http://{address}/slow HTTP/1.1\r\nHost: {address}\r\n\r\n").as_bytes(),
+        )
+        .await?;
+    let (pending_server, _) = upstream.accept().await?;
+    let pending = proxy.receive().await.ok_or("missing pending request")?;
+    // The upstream accepting the connection can race the proxy recording
+    // it, so wait until the request is forwarded as the fixture describes.
+    while pending
+        .request()
+        .body()
+        .is_none_or(|body| body.lifecycle() == BodyLifecycle::Streaming)
+    {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+
+    drop(upstream);
+    let mut failed_client = TcpStream::connect(proxy.local_addr()).await?;
+    failed_client
+        .write_all(
+            format!(
+                "GET http://{address}/ HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await?;
+    let failed = proxy.receive().await.ok_or("missing failure")?;
+    wait_until_ended(&failed).await;
+    Ok(Captures {
+        proxy,
+        address,
+        records: vec![response, tunnel, pending, failed],
+        _waiting: [pending_client, pending_server],
+    })
+}
+
+/// Builds, without a proxy, the same four records that `proxy_captures`
+/// captured. Only the server address and the operating system's connection
+/// error text are taken from the captures.
+fn fixtures(
+    response_address: std::net::SocketAddr,
+    address: std::net::SocketAddr,
+    failure: &Outcome,
+) -> Result<Vec<Exchange>, Box<dyn Error>> {
+    let Outcome::Failed { stage, message } = failure else {
+        return Err("expected a failed capture".into());
+    };
+    let response = with_headers(
+        ExchangeBuilder::http(
+            Method::POST,
+            format!("http://{response_address}/login?user=alice&empty"),
+        )?,
+        sensitive_request_headers(response_address),
+        ExchangeBuilder::header,
+    )?
+    .request_body(REQUEST_BODY, BodyLifecycle::Complete)
+    .respond(
+        with_headers(
+            ResponseFixture::new(StatusCode::OK),
+            sensitive_response_headers(),
+            ResponseFixture::header,
+        )?
+        .body(RESPONSE_BODY, BodyLifecycle::Complete),
+    )?;
+    let host = HeaderValue::try_from(address.to_string())?;
+    let tunnel = ExchangeBuilder::connect(address.to_string())
+        .header(HOST, host.clone())
+        .tunnel(4, 5, TunnelState::Closed)?;
+    let pending = ExchangeBuilder::http(Method::GET, format!("http://{address}/slow"))?
+        .header(HOST, host.clone())
+        .request_body(Vec::new(), BodyLifecycle::Complete)
+        .in_flight()?;
+    let failed = ExchangeBuilder::http(Method::GET, format!("http://{address}/"))?
+        .header(HOST, host)
+        .header(CONNECTION, HeaderValue::from_static("close"))
+        .fail(*stage, message)?;
+    Ok(vec![response, tunnel, pending, failed])
+}
+
+/// Replaces values that depend on when and how fast the exchange ran with
+/// whether they were observed, keeping everything else.
+fn without_clock(mut har: Value) -> Value {
+    if let Some(entries) = har["log"]["entries"].as_array_mut() {
+        for entry in entries {
+            let Some(fields) = entry.as_object_mut() else {
+                continue;
+            };
+            let _ = fields.remove("startedDateTime");
+            let _ = fields.remove("time");
+            if let Some(Value::Object(timings)) = fields.get_mut("timings") {
+                for value in timings.values_mut() {
+                    *value = Value::Bool(value.as_f64().is_some_and(|value| value >= 0.0));
+                }
+            }
+        }
+    }
+    har
+}
+
+/// Leaves out URL map statistics that record when requests ran and how
+/// long they took.
+fn without_clock_stats(value: &mut Value) {
+    match value {
+        Value::Object(fields) => {
+            for clock in [
+                "avg_duration_ms",
+                "max_duration_ms",
+                "first_seen_unix_ms",
+                "last_seen_unix_ms",
+            ] {
+                let _ = fields.remove(clock);
+            }
+            fields.values_mut().for_each(without_clock_stats);
+        }
+        Value::Array(items) => items.iter_mut().for_each(without_clock_stats),
+        _ => {}
+    }
+}
+
+fn url_map(records: &[Exchange]) -> (Value, String) {
+    let mut map = UrlMap::new();
+    for record in records {
+        let _ = map.observe_exchange(record);
+    }
+    let _ = map.sync_live();
+    let mut tree = export_tree_json(&map, true);
+    without_clock_stats(&mut tree);
+    (tree, export_graph_mermaid(&map, 16))
+}
+
+/// Whether a record matched, whether that is final, and why it may not have.
+type SearchResult = (bool, bool, Coverage);
+
+fn search_results(records: &[Exchange]) -> Result<Vec<SearchResult>, Box<dyn Error>> {
+    let mut results = Vec::new();
+    let mut cache = BodyCache::default();
+    for query in [
+        "POST",
+        "login",
+        "request-body-text",
+        "response-body-text",
+        "application/json",
+        "[REDACTED]",
+        SECRETS[0],
+        "200",
+        "CONNECT",
+        "slow",
+        "Failed",
+    ] {
+        let matcher = Matcher::new(query, MatchOptions::default())?;
+        for scope in SearchScope::ALL {
+            for record in records {
+                let checked = check(record, &matcher, scope, &mut cache);
+                results.push((checked.matched, checked.settled, checked.coverage));
+            }
+        }
+    }
+    Ok(results)
+}
+
+#[test]
+fn builder_records_export_search_and_map_like_proxy_captures() -> TestResult {
+    run(|| async {
+        let Captures {
+            proxy,
+            address,
+            records: captured,
+            _waiting,
+        } = proxy_captures().await?;
+        let [response, _, _, failed] = captured.as_slice() else {
+            return Err("expected four captures".into());
+        };
+        let response_address = response
+            .request()
+            .target()
+            .strip_prefix("http://")
+            .and_then(|rest| rest.split_once('/'))
+            .and_then(|(authority, _)| authority.parse().ok())
+            .ok_or("missing response address")?;
+        let built = fixtures(response_address, address, failed.outcome())?;
+
+        let now = SystemTime::now();
+        for options in [
+            HarOptions::default(),
+            HarOptions {
+                include_bodies: true,
+                include_sensitive_headers: true,
+            },
+        ] {
+            assert_eq!(
+                without_clock(document(&built, options, now)),
+                without_clock(document(&captured, options, now)),
+            );
+        }
+        assert_eq!(search_results(&built)?, search_results(&captured)?);
+        assert_eq!(url_map(&built), url_map(&captured));
+        proxy.stop()?;
         Ok(())
     })
 }

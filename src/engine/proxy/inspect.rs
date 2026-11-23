@@ -3,7 +3,7 @@ use super::forward::forward_over_stream;
 use super::handle::{ConnectionPermit, Engine, server_builder};
 use super::upstream::{UpstreamFailure, connect_deadline, connect_within, resolve_within};
 use super::{ProxyBody, empty_response, failed_response, tunnel};
-use crate::exchange::{CaptureSource, FailureStage, Outcome, RecordId, TunnelPreview};
+use crate::exchange::{CaptureSource, FailureStage, Outcome, RecordId, TunnelWriter};
 use crate::https::{Destination, PreparedInspection, TlsInspector, UpstreamTlsError};
 use http::header::{HOST, UPGRADE};
 use http::uri::Authority;
@@ -50,16 +50,17 @@ pub(super) async fn connect_tunnel(
         Ok(stream) => stream,
         Err(failure) => return failure.respond(&capture),
     };
-    capture.exchange.record_connect(connect_started.elapsed());
+    capture.writer.record_connect(connect_started.elapsed());
 
-    let tunnel = TunnelPreview::new();
-    capture.settle(Outcome::Tunnel(tunnel.clone()));
+    let tunnel = TunnelWriter::new();
+    let preview = tunnel.preview();
+    capture.settle(Outcome::Tunnel(preview.clone()));
     let on_upgrade = hyper::upgrade::on(request);
     tokio::spawn(async move {
         let _permit = permit;
         let client = async { on_upgrade.await.map(TokioIo::new) };
-        tunnel::relay(client, upstream, tunnel.clone()).await;
-        capture.tunnel_ended(&tunnel.snapshot());
+        tunnel::relay(client, upstream, tunnel).await;
+        capture.tunnel_ended(&preview.snapshot());
     });
 
     empty_response(StatusCode::OK)
@@ -291,7 +292,7 @@ pub(super) async fn forward_https(
             );
         }
     };
-    capture.exchange.record_connect(connect_started.elapsed());
+    capture.writer.record_connect(connect_started.elapsed());
     forward_over_stream(request, stream, engine, capture, path).await
 }
 

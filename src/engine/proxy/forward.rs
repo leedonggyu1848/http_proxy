@@ -4,16 +4,14 @@ use super::target::upstream_target;
 use super::upstream::connect_upstream;
 use super::{ProxyBody, failed_response};
 use crate::engine::capture::{
-    BODY_PREVIEW_BYTES, ERROR_BYTES, ObservedBody, bounded_text, capture_headers,
-    response_body_preview,
+    BODY_PREVIEW_BYTES, ObservedBody, captured_response, response_body_preview,
 };
 use crate::exchange::BodySide;
-use crate::exchange::{BodyPreview, CapturedResponse, FailureStage, Outcome};
+use crate::exchange::{BodyPreviewWriter, FailureStage, Outcome};
 use crate::http_semantics::remove_hop_by_hop_headers;
 use http::{Request, Response, StatusCode, Uri};
 use http_body_util::BodyExt;
 use hyper::client::conn::http1 as client_http1;
-use hyper::ext::ReasonPhrase;
 use hyper_util::rt::TokioIo;
 use std::time::Instant;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -41,7 +39,7 @@ pub(super) async fn forward_http(
         Ok(stream) => stream,
         Err(failure) => return failure.respond(capture),
     };
-    capture.exchange.record_connect(connect_started.elapsed());
+    capture.writer.record_connect(connect_started.elapsed());
 
     forward_over_stream(request, stream, engine, capture, target_parts.path).await
 }
@@ -77,8 +75,8 @@ where
 
     *request.uri_mut() = path;
     remove_hop_by_hop_headers(request.headers_mut());
-    let request_body = BodyPreview::new(BODY_PREVIEW_BYTES);
-    capture.exchange.attach_request_body(request_body.clone());
+    let request_body = BodyPreviewWriter::new(BODY_PREVIEW_BYTES);
+    capture.writer.attach_request_body(request_body.preview());
     let request = request
         .map(|body| ObservedBody::new(body, request_body, capture.body_sinks(BodySide::Request)));
 
@@ -101,7 +99,7 @@ where
             let response_body = response_body_preview(response.headers());
             capture.settle(Outcome::Response(captured_response(
                 &response,
-                response_body.clone(),
+                response_body.preview(),
             )));
             remove_hop_by_hop_headers(response.headers_mut());
             response
@@ -117,19 +115,4 @@ where
             &error.to_string(),
         ),
     }
-}
-
-fn captured_response<B>(response: &Response<B>, body: BodyPreview) -> CapturedResponse {
-    let status = response.status();
-    let reason = response.extensions().get::<ReasonPhrase>().map_or_else(
-        || status.canonical_reason().unwrap_or_default().to_owned(),
-        |phrase| String::from_utf8_lossy(phrase.as_bytes()).into_owned(),
-    );
-    CapturedResponse::new(
-        status,
-        response.version(),
-        bounded_text(&reason, ERROR_BYTES),
-        capture_headers(response.headers()),
-        body,
-    )
 }

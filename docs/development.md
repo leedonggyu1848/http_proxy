@@ -33,6 +33,8 @@ cargo build --release
 
 통합 테스트는 실제 TCP 연결을 사용한다. 테스트는 HTTP 전달과 `CONNECT` 터널의 양방향 전송을 검증한다.
 
+프록시를 띄우지 않고 캡처 레코드(`Exchange`)가 필요한 테스트는 `test-support` feature의 `http_proxy::ExchangeBuilder`로 레코드를 만든다. 빌더는 캡처 경로와 같은 쓰기 핸들과 헤더 마스킹·길이 제한 규칙을 쓴다. `Cargo.toml`의 `dev-dependencies`가 이 패키지 자신을 `test-support`와 함께 참조하므로 테스트·벤치마크·문서 테스트 빌드에서만 feature가 켜지고, `cargo build --release` 결과물에는 빌더가 들어가지 않는다.
+
 macOS 실환경에서 키체인 등록·상태 확인·제거와 Chrome 검사 창 실행을 확인하려면 다음 검사를 실행한다. 첫 검사는 임시 CA를 로그인 키체인에 등록한 뒤 제거하며, macOS 인증 창이 나타날 수 있다.
 
 ```bash
