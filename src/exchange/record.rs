@@ -20,7 +20,7 @@ static IN_FLIGHT: Outcome = Outcome::InFlight;
 pub struct SessionId(u64);
 
 impl SessionId {
-    pub(in crate::engine) fn next() -> Self {
+    pub(crate) fn next() -> Self {
         Self(NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed))
     }
 
@@ -54,7 +54,7 @@ pub struct CapturedRequest {
 }
 
 impl CapturedRequest {
-    pub(in crate::engine) fn new(
+    pub(crate) fn new(
         method: Method,
         target: String,
         headers: HeaderPreview,
@@ -130,7 +130,7 @@ pub struct CapturedResponse {
 }
 
 impl CapturedResponse {
-    pub(in crate::engine) fn new(
+    pub(crate) fn new(
         status: StatusCode,
         version: Version,
         reason: String,
@@ -343,7 +343,7 @@ pub struct Exchange {
 }
 
 impl Exchange {
-    pub(in crate::engine) fn new(
+    pub(crate) fn new(
         id: RecordId,
         session: SessionId,
         source: CaptureSource,
@@ -372,7 +372,7 @@ impl Exchange {
         self.inner.replay_of.get().copied()
     }
 
-    pub(in crate::engine) fn set_replay_of(&self, original: RecordId) {
+    pub(crate) fn set_replay_of(&self, original: RecordId) {
         let _already_set = self.inner.replay_of.set(original).is_err();
     }
 
@@ -500,18 +500,18 @@ impl Exchange {
 
     /// Attaches the request-body preview as the request is handed to the
     /// upstream connection, which starts the `send` phase.
-    pub(in crate::engine) fn attach_request_body(&self, body: BodyPreview) {
+    pub(crate) fn attach_request_body(&self, body: BodyPreview) {
         let _already_started = self.inner.send_started.set(Instant::now()).is_err();
         let _already_attached = self.inner.request.body.set(body).is_err();
     }
 
-    pub(in crate::engine) fn record_connect(&self, duration: Duration) {
+    pub(crate) fn record_connect(&self, duration: Duration) {
         let _already_recorded = self.inner.connect.set(duration).is_err();
     }
 
     /// Moves the exchange out of [`Outcome::InFlight`]. Returns `false` and
     /// keeps the first outcome when the exchange had already settled.
-    pub(in crate::engine) fn settle(&self, outcome: Outcome) -> bool {
+    pub(crate) fn settle(&self, outcome: Outcome) -> bool {
         let settlement = Settlement {
             outcome,
             after: self.inner.started.elapsed(),
@@ -561,14 +561,11 @@ mod tests {
         assert_eq!(response(HeaderPreview::default()).media_type(), None);
         let headers = HeaderPreview::new(
             vec![
-                crate::engine::domain::CapturedHeader::new(
+                crate::exchange::CapturedHeader::new(
                     "Content-Type".into(),
                     " application/problem+json ; charset=utf-8".into(),
                 ),
-                crate::engine::domain::CapturedHeader::new(
-                    "content-type".into(),
-                    "text/plain".into(),
-                ),
+                crate::exchange::CapturedHeader::new("content-type".into(), "text/plain".into()),
             ],
             false,
         );
@@ -582,7 +579,7 @@ mod tests {
     fn request_media_type_is_parsed_from_captured_headers() {
         let request = |value: &str| {
             let headers = HeaderPreview::new(
-                vec![crate::engine::domain::CapturedHeader::new(
+                vec![crate::exchange::CapturedHeader::new(
                     "content-type".into(),
                     value.into(),
                 )],

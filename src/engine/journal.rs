@@ -13,7 +13,7 @@ use http::{HeaderMap, Method};
 use tempfile::NamedTempFile;
 
 use crate::engine::capture::redacted_value;
-use crate::engine::domain::{BodyLifecycle, FailureStage, Outcome, RecordId, TunnelSnapshot};
+use crate::exchange::{BodyLifecycle, FailureStage, Outcome, RecordId, TunnelSnapshot};
 
 /// Which message of an exchange a body belongs to.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -551,12 +551,12 @@ mod tests {
 
     #[test]
     fn response_settled_format() -> io::Result<()> {
-        let response = crate::engine::domain::CapturedResponse::new(
+        let response = crate::exchange::CapturedResponse::new(
             http::StatusCode::OK,
             http::Version::HTTP_11,
             "OK".to_owned(),
             crate::engine::capture::capture_headers(&HeaderMap::new()),
-            crate::engine::domain::BodyPreview::new(0),
+            crate::exchange::BodyPreview::new(0),
         );
         assert_output(
             |log| log.settled(4, &Outcome::Response(response), Duration::from_millis(2)),
@@ -566,7 +566,7 @@ mod tests {
 
     #[test]
     fn tunnel_ended_format() -> io::Result<()> {
-        let tunnel = crate::engine::domain::TunnelPreview::new();
+        let tunnel = crate::exchange::TunnelPreview::new();
         tunnel.add_client_to_upstream(12);
         tunnel.add_upstream_to_client(34);
         tunnel.close();

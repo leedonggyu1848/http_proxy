@@ -1,12 +1,12 @@
 //! Explicit, validated manual replay using the normal forwarding path.
 use super::capture_context::CaptureContext;
 use super::forward::forward_http;
-use super::headers::remove_hop_by_hop_headers;
 use super::inspect::forward_https;
 use super::upstream::{connect_deadline, resolve_within};
 use super::{EngineState, ProxyHandle, failed_response, infallible_to_hyper};
-use crate::engine::domain::{BodyPreview, CaptureSource, Exchange, FailureStage};
 use crate::engine::tls::Destination;
+use crate::exchange::{BodyPreview, CaptureSource, Exchange, FailureStage};
+use crate::http_semantics::remove_hop_by_hop_headers;
 use bytes::Bytes;
 use http::HeaderMap;
 use http::{Method, Request, StatusCode, Uri, header::HOST};
@@ -57,7 +57,7 @@ impl ReplayDraft {
         }
         let snapshot = original.request().body().and_then(BodyPreview::snapshot);
         let body_missing = snapshot.as_ref().is_none_or(|body| {
-            body.lifecycle() != crate::engine::domain::BodyLifecycle::Complete
+            body.lifecycle() != crate::exchange::BodyLifecycle::Complete
                 || body.observed_bytes() != body.bytes().len() as u64
         }) || original.request().headers().omitted();
         let entries = original.request().headers().entries();
@@ -282,7 +282,7 @@ impl ProxyHandle {
                 request.headers(),
                 request
                     .extensions()
-                    .get::<crate::engine::domain::RecordId>()
+                    .get::<crate::exchange::RecordId>()
                     .copied(),
                 source,
                 &target,

@@ -9,8 +9,8 @@ use std::fmt::Write as _;
 
 use http::{HeaderMap, HeaderName, HeaderValue, Method, Uri};
 
-use super::domain::{BodyLifecycle, BodyRetention, CaptureSource, CapturedRequest, Exchange};
-use super::proxy::headers::remove_hop_by_hop_headers;
+use crate::exchange::{BodyLifecycle, BodyRetention, CaptureSource, CapturedRequest, Exchange};
+use crate::http_semantics::remove_hop_by_hop_headers;
 
 /// Headers whose original values are never retained by the capture.
 const REDACTED_HEADERS: [&str; 2] = ["authorization", "cookie"];
@@ -432,7 +432,7 @@ fn printf_format(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::domain::{BodyPreview, CapturedHeader, HeaderPreview, RecordId, SessionId};
+    use crate::exchange::{BodyPreview, CapturedHeader, HeaderPreview, RecordId, SessionId};
 
     fn exchange(
         method: Method,

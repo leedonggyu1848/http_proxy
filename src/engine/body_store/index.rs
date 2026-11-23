@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use crate::engine::domain::BodyLifecycle;
 use crate::engine::journal::BodySide;
+use crate::exchange::BodyLifecycle;
 
 /// Identifies one body: the record it belongs to and its direction.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

@@ -16,7 +16,7 @@ const FIXED_HOP_BY_HOP: [&str; 3] = [
 ///
 /// Fields named by every `Connection` header are removed first, regardless of
 /// case or how many `Connection` headers the message carries.
-pub(in crate::engine) fn remove_hop_by_hop_headers(headers: &mut HeaderMap) {
+pub(crate) fn remove_hop_by_hop_headers(headers: &mut HeaderMap) {
     for name in connection_options(headers) {
         headers.remove(name);
     }

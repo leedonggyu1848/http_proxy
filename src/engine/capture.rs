@@ -7,13 +7,13 @@ use http::HeaderMap;
 use http_body::{Body, Frame, SizeHint};
 
 use crate::engine::body_store::BodyRecorder;
-use crate::engine::domain::AuthScheme;
-use crate::engine::domain::BodyLifecycle;
-use crate::engine::domain::RetentionBudget;
-use crate::engine::domain::{BodyPreview, CapturedHeader, HeaderPreview};
-use crate::engine::domain::{ImageFormat, MediaType};
 use crate::engine::journal::BodySide;
 use crate::engine::journal::FullLog;
+use crate::exchange::AuthScheme;
+use crate::exchange::BodyLifecycle;
+use crate::exchange::RetentionBudget;
+use crate::exchange::{BodyPreview, CapturedHeader, HeaderPreview};
+use crate::exchange::{ImageFormat, MediaType};
 
 /// Most bytes one non-image body keeps in memory for its preview.
 pub const BODY_PREVIEW_BYTES: usize = 8 * 1024;

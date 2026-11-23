@@ -281,7 +281,7 @@ fn manifest_entry(body: &SaveBody, saved: &io::Result<SavedBody>, root: &Path) -
         "method": body.method,
         "url": body.target,
         "status": body.status,
-        "content_type": body.media_type.as_ref().map(crate::engine::domain::MediaType::essence),
+        "content_type": body.media_type.as_ref().map(crate::exchange::MediaType::essence),
         "format": format_name(body.format),
     });
     let details = match saved {
@@ -343,7 +343,7 @@ fn write_manifest(root: &Path, manifest: &Value) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::engine::body_store::BodyRecorder;
-    use crate::engine::domain::{BodyLifecycle, RecordId};
+    use crate::exchange::{BodyLifecycle, RecordId};
 
     fn body(record: u64, target: &str, directory: &Path) -> SaveBody {
         SaveBody {

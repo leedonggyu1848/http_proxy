@@ -2,16 +2,16 @@ use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, TryLockError};
 use std::time::Instant;
 
-mod exchange;
 mod image_format;
 mod media_type;
+mod record;
 mod tunnel;
 
-pub use exchange::{
-    CaptureSource, CapturedRequest, CapturedResponse, Exchange, Outcome, SessionId, Timing,
-};
 pub use image_format::ImageFormat;
 pub use media_type::MediaType;
+pub use record::{
+    CaptureSource, CapturedRequest, CapturedResponse, Exchange, Outcome, SessionId, Timing,
+};
 pub use tunnel::{TunnelPreview, TunnelSnapshot, TunnelState};
 
 /// Stable identity of one captured exchange.
@@ -19,7 +19,7 @@ pub use tunnel::{TunnelPreview, TunnelSnapshot, TunnelState};
 pub struct RecordId(u64);
 
 impl RecordId {
-    pub(in crate::engine) const fn new(value: u64) -> Self {
+    pub(crate) const fn new(value: u64) -> Self {
         Self(value)
     }
 
@@ -38,7 +38,7 @@ pub struct CapturedHeader {
 }
 
 impl CapturedHeader {
-    pub(in crate::engine) const fn new(name: String, value: String) -> Self {
+    pub(crate) const fn new(name: String, value: String) -> Self {
         Self { name, value }
     }
 
@@ -63,7 +63,7 @@ pub struct HeaderPreview {
 }
 
 impl HeaderPreview {
-    pub(in crate::engine) const fn new(entries: Vec<CapturedHeader>, omitted: bool) -> Self {
+    pub(crate) const fn new(entries: Vec<CapturedHeader>, omitted: bool) -> Self {
         Self { entries, omitted }
     }
 
@@ -146,12 +146,12 @@ impl std::fmt::Display for AuthScheme {
 /// prefix. Each retained byte is reserved before it is copied and returned
 /// when the preview is dropped.
 #[derive(Debug)]
-pub(in crate::engine) struct RetentionBudget {
+pub(crate) struct RetentionBudget {
     available: AtomicUsize,
 }
 
 impl RetentionBudget {
-    pub(in crate::engine) const fn new(bytes: usize) -> Self {
+    pub(crate) const fn new(bytes: usize) -> Self {
         Self {
             available: AtomicUsize::new(bytes),
         }
@@ -171,7 +171,7 @@ impl RetentionBudget {
     }
 
     #[cfg(test)]
-    pub(in crate::engine) fn available(&self) -> usize {
+    pub(crate) fn available(&self) -> usize {
         self.available.load(Ordering::Acquire)
     }
 }
@@ -210,17 +210,14 @@ pub struct BodyPreview {
 }
 
 impl BodyPreview {
-    pub(in crate::engine) fn new(limit: usize) -> Self {
+    pub(crate) fn new(limit: usize) -> Self {
         Self::with_budget(limit, None)
     }
 
     /// Creates a preview that retains up to `limit` bytes, each reserved from
     /// `budget` when one is given. Bytes the budget cannot cover are not
     /// retained and the preview becomes [`BodyRetention::Truncated`].
-    pub(in crate::engine) fn with_budget(
-        limit: usize,
-        budget: Option<&'static RetentionBudget>,
-    ) -> Self {
+    pub(crate) fn with_budget(limit: usize, budget: Option<&'static RetentionBudget>) -> Self {
         Self {
             inner: Arc::new(BodyPreviewInner {
                 prefix: Mutex::new(Vec::with_capacity(limit.min(INITIAL_PREVIEW_CAPACITY))),
@@ -234,7 +231,7 @@ impl BodyPreview {
         }
     }
 
-    pub(in crate::engine) fn observe(&self, data: &[u8]) {
+    pub(crate) fn observe(&self, data: &[u8]) {
         if data.is_empty() {
             return;
         }
@@ -279,15 +276,15 @@ impl BodyPreview {
         }
     }
 
-    pub(in crate::engine) fn complete(&self) {
+    pub(crate) fn complete(&self) {
         self.end(BodyLifecycle::Complete);
     }
 
-    pub(in crate::engine) fn interrupt(&self) {
+    pub(crate) fn interrupt(&self) {
         self.end(BodyLifecycle::Interrupted);
     }
 
-    pub(in crate::engine) fn cancel(&self) {
+    pub(crate) fn cancel(&self) {
         self.end(BodyLifecycle::Cancelled);
     }
 
@@ -317,7 +314,7 @@ impl BodyPreview {
     }
 
     /// Returns when the stream ended, or `None` while it is streaming.
-    pub(in crate::engine) fn ended_at(&self) -> Option<Instant> {
+    pub(crate) fn ended_at(&self) -> Option<Instant> {
         self.inner.ended.get().copied()
     }
 

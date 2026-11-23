@@ -2,12 +2,17 @@ mod body_store;
 mod browser;
 mod capture;
 mod curl;
-mod domain;
 mod journal;
 mod proxy;
 mod tls;
 mod trust;
 
+pub use crate::exchange::{
+    AuthScheme, BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, CaptureSource,
+    CapturedHeader, CapturedRequest, CapturedResponse, Exchange, FailureStage, HeaderPreview,
+    ImageFormat, MediaType, Outcome, RecordId, SessionId, Timing, TunnelPreview, TunnelSnapshot,
+    TunnelState,
+};
 pub use body_store::{
     BODY_STORE_LIMIT_BYTES, BODY_STORE_MIN_FREE_BYTES, BodyLayout, BodyStore, BulkProgress,
     BulkSave, BulkSummary, ContentRange, RangePlan, ReadBodyOutcome, SaveBody, SaveFormat,
@@ -21,12 +26,6 @@ pub use capture::{
 pub use curl::{
     CURL_REDACTED_PLACEHOLDER, CurlCommand, CurlUnavailable, RedactedHeaders, curl_command,
     curl_unavailable_reason,
-};
-pub use domain::{
-    AuthScheme, BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, CaptureSource,
-    CapturedHeader, CapturedRequest, CapturedResponse, Exchange, FailureStage, HeaderPreview,
-    ImageFormat, MediaType, Outcome, RecordId, SessionId, Timing, TunnelPreview, TunnelSnapshot,
-    TunnelState,
 };
 pub use journal::{BodySide, FullLog, SESSION_BODY_LIMIT_BYTES};
 pub use proxy::{

@@ -3,8 +3,8 @@
 //! Names come from untrusted headers and URLs, so every candidate is reduced
 //! to one plain path component before it is used.
 
-use crate::engine::domain::MediaType;
 use crate::engine::journal::BodySide;
+use crate::exchange::MediaType;
 
 /// Longest file name, in bytes, before format suffixes are added. Common
 /// file systems allow 255 bytes, which leaves room for the suffixes.

@@ -76,8 +76,8 @@ use self::file_name::NameSource;
 use self::index::{BodyKey, Index};
 use self::location::SessionDirectory;
 use self::writer::Command;
-use crate::engine::domain::{BodyLifecycle, BodyRetention, Exchange, MediaType, Outcome, RecordId};
 use crate::engine::journal::BodySide;
+use crate::exchange::{BodyLifecycle, BodyRetention, Exchange, MediaType, Outcome, RecordId};
 
 /// Default limit on body bytes one session stores.
 pub const BODY_STORE_LIMIT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
