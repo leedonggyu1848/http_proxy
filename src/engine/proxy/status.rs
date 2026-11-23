@@ -1,7 +1,11 @@
 //! Health of the proxy engine thread as seen by the owning handle.
 
 use std::io;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+fn lock_recovering<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// Whether a started proxy is still accepting connections.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -24,7 +28,7 @@ pub(super) struct EngineStatus {
 impl EngineStatus {
     /// Records why the engine stopped. The first cause is kept.
     pub(super) fn fail(&self, message: String) {
-        let mut failure = self.failure.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut failure = lock_recovering(&self.failure);
         if failure.is_none() {
             *failure = Some(message);
         }
@@ -33,7 +37,7 @@ impl EngineStatus {
     /// Returns the state, treating an engine thread that ended without a
     /// recorded cause as an unexpected stop.
     pub(super) fn state(&self, thread_finished: bool) -> EngineState {
-        let failure = self.failure.lock().unwrap_or_else(PoisonError::into_inner);
+        let failure = lock_recovering(&self.failure);
         match (failure.as_ref(), thread_finished) {
             (Some(message), _) => EngineState::Failed {
                 message: message.clone(),

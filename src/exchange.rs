@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, TryLockError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
 use std::time::Instant;
 
 mod body_side;
@@ -8,6 +8,14 @@ mod media_type;
 mod record;
 mod tunnel;
 mod wakers;
+
+/// Acquires `mutex`, recovering the inner value if a previous holder panicked.
+///
+/// Use only for locks whose guarded data maintains its invariants across a
+/// panic during mutation.
+fn lock_recovering<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 pub use body_side::BodySide;
 pub use image_format::ImageFormat;

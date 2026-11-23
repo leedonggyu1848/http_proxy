@@ -1,10 +1,10 @@
 //! Live observation of a CONNECT tunnel that the proxy relays without decrypting.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::FailureStage;
+use super::{FailureStage, lock_recovering};
 
 #[derive(Debug)]
 struct TunnelInner {
@@ -82,12 +82,7 @@ impl TunnelWriter {
     }
 
     fn finish(&self, state: TunnelState) {
-        let mut end = self
-            .preview
-            .inner
-            .end
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut end = lock_recovering(&self.preview.inner.end);
         if end.is_none() {
             *end = Some(TunnelEnd {
                 at: Instant::now(),
@@ -101,12 +96,7 @@ impl TunnelPreview {
     /// Returns the transfer totals and state at this instant.
     #[must_use]
     pub fn snapshot(&self) -> TunnelSnapshot {
-        let end = self
-            .inner
-            .end
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
+        let end = lock_recovering(&self.inner.end).clone();
         let (state, until) = end.map_or_else(
             || (TunnelState::Open, Instant::now()),
             |end| (end.state, end.at),

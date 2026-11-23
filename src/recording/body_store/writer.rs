@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use super::Shared;
 use super::index::{BodyKey, StoreGap};
+use crate::recording::lock_recovering;
 
 /// Commands processed before the index is updated, so a busy writer still
 /// publishes progress regularly.
@@ -113,20 +114,15 @@ impl Writer<'_> {
             self.fail(&error);
             return;
         }
-        if let Ok(mut index) = self.shared.index.lock() {
-            for (key, offset, length) in self.pending.drain(..) {
-                index.append(key, offset, length);
-            }
+        let mut index = lock_recovering(&self.shared.index);
+        for (key, offset, length) in self.pending.drain(..) {
+            index.append(key, offset, length);
         }
-        self.pending.clear();
     }
 
     /// Stops storing after a write error and marks unindexed bodies as incomplete.
     fn fail(&mut self, error: &io::Error) {
-        self.shared.failed.store(true, Ordering::Release);
-        if let Ok(mut message) = self.shared.error.lock() {
-            message.get_or_insert_with(|| format!("Body store writing failed: {error}"));
-        }
+        self.shared.record_write_error(error);
         for (key, _, _) in std::mem::take(&mut self.pending) {
             self.shared.mark_gap(key, StoreGap::WriteFailed);
         }
