@@ -8,8 +8,8 @@ use http::{Method, StatusCode, Version};
 use tokio::sync::Notify;
 
 use super::{
-    BodyLifecycle, BodyPreview, FailureStage, HeaderPreview, MediaType, RecordId, TunnelPreview,
-    TunnelState,
+    AuthScheme, BodyLifecycle, BodyPreview, FailureStage, HeaderPreview, MediaType, RecordId,
+    TunnelPreview, TunnelState,
 };
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
@@ -48,17 +48,24 @@ pub struct CapturedRequest {
     method: Method,
     target: String,
     headers: HeaderPreview,
+    auth_schemes: Vec<AuthScheme>,
     media_type: Option<MediaType>,
     body: OnceLock<BodyPreview>,
 }
 
 impl CapturedRequest {
-    pub(in crate::engine) fn new(method: Method, target: String, headers: HeaderPreview) -> Self {
+    pub(in crate::engine) fn new(
+        method: Method,
+        target: String,
+        headers: HeaderPreview,
+        auth_schemes: Vec<AuthScheme>,
+    ) -> Self {
         Self {
             method,
             target,
             media_type: content_media_type(&headers),
             headers,
+            auth_schemes,
             body: OnceLock::new(),
         }
     }
@@ -79,6 +86,13 @@ impl CapturedRequest {
     #[must_use]
     pub const fn headers(&self) -> &HeaderPreview {
         &self.headers
+    }
+
+    /// Returns recognized authentication scheme names observed on the request,
+    /// without retaining any credential or cookie values.
+    #[must_use]
+    pub fn auth_schemes(&self) -> &[AuthScheme] {
+        &self.auth_schemes
     }
 
     /// Returns the media type of the first retained `Content-Type`, or
@@ -528,6 +542,7 @@ mod tests {
                 Method::GET,
                 "http://example.invalid/".to_owned(),
                 HeaderPreview::default(),
+                Vec::new(),
             ),
         )
     }
@@ -573,7 +588,12 @@ mod tests {
                 )],
                 false,
             );
-            CapturedRequest::new(Method::POST, "http://example.invalid/".into(), headers)
+            CapturedRequest::new(
+                Method::POST,
+                "http://example.invalid/".into(),
+                headers,
+                Vec::new(),
+            )
         };
         assert_eq!(
             request("Application/X-WWW-Form-Urlencoded; charset=utf-8")

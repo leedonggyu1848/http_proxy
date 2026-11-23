@@ -1,7 +1,9 @@
 use super::handle::Engine;
 use crate::engine::body_store::{BodyRecorder, BodyStore};
 use crate::engine::capture::{BodyLog, BodySinks};
-use crate::engine::capture::{ERROR_BYTES, TARGET_BYTES, bounded_text, capture_headers};
+use crate::engine::capture::{
+    ERROR_BYTES, TARGET_BYTES, bounded_text, capture_auth_schemes, capture_headers,
+};
 use crate::engine::domain::{
     CaptureSource, CapturedRequest, Exchange, FailureStage, Outcome, RecordId, TunnelSnapshot,
 };
@@ -74,6 +76,7 @@ impl CaptureContext {
                 method.clone(),
                 bounded_text(target, TARGET_BYTES),
                 capture_headers(headers),
+                capture_auth_schemes(headers),
             ),
         );
         if let Some(original) = replay_of {

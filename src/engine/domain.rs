@@ -88,6 +88,60 @@ impl HeaderPreview {
     }
 }
 
+/// Recognized HTTP authentication scheme name extracted at capture time
+/// without retaining any credential, token, or cookie value.
+///
+/// Closed enum guarantees by construction that raw secrets can never enter
+/// endpoint schema aggregates or UI views.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum AuthScheme {
+    /// `Authorization: Bearer ...`
+    Bearer,
+    /// `Authorization: Basic ...`
+    Basic,
+    /// `Authorization: Digest ...`
+    Digest,
+    /// `Authorization: OAuth ...`
+    OAuth,
+    /// `Authorization: AWS4-HMAC-SHA256 ...`
+    AwsSigV4,
+    /// `Authorization: Token ...` or `X-Auth-Token` / `X-Access-Token` header.
+    Token,
+    /// `Authorization: ApiKey ...` or `X-API-Key` / `Api-Key` / `ApiKey` header.
+    ApiKey,
+    /// `Cookie` header present (cookie names and values are never stored).
+    Cookie,
+    /// `Authorization` header with another or unrecognized scheme format.
+    AuthorizationOther,
+    /// `Proxy-Authorization` header present.
+    ProxyAuthorization,
+}
+
+impl AuthScheme {
+    /// Human-readable display label shown in the Map detail panel.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Bearer => "Bearer",
+            Self::Basic => "Basic",
+            Self::Digest => "Digest",
+            Self::OAuth => "OAuth",
+            Self::AwsSigV4 => "AWS4-HMAC-SHA256",
+            Self::Token => "Token",
+            Self::ApiKey => "API Key",
+            Self::Cookie => "Cookie",
+            Self::AuthorizationOther => "Authorization (other)",
+            Self::ProxyAuthorization => "Proxy-Authorization",
+        }
+    }
+}
+
+impl std::fmt::Display for AuthScheme {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
 /// Memory shared by every body preview that retains more than the default
 /// prefix. Each retained byte is reserved before it is copied and returned
 /// when the preview is dropped.

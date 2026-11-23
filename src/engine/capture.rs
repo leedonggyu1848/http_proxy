@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -6,6 +7,7 @@ use http::HeaderMap;
 use http_body::{Body, Frame, SizeHint};
 
 use crate::engine::body_store::BodyRecorder;
+use crate::engine::domain::AuthScheme;
 use crate::engine::domain::BodyLifecycle;
 use crate::engine::domain::RetentionBudget;
 use crate::engine::domain::{BodyPreview, CapturedHeader, HeaderPreview};
@@ -90,6 +92,58 @@ pub(in crate::engine) fn redacted_value<'a>(
         b"[REDACTED]"
     } else {
         value.as_bytes()
+    }
+}
+
+/// Extracts recognized authentication scheme names from raw request headers
+/// before values are redacted. No credential, token, or cookie bytes are kept.
+pub(in crate::engine) fn capture_auth_schemes(headers: &HeaderMap) -> Vec<AuthScheme> {
+    let mut schemes = BTreeSet::new();
+    for value in headers.get_all(http::header::AUTHORIZATION) {
+        let _ = schemes.insert(classify_authorization_value(value.as_bytes()));
+    }
+    if headers.contains_key(http::header::PROXY_AUTHORIZATION) {
+        let _ = schemes.insert(AuthScheme::ProxyAuthorization);
+    }
+    if headers.contains_key(http::header::COOKIE) {
+        let _ = schemes.insert(AuthScheme::Cookie);
+    }
+    for name in headers.keys() {
+        match name.as_str() {
+            "x-api-key" | "api-key" | "apikey" | "x-apikey" => {
+                let _ = schemes.insert(AuthScheme::ApiKey);
+            }
+            "x-auth-token" | "x-access-token" => {
+                let _ = schemes.insert(AuthScheme::Token);
+            }
+            _ => {}
+        }
+    }
+    schemes.into_iter().collect()
+}
+
+fn classify_authorization_value(raw: &[u8]) -> AuthScheme {
+    let Ok(text) = std::str::from_utf8(raw) else {
+        return AuthScheme::AuthorizationOther;
+    };
+    let trimmed = text.trim();
+    // Require whitespace separating the scheme name from credentials so a raw
+    // single-token secret is never mistaken for a scheme.
+    let Some((scheme, rest)) = trimmed.split_once(|c: char| c.is_ascii_whitespace()) else {
+        return AuthScheme::AuthorizationOther;
+    };
+    if rest.trim().is_empty() {
+        return AuthScheme::AuthorizationOther;
+    }
+    match scheme.to_ascii_lowercase().as_str() {
+        "bearer" => AuthScheme::Bearer,
+        "basic" => AuthScheme::Basic,
+        "digest" => AuthScheme::Digest,
+        "oauth" => AuthScheme::OAuth,
+        "aws4-hmac-sha256" => AuthScheme::AwsSigV4,
+        "token" => AuthScheme::Token,
+        "apikey" | "api-key" => AuthScheme::ApiKey,
+        _ => AuthScheme::AuthorizationOther,
     }
 }
 
@@ -336,5 +390,47 @@ mod tests {
              [9] Response body: complete\n"
         );
         Ok(())
+    }
+
+    #[test]
+    fn captures_auth_scheme_names_without_retaining_credentials() {
+        let mut headers = HeaderMap::new();
+        headers.append(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_static("Bearer eyJhbGciOiJIUzI1NiJ9.SECRET_JWT"),
+        );
+        headers.append(
+            http::header::COOKIE,
+            http::HeaderValue::from_static("session=SECRET_COOKIE_VAL"),
+        );
+        headers.append("x-api-key", http::HeaderValue::from_static("sk_live_9999"));
+
+        let schemes = capture_auth_schemes(&headers);
+        assert_eq!(
+            schemes,
+            vec![AuthScheme::Bearer, AuthScheme::ApiKey, AuthScheme::Cookie]
+        );
+        let debug = format!("{schemes:?}");
+        assert!(!debug.contains("SECRET_JWT"));
+        assert!(!debug.contains("SECRET_COOKIE_VAL"));
+        assert!(!debug.contains("sk_live_9999"));
+
+        // Single-word raw token without whitespace maps to AuthorizationOther.
+        let mut raw_token = HeaderMap::new();
+        raw_token.append(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_static("RAW_SECRET_NO_SPACE"),
+        );
+        assert_eq!(
+            capture_auth_schemes(&raw_token),
+            vec![AuthScheme::AuthorizationOther]
+        );
+
+        let mut basic = HeaderMap::new();
+        basic.append(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_static("basic dXNlcjpwYXNz"),
+        );
+        assert_eq!(capture_auth_schemes(&basic), vec![AuthScheme::Basic]);
     }
 }

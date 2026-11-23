@@ -451,7 +451,7 @@ mod tests {
             RecordId::new(1),
             SessionId::next(),
             CaptureSource::HttpProxy,
-            CapturedRequest::new(method, target.to_owned(), headers),
+            CapturedRequest::new(method, target.to_owned(), headers, Vec::new()),
         );
         if let Some(body) = body {
             let preview = BodyPreview::new(8 * 1024);
@@ -702,6 +702,7 @@ mod tests {
                 Method::GET,
                 "http://h.test/".into(),
                 HeaderPreview::new(Vec::new(), true),
+                Vec::new(),
             ),
         );
         assert_eq!(
@@ -717,6 +718,7 @@ mod tests {
                 Method::CONNECT,
                 "h.test:443".into(),
                 HeaderPreview::default(),
+                Vec::new(),
             ),
         );
         assert_eq!(

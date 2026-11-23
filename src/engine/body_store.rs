@@ -26,16 +26,57 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 pub use bulk::{BodyLayout, BulkProgress, BulkSave, BulkSummary};
-pub use export::SaveFormat;
+pub use export::{ReadBodyOutcome, SaveFormat};
 pub use index::{StoreGap, StoredBody};
 pub use ranges::{ContentRange, RangePlan};
 
-use self::export::{ContentEncoding, CopyPlan};
+/// Reads one complete body of a finished exchange, decoded and bounded by
+/// `max_decoded_bytes`.
+///
+/// The in-memory preview is used when it kept every byte; otherwise the
+/// body is read from `store`. Reading from the store waits for its writer
+/// and reads a file, so call this only from a background thread.
+#[must_use]
+pub fn read_captured_body(
+    exchange: &Exchange,
+    side: BodySide,
+    store: Option<&BodyStore>,
+    max_decoded_bytes: usize,
+) -> ReadBodyOutcome {
+    let (preview, headers) = match (side, exchange.outcome()) {
+        (BodySide::Request, _) => (exchange.request().body(), exchange.request().headers()),
+        (BodySide::Response, Outcome::Response(response)) => {
+            (Some(response.body()), response.headers())
+        }
+        (BodySide::Response, _) => return ReadBodyOutcome::NotFound,
+    };
+    let Some(preview) = preview else {
+        return ReadBodyOutcome::Complete(Vec::new());
+    };
+    if preview.lifecycle() != BodyLifecycle::Complete {
+        return ReadBodyOutcome::Incomplete;
+    }
+    if preview.observed_bytes() == 0 {
+        return ReadBodyOutcome::Complete(Vec::new());
+    }
+    let encodings: Vec<String> = headers.get("content-encoding").map(str::to_owned).collect();
+    if let Some(snapshot) = preview.snapshot()
+        && snapshot.retention() == BodyRetention::Prefix
+        && u64::try_from(snapshot.bytes().len()).ok() == Some(snapshot.observed_bytes())
+    {
+        return decode_complete_bytes(snapshot.bytes(), &encodings, max_decoded_bytes);
+    }
+    store.map_or(ReadBodyOutcome::Incomplete, |store| {
+        store.read_complete_decoded(exchange.id(), side, &encodings, max_decoded_bytes)
+    })
+}
+
+use self::export::{ContentEncoding, CopyPlan, decode_complete_bytes, read_decoded_segments};
 use self::file_name::NameSource;
 use self::index::{BodyKey, Index};
 use self::location::SessionDirectory;
 use self::writer::Command;
-use crate::engine::domain::{BodyLifecycle, Exchange, MediaType, Outcome, RecordId};
+use crate::engine::domain::{BodyLifecycle, BodyRetention, Exchange, MediaType, Outcome, RecordId};
 use crate::engine::journal::BodySide;
 
 /// Default limit on body bytes one session stores.
@@ -251,6 +292,53 @@ impl BodyStore {
             side,
         };
         self.shared.index.lock().ok()?.info(key)
+    }
+
+    /// Reads and decompresses a complete stored body into memory, bounded by
+    /// `max_decoded_bytes`.
+    ///
+    /// Intended for background analysis threads (never call on the UI or
+    /// forwarding path, as this waits for the store writer barrier and reads
+    /// from the session file).
+    #[must_use]
+    pub fn read_complete_decoded(
+        &self,
+        record: RecordId,
+        side: BodySide,
+        encodings: &[String],
+        max_decoded_bytes: usize,
+    ) -> ReadBodyOutcome {
+        if self.wait_for_writer().is_err() {
+            return ReadBodyOutcome::Unavailable;
+        }
+        let key = BodyKey {
+            record: record.value(),
+            side,
+        };
+        let Some((segments, body)) = self
+            .shared
+            .index
+            .lock()
+            .ok()
+            .and_then(|index| index.segments(key))
+        else {
+            return ReadBodyOutcome::NotFound;
+        };
+        if !body.is_complete() {
+            return ReadBodyOutcome::Incomplete;
+        }
+        let layers = encoding_layers(encodings);
+        let Ok(decode) = ContentEncoding::parse_all(&layers) else {
+            return ReadBodyOutcome::DecodeFailed;
+        };
+        let limit_u64 = u64::try_from(max_decoded_bytes).unwrap_or(u64::MAX);
+        if decode.is_empty() && body.stored_bytes() > limit_u64 {
+            return ReadBodyOutcome::TooLarge;
+        }
+        let Ok(file) = File::open(&self.shared.data_path) else {
+            return ReadBodyOutcome::Unavailable;
+        };
+        read_decoded_segments(file, segments, &decode, max_decoded_bytes)
     }
 
     /// Saves one stored body to a new file in the background.
@@ -707,5 +795,65 @@ mod tests {
             encoding_layers(&["GZIP, identity".to_owned(), " br ".to_owned()]),
             ["gzip", "br"]
         );
+    }
+
+    #[test]
+    fn read_complete_decoded_handles_complete_gzip_incomplete_and_oversized() -> io::Result<()> {
+        use std::io::Write as _;
+
+        let root = tempfile::tempdir()?;
+        let store = BodyStore::with_limits(root.path(), 64 * 1024, 0)?;
+
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(br#"{"ok":true,"count":3}"#)?;
+        let gz = encoder.finish()?;
+
+        let mut rec1 = BodyRecorder::new(store.clone(), 10, BodySide::Response);
+        rec1.observe(&gz);
+        rec1.end(BodyLifecycle::Complete);
+
+        assert_eq!(
+            store.read_complete_decoded(
+                RecordId::new(10),
+                BodySide::Response,
+                &["gzip".to_owned()],
+                1024,
+            ),
+            ReadBodyOutcome::Complete(br#"{"ok":true,"count":3}"#.to_vec())
+        );
+        // Oversized decoded cap returns TooLarge.
+        assert_eq!(
+            store.read_complete_decoded(
+                RecordId::new(10),
+                BodySide::Response,
+                &["gzip".to_owned()],
+                8,
+            ),
+            ReadBodyOutcome::TooLarge
+        );
+        // Unsupported encoding returns DecodeFailed.
+        assert_eq!(
+            store.read_complete_decoded(
+                RecordId::new(10),
+                BodySide::Response,
+                &["lz4".to_owned()],
+                1024,
+            ),
+            ReadBodyOutcome::DecodeFailed
+        );
+
+        // Interrupted body returns Incomplete.
+        let mut rec2 = BodyRecorder::new(store.clone(), 11, BodySide::Response);
+        rec2.observe(br#"{"partial":"#);
+        rec2.end(BodyLifecycle::Interrupted);
+        assert_eq!(
+            store.read_complete_decoded(RecordId::new(11), BodySide::Response, &[], 1024),
+            ReadBodyOutcome::Incomplete
+        );
+        assert_eq!(
+            store.read_complete_decoded(RecordId::new(99), BodySide::Response, &[], 1024),
+            ReadBodyOutcome::NotFound
+        );
+        Ok(())
     }
 }

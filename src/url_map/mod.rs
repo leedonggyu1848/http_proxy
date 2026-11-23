@@ -28,13 +28,13 @@ pub use id_fold::{ID_FOLD_THRESHOLD, IdKind, PathSegmentPattern, classify_id_seg
 pub use layout::{DEFAULT_MAX_GRAPH_DOMAINS, ForceLayout, GraphEdge, GraphNode, STEPS_PER_FRAME};
 pub use normalize::{
     NormalizedUrl, OriginKey, parse_exchange_target, parse_origin_header, parse_url,
-    percent_decode_display, resolve_location,
+    percent_decode_display, resolve_location, visit_query_values,
 };
 pub use site::{PartyKind, is_third_party, registrable_domain};
 pub use stats::{MethodSet, NodeStats, StatusBucket, StatusCounts};
 pub use tree::{MAX_NODES, MapNode, NodeId, ObservedInput, UrlMap};
 pub use view::{
-    ContentTypeFilter, PartyFilter, RowExpansion, RowKind, SortDirection, StatusFilter, TreeFilter,
-    TreeSortField, ViewNode, ViewNodeKey, VisibleRow, build_view_roots, find_view_node,
-    flatten_visible,
+    ContentTypeFilter, PartyFilter, RequestScope, RowExpansion, RowKind, SortDirection,
+    StatusFilter, TreeFilter, TreeSortField, ViewNode, ViewNodeKey, VisibleRow, build_view_roots,
+    find_view_node, flatten_visible,
 };
