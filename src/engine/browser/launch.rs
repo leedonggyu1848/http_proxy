@@ -13,6 +13,7 @@ use tokio::sync::oneshot;
 use super::{Browser, BrowserEvent, BrowserSession, Kind};
 use crate::engine::tls::CaInfo;
 use crate::engine::trust::CaTrustStore;
+use crate::settings::paths;
 
 type LaunchResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -108,9 +109,7 @@ fn profile_directory(kind: Kind) -> LaunchResult<TempDir> {
         .prefix("http-inspector-browser-")
         .permissions(fs::Permissions::from_mode(0o700));
     if kind == (Kind::Firefox { snap: true }) {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
+        let home = paths::home_directory(|name| std::env::var_os(name))
             .ok_or("Firefox Snap requires an absolute HOME")?;
         let common = home.join("snap/firefox/common");
         fs::create_dir_all(&common)?;
