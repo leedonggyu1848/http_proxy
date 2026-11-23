@@ -1,4 +1,3 @@
-mod app_paths;
 mod body_display;
 mod body_format;
 mod body_matches;
@@ -19,7 +18,6 @@ mod image_decode;
 mod image_view;
 mod map_panel;
 mod outcome_view;
-mod port_settings;
 mod range_merge;
 mod records;
 mod replay_panel;
@@ -40,6 +38,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use eframe::egui;
+use http_proxy::settings;
 use http_proxy::url_map::{
     RequestScope, UrlMap, export_graph_dot, export_graph_mermaid, export_tree_json,
     export_tree_text,
@@ -169,7 +168,7 @@ impl InspectorApp {
             record_filter: RecordFilter::All,
             https_inspection: false,
             authorization_notice: toolbar::AuthorizationNotice::default(),
-            ca_directory: app_paths::ca_directory(|name| std::env::var_os(name)),
+            ca_directory: settings::paths::ca_directory(|name| std::env::var_os(name)),
             ca_panel: ca_panel::CaPanel::default(),
             browsers: browser_panel::BrowserPanel::default(),
             error: None,
@@ -194,7 +193,7 @@ impl InspectorApp {
     }
 
     fn start_proxy(&mut self) {
-        let port = match port_settings::ProxyPort::parse(&self.port.text) {
+        let port = match settings::port::ProxyPort::parse(&self.port.text) {
             Ok(port) => port,
             Err(error) => {
                 self.error = Some(error.to_string());
@@ -231,7 +230,7 @@ impl InspectorApp {
                     .map(|error| error.to_string());
             }
             Err(error) => {
-                self.error = Some(port_settings::start_error_text(&error, port));
+                self.error = Some(settings::port::start_error_text(&error, port));
             }
         }
     }
@@ -669,10 +668,10 @@ mod layout_tests {
         MIN_DETAIL_WIDTH, MIN_MAIN_HEIGHT, MIN_TABLE_WIDTH, MIN_WINDOW, MainView, PortChoice,
         RecordFilter, UrlMap, body_display, body_format, body_saving, browser_panel, ca_panel,
         copy_curl, endpoint_analysis, fonts, har_dialog, image_view, main_height, map_panel,
-        port_settings, records, replay_panel, request_table, save, search, split_detail_width,
-        theme, toolbar,
+        records, replay_panel, request_table, save, search, split_detail_width, theme, toolbar,
     };
     use eframe::egui;
+    use http_proxy::settings;
     use http_proxy::{Exchange, ProxyConfig, ProxyHandle};
     use std::time::Duration;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -709,7 +708,7 @@ mod layout_tests {
             body_saving: body_saving::BodySaving::without_store(),
             port: PortChoice {
                 text: "0".to_owned(),
-                origin: port_settings::PortOrigin::Default,
+                origin: settings::port::PortOrigin::Default,
                 settings_directory: None,
                 launch_warning: None,
             },

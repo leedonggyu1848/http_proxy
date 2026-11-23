@@ -92,7 +92,7 @@ const fn serialize(preference: egui::ThemePreference) -> &'static str {
 
 impl ThemeSettings {
     pub(in crate::ui) fn new(context: &egui::Context) -> Self {
-        let path = super::app_paths::settings_directory(|name| std::env::var_os(name))
+        let path = http_proxy::settings::paths::settings_directory(|name| std::env::var_os(name))
             .map(|directory| directory.join("theme"));
         let preference = path
             .as_ref()

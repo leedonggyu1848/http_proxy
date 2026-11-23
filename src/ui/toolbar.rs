@@ -2,28 +2,28 @@
 
 use crate::ui::theme::Palette;
 use crate::ui::{InspectorApp, MAX_RECORDS};
-use crate::ui::{app_paths, port_settings};
 use eframe::egui::{self, RichText};
+use http_proxy::settings;
 use http_proxy::{FullLog, ProxyHandle};
 use std::path::PathBuf;
 
 /// Port typed in the toolbar and where its current value came from.
 pub(in crate::ui) struct PortChoice {
     pub(in crate::ui) text: String,
-    pub(in crate::ui) origin: port_settings::PortOrigin,
+    pub(in crate::ui) origin: settings::port::PortOrigin,
     pub(in crate::ui) settings_directory: Option<PathBuf>,
     pub(in crate::ui) launch_warning: Option<String>,
 }
 
 impl PortChoice {
     pub(in crate::ui) fn from_launch() -> Self {
-        let settings_directory = app_paths::settings_directory(|name| std::env::var_os(name));
+        let settings_directory = settings::paths::settings_directory(|name| std::env::var_os(name));
         let saved = settings_directory
             .as_deref()
-            .and_then(port_settings::load_port);
-        let launch = port_settings::launch_port(
+            .and_then(settings::port::load_port);
+        let launch = settings::port::launch_port(
             std::env::args_os(),
-            std::env::var_os(port_settings::PORT_ENV),
+            std::env::var_os(settings::port::PORT_ENV),
             saved,
         );
         Self {
@@ -37,15 +37,15 @@ impl PortChoice {
     /// Remembers a port the user typed once the proxy started on it.
     pub(in crate::ui) fn remember(
         &self,
-        port: port_settings::ProxyPort,
-    ) -> Result<(), port_settings::PortSaveError> {
-        if self.origin != port_settings::PortOrigin::User {
+        port: settings::port::ProxyPort,
+    ) -> Result<(), settings::port::PortSaveError> {
+        if self.origin != settings::port::PortOrigin::User {
             return Ok(());
         }
         let Some(directory) = self.settings_directory.as_deref() else {
-            return Err(port_settings::PortSaveError::SettingsDirectoryUnavailable);
+            return Err(settings::port::PortSaveError::SettingsDirectoryUnavailable);
         };
-        port_settings::save_port(directory, port).map_err(port_settings::PortSaveError::Save)
+        settings::port::save_port(directory, port).map_err(settings::port::PortSaveError::Save)
     }
 }
 
@@ -123,7 +123,7 @@ impl InspectorApp {
                 )
                 .changed();
             if edited {
-                self.port.origin = port_settings::PortOrigin::User;
+                self.port.origin = settings::port::PortOrigin::User;
             }
             if ui.button("Start").clicked() {
                 self.start_proxy();
@@ -282,10 +282,8 @@ fn copy_menu(ui: &mut egui::Ui, address: std::net::SocketAddr) {
 
 #[cfg(test)]
 mod port_choice_tests {
-    use super::{
-        PortChoice,
-        port_settings::{PortOrigin, PortSaveError, ProxyPort},
-    };
+    use super::PortChoice;
+    use http_proxy::settings::port::{PortOrigin, PortSaveError, ProxyPort};
 
     #[test]
     fn remember_reports_typed_errors_and_skips_non_user_ports()

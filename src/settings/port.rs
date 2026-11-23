@@ -6,22 +6,22 @@ use std::fs;
 use std::io::{self, Write as _};
 use std::path::Path;
 
-use http_proxy::StartError;
+use crate::StartError;
 
 /// Port used when nothing else chooses one.
-pub(in crate::ui) const DEFAULT_PORT: ProxyPort = ProxyPort(http_proxy::DEFAULT_PORT);
+pub const DEFAULT_PORT: ProxyPort = ProxyPort(crate::DEFAULT_PORT);
 /// Environment variable that overrides the saved port for one run.
-pub(in crate::ui) const PORT_ENV: &str = "HTTP_INSPECTOR_PORT";
+pub const PORT_ENV: &str = "HTTP_INSPECTOR_PORT";
 const SETTINGS_FILE: &str = "settings";
 const PORT_KEY: &str = "proxy_port";
 
 /// Validated loopback listener port. Zero asks the OS for a free port.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::ui) struct ProxyPort(u16);
+pub struct ProxyPort(u16);
 
 impl ProxyPort {
     /// Parses user input such as `8080` or `0`.
-    pub(in crate::ui) fn parse(text: &str) -> Result<Self, PortError> {
+    pub fn parse(text: &str) -> Result<Self, PortError> {
         let text = text.trim();
         if text.is_empty() {
             return Err(PortError::Empty);
@@ -31,7 +31,8 @@ impl ProxyPort {
             .map_err(|_| PortError::Invalid(text.to_owned()))
     }
 
-    pub(in crate::ui) const fn value(self) -> u16 {
+    #[must_use]
+    pub const fn value(self) -> u16 {
         self.0
     }
 }
@@ -44,7 +45,7 @@ impl fmt::Display for ProxyPort {
 
 /// Reason a port value was rejected.
 #[derive(Debug, Eq, PartialEq)]
-pub(in crate::ui) enum PortError {
+pub enum PortError {
     Empty,
     Invalid(String),
 }
@@ -63,7 +64,7 @@ impl fmt::Display for PortError {
 
 /// Where the port of the current run came from.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::ui) enum PortOrigin {
+pub enum PortOrigin {
     Default,
     Saved,
     Environment,
@@ -74,15 +75,15 @@ pub(in crate::ui) enum PortOrigin {
 
 /// Port chosen at launch, plus a problem to show when an override was invalid.
 #[derive(Debug, Eq, PartialEq)]
-pub(in crate::ui) struct LaunchPort {
-    pub(in crate::ui) port: ProxyPort,
-    pub(in crate::ui) origin: PortOrigin,
-    pub(in crate::ui) warning: Option<String>,
+pub struct LaunchPort {
+    pub port: ProxyPort,
+    pub origin: PortOrigin,
+    pub warning: Option<String>,
 }
 
 /// Picks the launch port: `--port`, then the environment, then the saved
 /// setting, then the default. An invalid override is reported and skipped.
-pub(in crate::ui) fn launch_port(
+pub fn launch_port(
     args: impl IntoIterator<Item = OsString>,
     env_value: Option<OsString>,
     saved: Option<ProxyPort>,
@@ -138,7 +139,8 @@ fn port_argument(args: impl IntoIterator<Item = OsString>) -> Result<Option<Prox
 }
 
 /// Reads the saved port, treating a missing or malformed file as no setting.
-pub(in crate::ui) fn load_port(directory: &Path) -> Option<ProxyPort> {
+#[must_use]
+pub fn load_port(directory: &Path) -> Option<ProxyPort> {
     let text = fs::read_to_string(directory.join(SETTINGS_FILE)).ok()?;
     text.lines()
         .filter_map(|line| line.split_once('='))
@@ -148,7 +150,7 @@ pub(in crate::ui) fn load_port(directory: &Path) -> Option<ProxyPort> {
 
 /// Reason a user-selected port could not be remembered.
 #[derive(Debug, thiserror::Error)]
-pub(in crate::ui) enum PortSaveError {
+pub enum PortSaveError {
     #[error(
         "The port could not be saved because the application settings directory is unavailable."
     )]
@@ -158,7 +160,7 @@ pub(in crate::ui) enum PortSaveError {
 }
 
 /// Saves `port` so the next launch starts with it.
-pub(in crate::ui) fn save_port(directory: &Path, port: ProxyPort) -> io::Result<()> {
+pub fn save_port(directory: &Path, port: ProxyPort) -> io::Result<()> {
     fs::create_dir_all(directory)?;
     let mut file = tempfile::NamedTempFile::new_in(directory)?;
     writeln!(file, "{PORT_KEY}={port}")?;
@@ -168,7 +170,8 @@ pub(in crate::ui) fn save_port(directory: &Path, port: ProxyPort) -> io::Result<
 }
 
 /// Explains a failed start in terms of what the user can change.
-pub(in crate::ui) fn start_error_text(error: &StartError, port: ProxyPort) -> String {
+#[must_use]
+pub fn start_error_text(error: &StartError, port: ProxyPort) -> String {
     match error {
         StartError::Bind(bind) if bind.kind() == io::ErrorKind::AddrInUse => format!(
             "Port {port} is already in use by another program. Enter another port, or 0 to pick a free one, then press Start."
@@ -274,8 +277,7 @@ mod tests {
     fn explains_an_occupied_port() -> io::Result<()> {
         let occupied = std::net::TcpListener::bind("127.0.0.1:0")?;
         let port = ProxyPort(occupied.local_addr()?.port());
-        let Err(error) =
-            http_proxy::ProxyHandle::start(http_proxy::ProxyConfig::loopback(port.value()))
+        let Err(error) = crate::ProxyHandle::start(crate::ProxyConfig::loopback(port.value()))
         else {
             return Err(io::Error::other("binding an occupied port succeeded"));
         };

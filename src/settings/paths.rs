@@ -4,9 +4,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 /// Returns the application settings directory, ignoring invalid environment paths.
-pub(in crate::ui) fn settings_directory(
-    mut lookup: impl FnMut(&str) -> Option<OsString>,
-) -> Option<PathBuf> {
+pub fn settings_directory(mut lookup: impl FnMut(&str) -> Option<OsString>) -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         macos_directory(&mut lookup)
@@ -18,9 +16,7 @@ pub(in crate::ui) fn settings_directory(
 }
 
 /// Returns the CA directory, ignoring invalid environment paths.
-pub(in crate::ui) fn ca_directory(
-    mut lookup: impl FnMut(&str) -> Option<OsString>,
-) -> Option<PathBuf> {
+pub fn ca_directory(mut lookup: impl FnMut(&str) -> Option<OsString>) -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     let directory = macos_directory(&mut lookup);
     #[cfg(not(target_os = "macos"))]
@@ -30,9 +26,7 @@ pub(in crate::ui) fn ca_directory(
 
 /// Returns the body store root: a cache directory, because `/tmp` is often
 /// RAM-backed and too small for video, and the bodies are disposable.
-pub(in crate::ui) fn body_store_directory(
-    mut lookup: impl FnMut(&str) -> Option<OsString>,
-) -> Option<PathBuf> {
+pub fn body_store_directory(mut lookup: impl FnMut(&str) -> Option<OsString>) -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     let directory =
         absolute_path(lookup("HOME")).map(|home| home.join("Library/Caches/http-inspector"));

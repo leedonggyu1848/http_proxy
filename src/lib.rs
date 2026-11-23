@@ -2,6 +2,7 @@
 
 pub mod endpoint_schema;
 mod engine;
+pub mod settings;
 pub mod text_search;
 pub mod url_map;
 

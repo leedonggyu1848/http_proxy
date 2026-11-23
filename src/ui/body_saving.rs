@@ -48,18 +48,20 @@ pub(in crate::ui) struct BodySaving {
 impl BodySaving {
     /// Opens this session's body store with the saved limit.
     pub(in crate::ui) fn open() -> Self {
-        let settings_path = super::app_paths::settings_directory(|name| std::env::var_os(name))
-            .map(|directory| directory.join(SETTINGS_FILE));
+        let settings_path =
+            http_proxy::settings::paths::settings_directory(|name| std::env::var_os(name))
+                .map(|directory| directory.join(SETTINGS_FILE));
         let limit_mib = settings_path
             .as_ref()
             .and_then(|path| std::fs::read_to_string(path).ok())
             .and_then(|text| parse_limit(&text))
             .unwrap_or(BODY_STORE_LIMIT_BYTES / MIB);
-        let opened = super::app_paths::body_store_directory(|name| std::env::var_os(name))
-            .ok_or_else(|| io::Error::other("no cache directory; check HOME"))
-            .and_then(|root| {
-                BodyStore::with_limits(&root, limit_mib * MIB, BODY_STORE_MIN_FREE_BYTES)
-            });
+        let opened =
+            http_proxy::settings::paths::body_store_directory(|name| std::env::var_os(name))
+                .ok_or_else(|| io::Error::other("no cache directory; check HOME"))
+                .and_then(|root| {
+                    BodyStore::with_limits(&root, limit_mib * MIB, BODY_STORE_MIN_FREE_BYTES)
+                });
         let (store, init_error) = match opened {
             Ok(store) => (Some(store), None),
             Err(error) => (None, Some(format!("Saving bodies is unavailable: {error}"))),
