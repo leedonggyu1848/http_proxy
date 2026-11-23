@@ -1,4 +1,4 @@
-use crate::engine::domain::FailureStage;
+use crate::exchange::FailureStage;
 use bytes::Bytes;
 use capture_context::CaptureContext;
 use http::{Response, StatusCode};
@@ -10,7 +10,6 @@ mod capture_context;
 mod config;
 mod forward;
 mod handle;
-pub(in crate::engine) mod headers;
 mod inspect;
 mod replay;
 mod status;

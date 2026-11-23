@@ -1,4 +1,3 @@
-use std::fmt;
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -12,26 +11,8 @@ use std::time::Duration;
 use http::{HeaderMap, Method};
 use tempfile::NamedTempFile;
 
-use crate::engine::capture::redacted_value;
-use crate::engine::domain::{BodyLifecycle, FailureStage, Outcome, RecordId, TunnelSnapshot};
-
-/// Which message of an exchange a body belongs to.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum BodySide {
-    /// The request body sent by the client.
-    Request,
-    /// The response body sent by the upstream server.
-    Response,
-}
-
-impl fmt::Display for BodySide {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Request => "Request",
-            Self::Response => "Response",
-        })
-    }
-}
+use crate::exchange::{BodyLifecycle, BodySide, FailureStage, Outcome, RecordId, TunnelSnapshot};
+use crate::http_semantics::redacted_value;
 
 fn full_headers(headers: &HeaderMap) -> String {
     headers
@@ -462,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn previews_and_full_logs_share_redaction_without_changing_byte_display()
+    fn full_logs_redact_sensitive_headers_and_escape_bytes()
     -> Result<(), http::header::InvalidHeaderValue> {
         let mut headers = HeaderMap::new();
         for name in [
@@ -477,7 +458,6 @@ mod tests {
             );
         }
         headers.insert("x-bytes", http::HeaderValue::from_bytes(b"\xff")?);
-        let preview = crate::engine::capture::capture_headers(&headers);
         let full = full_headers(&headers);
         for name in [
             "authorization",
@@ -485,11 +465,9 @@ mod tests {
             "cookie",
             "set-cookie",
         ] {
-            assert_eq!(preview.get(name).next(), Some("[REDACTED]"));
             assert!(full.contains(&format!("{name}: [REDACTED]\n")));
         }
         assert!(!full.contains("secret"));
-        assert_eq!(preview.get("x-bytes").next(), Some("\u{fffd}"));
         assert!(full.contains("x-bytes: \\xff\n"));
         Ok(())
     }
@@ -551,12 +529,12 @@ mod tests {
 
     #[test]
     fn response_settled_format() -> io::Result<()> {
-        let response = crate::engine::domain::CapturedResponse::new(
+        let response = crate::exchange::CapturedResponse::new(
             http::StatusCode::OK,
             http::Version::HTTP_11,
             "OK".to_owned(),
-            crate::engine::capture::capture_headers(&HeaderMap::new()),
-            crate::engine::domain::BodyPreview::new(0),
+            crate::exchange::HeaderPreview::default(),
+            crate::exchange::BodyPreview::new(0),
         );
         assert_output(
             |log| log.settled(4, &Outcome::Response(response), Duration::from_millis(2)),
@@ -566,7 +544,7 @@ mod tests {
 
     #[test]
     fn tunnel_ended_format() -> io::Result<()> {
-        let tunnel = crate::engine::domain::TunnelPreview::new();
+        let tunnel = crate::exchange::TunnelPreview::new();
         tunnel.add_client_to_upstream(12);
         tunnel.add_upstream_to_client(34);
         tunnel.close();

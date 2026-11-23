@@ -27,7 +27,7 @@ pub struct TunnelPreview {
 }
 
 impl TunnelPreview {
-    pub(in crate::engine) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             inner: Arc::new(TunnelInner {
                 opened: Instant::now(),
@@ -38,24 +38,24 @@ impl TunnelPreview {
         }
     }
 
-    pub(in crate::engine) fn add_client_to_upstream(&self, bytes: usize) {
+    pub(crate) fn add_client_to_upstream(&self, bytes: usize) {
         add(&self.inner.client_to_upstream, bytes);
     }
 
-    pub(in crate::engine) fn add_upstream_to_client(&self, bytes: usize) {
+    pub(crate) fn add_upstream_to_client(&self, bytes: usize) {
         add(&self.inner.upstream_to_client, bytes);
     }
 
-    pub(in crate::engine) fn close(&self) {
+    pub(crate) fn close(&self) {
         self.finish(TunnelState::Closed);
     }
 
-    pub(in crate::engine) fn fail(&self, stage: FailureStage, message: String) {
+    pub(crate) fn fail(&self, stage: FailureStage, message: String) {
         self.finish(TunnelState::Failed { stage, message });
     }
 
     /// Ends a tunnel that the proxy stopped relaying before either side finished.
-    pub(in crate::engine) fn abandon(&self) {
+    pub(crate) fn abandon(&self) {
         self.finish(TunnelState::Incomplete);
     }
 

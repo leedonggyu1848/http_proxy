@@ -4,11 +4,11 @@ use crate::engine::capture::{BodyLog, BodySinks};
 use crate::engine::capture::{
     ERROR_BYTES, TARGET_BYTES, bounded_text, capture_auth_schemes, capture_headers,
 };
-use crate::engine::domain::{
+use crate::engine::journal::FullLog;
+use crate::exchange::BodySide;
+use crate::exchange::{
     CaptureSource, CapturedRequest, Exchange, FailureStage, Outcome, RecordId, TunnelSnapshot,
 };
-use crate::engine::journal::BodySide;
-use crate::engine::journal::FullLog;
 use http::{HeaderMap, Method};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};

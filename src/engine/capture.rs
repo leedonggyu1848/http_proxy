@@ -7,13 +7,13 @@ use http::HeaderMap;
 use http_body::{Body, Frame, SizeHint};
 
 use crate::engine::body_store::BodyRecorder;
-use crate::engine::domain::AuthScheme;
-use crate::engine::domain::BodyLifecycle;
-use crate::engine::domain::RetentionBudget;
-use crate::engine::domain::{BodyPreview, CapturedHeader, HeaderPreview};
-use crate::engine::domain::{ImageFormat, MediaType};
-use crate::engine::journal::BodySide;
 use crate::engine::journal::FullLog;
+use crate::exchange::AuthScheme;
+use crate::exchange::BodyLifecycle;
+use crate::exchange::RetentionBudget;
+use crate::exchange::{BodyPreview, CapturedHeader, HeaderPreview};
+use crate::exchange::{BodySide, ImageFormat, MediaType};
+use crate::http_semantics::redacted_value;
 
 /// Most bytes one non-image body keeps in memory for its preview.
 pub const BODY_PREVIEW_BYTES: usize = 8 * 1024;
@@ -79,20 +79,6 @@ pub(in crate::engine) fn bounded_text(value: &str, max_bytes: usize) -> String {
     }
     let (prefix, _) = value.split_at(value.floor_char_boundary(max_bytes));
     format!("{prefix}…")
-}
-
-pub(in crate::engine) fn redacted_value<'a>(
-    name: &http::HeaderName,
-    value: &'a http::HeaderValue,
-) -> &'a [u8] {
-    if matches!(
-        name.as_str(),
-        "authorization" | "proxy-authorization" | "cookie" | "set-cookie"
-    ) {
-        b"[REDACTED]"
-    } else {
-        value.as_bytes()
-    }
 }
 
 /// Extracts recognized authentication scheme names from raw request headers
@@ -298,6 +284,35 @@ mod tests {
     use std::io;
 
     use super::*;
+
+    #[test]
+    fn previews_redact_sensitive_headers_and_replace_invalid_bytes()
+    -> Result<(), http::header::InvalidHeaderValue> {
+        let mut headers = HeaderMap::new();
+        for name in [
+            "authorization",
+            "proxy-authorization",
+            "cookie",
+            "set-cookie",
+        ] {
+            headers.insert(
+                http::HeaderName::from_static(name),
+                http::HeaderValue::from_static("secret"),
+            );
+        }
+        headers.insert("x-bytes", http::HeaderValue::from_bytes(b"\xff")?);
+        let preview = capture_headers(&headers);
+        for name in [
+            "authorization",
+            "proxy-authorization",
+            "cookie",
+            "set-cookie",
+        ] {
+            assert_eq!(preview.get(name).next(), Some("[REDACTED]"));
+        }
+        assert_eq!(preview.get("x-bytes").next(), Some("\u{fffd}"));
+        Ok(())
+    }
 
     #[test]
     fn recognizes_previewable_image_media_types() {

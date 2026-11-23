@@ -1,12 +1,12 @@
 //! Explicit, validated manual replay using the normal forwarding path.
 use super::capture_context::CaptureContext;
 use super::forward::forward_http;
-use super::headers::remove_hop_by_hop_headers;
 use super::inspect::forward_https;
 use super::upstream::{connect_deadline, resolve_within};
 use super::{EngineState, ProxyHandle, failed_response, infallible_to_hyper};
-use crate::engine::domain::{BodyPreview, CaptureSource, Exchange, FailureStage};
 use crate::engine::tls::Destination;
+use crate::exchange::{BodyPreview, CaptureSource, Exchange, FailureStage};
+use crate::http_semantics::{REDACTED_VALUE, is_sensitive_header, remove_hop_by_hop_headers};
 use bytes::Bytes;
 use http::HeaderMap;
 use http::{Method, Request, StatusCode, Uri, header::HOST};
@@ -57,7 +57,7 @@ impl ReplayDraft {
         }
         let snapshot = original.request().body().and_then(BodyPreview::snapshot);
         let body_missing = snapshot.as_ref().is_none_or(|body| {
-            body.lifecycle() != crate::engine::domain::BodyLifecycle::Complete
+            body.lifecycle() != crate::exchange::BodyLifecycle::Complete
                 || body.observed_bytes() != body.bytes().len() as u64
         }) || original.request().headers().omitted();
         let entries = original.request().headers().entries();
@@ -70,7 +70,7 @@ impl ReplayDraft {
             .map(|field| ReplayField {
                 enabled: true,
                 name: field.name().to_owned(),
-                value: if field.value() == "[REDACTED]" {
+                value: if field.value() == REDACTED_VALUE {
                     String::new()
                 } else {
                     field.value().to_owned()
@@ -200,12 +200,8 @@ impl ReplayDraft {
 fn header_pair(field: &ReplayField) -> Result<(http::HeaderName, http::HeaderValue), String> {
     let name = http::HeaderName::from_bytes(field.name.as_bytes())
         .map_err(|_| format!("Invalid header name: {}", field.name))?;
-    if field.value == "[REDACTED]"
-        || (field.value.is_empty()
-            && matches!(
-                name.as_str(),
-                "authorization" | "cookie" | "set-cookie" | "proxy-authorization"
-            ))
+    if field.value == REDACTED_VALUE
+        || (field.value.is_empty() && is_sensitive_header(name.as_str()))
     {
         return Err("Enter redacted header values or disable their rows".to_owned());
     }
@@ -282,7 +278,7 @@ impl ProxyHandle {
                 request.headers(),
                 request
                     .extensions()
-                    .get::<crate::engine::domain::RecordId>()
+                    .get::<crate::exchange::RecordId>()
                     .copied(),
                 source,
                 &target,

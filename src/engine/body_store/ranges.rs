@@ -11,8 +11,8 @@ use super::export::{self, Part};
 use super::file_name::{self, NameSource};
 use super::index::{BodyKey, Segment};
 use super::{BodyStore, SaveBody, SavedBody, encoding_layers};
-use crate::engine::domain::BodyLifecycle;
-use crate::engine::journal::BodySide;
+use crate::exchange::BodyLifecycle;
+use crate::exchange::BodySide;
 
 /// Gaps listed in an incomplete reason before the rest are counted.
 const LISTED_GAPS: usize = 5;
@@ -592,7 +592,7 @@ mod tests {
     fn make_plan(pieces: Vec<Piece>, gaps: Vec<(u64, u64)>, total: Option<u64>) -> RangePlan {
         RangePlan {
             template: SaveBody {
-                record: crate::engine::domain::RecordId::new(1),
+                record: crate::exchange::RecordId::new(1),
                 side: BodySide::Response,
                 format: super::super::SaveFormat::AsReceived,
                 directory: PathBuf::new(),

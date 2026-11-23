@@ -55,7 +55,7 @@ CONNECT 요청은 터널 내부가 암호화되어 있다는 설명만 표시한
 
 ## 모듈 소유권
 
-- `domain.rs`: UI가 읽는 기록 ID, 헤더와 본문 스냅샷 타입
+- `exchange`(`src/exchange.rs`, `src/exchange/`): UI가 읽는 기록 ID, 헤더와 본문 스냅샷 타입
 - `capture.rs`: 제한 적용과 스트리밍 본문 관찰
 - `proxy.rs`: HTTP 경계에서 캡처를 만들고 제한 채널에 게시
 - `main.rs`: 기록 보존, 필터, 선택과 상세 화면

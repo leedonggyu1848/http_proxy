@@ -2,7 +2,7 @@ use super::capture_context::CaptureContext;
 use super::handle::Engine;
 use super::target::{ResolveError, resolve_upstream};
 use super::{ProxyBody, failed_response};
-use crate::engine::domain::FailureStage;
+use crate::exchange::FailureStage;
 use http::uri::Authority;
 use http::{Response, StatusCode};
 use std::net::SocketAddr;
