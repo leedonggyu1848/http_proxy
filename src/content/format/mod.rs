@@ -14,7 +14,7 @@ mod json_tree;
 mod markup;
 mod tag;
 pub mod tree;
-pub mod xml;
+mod xml;
 
 use crate::MediaType;
 
@@ -109,21 +109,21 @@ impl BodyFormat {
 }
 
 /// Reads text as a format and returns it formatted, or why it could not.
-pub type PrettyFn = fn(&str) -> Result<Formatted, String>;
+type PrettyFn = fn(&str) -> Result<Formatted, String>;
 
 /// Reads text as a format and returns its tree, or why it could not.
-pub type TreeFn = fn(&str) -> Result<tree::TreeModel, String>;
+type TreeFn = fn(&str) -> Result<tree::TreeModel, String>;
 
 /// Everything the body view needs to know about one format. Adding a format
 /// means adding its [`BodyFormat::spec`] entry and its formatter module.
 #[derive(Debug)]
 pub struct FormatSpec {
     /// Name shown next to the view mode.
-    pub label: &'static str,
+    label: &'static str,
     /// Pretty printer; without one Pretty shows the original text.
-    pub pretty: Option<PrettyFn>,
+    pretty: Option<PrettyFn>,
     /// Tree builder; without one Tree shows Pretty with a notice.
-    pub tree: Option<TreeFn>,
+    tree: Option<TreeFn>,
     /// Whether Pretty and Raw are shown with line numbers.
     pub numbered: bool,
 }
@@ -196,7 +196,7 @@ pub struct Styled {
 
 impl Styled {
     #[must_use]
-    pub fn plain(text: &str) -> Self {
+    fn plain(text: &str) -> Self {
         let mut styled = Self::default();
         styled.push(text, TokenKind::Text);
         styled
@@ -321,7 +321,7 @@ impl Styled {
 
     /// Iterates over the text pieces and their kinds in order.
     #[cfg(test)]
-    pub fn pieces(&self) -> impl Iterator<Item = (&str, TokenKind)> {
+    fn pieces(&self) -> impl Iterator<Item = (&str, TokenKind)> {
         self.spans
             .iter()
             .filter_map(|(range, kind)| Some((self.text.get(range.clone())?, *kind)))
@@ -417,7 +417,7 @@ pub struct Formatted {
 impl Formatted {
     /// Formatted text with nothing to point out.
     #[must_use]
-    pub const fn plain(styled: Styled) -> Self {
+    const fn plain(styled: Styled) -> Self {
         Self {
             styled,
             notices: Vec::new(),

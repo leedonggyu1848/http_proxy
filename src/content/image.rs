@@ -14,7 +14,7 @@ use resvg::{tiny_skia, usvg};
 use usvg::roxmltree;
 
 /// Widest or tallest image the decoder accepts.
-pub const MAX_IMAGE_SIDE: u32 = 8_192;
+const MAX_IMAGE_SIDE: u32 = 8_192;
 /// Most pixels the decoder accepts, which bounds the RGBA buffer to 64 MiB.
 const MAX_IMAGE_PIXELS: u64 = 4_096 * 4_096;
 /// Allocation ceiling handed to decoders: the RGBA frame plus working buffers.

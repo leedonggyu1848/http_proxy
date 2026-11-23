@@ -5,7 +5,7 @@
 use super::{BodyFormat, Styled};
 
 /// Longest text shown on one tree row; the rest is elided.
-pub const ROW_TEXT: usize = 200;
+pub(in crate::content::format) const ROW_TEXT: usize = 200;
 
 /// One row of a tree.
 #[derive(Debug, Eq, PartialEq)]
@@ -47,7 +47,11 @@ pub struct TreeModel {
 impl TreeModel {
     /// `nodes` must be in depth-first order with parents before children.
     #[must_use]
-    pub fn new(nodes: Vec<TreeNode>, incomplete: Option<String>, copy: CopyLabels) -> Self {
+    pub(in crate::content::format) fn new(
+        nodes: Vec<TreeNode>,
+        incomplete: Option<String>,
+        copy: CopyLabels,
+    ) -> Self {
         let mut child_counts = vec![0; nodes.len()];
         for parent in nodes.iter().filter_map(|node| node.parent) {
             if let Some(count) = child_counts.get_mut(parent) {
@@ -99,7 +103,7 @@ pub fn build(format: BodyFormat, text: &str) -> Option<Result<TreeModel, String>
 
 /// Cuts `text` longer than [`ROW_TEXT`] characters and marks the cut.
 #[must_use]
-pub fn elide(text: &str) -> String {
+pub(in crate::content::format) fn elide(text: &str) -> String {
     match text.char_indices().nth(ROW_TEXT) {
         Some((cut, _)) => format!("{}…", text.get(..cut).unwrap_or_default()),
         None => text.to_owned(),

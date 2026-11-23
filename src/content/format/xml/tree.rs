@@ -14,7 +14,7 @@ const COPY: CopyLabels = CopyLabels {
 
 /// Builds the rows of `text` as far as it could be read. Whitespace-only
 /// text is left out; fails when `text` has no element.
-pub fn build(text: &str) -> Result<TreeModel, String> {
+pub(in crate::content::format) fn build(text: &str) -> Result<TreeModel, String> {
     let document = Document::parse(text)?;
     let mut builder = Builder {
         document: &document,
