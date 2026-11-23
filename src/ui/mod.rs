@@ -10,7 +10,6 @@ mod detail_view;
 mod endpoint_analysis;
 mod filter;
 mod fonts;
-mod har;
 mod har_dialog;
 mod highlight;
 mod image_view;
@@ -37,11 +36,11 @@ use std::time::Duration;
 
 use eframe::egui;
 use http_proxy::content::format as body_format;
-use http_proxy::settings;
-use http_proxy::url_map::{
-    RequestScope, UrlMap, export_graph_dot, export_graph_mermaid, export_tree_json,
-    export_tree_text,
+use http_proxy::interop::map_export::{
+    export_graph_dot, export_graph_mermaid, export_tree_json, export_tree_text,
 };
+use http_proxy::settings;
+use http_proxy::url_map::{RequestScope, UrlMap};
 use http_proxy::{
     EngineState, Exchange, FullLog, HttpsInspection, ProxyConfig, ProxyHandle, RecordId,
 };

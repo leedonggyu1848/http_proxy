@@ -1,7 +1,6 @@
 #![forbid(unsafe_code)]
 
 pub mod content;
-mod curl;
 pub mod endpoint_schema;
 #[expect(
     clippy::redundant_pub_crate,
@@ -23,6 +22,7 @@ mod https;
     reason = "crate-wide items of a private module; `pub` would trip `unreachable_pub`"
 )]
 mod interception;
+pub mod interop;
 mod launcher;
 pub mod recording;
 mod replay;
@@ -30,10 +30,6 @@ pub mod settings;
 pub mod text_search;
 pub mod url_map;
 
-pub use curl::{
-    CURL_REDACTED_PLACEHOLDER, CurlCommand, CurlUnavailable, RedactedHeaders, curl_command,
-    curl_unavailable_reason,
-};
 pub use exchange::BodySide;
 pub use exchange::{
     AuthScheme, BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, CaptureSource,
@@ -50,6 +46,10 @@ pub use interception::{
 #[cfg(feature = "test-support")]
 pub use interception::{ConnectExchangeBuilder, ExchangeBuilder, FixtureError, ResponseFixture};
 pub use interception::{EngineState, ProxyConfig, ProxyHandle, StartError, StopError};
+pub use interop::curl::{
+    CURL_REDACTED_PLACEHOLDER, CurlCommand, CurlUnavailable, RedactedHeaders, curl_command,
+    curl_unavailable_reason,
+};
 pub use launcher::{Browser, BrowserEvent, BrowserSession};
 pub use recording::body_store::{
     BODY_STORE_LIMIT_BYTES, BODY_STORE_MIN_FREE_BYTES, BodyLayout, BodyStore, BulkProgress,

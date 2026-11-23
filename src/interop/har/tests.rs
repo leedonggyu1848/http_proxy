@@ -1,5 +1,5 @@
 //! HAR export tests against exchanges captured by a real proxy, and a check
-//! that fixtures built without a proxy export, search, and map the same way.
+//! that fixtures built without a proxy export and map the same way.
 #![expect(
     clippy::indexing_slicing,
     reason = "Reading a serde_json::Value by key yields Null instead of panicking."
@@ -14,20 +14,18 @@ use http::header::{
     SET_COOKIE,
 };
 use http::{HeaderName, HeaderValue, Method, StatusCode};
-use http_proxy::text_search::{MatchOptions, Matcher};
-use http_proxy::url_map::{UrlMap, export_graph_mermaid, export_tree_json};
-use http_proxy::{
-    BodyLifecycle, Exchange, ExchangeBuilder, Outcome, ProxyConfig, ProxyHandle, ResponseFixture,
-    TunnelState,
-};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
 
 use super::{HarOptions, document, write};
-use crate::ui::search::SearchScope;
-use crate::ui::search::document::{BodyCache, Coverage, check};
+use crate::interop::map_export::{export_graph_mermaid, export_tree_json};
+use crate::url_map::UrlMap;
+use crate::{
+    BODY_PREVIEW_BYTES, BodyLifecycle, Exchange, ExchangeBuilder, Outcome, ProxyConfig,
+    ProxyHandle, ResponseFixture, TunnelState,
+};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -236,7 +234,7 @@ fn truncated_binary_and_compressed_bodies_are_marked() -> TestResult {
                 "GET http://{address}/ HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
             )
         };
-        let large = "a".repeat(http_proxy::BODY_PREVIEW_BYTES + 100);
+        let large = "a".repeat(BODY_PREVIEW_BYTES + 100);
         let truncated = exchange(
             &mut proxy,
             get,
@@ -275,7 +273,7 @@ fn truncated_binary_and_compressed_bodies_are_marked() -> TestResult {
         let content = &truncated["response"]["content"];
         assert_eq!(
             content["text"].as_str().map(str::len),
-            Some(http_proxy::BODY_PREVIEW_BYTES)
+            Some(BODY_PREVIEW_BYTES)
         );
         assert_eq!(content["size"], large.len());
         assert!(
@@ -591,38 +589,8 @@ fn url_map(records: &[Exchange]) -> (Value, String) {
     (tree, export_graph_mermaid(&map, 16))
 }
 
-/// Whether a record matched, whether that is final, and why it may not have.
-type SearchResult = (bool, bool, Coverage);
-
-fn search_results(records: &[Exchange]) -> Result<Vec<SearchResult>, Box<dyn Error>> {
-    let mut results = Vec::new();
-    let mut cache = BodyCache::default();
-    for query in [
-        "POST",
-        "login",
-        "request-body-text",
-        "response-body-text",
-        "application/json",
-        "[REDACTED]",
-        SECRETS[0],
-        "200",
-        "CONNECT",
-        "slow",
-        "Failed",
-    ] {
-        let matcher = Matcher::new(query, MatchOptions::default())?;
-        for scope in SearchScope::ALL {
-            for record in records {
-                let checked = check(record, &matcher, scope, &mut cache);
-                results.push((checked.matched, checked.settled, checked.coverage));
-            }
-        }
-    }
-    Ok(results)
-}
-
 #[test]
-fn builder_records_export_search_and_map_like_proxy_captures() -> TestResult {
+fn builder_records_export_and_map_like_proxy_captures() -> TestResult {
     run(|| async {
         let Captures {
             proxy,
@@ -655,7 +623,6 @@ fn builder_records_export_search_and_map_like_proxy_captures() -> TestResult {
                 without_clock(document(&captured, options, now)),
             );
         }
-        assert_eq!(search_results(&built)?, search_results(&captured)?);
         assert_eq!(url_map(&built), url_map(&captured));
         proxy.stop()?;
         Ok(())
