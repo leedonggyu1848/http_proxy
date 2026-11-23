@@ -515,19 +515,19 @@ fn fixtures(
             ResponseFixture::header,
         )?
         .body(RESPONSE_BODY, BodyLifecycle::Complete),
-    );
+    )?;
     let host = HeaderValue::try_from(address.to_string())?;
     let tunnel = ExchangeBuilder::connect(address.to_string())
         .header(HOST, host.clone())
-        .tunnel(4, 5, TunnelState::Closed);
+        .tunnel(4, 5, TunnelState::Closed)?;
     let pending = ExchangeBuilder::http(Method::GET, format!("http://{address}/slow"))?
         .header(HOST, host.clone())
         .request_body(Vec::new(), BodyLifecycle::Complete)
-        .in_flight();
+        .in_flight()?;
     let failed = ExchangeBuilder::http(Method::GET, format!("http://{address}/"))?
         .header(HOST, host)
         .header(CONNECTION, HeaderValue::from_static("close"))
-        .fail(*stage, message);
+        .fail(*stage, message)?;
     Ok(vec![response, tunnel, pending, failed])
 }
 
