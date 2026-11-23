@@ -1743,6 +1743,7 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "http-proxy",
  "hyper",
  "hyper-util",
  "image",

@@ -67,9 +67,15 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 zstd = { version = "0.13", default-features = false }
 
+[features]
+# Exchange fixtures for tests (`ExchangeBuilder`). Release builds leave it off;
+# tests turn it on through the dev-dependency on this package below.
+test-support = []
+
 [dev-dependencies]
 aho-corasick = "1.1"
 criterion = { version = "0.8.2", default-features = false }
+http-proxy = { path = ".", features = ["test-support"] }
 
 [[bench]]
 name = "search"
