@@ -118,7 +118,7 @@ impl PlatformStore {
         if self.status(certificate).await? == CaTrustStatus::NotInstalled {
             return Ok(CaTrustStatus::NotInstalled);
         }
-        let fingerprint = crate::engine::tls::fingerprint(certificate).replace(':', "");
+        let fingerprint = crate::https::ca::fingerprint(certificate).replace(':', "");
         let output = security(&[
             Path::new("delete-certificate"),
             Path::new("-t"),
@@ -171,7 +171,7 @@ fn require_success(output: &Output) -> Result<(), CaTrustError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::tls::CaInfo;
+    use crate::https::ca::CaInfo;
 
     #[tokio::test]
     async fn new_ca_is_absent_from_login_keychain() -> Result<(), Box<dyn std::error::Error>> {
