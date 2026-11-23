@@ -1,5 +1,5 @@
 //! Builds the [`TreeModel`] of an XML preview, with an `XPath` for every
-//! element. [`Document::parse`] applies the node and depth limits.
+//! element. Document parsing applies the node and depth limits.
 
 use super::pretty::push_leaf;
 use super::{Document, Element, NodeKind};
