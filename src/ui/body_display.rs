@@ -225,6 +225,13 @@ impl BodyViewCache {
             BodySide::Response => &mut self.response,
         };
         if side.shown.as_ref().is_none_or(|(cached, _)| *cached != key) {
+            if side
+                .shown
+                .as_ref()
+                .is_some_and(|(cached, _)| cached.record != key.record || cached.mode != key.mode)
+            {
+                reset_text_selection(ui, key.side);
+            }
             self.builds += 1;
             // Use the keyed theme's style: after a theme switch this frame's
             // style still belongs to the previous theme.
@@ -383,15 +390,34 @@ fn render(ui: &mut egui::Ui, content: &mut Content, key: &Key, trees: &mut TreeC
         }
     };
     let output = egui::TextEdit::multiline(&mut text)
+        .id(body_text_id(ui, key.side))
         .font(egui::TextStyle::Monospace)
         .desired_rows(8)
         .desired_width(f32::INFINITY)
-        .interactive(false)
         .layouter(&mut layouter)
         .show(ui);
     if let Some(hit) = scroll {
         scroll_to_hit(ui, &output, &job.text, &hit);
     }
+}
+
+/// Persistent widget id for one side's non-numbered read-only body text view.
+fn body_text_id(ui: &egui::Ui, side: BodySide) -> egui::Id {
+    ui.make_persistent_id(("body-text", side))
+}
+
+/// Clears cached selection state and focus for `side` so switching records or
+/// view modes never carries stale cursor offsets into different text.
+fn reset_text_selection(ui: &egui::Ui, side: BodySide) {
+    let id = body_text_id(ui, side);
+    ui.ctx().data_mut(|data| {
+        data.remove::<egui::text_edit::TextEditState>(id);
+    });
+    ui.memory_mut(|memory| {
+        if memory.has_focus(id) {
+            memory.surrender_focus(id);
+        }
+    });
 }
 
 /// Bounds visual continuation indents on narrow viewports so long prefixes
@@ -1316,6 +1342,513 @@ mod tests {
             (html_open_x - html_next_x).abs() < 0.5,
             "{html_open_x} vs {html_next_x}"
         );
+        Ok(())
+    }
+
+    fn find_text_shape(
+        shapes: &[egui::epaint::ClippedShape],
+        predicate: &impl Fn(&str) -> bool,
+    ) -> Option<(egui::Pos2, Arc<Galley>)> {
+        fn walk(
+            shape: &egui::Shape,
+            predicate: &impl Fn(&str) -> bool,
+        ) -> Option<(egui::Pos2, Arc<Galley>)> {
+            match shape {
+                egui::Shape::Text(text) if predicate(text.galley.text()) => {
+                    Some((text.pos, Arc::clone(&text.galley)))
+                }
+                egui::Shape::Vec(items) => items.iter().find_map(|item| walk(item, predicate)),
+                _ => None,
+            }
+        }
+        shapes
+            .iter()
+            .find_map(|clipped| walk(&clipped.shape, predicate))
+    }
+
+    fn cursor_screen_pos(
+        origin: egui::Pos2,
+        galley: &Galley,
+        byte_index: usize,
+    ) -> Result<egui::Pos2, String> {
+        let char_index = galley
+            .text()
+            .get(..byte_index)
+            .ok_or_else(|| format!("invalid byte index {byte_index}"))?
+            .chars()
+            .count();
+        let rect = galley.pos_from_cursor(egui::text::CCursor::new(char_index));
+        Ok(egui::pos2(
+            origin.x + rect.min.x,
+            origin.y + rect.center().y,
+        ))
+    }
+
+    fn run_frame(
+        ctx: &egui::Context,
+        time: f64,
+        events: Vec<egui::Event>,
+        body: impl FnMut(&mut egui::Ui),
+    ) -> egui::FullOutput {
+        let input = egui::RawInput {
+            time: Some(time),
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 900.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, body);
+        output.textures_delta.clear();
+        output
+    }
+
+    fn copied_texts(output: &egui::FullOutput) -> Vec<String> {
+        output
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|cmd| match cmd {
+                egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn drag_select(
+        ctx: &egui::Context,
+        time: &mut f64,
+        from: egui::Pos2,
+        to: egui::Pos2,
+        mut body: impl FnMut(&mut egui::Ui),
+    ) {
+        for events in [
+            vec![egui::Event::PointerMoved(from)],
+            vec![egui::Event::PointerButton {
+                pos: from,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            vec![egui::Event::PointerMoved(to)],
+            vec![egui::Event::PointerButton {
+                pos: to,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        ] {
+            *time += 0.05;
+            let _ = run_frame(ctx, *time, events, &mut body);
+        }
+    }
+
+    fn click_at(
+        ctx: &egui::Context,
+        time: &mut f64,
+        pos: egui::Pos2,
+        mut body: impl FnMut(&mut egui::Ui),
+    ) {
+        *time += 0.05;
+        let _ = run_frame(
+            ctx,
+            *time,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            &mut body,
+        );
+        *time += 0.02;
+        let _ = run_frame(
+            ctx,
+            *time,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            &mut body,
+        );
+    }
+
+    fn key_press(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    fn drag_copy_slice(
+        ctx: &egui::Context,
+        time: &mut f64,
+        pos: egui::Pos2,
+        galley: &Galley,
+        slice: &str,
+        mut draw: impl FnMut(&mut egui::Ui),
+    ) -> Result<Vec<String>, String> {
+        let start = galley
+            .text()
+            .find(slice)
+            .ok_or_else(|| format!("missing slice {slice:?}"))?;
+        let end = start + slice.len();
+        drag_select(
+            ctx,
+            time,
+            cursor_screen_pos(pos, galley, start)?,
+            cursor_screen_pos(pos, galley, end)?,
+            &mut draw,
+        );
+        *time += 0.05;
+        let out = run_frame(ctx, *time, vec![egui::Event::Copy], &mut draw);
+        Ok(copied_texts(&out))
+    }
+
+    #[test]
+    fn copies_pretty_request_and_response_with_drag_select_all_and_clicks() -> Result<(), String> {
+        let ctx = egui::Context::default();
+        let mut cache = BodyViewCache::default();
+        let mut time = 0.0;
+        let req_source = BodySource {
+            side: BodySide::Request,
+            ..source(30, br#"{"req":  "alpha  beta","id":1}"#)
+        };
+        let resp_source = BodySource {
+            side: BodySide::Response,
+            ..source(30, br#"{"resp":  "gamma  delta","ok":true}"#)
+        };
+        let mut draw_pretty = |ui: &mut egui::Ui| {
+            cache.show(ui, &req_source, ViewMode::Pretty);
+            ui.separator();
+            cache.show(ui, &resp_source, ViewMode::Pretty);
+        };
+
+        time += 0.05;
+        let initial = run_frame(&ctx, time, Vec::new(), &mut draw_pretty);
+        let expected_req = "{\n  \"req\": \"alpha  beta\",\n  \"id\": 1\n}";
+        let expected_resp = "{\n  \"resp\": \"gamma  delta\",\n  \"ok\": true\n}";
+        let (req_pos, req_galley) = find_text_shape(&initial.shapes, &|t| t == expected_req)
+            .ok_or("missing Pretty request body galley")?;
+        let (resp_pos, resp_galley) = find_text_shape(&initial.shapes, &|t| t == expected_resp)
+            .ok_or("missing Pretty response body galley")?;
+
+        let req_slice = "  \"req\": \"alpha  beta\",\n  \"id\": 1";
+        let got_req = drag_copy_slice(
+            &ctx,
+            &mut time,
+            req_pos,
+            &req_galley,
+            req_slice,
+            &mut draw_pretty,
+        )?;
+        assert_eq!(got_req, vec![req_slice.to_owned()]);
+
+        let resp_slice = "  \"resp\": \"gamma  delta\",\n  \"ok\": true";
+        let got_resp = drag_copy_slice(
+            &ctx,
+            &mut time,
+            resp_pos,
+            &resp_galley,
+            resp_slice,
+            &mut draw_pretty,
+        )?;
+        assert_eq!(got_resp, vec![resp_slice.to_owned()]);
+
+        // Ctrl+A in request body selects only the request body, not the response body.
+        let req_click = expected_req.find("alpha").ok_or("missing alpha")?;
+        click_at(
+            &ctx,
+            &mut time,
+            cursor_screen_pos(req_pos, &req_galley, req_click)?,
+            &mut draw_pretty,
+        );
+        time += 0.05;
+        let select_all = run_frame(
+            &ctx,
+            time,
+            vec![
+                key_press(egui::Key::A, egui::Modifiers::COMMAND),
+                egui::Event::Copy,
+            ],
+            &mut draw_pretty,
+        );
+        assert_eq!(copied_texts(&select_all), vec![expected_req.to_owned()]);
+
+        // Double-click selects a word ("gamma") and triple-click selects the line in response body.
+        time += 1.0;
+        let gamma_byte = expected_resp.find("gamma").ok_or("missing gamma")?;
+        let gamma_pos = cursor_screen_pos(resp_pos, &resp_galley, gamma_byte + 2)?;
+        click_at(&ctx, &mut time, gamma_pos, &mut draw_pretty);
+        click_at(&ctx, &mut time, gamma_pos, &mut draw_pretty);
+        time += 0.05;
+        let dbl_copy = run_frame(&ctx, time, vec![egui::Event::Copy], &mut draw_pretty);
+        assert_eq!(copied_texts(&dbl_copy), vec!["gamma".to_owned()]);
+
+        click_at(&ctx, &mut time, gamma_pos, &mut draw_pretty);
+        time += 0.05;
+        let triple_copy = run_frame(&ctx, time, vec![egui::Event::Copy], &mut draw_pretty);
+        assert_eq!(
+            copied_texts(&triple_copy),
+            vec!["  \"resp\": \"gamma  delta\",".to_owned()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn copies_raw_request_and_response_preserving_original_spacing() -> Result<(), String> {
+        let ctx = egui::Context::default();
+        let mut cache = BodyViewCache::default();
+        let mut time = 0.0;
+
+        let req_raw = br#"{"req":  "alpha  beta","id":1}"#;
+        let resp_raw = br#"{"resp":  "gamma  delta","ok":true}"#;
+        let req_source = BodySource {
+            side: BodySide::Request,
+            ..source(36, req_raw)
+        };
+        let resp_source = BodySource {
+            side: BodySide::Response,
+            ..source(36, resp_raw)
+        };
+        let mut draw_raw = |ui: &mut egui::Ui| {
+            cache.show(ui, &req_source, ViewMode::Raw);
+            ui.separator();
+            cache.show(ui, &resp_source, ViewMode::Raw);
+        };
+
+        time += 0.05;
+        let initial = run_frame(&ctx, time, Vec::new(), &mut draw_raw);
+        let expected_req = std::str::from_utf8(req_raw).map_err(|e| e.to_string())?;
+        let expected_resp = std::str::from_utf8(resp_raw).map_err(|e| e.to_string())?;
+        let (req_pos, req_galley) = find_text_shape(&initial.shapes, &|t| t == expected_req)
+            .ok_or("missing Raw request body galley")?;
+        let (resp_pos, resp_galley) = find_text_shape(&initial.shapes, &|t| t == expected_resp)
+            .ok_or("missing Raw response body galley")?;
+
+        let raw_req_slice = "\"req\":  \"alpha  beta\"";
+        assert_eq!(
+            drag_copy_slice(
+                &ctx,
+                &mut time,
+                req_pos,
+                &req_galley,
+                raw_req_slice,
+                &mut draw_raw
+            )?,
+            vec![raw_req_slice.to_owned()]
+        );
+
+        let raw_resp_slice = "\"resp\":  \"gamma  delta\"";
+        assert_eq!(
+            drag_copy_slice(
+                &ctx,
+                &mut time,
+                resp_pos,
+                &resp_galley,
+                raw_resp_slice,
+                &mut draw_raw
+            )?,
+            vec![raw_resp_slice.to_owned()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn read_only_body_rejects_text_edits_backspace_paste_and_cut() -> Result<(), String> {
+        let ctx = egui::Context::default();
+        let mut cache = BodyViewCache::default();
+        let mut time = 0.0;
+        let json = source(31, br#"{"name":"Alice","role":"admin"}"#);
+        let expected = "{\n  \"name\": \"Alice\",\n  \"role\": \"admin\"\n}";
+
+        time += 0.05;
+        let initial = run_frame(&ctx, time, Vec::new(), |ui| {
+            cache.show(ui, &json, ViewMode::Pretty);
+        });
+        let (pos, galley) =
+            find_text_shape(&initial.shapes, &|t| t == expected).ok_or("missing JSON galley")?;
+
+        let start = expected.find("Alice").ok_or("missing Alice")?;
+        drag_select(
+            &ctx,
+            &mut time,
+            cursor_screen_pos(pos, &galley, start)?,
+            cursor_screen_pos(pos, &galley, start + "Alice".len())?,
+            |ui| cache.show(ui, &json, ViewMode::Pretty),
+        );
+
+        // Attempt every mutating input event while focused with an active selection.
+        time += 0.05;
+        let _ = run_frame(
+            &ctx,
+            time,
+            vec![
+                egui::Event::Text("Bob".to_owned()),
+                key_press(egui::Key::Backspace, egui::Modifiers::NONE),
+                key_press(egui::Key::Delete, egui::Modifiers::NONE),
+                key_press(egui::Key::Enter, egui::Modifiers::NONE),
+                egui::Event::Paste("INJECTED".to_owned()),
+                egui::Event::Cut,
+            ],
+            |ui| cache.show(ui, &json, ViewMode::Pretty),
+        );
+
+        let (job, _) = cached_text_galley(&cache)?;
+        assert_eq!(job.text, expected, "body text must remain read-only");
+
+        time += 0.05;
+        let verify = run_frame(
+            &ctx,
+            time,
+            vec![
+                key_press(egui::Key::A, egui::Modifiers::COMMAND),
+                egui::Event::Copy,
+            ],
+            |ui| cache.show(ui, &json, ViewMode::Pretty),
+        );
+        assert_eq!(copied_texts(&verify), vec![expected.to_owned()]);
+        Ok(())
+    }
+
+    #[test]
+    fn copies_multiline_values_without_visual_leading_space() -> Result<(), String> {
+        let ctx = egui::Context::default();
+        let mut cache = BodyViewCache::default();
+        let mut time = 0.0;
+        let xml = BodySource {
+            media_type: media("application/xml"),
+            ..source(
+                32,
+                b"<root><item><note>line1\nline2\n  line3</note><next>ok</next></item></root>",
+            )
+        };
+
+        time += 0.05;
+        let initial = run_frame(&ctx, time, Vec::new(), |ui| {
+            cache.show(ui, &xml, ViewMode::Pretty);
+        });
+        let (job, _) = cached_text_galley(&cache)?;
+        let expected_text = job.text.clone();
+        assert!(
+            job.sections
+                .iter()
+                .any(|section| section.leading_space > 0.0),
+            "expected visual leading_space on multiline continuation lines"
+        );
+
+        let (pos, galley) = find_text_shape(&initial.shapes, &|t| t == expected_text)
+            .ok_or("missing XML galley")?;
+        let needle = "line1\nline2\n  line3";
+        let copied = drag_copy_slice(&ctx, &mut time, pos, &galley, needle, |ui| {
+            cache.show(ui, &xml, ViewMode::Pretty);
+        })?;
+        assert_eq!(
+            copied,
+            vec![needle.to_owned()],
+            "visual leading_space must not leak into copied text"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn resets_selection_on_record_and_mode_switch_without_panic() -> Result<(), String> {
+        let ctx = egui::Context::default();
+        let mut cache = BodyViewCache::default();
+        let mut time = 0.0;
+        let long_body = source(
+            33,
+            br#"{"first":"value-one","second":"value-two","third":"value-three"}"#,
+        );
+        let short_body = source(34, br#"{"x":1}"#);
+
+        time += 0.05;
+        let initial = run_frame(&ctx, time, Vec::new(), |ui| {
+            cache.show(ui, &long_body, ViewMode::Pretty);
+        });
+        let (job, _) = cached_text_galley(&cache)?;
+        let full_pretty = job.text.clone();
+        let (pos, galley) = find_text_shape(&initial.shapes, &|t| t == full_pretty)
+            .ok_or("missing long Pretty galley")?;
+        let tail_start = full_pretty.find("\"third\"").ok_or("missing third field")?;
+        drag_select(
+            &ctx,
+            &mut time,
+            cursor_screen_pos(pos, &galley, tail_start)?,
+            cursor_screen_pos(pos, &galley, full_pretty.len())?,
+            |ui| cache.show(ui, &long_body, ViewMode::Pretty),
+        );
+        assert!(ctx.memory(egui::Memory::focused).is_some());
+
+        // Switch Pretty -> Raw: selection and focus reset cleanly.
+        time += 0.05;
+        let switched_mode = run_frame(&ctx, time, vec![egui::Event::Copy], |ui| {
+            cache.show(ui, &long_body, ViewMode::Raw);
+        });
+        assert_eq!(copied_texts(&switched_mode), Vec::<String>::new());
+        assert!(ctx.memory(egui::Memory::focused).is_none());
+
+        // Select near the end of long Raw body, then switch to a much shorter record.
+        let (raw_job, _) = cached_text_galley(&cache)?;
+        let full_raw = raw_job.text.clone();
+        let (raw_pos, raw_galley) = find_text_shape(&switched_mode.shapes, &|t| t == full_raw)
+            .ok_or("missing long Raw galley")?;
+        drag_select(
+            &ctx,
+            &mut time,
+            cursor_screen_pos(raw_pos, &raw_galley, full_raw.len() - 15)?,
+            cursor_screen_pos(raw_pos, &raw_galley, full_raw.len())?,
+            |ui| cache.show(ui, &long_body, ViewMode::Raw),
+        );
+
+        time += 0.05;
+        let switched_record = run_frame(&ctx, time, vec![egui::Event::Copy], |ui| {
+            cache.show(ui, &short_body, ViewMode::Raw);
+        });
+        assert_eq!(copied_texts(&switched_record), Vec::<String>::new());
+        assert!(ctx.memory(egui::Memory::focused).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn numbered_lines_view_copies_code_without_line_numbers() -> Result<(), String> {
+        let ctx = egui::Context::default();
+        let mut cache = BodyViewCache::default();
+        let mut time = 0.0;
+        let css = BodySource {
+            media_type: media("text/css"),
+            ..source(35, b"a{color:red;margin:0}")
+        };
+
+        let mut draw = |ui: &mut egui::Ui| {
+            cache.show(ui, &css, ViewMode::Pretty);
+        };
+        time += 0.05;
+        let initial = run_frame(&ctx, time, Vec::new(), &mut draw);
+        let (line1_pos, line1_galley) =
+            find_text_shape(&initial.shapes, &|t| t == "a{").ok_or("missing first CSS line")?;
+        let (line2_pos, line2_galley) = find_text_shape(&initial.shapes, &|t| t == "  color:red;")
+            .ok_or("missing second CSS line")?;
+
+        drag_select(
+            &ctx,
+            &mut time,
+            cursor_screen_pos(line1_pos, &line1_galley, 0)?,
+            cursor_screen_pos(line2_pos, &line2_galley, "  color:red;".len())?,
+            &mut draw,
+        );
+        time += 0.05;
+        let copied = run_frame(&ctx, time, vec![egui::Event::Copy], &mut draw);
+        assert_eq!(copied_texts(&copied), vec!["a{\n  color:red;".to_owned()]);
         Ok(())
     }
 }
