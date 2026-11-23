@@ -2,7 +2,10 @@
 //! unbalanced markup.
 
 use super::tag::{Dialect, Spacing, push_tag};
-use super::{Styled, TokenKind, split_while};
+use super::{
+    Styled, TokenKind, comment_align, split_trailing_blank_line, split_while,
+    starts_with_blank_line,
+};
 
 /// HTML elements that never have a closing tag.
 const VOID_ELEMENTS: [&str; 14] = [
@@ -50,14 +53,24 @@ pub(super) fn pretty(text: &str) -> Result<Styled, String> {
         match node {
             Node::Declaration(declaration) => {
                 line(&mut out, depth);
-                out.push(declaration, TokenKind::Tag);
+                if declaration.contains('\n') {
+                    let align = out.visual_current_line();
+                    out.push_multiline(declaration, TokenKind::Tag, &align);
+                } else {
+                    out.push(declaration, TokenKind::Tag);
+                }
             }
             Node::Comment(comment) => {
                 line(&mut out, depth);
-                out.push(comment, TokenKind::Comment);
+                if comment.contains('\n') {
+                    let align = comment_align(&out.visual_current_line(), comment, "<!--");
+                    out.push_multiline(comment, TokenKind::Comment, &align);
+                } else {
+                    out.push(comment, TokenKind::Comment);
+                }
             }
             // Only reached when the closing tag was cut off.
-            Node::Verbatim(text) => out.push(text, TokenKind::Text),
+            Node::Verbatim(text) => push_verbatim_text(&mut out, text, depth, None),
             Node::Text(text) => {
                 for text_line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
                     line(&mut out, depth);
@@ -74,7 +87,8 @@ pub(super) fn pretty(text: &str) -> Result<Styled, String> {
                 if has_content {
                     let inline = inline_content(&nodes, index, name);
                     if let Some((consumed, text, close)) = inline {
-                        out.push(text, TokenKind::Text);
+                        push_verbatim_text(&mut out, text, depth + 1, Some(depth));
+                        out.indent_line_if_at_start(&"  ".repeat(depth));
                         push_tag(&mut out, close, Dialect::Html, Spacing::Normalize);
                         index += consumed;
                     } else {
@@ -90,6 +104,30 @@ pub(super) fn pretty(text: &str) -> Result<Styled, String> {
         }
     }
     Ok(out)
+}
+
+fn push_verbatim_text(
+    out: &mut Styled,
+    text: &str,
+    block_depth: usize,
+    close_depth: Option<usize>,
+) {
+    if !text.contains('\n') {
+        out.push(text, TokenKind::Text);
+        return;
+    }
+    let align = if starts_with_blank_line(text) {
+        "  ".repeat(block_depth)
+    } else {
+        out.visual_current_line()
+    };
+    if let Some(close_depth) = close_depth {
+        let (body, tail) = split_trailing_blank_line(text);
+        out.push_multiline(body, TokenKind::Text, &align);
+        out.push_closing_tail(tail, close_depth);
+    } else {
+        out.push_multiline(text, TokenKind::Text, &align);
+    }
 }
 
 /// Finds `[short text] </name>` or `verbatim content </name>` right after an
@@ -328,5 +366,62 @@ mod tests {
     #[test]
     fn rejects_text_without_tags() {
         assert!(pretty("plain text, 1 < 2").is_err());
+    }
+
+    #[test]
+    fn aligns_multiline_attributes_verbatim_and_comments_without_padding_text() -> Result<(), String>
+    {
+        let html = concat!(
+            "<div><a title=\"first\nsecond\nthird\">link</a>",
+            "<textarea>t1\nt2\nt3</textarea>",
+            "<!-- c1\nc2\nc3 -->",
+            "<p>next</p></div>"
+        );
+        let styled = pretty(html)?;
+        assert!(
+            styled
+                .text()
+                .contains("  <a title=\"first\nsecond\nthird\">")
+        );
+        assert!(styled.text().contains("  <textarea>t1\nt2\nt3</textarea>"));
+        let align_for = |needle: &str| -> Option<&str> {
+            let offset = styled.text().find(needle)?;
+            styled
+                .indents()
+                .iter()
+                .find(|indent| indent.offset == offset)
+                .map(|indent| indent.align_to.as_str())
+        };
+        assert_eq!(align_for("second\n"), Some("  <a title=\""));
+        assert_eq!(align_for("third\""), Some("  <a title=\""));
+        assert_eq!(align_for("t2\n"), Some("  <textarea>"));
+        assert_eq!(align_for("t3</textarea>"), Some("  <textarea>"));
+        assert_eq!(align_for("c2\n"), Some("  <!-- "));
+        assert_eq!(align_for("c3 -->"), Some("  <!-- "));
+        Ok(())
+    }
+
+    #[test]
+    fn pads_short_trailing_indent_before_closing_tag_without_mutating_text() -> Result<(), String> {
+        let html =
+            "<div><section><textarea>\nline1\nline2\n  </textarea><p>next</p></section></div>";
+        let styled = pretty(html)?;
+        assert!(
+            styled
+                .text()
+                .contains("    <textarea>\nline1\nline2\n  </textarea>")
+        );
+        let tail_start = styled
+            .text()
+            .find("\n  </textarea>")
+            .map(|pos| pos + 1)
+            .ok_or("missing closing textarea tail")?;
+        let tail_indent = styled
+            .indents()
+            .iter()
+            .find(|indent| indent.offset == tail_start)
+            .map(|indent| indent.align_to.as_str());
+        assert_eq!(tail_indent, Some("  "));
+        Ok(())
     }
 }

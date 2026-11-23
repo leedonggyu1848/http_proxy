@@ -138,6 +138,7 @@ impl TreeView {
             .iter()
             .map(|node| {
                 Arc::new(highlight::layout_job(
+                    ctx,
                     &node.label,
                     &palette,
                     text_color,

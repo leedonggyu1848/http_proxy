@@ -171,12 +171,25 @@ pub(in crate::ui) enum TokenKind {
     Instruction,
 }
 
+/// Visual-only indentation applied at the start of a continuation line
+/// (`offset` immediately follows `\n`) without inserting whitespace into
+/// [`Styled::text`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::ui) struct LineIndent {
+    /// Byte offset in [`Styled::text`] where the indented line starts.
+    pub(in crate::ui) offset: usize,
+    /// Reference prefix whose rendered width in the active monospace font sets
+    /// the visual indentation of the line.
+    pub(in crate::ui) align_to: String,
+}
+
 /// Text with every byte assigned to a [`TokenKind`]; adjacent pieces of the
 /// same kind are merged.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(in crate::ui) struct Styled {
     text: String,
     spans: Vec<(std::ops::Range<usize>, TokenKind)>,
+    indents: Vec<LineIndent>,
 }
 
 impl Styled {
@@ -199,11 +212,112 @@ impl Styled {
         }
     }
 
+    /// Appends `piece` and aligns every non-empty continuation line inside it
+    /// visually to `align_to`, without adding spaces to [`Self::text`].
+    pub(super) fn push_multiline(&mut self, piece: &str, kind: TokenKind, align_to: &str) {
+        let start = self.text.len();
+        self.push(piece, kind);
+        if align_to.is_empty() || !piece.contains('\n') {
+            return;
+        }
+        for (nl, _) in piece.match_indices('\n') {
+            let next = nl + 1;
+            if let Some(rest) = piece.get(next..)
+                && !rest.is_empty()
+                && !is_empty_line_start(rest)
+            {
+                self.add_indent(start + next, align_to);
+            }
+        }
+    }
+
+    /// Appends a quoted/backtick-delimited value and aligns any internal
+    /// continuation lines to the start of the value content (just past the
+    /// opening delimiter).
+    pub(super) fn push_quoted_multiline(&mut self, piece: &str, kind: TokenKind) {
+        if !piece.contains('\n') {
+            self.push(piece, kind);
+            return;
+        }
+        let mut align = self.visual_current_line();
+        if let Some(open @ ('"' | '\'' | '`')) = piece.chars().next() {
+            align.push(open);
+        }
+        self.push_multiline(piece, kind, &align);
+    }
+
+    /// Records a visual indent for the current position when it starts a new
+    /// line immediately after `\n`.
+    pub(super) fn indent_line_if_at_start(&mut self, align_to: &str) {
+        if self.text.ends_with('\n') {
+            self.add_indent(self.text.len(), align_to);
+        }
+    }
+
+    /// Appends the trailing horizontal-whitespace slice before a closing tag
+    /// verbatim while visually padding any shortfall below `depth * 2` spaces
+    /// so the closing tag never protrudes into an outer nesting column.
+    pub(super) fn push_closing_tail(&mut self, tail: &str, depth: usize) {
+        if tail.is_empty() {
+            return;
+        }
+        if !tail.contains('\t') {
+            let spaces = tail.bytes().filter(|&b| b == b' ').count();
+            let missing = (depth * 2).saturating_sub(spaces);
+            if missing > 0 {
+                self.indent_line_if_at_start(&" ".repeat(missing));
+            }
+        }
+        self.push(tail, TokenKind::Text);
+    }
+
+    fn add_indent(&mut self, offset: usize, align_to: &str) {
+        if align_to.is_empty() {
+            return;
+        }
+        if self.indents.last().is_none_or(|last| last.offset < offset) {
+            self.indents.push(LineIndent {
+                offset,
+                align_to: align_to.to_owned(),
+            });
+        }
+    }
+
+    /// Text on the current line (since the last `\n`), combined with any visual
+    /// indent already active on that line.
+    pub(super) fn visual_current_line(&self) -> String {
+        let line_start = self.text.rfind('\n').map_or(0, |index| index + 1);
+        let current = self.text.get(line_start..).unwrap_or_default();
+        match self.indents.last() {
+            Some(indent) if indent.offset == line_start => {
+                let mut combined = String::with_capacity(indent.align_to.len() + current.len());
+                combined.push_str(&indent.align_to);
+                combined.push_str(current);
+                combined
+            }
+            _ => current.to_owned(),
+        }
+    }
+
     pub(in crate::ui) fn text(&self) -> &str {
         &self.text
     }
 
+    pub(in crate::ui) fn indents(&self) -> &[LineIndent] {
+        &self.indents
+    }
+
+    /// Iterates over the byte ranges and kinds in order.
+    pub(in crate::ui) fn span_ranges(
+        &self,
+    ) -> impl Iterator<Item = (std::ops::Range<usize>, TokenKind)> + '_ {
+        self.spans
+            .iter()
+            .map(|(range, kind)| (range.clone(), *kind))
+    }
+
     /// Iterates over the text pieces and their kinds in order.
+    #[cfg(test)]
     pub(in crate::ui) fn pieces(&self) -> impl Iterator<Item = (&str, TokenKind)> {
         self.spans
             .iter()
@@ -214,6 +328,47 @@ impl Styled {
         self.push("\n", TokenKind::Text);
         self.push(&"  ".repeat(depth), TokenKind::Text);
     }
+}
+
+fn is_empty_line_start(rest: &str) -> bool {
+    rest.starts_with('\n') || rest.starts_with("\r\n")
+}
+
+/// Whether `text` has a line break whose preceding prefix contains only
+/// horizontal whitespace (or is empty), meaning the visible value begins on a
+/// following line rather than the opening line.
+pub(super) fn starts_with_blank_line(text: &str) -> bool {
+    text.split_once('\n')
+        .is_some_and(|(first, _)| first.trim_matches([' ', '\t', '\r']).is_empty())
+}
+
+/// Splits off a trailing line that contains only horizontal whitespace after
+/// the last `\n` (typically the original indentation before a closing tag).
+pub(super) fn split_trailing_blank_line(text: &str) -> (&str, &str) {
+    let Some(nl) = text.rfind('\n') else {
+        return (text, "");
+    };
+    let after = text.get(nl + 1..).unwrap_or_default();
+    if !after.is_empty() && after.trim_matches([' ', '\t', '\r']).is_empty() {
+        text.split_at(nl + 1)
+    } else {
+        (text, "")
+    }
+}
+
+/// Visual alignment target for continuation lines of a delimited comment such
+/// as `<!-- … -->` or `/* … */`.
+pub(super) fn comment_align(base_line: &str, comment: &str, open: &str) -> String {
+    let after = comment.strip_prefix(open).unwrap_or(comment);
+    if starts_with_blank_line(after) {
+        return base_line.to_owned();
+    }
+    let (ws, _) = split_while(after, |c| matches!(c, ' ' | '\t'));
+    let mut align = String::with_capacity(base_line.len() + open.len() + ws.len());
+    align.push_str(base_line);
+    align.push_str(open);
+    align.push_str(ws);
+    align
 }
 
 /// How a [`Notice`] is shown.

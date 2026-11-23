@@ -111,14 +111,36 @@ fn split_value(text: &str, dialect: Dialect) -> (&str, &str) {
 
 /// Appends an attribute value; in XML, entity references are marked.
 fn push_value(out: &mut Styled, value: &str, dialect: Dialect) {
+    let align = value.contains('\n').then(|| {
+        let mut align = out.visual_current_line();
+        if let Some(open @ ('"' | '\'')) = value.chars().next() {
+            align.push(open);
+        }
+        align
+    });
     if dialect == Dialect::Html {
-        out.push(value, TokenKind::AttributeValue);
+        match align.as_deref() {
+            Some(align) => out.push_multiline(value, TokenKind::AttributeValue, align),
+            None => out.push(value, TokenKind::AttributeValue),
+        }
         return;
     }
+    let push = |out: &mut Styled, piece: &str, kind: TokenKind| {
+        if piece.is_empty() {
+            return;
+        }
+        match align.as_deref() {
+            Some(align) => {
+                out.indent_line_if_at_start(align);
+                out.push_multiline(piece, kind, align);
+            }
+            None => out.push(piece, kind),
+        }
+    };
     let mut rest = value;
     while let Some(start) = rest.find('&') {
         let (before, reference) = rest.split_at(start);
-        out.push(before, TokenKind::AttributeValue);
+        push(out, before, TokenKind::AttributeValue);
         let end = reference
             .find(';')
             .filter(|&end| {
@@ -129,7 +151,8 @@ fn push_value(out: &mut Styled, value: &str, dialect: Dialect) {
             })
             .map_or(1, |end| end + 1);
         let (reference, after) = reference.split_at(end);
-        out.push(
+        push(
+            out,
             reference,
             if end > 1 {
                 TokenKind::Entity
@@ -139,7 +162,7 @@ fn push_value(out: &mut Styled, value: &str, dialect: Dialect) {
         );
         rest = after;
     }
-    out.push(rest, TokenKind::AttributeValue);
+    push(out, rest, TokenKind::AttributeValue);
 }
 
 #[cfg(test)]
