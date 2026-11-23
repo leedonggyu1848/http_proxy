@@ -1,12 +1,13 @@
 //! End-to-end check that live proxy traffic produces per-endpoint request
 //! and response structure without keeping any value.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use http::Method;
 use http_proxy::endpoint_schema::{
-    CapturedBodies, EndpointKey, EndpointSchema, EndpointSchemas, ExclusionReason, FieldShape,
-    ParamStats, ResponseKey, SchemaAnalyzer, ValueKind,
+    EndpointKey, EndpointSchema, EndpointSchemas, ExclusionReason, FieldShape, ParamStats,
+    ResponseKey, SchemaAnalyzer, ValueKind,
 };
 use http_proxy::url_map::{
     RequestScope, SortDirection, TreeFilter, TreeSortField, UrlMap, ViewNode, build_view_roots,
@@ -205,7 +206,7 @@ async fn live_traffic_builds_endpoint_structure_without_values() -> Result<(), T
         let address = upstream.local_addr()?;
         let mut proxy =
             ProxyHandle::start(ProxyConfig::loopback(0).with_body_store(store.clone()))?;
-        let mut analyzer = SchemaAnalyzer::spawn(CapturedBodies::new(Some(store)), || {})?;
+        let mut analyzer = SchemaAnalyzer::spawn(Arc::new(store), || {})?;
         let mut schemas = EndpointSchemas::new();
         let mut map = UrlMap::new();
         let mut retained = Vec::new();

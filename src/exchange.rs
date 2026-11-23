@@ -3,8 +3,11 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
 use std::time::Instant;
 
 mod body_side;
+mod body_source;
 mod image_format;
 mod media_type;
+#[cfg(feature = "test-support")]
+mod memory_body_source;
 mod record;
 mod tunnel;
 mod wakers;
@@ -18,8 +21,11 @@ fn lock_recovering<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 pub use body_side::BodySide;
+pub use body_source::{BodySource, ReadBodyOutcome};
 pub use image_format::ImageFormat;
 pub use media_type::MediaType;
+#[cfg(feature = "test-support")]
+pub use memory_body_source::MemoryBodySource;
 pub(crate) use record::ExchangeWriter;
 pub use record::{
     CaptureSource, CapturedRequest, CapturedResponse, Exchange, Outcome, SessionId, Timing,
