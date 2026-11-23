@@ -1,7 +1,7 @@
 //! Lossless CSS token slices with display-only structural whitespace.
 use cssparser::{Parser, Token};
 
-use super::{Formatted, Notice, Styled, TokenKind};
+use super::{Formatted, Notice, Styled, TokenKind, comment_align};
 
 struct Piece<'a> {
     raw: &'a str,
@@ -37,6 +37,7 @@ pub(super) fn pretty(text: &str) -> Result<Formatted, String> {
     let mut stack = Vec::new();
     let mut line_start = true;
     let mut value = false;
+    let mut value_align: Option<String> = None;
     let mut invalid = false;
     let mut declaration = is_declaration(&pieces);
     let mut statement = 0;
@@ -65,34 +66,37 @@ pub(super) fn pretty(text: &str) -> Result<Formatted, String> {
             start_line(&mut out, depth.saturating_sub(1), &mut line_start);
         } else if line_start {
             start_line(&mut out, depth, &mut line_start);
+        } else {
+            prepare_continuation_indent(&mut out, piece, value, &mut value_align, depth);
         }
-        emit(&mut out, piece, value, declaration);
+        emit(
+            &mut out,
+            piece,
+            value,
+            declaration,
+            value_align.as_deref(),
+            depth,
+        );
         invalid |= invalid_token(piece);
         match token {
             Token::Function(_) | Token::ParenthesisBlock => stack.push(')'),
             Token::SquareBracketBlock => stack.push(']'),
-            Token::CloseParenthesis | Token::CloseSquareBracket => {
-                let close = if matches!(token, Token::CloseParenthesis) {
-                    ')'
-                } else {
-                    ']'
-                };
-                invalid |= stack.pop() != Some(close);
-            }
+            Token::CloseParenthesis => invalid |= stack.pop() != Some(')'),
+            Token::CloseSquareBracket => invalid |= stack.pop() != Some(']'),
             Token::CurlyBracketBlock if protected || (value && declaration) => stack.push('v'),
-            Token::CloseCurlyBracket if protected => {
-                invalid |= stack.pop() != Some('v');
+            Token::CloseCurlyBracket if protected => invalid |= stack.pop() != Some('v'),
+            Token::Colon if !protected && declaration => {
+                value = true;
+                value_align = None;
             }
-            Token::CurlyBracketBlock => {
-                stack.push('}');
+            Token::CurlyBracketBlock | Token::Semicolon | Token::CloseCurlyBracket
+                if !protected =>
+            {
+                if matches!(token, Token::CurlyBracketBlock) {
+                    stack.push('}');
+                }
                 value = false;
-                statement = index + 1;
-                declaration = is_declaration(pieces.get(statement..).unwrap_or_default());
-                line_start = true;
-            }
-            Token::Colon if !protected && declaration => value = true,
-            Token::Semicolon | Token::CloseCurlyBracket if !protected => {
-                value = false;
+                value_align = None;
                 statement = index + 1;
                 declaration = is_declaration(pieces.get(statement..).unwrap_or_default());
                 line_start = true;
@@ -110,7 +114,42 @@ pub(super) fn pretty(text: &str) -> Result<Formatted, String> {
     })
 }
 
-fn emit(out: &mut Styled, piece: &Piece<'_>, value: bool, declaration: bool) {
+fn prepare_continuation_indent(
+    out: &mut Styled,
+    piece: &Piece<'_>,
+    value: bool,
+    value_align: &mut Option<String>,
+    depth: usize,
+) {
+    if value && value_align.is_none() {
+        if matches!(piece.token, Token::WhiteSpace(_)) {
+            if piece.raw.contains('\n') {
+                *value_align = Some("  ".repeat(depth + 1));
+            }
+        } else {
+            *value_align = Some(out.visual_current_line());
+        }
+    }
+    if out.text().ends_with('\n') && !piece.raw.starts_with('\n') && !piece.raw.starts_with("\r\n")
+    {
+        let fallback = "  ".repeat(depth);
+        let align = if value {
+            value_align.as_deref().unwrap_or(&fallback)
+        } else {
+            &fallback
+        };
+        out.indent_line_if_at_start(align);
+    }
+}
+
+fn emit(
+    out: &mut Styled,
+    piece: &Piece<'_>,
+    value: bool,
+    declaration: bool,
+    value_align: Option<&str>,
+    depth: usize,
+) {
     if let Token::Dimension { unit, .. } = &piece.token {
         let split = piece.raw.len().saturating_sub(unit.len());
         if piece.raw.is_char_boundary(split) && piece.raw.ends_with(unit.as_ref()) {
@@ -120,9 +159,38 @@ fn emit(out: &mut Styled, piece: &Piece<'_>, value: bool, declaration: bool) {
         } else {
             out.push(piece.raw, TokenKind::Number);
         }
-    } else {
-        out.push(piece.raw, kind(&piece.token, value, declaration));
+        return;
     }
+    if piece.raw.contains('\n') {
+        match &piece.token {
+            Token::QuotedString(_) => {
+                out.push_quoted_multiline(piece.raw, TokenKind::String);
+                return;
+            }
+            Token::Comment(_) => {
+                let align = comment_align(&out.visual_current_line(), piece.raw, "/*");
+                out.push_multiline(piece.raw, TokenKind::Comment, &align);
+                return;
+            }
+            Token::WhiteSpace(_) => {
+                let fallback = "  ".repeat(depth);
+                let align = if value {
+                    value_align.unwrap_or(&fallback)
+                } else {
+                    &fallback
+                };
+                out.push_multiline(piece.raw, TokenKind::Text, align);
+                return;
+            }
+            Token::UnquotedUrl(_) => {
+                let align = out.visual_current_line();
+                out.push_multiline(piece.raw, TokenKind::String, &align);
+                return;
+            }
+            _ => {}
+        }
+    }
+    out.push(piece.raw, kind(&piece.token, value, declaration));
 }
 
 fn invalid_token(piece: &Piece<'_>) -> bool {
@@ -284,6 +352,32 @@ mod tests {
             );
             assert_ne!(out.styled.text(), "");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn visually_indents_multiline_values_strings_and_comments_without_altering_text()
+    -> Result<(), String> {
+        let css = "a{background:linear-gradient(\nred,\nblue\n);content:\"first\\\nsecond\\\nthird\";/* c1\nc2 */}";
+        let out = pretty(css)?;
+        let text = out.styled.text();
+        assert!(text.contains("linear-gradient(\nred,\nblue\n);"), "{text}");
+        assert!(text.contains("\"first\\\nsecond\\\nthird\""), "{text}");
+        assert!(text.contains("/* c1\nc2 */"), "{text}");
+
+        let indents = out.styled.indents();
+        let align_for = |needle: &str| {
+            let pos = text.find(needle)?;
+            indents
+                .iter()
+                .find(|indent| indent.offset == pos)
+                .map(|indent| indent.align_to.as_str())
+        };
+        assert_eq!(align_for("red,"), Some("  background:"));
+        assert_eq!(align_for("blue"), Some("  background:"));
+        assert_eq!(align_for("second\\"), Some("  content:\""));
+        assert_eq!(align_for("third\""), Some("  content:\""));
+        assert_eq!(align_for("c2 */"), Some("  /* "));
         Ok(())
     }
 }

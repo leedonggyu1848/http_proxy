@@ -229,7 +229,7 @@ impl BodyViewCache {
             // Use the keyed theme's style: after a theme switch this frame's
             // style still belongs to the previous theme.
             let text_color = ui.ctx().style_of(key.theme).visuals.text_color();
-            let content = build(source, &key, text_color, &mut side.tree);
+            let content = build(ui.ctx(), source, &key, text_color, &mut side.tree);
             side.shown = Some((key, content));
         }
         if let Some((key, content)) = &mut side.shown {
@@ -244,6 +244,7 @@ impl BodyViewCache {
 }
 
 fn build(
+    ctx: &egui::Context,
     source: &BodySource<'_>,
     key: &Key,
     text_color: egui::Color32,
@@ -278,11 +279,11 @@ fn build(
     let formatted = body_format::format(format, key.mode, &text);
     notices.extend(formatted.notices);
     let palette = highlight::SyntaxPalette::for_theme(key.theme);
-    let job = highlight::layout_job(&formatted.styled, &palette, text_color, &key.font);
+    let job = highlight::layout_job(ctx, &formatted.styled, &palette, text_color, &key.font);
     let lines = format
         .spec()
         .numbered
-        .then(|| highlight::line_jobs(&formatted.styled, &palette, text_color, &key.font));
+        .then(|| highlight::line_jobs(ctx, &formatted.styled, &palette, text_color, &key.font));
     let Some(query) = source.search else {
         return Content::Ready {
             format,
@@ -368,7 +369,14 @@ fn render(ui: &mut egui::Ui, content: &mut Content, key: &Key, trees: &mut TreeC
             _ => {
                 let mut wrapped = job.clone();
                 wrapped.wrap.max_width = wrap_width;
-                let laid_out = ui.ctx().fonts_mut(|fonts| fonts.layout_job(wrapped));
+                let has_indent = clamp_leading_space(&mut wrapped, wrap_width);
+                let mut laid_out = ui
+                    .ctx()
+                    .fonts_mut(|fonts| fonts.layout_job(wrapped.clone()));
+                if has_indent && dropped_leading_indent(&laid_out) {
+                    wrapped.wrap.break_anywhere = true;
+                    laid_out = ui.ctx().fonts_mut(|fonts| fonts.layout_job(wrapped));
+                }
                 *galley = Some((width, Arc::clone(&laid_out)));
                 laid_out
             }
@@ -384,6 +392,39 @@ fn render(ui: &mut egui::Ui, content: &mut Content, key: &Key, trees: &mut TreeC
     if let Some(hit) = scroll {
         scroll_to_hit(ui, &output, &job.text, &hit);
     }
+}
+
+/// Bounds visual continuation indents on narrow viewports so long prefixes
+/// never squeeze continuation lines into unreadable narrow columns.
+/// Returns `true` when at least one section keeps a non-zero visual indent.
+fn clamp_leading_space(job: &mut LayoutJob, wrap_width: f32) -> bool {
+    let max_indent = if wrap_width.is_finite() {
+        Some((wrap_width * 0.5).min((wrap_width - 80.0).max(0.0)))
+    } else {
+        None
+    };
+    let mut has_indent = false;
+    for section in &mut job.sections {
+        if let Some(limit) = max_indent
+            && section.leading_space > limit
+        {
+            section.leading_space = limit;
+        }
+        if section.leading_space > 0.0 {
+            has_indent = true;
+        }
+    }
+    has_indent
+}
+
+/// Detects epaint's fallback that inserts an empty zero-height row and resets
+/// `leading_space` to zero when a single unbreakable token exceeds the space
+/// remaining after the indent.
+fn dropped_leading_indent(galley: &Galley) -> bool {
+    galley
+        .rows
+        .iter()
+        .any(|row| !row.ends_with_newline && row.glyphs.is_empty())
 }
 
 /// Scrolls the enclosing scroll area so the match `hit` in `text` is in view.
@@ -920,5 +961,272 @@ mod tests {
                 "{capture:?}"
             );
         }
+    }
+
+    fn glyph_x(galley: &Galley, text: &str, needle: &str) -> Result<f32, String> {
+        let byte_index = text
+            .find(needle)
+            .ok_or_else(|| format!("needle {needle:?} not found in {text:?}"))?;
+        let char_index = text
+            .get(..byte_index)
+            .ok_or_else(|| format!("invalid byte offset {byte_index}"))?
+            .chars()
+            .count();
+        Ok(galley
+            .pos_from_cursor(egui::text::CCursor::new(char_index))
+            .min
+            .x)
+    }
+
+    fn cached_text_galley(cache: &BodyViewCache) -> Result<(&LayoutJob, Arc<Galley>), String> {
+        match &cache.response.shown {
+            Some((
+                _,
+                Content::Ready {
+                    job,
+                    galley: Some((_, galley)),
+                    ..
+                },
+            )) => Ok((job, Arc::clone(galley))),
+            _ => Err("expected laid-out text body".to_owned()),
+        }
+    }
+
+    fn assert_three_lines_aligned(
+        galley: &Galley,
+        text: &str,
+        lines: [&str; 3],
+        next_field: &str,
+    ) -> Result<(), String> {
+        let first_x = glyph_x(galley, text, lines[0])?;
+        let second_x = glyph_x(galley, text, lines[1])?;
+        let third_x = glyph_x(galley, text, lines[2])?;
+        let next_x = glyph_x(galley, text, next_field)?;
+        assert!((first_x - second_x).abs() < 0.5, "{first_x} vs {second_x}");
+        assert!((first_x - third_x).abs() < 0.5, "{first_x} vs {third_x}");
+        assert!(first_x > next_x, "value {first_x} <= next field {next_x}");
+        Ok(())
+    }
+
+    #[test]
+    fn aligns_nested_xml_html_and_json_multiline_values() -> Result<(), String> {
+        let ctx = egui::Context::default();
+        let mut cache = BodyViewCache::default();
+
+        let xml_bytes =
+            b"<root><item title=\"attr1\nattr2\"><note>line1\nline2\nline3</note><next>ok</next></item></root>";
+        let xml = BodySource {
+            media_type: media("application/xml"),
+            ..source(10, xml_bytes)
+        };
+        run(&mut cache, &ctx, &xml, ViewMode::Pretty);
+        let (job, galley) = cached_text_galley(&cache)?;
+        assert!(job.text.contains("line1\nline2\nline3"), "{}", job.text);
+        assert!(job.text.contains("\"attr1\nattr2\""), "{}", job.text);
+        assert_three_lines_aligned(&galley, &job.text, ["line1", "line2", "line3"], "<next>")?;
+        let attr_first_x = glyph_x(&galley, &job.text, "attr1")?;
+        let attr_second_x = glyph_x(&galley, &job.text, "attr2")?;
+        assert!((attr_first_x - attr_second_x).abs() < 0.5);
+
+        let html_bytes =
+            b"<section><textarea name=\"bio\">alpha\nbeta\ngamma</textarea><p>after</p></section>";
+        let html = BodySource {
+            media_type: media("text/html"),
+            ..source(11, html_bytes)
+        };
+        run(&mut cache, &ctx, &html, ViewMode::Pretty);
+        let (job, galley) = cached_text_galley(&cache)?;
+        assert!(job.text.contains("alpha\nbeta\ngamma"), "{}", job.text);
+        assert_three_lines_aligned(&galley, &job.text, ["alpha", "beta", "gamma"], "<p>")?;
+
+        let json_bytes = b"{\"outer\":{\"note\":\"one\ntwo\nthree\",\"next\":1}}";
+        let json = BodySource {
+            media_type: media("application/json"),
+            ..source(12, json_bytes)
+        };
+        run(&mut cache, &ctx, &json, ViewMode::Pretty);
+        let (job, galley) = cached_text_galley(&cache)?;
+        assert!(job.text.contains("\"one\ntwo\nthree\""), "{}", job.text);
+        assert_three_lines_aligned(&galley, &job.text, ["one", "two", "three"], "\"next\"")?;
+        Ok(())
+    }
+
+    #[test]
+    fn preserves_raw_and_tree_copy_values() -> Result<(), String> {
+        let ctx = egui::Context::default();
+        let mut cache = BodyViewCache::default();
+
+        let xml_bytes = b"<root><note>line1\nline2\nline3</note></root>";
+        let xml = BodySource {
+            media_type: media("application/xml"),
+            ..source(13, xml_bytes)
+        };
+        run(&mut cache, &ctx, &xml, ViewMode::Raw);
+        let (raw_job, _) = cached_text_galley(&cache)?;
+        assert_eq!(raw_job.text.as_bytes(), xml_bytes);
+        assert!(
+            raw_job
+                .sections
+                .iter()
+                .all(|section| section.leading_space == 0.0)
+        );
+
+        let xml_tree = tree::build(
+            BodyFormat::Xml,
+            std::str::from_utf8(xml_bytes).map_err(|e| e.to_string())?,
+        )
+        .ok_or("missing XML tree")??;
+        assert!(
+            xml_tree
+                .nodes()
+                .iter()
+                .any(|node| node.value == "<note>line1\nline2\nline3</note>")
+        );
+
+        let valid_json = r#"{"note":"line1\n  line2\nline3"}"#;
+        let json_tree = tree::build(BodyFormat::Json, valid_json).ok_or("missing JSON tree")??;
+        assert!(
+            json_tree
+                .nodes()
+                .iter()
+                .any(|node| node.value == r#""line1\n  line2\nline3""#)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn aligns_js_line_numbered_multiline_values_and_keeps_raw_unpadded() -> Result<(), String> {
+        let ctx = egui::Context::default();
+        let mut cache = BodyViewCache::default();
+
+        let js_bytes = b"const cfg={a:{msg:`row1\nrow2\nrow3`,next:1}};";
+        let js = BodySource {
+            media_type: media("application/javascript"),
+            ..source(14, js_bytes)
+        };
+        run(&mut cache, &ctx, &js, ViewMode::Pretty);
+        let js_lines = match &cache.response.shown {
+            Some((
+                _,
+                Content::Ready {
+                    lines: Some(lines), ..
+                },
+            )) => lines.clone(),
+            _ => return Err("expected line-numbered JS body".to_owned()),
+        };
+        let row1_idx = js_lines
+            .iter()
+            .position(|line| line.text.contains("row1"))
+            .ok_or("missing row1")?;
+        let first_line = js_lines.get(row1_idx).ok_or("missing row1 line")?;
+        let second_line = js_lines.get(row1_idx + 1).ok_or("missing row2 line")?;
+        let third_line = js_lines.get(row1_idx + 2).ok_or("missing row3 line")?;
+        assert_eq!(second_line.text, "row2");
+        assert_eq!(third_line.text, "row3`,");
+        let mut check: Result<(), String> = Ok(());
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            check = (|| {
+                let g1 = ui.fonts_mut(|f| f.layout_job(first_line.clone()));
+                let g2 = ui.fonts_mut(|f| f.layout_job(second_line.clone()));
+                let g3 = ui.fonts_mut(|f| f.layout_job(third_line.clone()));
+                let first_x = glyph_x(&g1, &first_line.text, "row1")?;
+                let second_x = glyph_x(&g2, &second_line.text, "row2")?;
+                let third_x = glyph_x(&g3, &third_line.text, "row3")?;
+                assert!((first_x - second_x).abs() < 0.5, "{first_x} vs {second_x}");
+                assert!((first_x - third_x).abs() < 0.5, "{first_x} vs {third_x}");
+                Ok(())
+            })();
+        });
+        output.textures_delta.clear();
+        check?;
+
+        run(&mut cache, &ctx, &js, ViewMode::Raw);
+        let Some((_, Content::Ready { job, lines, .. })) = &cache.response.shown else {
+            return Err("expected raw JS body".to_owned());
+        };
+        assert_eq!(job.text.as_bytes(), js_bytes);
+        assert!(
+            lines
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .flat_map(|line| &line.sections)
+                .all(|section| section.leading_space == 0.0)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn preserves_multiline_alignment_with_active_search_highlights() -> Result<(), String> {
+        let ctx = egui::Context::default();
+        let mut cache = BodyViewCache::default();
+        let query = Query {
+            generation: 1,
+            matcher: http_proxy::text_search::Matcher::new(
+                "line",
+                http_proxy::text_search::MatchOptions::default(),
+            )
+            .map_err(|e| e.to_string())?,
+            scope: crate::ui::search::SearchScope::All,
+        };
+        let xml = BodySource {
+            media_type: media("application/xml"),
+            search: Some(&query),
+            ..source(
+                20,
+                b"<root><note>line1\nline2\nline3</note><other>line4</other></root>",
+            )
+        };
+        run(&mut cache, &ctx, &xml, ViewMode::Pretty);
+        let (job, galley) = cached_text_galley(&cache)?;
+        assert!(job.text.contains("line1\nline2\nline3"));
+        let x1 = glyph_x(&galley, &job.text, "line1")?;
+        let x2 = glyph_x(&galley, &job.text, "line2")?;
+        let x3 = glyph_x(&galley, &job.text, "line3")?;
+        assert!((x1 - x2).abs() < 0.5, "x1={x1}, x2={x2}");
+        assert!((x1 - x3).abs() < 0.5, "x1={x1}, x3={x3}");
+        Ok(())
+    }
+
+    #[test]
+    fn clamps_multiline_continuation_indent_in_narrow_viewport() -> Result<(), String> {
+        let ctx = egui::Context::default();
+        let mut cache = BodyViewCache::default();
+        let xml = BodySource {
+            media_type: media("application/xml"),
+            ..source(
+                21,
+                b"<root><very_long_nested_field_name_for_narrow_window>first\nsecond\nthird</very_long_nested_field_name_for_narrow_window></root>",
+            )
+        };
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(640.0, 420.0),
+            )),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            ui.set_max_width(240.0);
+            cache.show(ui, &xml, ViewMode::Pretty);
+        });
+        output.textures_delta.clear();
+
+        let (job, galley) = cached_text_galley(&cache)?;
+        let x_second = glyph_x(&galley, &job.text, "second")?;
+        let x_third = glyph_x(&galley, &job.text, "third")?;
+        assert!(
+            x_second > 0.0,
+            "continuation should remain visibly indented"
+        );
+        assert!(
+            x_second <= 120.5,
+            "indent {x_second} should be clamped to at most half of narrow width"
+        );
+        assert!(
+            (x_second - x_third).abs() < 0.5,
+            "clamped continuations must still align: x_second={x_second}, x_third={x_third}"
+        );
+        Ok(())
     }
 }

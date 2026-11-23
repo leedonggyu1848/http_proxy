@@ -78,7 +78,7 @@ pub(super) fn pretty(text: &str) -> Result<Styled, String> {
                 } else {
                     TokenKind::String
                 };
-                out.push(string, kind);
+                out.push_quoted_multiline(string, kind);
             }
             Lexeme::Number(number) => out.push(number, TokenKind::Number),
             Lexeme::Literal(literal) => out.push(literal, TokenKind::Literal),
@@ -204,5 +204,26 @@ mod tests {
         );
         assert!(pretty("hello").is_err());
         assert!(pretty("[tr, 1]").is_err());
+    }
+
+    #[test]
+    fn aligns_multiline_json_strings_visually_without_changing_text() -> Result<(), String> {
+        let input = "{\"outer\":{\"note\":\"first\nsecond\nthird\",\"next\":1}}";
+        let styled = pretty(input)?;
+        assert_eq!(
+            styled.text(),
+            "{\n  \"outer\": {\n    \"note\": \"first\nsecond\nthird\",\n    \"next\": 1\n  }\n}"
+        );
+        let align_for = |needle: &str| -> Option<&str> {
+            let offset = styled.text().find(needle)?;
+            styled
+                .indents()
+                .iter()
+                .find(|indent| indent.offset == offset)
+                .map(|indent| indent.align_to.as_str())
+        };
+        assert_eq!(align_for("second"), Some("    \"note\": \""));
+        assert_eq!(align_for("third"), Some("    \"note\": \""));
+        Ok(())
     }
 }

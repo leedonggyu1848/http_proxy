@@ -9,7 +9,7 @@
 
 mod lexer;
 
-use super::{Formatted, Notice, Styled, TokenKind};
+use super::{Formatted, Notice, Styled, TokenKind, comment_align, starts_with_blank_line};
 use lexer::{Kind, Token};
 
 /// Words shown as keywords.
@@ -118,12 +118,38 @@ impl Printer {
                 source_gap.max(self.added_gap(previous, *token))
             });
             self.write_gap(gap, *token);
-            self.out.push(token.text, kind(*token, previous));
+            self.emit(*token, previous);
             self.track_brackets(*token);
             previous = Some(*token);
             source_gap = Gap::None;
         }
         self.out
+    }
+
+    fn emit(&mut self, token: Token<'_>, previous: Option<Token<'_>>) {
+        let token_kind = kind(token, previous);
+        if !token.text.contains('\n') {
+            self.out.push(token.text, token_kind);
+            return;
+        }
+        match token.kind {
+            Kind::Template => {
+                let after = token.text.strip_prefix('`').unwrap_or(token.text);
+                if starts_with_blank_line(after) {
+                    let depth = self.opens.iter().filter(|open| **open == '{').count();
+                    self.out
+                        .push_multiline(token.text, token_kind, &"  ".repeat(depth + 1));
+                } else {
+                    self.out.push_quoted_multiline(token.text, token_kind);
+                }
+            }
+            Kind::String => self.out.push_quoted_multiline(token.text, token_kind),
+            Kind::BlockComment => {
+                let align = comment_align(&self.out.visual_current_line(), token.text, "/*");
+                self.out.push_multiline(token.text, token_kind, &align);
+            }
+            _ => self.out.push(token.text, token_kind),
+        }
     }
 
     /// A break the printer adds where the source had none.
@@ -360,5 +386,30 @@ mod tests {
     fn falls_back_when_tokens_need_a_guess() {
         assert!(pretty("a = 'line\nbreak'").is_err());
         assert!(pretty("<html>}</html>").is_err());
+    }
+
+    #[test]
+    fn visually_indents_multiline_templates_and_block_comments_without_altering_text()
+    -> Result<(), String> {
+        let js = "const data={nested:{msg:`line1\nline2\nline3`,next:1}};/* a\nb */";
+        let out = pretty(js)?;
+        let text = out.styled.text();
+        assert!(text.contains("`line1\nline2\nline3`"), "{text}");
+        assert!(text.contains("/* a\nb */"), "{text}");
+        assert_eq!(significant(text)?, significant(js)?);
+
+        let indents = out.styled.indents();
+        let align_for = |needle: &str| {
+            let pos = text.find(needle)?;
+            indents
+                .iter()
+                .find(|indent| indent.offset == pos)
+                .map(|indent| indent.align_to.as_str())
+        };
+        assert_eq!(align_for("line2"), Some("    msg:`"));
+        assert_eq!(align_for("line3"), Some("    msg:`"));
+        assert_eq!(align_for("b */"), Some("/* "));
+        assert_eq!(align_for("next:1"), None);
+        Ok(())
     }
 }

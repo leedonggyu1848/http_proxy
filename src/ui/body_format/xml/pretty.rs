@@ -3,7 +3,10 @@
 
 use super::{Document, Element, NodeKind};
 use crate::ui::body_format::tag::{Dialect, Spacing, push_tag};
-use crate::ui::body_format::{Formatted, Notice, Styled, TokenKind};
+use crate::ui::body_format::{
+    Formatted, Notice, Styled, TokenKind, comment_align, split_trailing_blank_line,
+    starts_with_blank_line,
+};
 
 /// Indents element-only content two spaces per level. Elements that hold
 /// text, entity references, or `CDATA`, and elements under
@@ -48,7 +51,13 @@ impl Printer<'_, '_> {
             NodeKind::Text | NodeKind::Entity if raw.trim().is_empty() => {}
             kind => {
                 self.line(depth);
-                push_leaf(&mut self.out, kind, raw.trim());
+                let trimmed = raw.trim();
+                if trimmed.contains('\n') {
+                    let align = leaf_align(&self.out.visual_current_line(), kind, trimmed, depth);
+                    push_leaf_multiline(&mut self.out, kind, trimmed, &align);
+                } else {
+                    push_leaf(&mut self.out, kind, trimmed);
+                }
             }
         }
     }
@@ -57,8 +66,11 @@ impl Printer<'_, '_> {
         self.line(depth);
         push_tag(&mut self.out, start_tag, Dialect::Xml, Spacing::Normalize);
         if element.preserve || has_text(self.document, element) {
-            for &child in &element.children {
-                self.verbatim(child);
+            let align = self.verbatim_align(element, depth);
+            let last_index = element.children.len().saturating_sub(1);
+            for (pos, &child) in element.children.iter().enumerate() {
+                let before_close = element.end_tag.is_some() && pos == last_index;
+                self.verbatim(child, &align, before_close);
             }
         } else {
             self.nodes(&element.children, depth + 1);
@@ -67,27 +79,63 @@ impl Printer<'_, '_> {
             }
         }
         if let Some(end_tag) = &element.end_tag {
+            self.out.indent_line_if_at_start(&"  ".repeat(depth));
             push_raw_tag(&mut self.out, self.document.slice(end_tag));
         }
     }
 
-    /// Appends a node and its descendants exactly as written.
-    fn verbatim(&mut self, index: usize) {
+    /// Alignment prefix for continuation lines inside a verbatim element.
+    fn verbatim_align(&self, element: &Element, depth: usize) -> String {
+        if let [only] = element.children.as_slice()
+            && let Some(node) = self.document.node(*only)
+            && node.kind == NodeKind::CData
+        {
+            let raw = self.document.slice(&node.range);
+            return leaf_align(&self.out.visual_current_line(), &node.kind, raw, depth);
+        }
+        let first_is_blank = element
+            .children
+            .first()
+            .and_then(|&child| self.document.node(child))
+            .is_some_and(|node| starts_with_blank_line(self.document.slice(&node.range)));
+        if first_is_blank {
+            "  ".repeat(depth + 1)
+        } else {
+            self.out.visual_current_line()
+        }
+    }
+
+    /// Appends a node and its descendants exactly as written while recording
+    /// visual continuation indents for multiline content.
+    fn verbatim(&mut self, index: usize, align: &str, before_close: bool) {
         let Some(node) = self.document.node(index) else {
             return;
         };
         let raw = self.document.slice(&node.range);
         match &node.kind {
             NodeKind::Element(element) => {
+                self.out.indent_line_if_at_start(align);
                 push_raw_tag(&mut self.out, raw);
                 for &child in &element.children {
-                    self.verbatim(child);
+                    self.verbatim(child, align, false);
                 }
                 if let Some(end_tag) = &element.end_tag {
+                    self.out.indent_line_if_at_start(align);
                     push_raw_tag(&mut self.out, self.document.slice(end_tag));
                 }
             }
-            kind => push_leaf(&mut self.out, kind, raw),
+            kind => {
+                if !raw.is_empty() && !raw.starts_with('\n') && !raw.starts_with("\r\n") {
+                    self.out.indent_line_if_at_start(align);
+                }
+                if before_close && *kind == NodeKind::Text {
+                    let (body, tail) = split_trailing_blank_line(raw);
+                    push_leaf_multiline(&mut self.out, kind, body, align);
+                    self.out.push(tail, TokenKind::Text);
+                } else {
+                    push_leaf_multiline(&mut self.out, kind, raw, align);
+                }
+            }
         }
     }
 
@@ -95,6 +143,22 @@ impl Printer<'_, '_> {
         if !self.out.text().is_empty() {
             self.out.newline(depth);
         }
+    }
+}
+
+/// Alignment prefix for a multiline non-element node.
+fn leaf_align(base_line: &str, kind: &NodeKind, raw: &str, depth: usize) -> String {
+    match kind {
+        NodeKind::Comment => comment_align(base_line, raw, "<!--"),
+        NodeKind::CData => {
+            let after = raw.strip_prefix("<![CDATA[").unwrap_or(raw);
+            if starts_with_blank_line(after) {
+                "  ".repeat(depth + 1)
+            } else {
+                format!("{base_line}<![CDATA[")
+            }
+        }
+        _ => base_line.to_owned(),
     }
 }
 
@@ -112,18 +176,30 @@ fn has_text(document: &Document<'_>, element: &Element) -> bool {
 
 /// Appends a non-element node with its token kind.
 pub(super) fn push_leaf(out: &mut Styled, kind: &NodeKind, raw: &str) {
-    let kind = match kind {
-        NodeKind::Element(_) => {
-            push_raw_tag(out, raw);
-            return;
-        }
-        NodeKind::Text => TokenKind::Text,
-        NodeKind::Entity => TokenKind::Entity,
-        NodeKind::CData => TokenKind::CData,
-        NodeKind::Comment => TokenKind::Comment,
-        NodeKind::Instruction => TokenKind::Instruction,
-    };
-    out.push(raw, kind);
+    if let Some(token_kind) = leaf_token_kind(kind) {
+        out.push(raw, token_kind);
+    } else {
+        push_raw_tag(out, raw);
+    }
+}
+
+fn push_leaf_multiline(out: &mut Styled, kind: &NodeKind, raw: &str, align: &str) {
+    if let Some(token_kind) = leaf_token_kind(kind) {
+        out.push_multiline(raw, token_kind, align);
+    } else {
+        push_raw_tag(out, raw);
+    }
+}
+
+const fn leaf_token_kind(kind: &NodeKind) -> Option<TokenKind> {
+    match kind {
+        NodeKind::Element(_) => None,
+        NodeKind::Text => Some(TokenKind::Text),
+        NodeKind::Entity => Some(TokenKind::Entity),
+        NodeKind::CData => Some(TokenKind::CData),
+        NodeKind::Comment => Some(TokenKind::Comment),
+        NodeKind::Instruction => Some(TokenKind::Instruction),
+    }
 }
 
 fn push_raw_tag(out: &mut Styled, tag: &str) {
@@ -273,6 +349,82 @@ mod tests {
             "<!DOCTYPE r [<!ENTITY e SYSTEM \"file:///etc/passwd\">]>\n<r>&e;</r>"
         );
         assert_eq!(kinds(&styled, TokenKind::Entity), ["&e;"]);
+        Ok(())
+    }
+
+    #[test]
+    fn aligns_multiline_element_text_attributes_cdata_and_comments_without_padding_text()
+    -> Result<(), String> {
+        let xml = concat!(
+            "<root><outer>",
+            "<note>first\nsecond\nthird</note>",
+            "<item attr=\"a1 &amp;\na2\na3\" second=\"b1\nb2\"/>",
+            "<data><![CDATA[c1\nc2\nc3]]></data>",
+            "<!-- m1\nm2\nm3 -->",
+            "<next>ok</next>",
+            "</outer></root>"
+        );
+        let styled = pretty(xml)?.styled;
+        // Source newlines and spaces inside values stay untouched in styled.text().
+        assert!(
+            styled
+                .text()
+                .contains("    <note>first\nsecond\nthird</note>")
+        );
+        assert!(
+            styled
+                .text()
+                .contains("    <item attr=\"a1 &amp;\na2\na3\" second=\"b1\nb2\"/>")
+        );
+        assert!(
+            styled
+                .text()
+                .contains("    <data><![CDATA[c1\nc2\nc3]]></data>")
+        );
+        assert!(styled.text().contains("    <!-- m1\nm2\nm3 -->"));
+
+        let align_for = |needle: &str| -> Option<&str> {
+            let offset = styled.text().find(needle)?;
+            styled
+                .indents()
+                .iter()
+                .find(|indent| indent.offset == offset)
+                .map(|indent| indent.align_to.as_str())
+        };
+        assert_eq!(align_for("second\n"), Some("    <note>"));
+        assert_eq!(align_for("third</note>"), Some("    <note>"));
+        assert_eq!(align_for("a2\n"), Some("    <item attr=\""));
+        assert_eq!(align_for("a3\""), Some("    <item attr=\""));
+        assert_eq!(align_for("b2\""), Some("    <item attr=\"a3\" second=\""));
+        assert_eq!(align_for("c2\n"), Some("    <data><![CDATA["));
+        assert_eq!(align_for("c3]]>"), Some("    <data><![CDATA["));
+        assert_eq!(align_for("m2\n"), Some("    <!-- "));
+        assert_eq!(align_for("m3 -->"), Some("    <!-- "));
+        Ok(())
+    }
+
+    #[test]
+    fn indents_multiline_element_starting_with_newline_and_aligns_closing_tag() -> Result<(), String>
+    {
+        let xml = "<root><outer><note>\nline1\nline2\nline3\n</note><next>ok</next></outer></root>";
+        let styled = pretty(xml)?.styled;
+        assert!(
+            styled
+                .text()
+                .contains("    <note>\nline1\nline2\nline3\n</note>")
+        );
+        let align_for = |needle: &str| -> Option<&str> {
+            let offset = styled.text().find(needle)?;
+            styled
+                .indents()
+                .iter()
+                .find(|indent| indent.offset == offset)
+                .map(|indent| indent.align_to.as_str())
+        };
+        assert_eq!(align_for("line1"), Some("      "));
+        assert_eq!(align_for("line2"), Some("      "));
+        assert_eq!(align_for("line3"), Some("      "));
+        assert_eq!(align_for("</note>"), Some("    "));
         Ok(())
     }
 }
