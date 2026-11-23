@@ -8,42 +8,47 @@ use serde_json::Value;
 use super::multipart::{Boundary, MAX_PARTS, PartObservation, parse_parts};
 use super::shape::{FieldShape, MAX_SHAPE_FIELDS};
 use super::value::bump;
+use crate::content::detect::{self as content_detect, Basis, Detection};
+use crate::content::format::BodyFormat;
 use crate::url_map::percent_decode_display;
 use crate::{MediaType, ReadBodyOutcome};
 
-/// How a body is parsed, chosen from its `Content-Type` before it is read.
+/// How a body is parsed for its structure, following the format
+/// [`content_detect`] decided.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum BodyFormat {
-    /// `application/json` or a `+json` type.
+pub enum BodyParse {
+    /// Declared JSON: `application/json` or a `+json` type.
     Json,
-    /// `application/x-www-form-urlencoded`.
+    /// Form fields: `application/x-www-form-urlencoded`.
     Form,
     /// `multipart/form-data` with a valid boundary.
     Multipart(Boundary),
-    /// No `Content-Type` or `text/plain`: described as JSON only when it parses as JSON.
+    /// Sniffed JSON: described as JSON only when it parses as JSON.
     MaybeJson,
-    /// Any other type; the body is counted but not read.
+    /// Any other format; the body is counted but not parsed.
     Unstructured,
 }
 
-impl BodyFormat {
-    /// Chooses the format from the parsed media type and the raw header,
-    /// which still carries the multipart boundary parameter.
+impl BodyParse {
+    /// Follows `detection`; the raw `Content-Type` header still carries the
+    /// multipart boundary parameter that [`MediaType`] drops.
     #[must_use]
-    pub fn detect(media: Option<&MediaType>, raw_content_type: Option<&str>) -> Self {
-        let Some(media) = media else {
-            return Self::MaybeJson;
-        };
-        if media.is_json() {
-            return Self::Json;
-        }
-        match media.essence() {
-            "application/x-www-form-urlencoded" => Self::Form,
-            "multipart/form-data" => raw_content_type
+    pub fn new(detection: Detection, raw_content_type: Option<&str>) -> Self {
+        match (detection.format, detection.basis) {
+            (BodyFormat::Json, Basis::ContentType) => Self::Json,
+            (BodyFormat::Json, Basis::Sniffed) => Self::MaybeJson,
+            (BodyFormat::Form, _) => Self::Form,
+            (BodyFormat::Multipart, _) => raw_content_type
                 .and_then(Boundary::from_content_type)
                 .map_or(Self::Unstructured, Self::Multipart),
-            "text/plain" => Self::MaybeJson,
-            _ => Self::Unstructured,
+            (
+                BodyFormat::Css
+                | BodyFormat::Markup
+                | BodyFormat::Xml
+                | BodyFormat::JavaScript
+                | BodyFormat::Text,
+                _,
+            ) => Self::Unstructured,
         }
     }
 
@@ -104,12 +109,25 @@ pub enum BodyAnalysis {
 }
 
 impl BodyAnalysis {
-    /// Describes a body of `format` from the outcome of reading it.
+    /// Describes a body parsed as `parse` from the outcome of reading it.
     #[must_use]
-    pub fn describe(format: &BodyFormat, read: ReadBodyOutcome) -> Self {
+    pub fn describe(parse: &BodyParse, read: ReadBodyOutcome) -> Self {
+        Self::describe_with(read, |_| parse.clone())
+    }
+
+    /// Describes a body whose `Content-Type` did not name a format, sniffing
+    /// the read bytes with [`content_detect::detect`].
+    #[must_use]
+    pub fn describe_sniffed(media: Option<&MediaType>, read: ReadBodyOutcome) -> Self {
+        Self::describe_with(read, |bytes| {
+            BodyParse::new(content_detect::detect(media, bytes), None)
+        })
+    }
+
+    fn describe_with(read: ReadBodyOutcome, parse: impl FnOnce(&[u8]) -> BodyParse) -> Self {
         match read {
             ReadBodyOutcome::Complete(bytes) if bytes.is_empty() => Self::Empty,
-            ReadBodyOutcome::Complete(bytes) => Self::parse(format, &bytes),
+            ReadBodyOutcome::Complete(bytes) => Self::parse(&parse(&bytes), &bytes),
             ReadBodyOutcome::Incomplete => Self::Excluded(ExclusionReason::Truncated),
             ReadBodyOutcome::TooLarge => Self::Excluded(ExclusionReason::TooLarge),
             ReadBodyOutcome::DecodeFailed => Self::Excluded(ExclusionReason::DecodeFailed),
@@ -119,22 +137,22 @@ impl BodyAnalysis {
         }
     }
 
-    fn parse(format: &BodyFormat, bytes: &[u8]) -> Self {
-        match format {
-            BodyFormat::Json => serde_json::from_slice::<Value>(bytes)
+    fn parse(parse: &BodyParse, bytes: &[u8]) -> Self {
+        match parse {
+            BodyParse::Json => serde_json::from_slice::<Value>(bytes)
                 .map_or(Self::Invalid, |value| {
                     Self::Fields(FieldShape::from_json(&value))
                 }),
-            BodyFormat::MaybeJson => serde_json::from_slice::<Value>(bytes)
+            BodyParse::MaybeJson => serde_json::from_slice::<Value>(bytes)
                 .map_or(Self::Unstructured, |value| {
                     Self::Fields(FieldShape::from_json(&value))
                 }),
-            BodyFormat::Form => std::str::from_utf8(bytes)
+            BodyParse::Form => std::str::from_utf8(bytes)
                 .map_or(Self::Invalid, |text| Self::Fields(form_fields(text))),
-            BodyFormat::Multipart(boundary) => {
+            BodyParse::Multipart(boundary) => {
                 parse_parts(bytes, boundary).map_or(Self::Invalid, Self::Parts)
             }
-            BodyFormat::Unstructured => Self::Unstructured,
+            BodyParse::Unstructured => Self::Unstructured,
         }
     }
 }
@@ -350,45 +368,46 @@ mod tests {
     }
 
     #[test]
-    fn detects_format_from_content_type() {
+    fn parses_as_the_detected_format() {
+        let parse = |value: &str, head: &[u8]| {
+            let media = media(value);
+            BodyParse::new(content_detect::detect(media.as_ref(), head), Some(value))
+        };
+        assert_eq!(parse("application/problem+json", b""), BodyParse::Json);
         assert_eq!(
-            BodyFormat::detect(media("application/problem+json").as_ref(), None),
-            BodyFormat::Json
+            parse("application/x-www-form-urlencoded", b""),
+            BodyParse::Form
         );
+        assert_eq!(parse("multipart/form-data", b""), BodyParse::Unstructured);
+        assert!(matches!(
+            parse("multipart/form-data; boundary=B", b""),
+            BodyParse::Multipart(_)
+        ));
+        assert_eq!(parse("text/plain", b"{}"), BodyParse::MaybeJson);
+        assert_eq!(parse("text/plain", b"hello"), BodyParse::Unstructured);
         assert_eq!(
-            BodyFormat::detect(media("application/x-www-form-urlencoded").as_ref(), None),
-            BodyFormat::Form
+            BodyParse::new(content_detect::detect(None, b"[1]"), None),
+            BodyParse::MaybeJson
         );
-        assert_eq!(
-            BodyFormat::detect(
-                media("multipart/form-data").as_ref(),
-                Some("multipart/form-data")
-            ),
-            BodyFormat::Unstructured
-        );
-        assert_eq!(BodyFormat::detect(None, None), BodyFormat::MaybeJson);
-        assert_eq!(
-            BodyFormat::detect(media("text/html").as_ref(), None),
-            BodyFormat::Unstructured
-        );
-        assert!(!BodyFormat::Unstructured.needs_bytes());
+        assert_eq!(parse("text/html", b"{}"), BodyParse::Unstructured);
+        assert!(!BodyParse::Unstructured.needs_bytes());
     }
 
     #[test]
     fn groups_count_samples_exclusions_and_invalid_bodies() {
         let mut group = BodySchema::default();
         let json = |text: &str| {
-            BodyAnalysis::describe(&BodyFormat::Json, ReadBodyOutcome::Complete(text.into()))
+            BodyAnalysis::describe(&BodyParse::Json, ReadBodyOutcome::Complete(text.into()))
         };
         group.record(&json(r#"{"a":1}"#));
         group.record(&json(r#"{"a":null,"b":"x"}"#));
         group.record(&json("{not json"));
         group.record(&BodyAnalysis::describe(
-            &BodyFormat::Json,
+            &BodyParse::Json,
             ReadBodyOutcome::Incomplete,
         ));
         group.record(&BodyAnalysis::describe(
-            &BodyFormat::Json,
+            &BodyParse::Json,
             ReadBodyOutcome::Complete(Vec::new()),
         ));
         assert_eq!(group.bodies(), 5);
@@ -416,7 +435,7 @@ mod tests {
     #[test]
     fn form_bodies_keep_names_and_types_only() {
         let analysis = BodyAnalysis::describe(
-            &BodyFormat::Form,
+            &BodyParse::Form,
             ReadBodyOutcome::Complete(b"user=SECRET_USER&remember=true&age=33&q=a+b".to_vec()),
         );
         let BodyAnalysis::Fields(shape) = &analysis else {
@@ -438,11 +457,11 @@ mod tests {
         let Some(boundary) = Boundary::from_content_type("multipart/form-data; boundary=B") else {
             unreachable!("valid boundary");
         };
-        let format = BodyFormat::Multipart(boundary);
+        let parse = BodyParse::Multipart(boundary);
         let body = b"--B\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\nContent-Type: text/plain\r\n\r\nx\r\n--B--".to_vec();
         let mut group = BodySchema::default();
         group.record(&BodyAnalysis::describe(
-            &format,
+            &parse,
             ReadBodyOutcome::Complete(body),
         ));
         let part = group.parts().get("file");

@@ -4,12 +4,14 @@
 //! aggregation: header values, query values, credentials and body values are
 //! read here only to name their type and are never copied out.
 
-use super::body::{BodyAnalysis, BodyFormat, ExclusionReason};
+use super::body::{BodyAnalysis, BodyParse, ExclusionReason};
 use super::endpoint::{BodyObservation, EndpointObservation, ResponseObservation};
 use super::value::ValueShape;
+use crate::content::detect as content_detect;
 use crate::url_map::{classify_id_segment, parse_exchange_target, visit_query_values};
 use crate::{
     BodyLifecycle, BodyPreview, BodySide, BodySource, Exchange, HeaderPreview, MediaType, Outcome,
+    ReadBodyOutcome,
 };
 
 /// Largest decoded body described; larger bodies are excluded as too large.
@@ -135,18 +137,34 @@ fn describe_body(
     headers: &HeaderPreview,
     media: Option<&MediaType>,
 ) -> BodyObservation {
-    let format = BodyFormat::detect(media, headers.get("content-type").next());
-    let analysis = if format.needs_bytes() {
-        BodyAnalysis::describe(
-            &format,
-            bodies.read(exchange, side, MAX_ANALYZED_BODY_BYTES),
-        )
-    } else {
-        unread_body(preview)
-    };
+    let analysis = analyze(
+        media,
+        headers.get("content-type").next(),
+        || bodies.read(exchange, side, MAX_ANALYZED_BODY_BYTES),
+        || unread_body(preview),
+    );
     BodyObservation {
         content_type: media.map(|media| media.essence().to_owned()),
         analysis,
+    }
+}
+
+/// Describes a body in the format [`content_detect`] decides, reading it
+/// only when that format can carry structure or has to be sniffed.
+fn analyze(
+    media: Option<&MediaType>,
+    raw_content_type: Option<&str>,
+    read: impl FnOnce() -> ReadBodyOutcome,
+    unread: impl FnOnce() -> BodyAnalysis,
+) -> BodyAnalysis {
+    let Some(detection) = content_detect::from_content_type(media) else {
+        return BodyAnalysis::describe_sniffed(media, read());
+    };
+    let parse = BodyParse::new(detection, raw_content_type);
+    if parse.needs_bytes() {
+        BodyAnalysis::describe(&parse, read())
+    } else {
+        unread()
     }
 }
 
@@ -201,6 +219,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::content::format::BodyFormat;
     use crate::endpoint_schema::FieldShape;
     use crate::{ExchangeBuilder, MemoryBodySource, ReadBodyOutcome, ResponseFixture};
 
@@ -311,5 +330,87 @@ mod tests {
         assert!(!is_custom_header("x-api-key"));
         assert!(!is_custom_header("sec-fetch-mode"));
         assert_eq!(bounded(&"x".repeat(100)).len(), MAX_HEADER_NAME_BYTES);
+    }
+
+    /// What the Map detail panel makes of a body of a Body tab format.
+    #[derive(Debug, Eq, PartialEq)]
+    enum MapReading {
+        Fields,
+        Parts,
+        Unstructured,
+    }
+
+    impl MapReading {
+        fn expected_for(format: BodyFormat) -> Self {
+            match format {
+                BodyFormat::Json | BodyFormat::Form => Self::Fields,
+                BodyFormat::Multipart => Self::Parts,
+                BodyFormat::Css
+                | BodyFormat::Markup
+                | BodyFormat::Xml
+                | BodyFormat::JavaScript
+                | BodyFormat::Text => Self::Unstructured,
+            }
+        }
+
+        fn of(analysis: &BodyAnalysis) -> Option<Self> {
+            match analysis {
+                BodyAnalysis::Fields(_) => Some(Self::Fields),
+                BodyAnalysis::Parts(_) => Some(Self::Parts),
+                BodyAnalysis::Unstructured => Some(Self::Unstructured),
+                BodyAnalysis::Empty | BodyAnalysis::Excluded(_) | BodyAnalysis::Invalid => None,
+            }
+        }
+    }
+
+    #[test]
+    fn body_tab_and_map_classify_bodies_alike() {
+        let multipart = b"--B\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nx\r\n--B--";
+        for (content_type, body, expected) in [
+            (
+                Some("application/json"),
+                &br#"{"a":1}"#[..],
+                BodyFormat::Json,
+            ),
+            (
+                Some("application/problem+json; charset=utf-8"),
+                br#"{"title":"x"}"#,
+                BodyFormat::Json,
+            ),
+            (None, br#"{"a":1}"#, BodyFormat::Json),
+            (None, b" [1,2]", BodyFormat::Json),
+            (Some("text/plain"), br#"{"a":1}"#, BodyFormat::Json),
+            (None, b"{oops", BodyFormat::Text),
+            (None, b"42", BodyFormat::Text),
+            (Some("text/plain"), b"hello", BodyFormat::Text),
+            (
+                Some("application/x-www-form-urlencoded"),
+                b"a=1&b=2",
+                BodyFormat::Form,
+            ),
+            (
+                Some("multipart/form-data; boundary=B"),
+                multipart,
+                BodyFormat::Multipart,
+            ),
+            (Some("application/xml"), b"<a>1</a>", BodyFormat::Xml),
+            (Some("application/atom+xml"), b"<feed/>", BodyFormat::Xml),
+            (None, b"<a>1</a>", BodyFormat::Text),
+        ] {
+            let media = content_type.and_then(MediaType::parse);
+            let body_tab = content_detect::settle(media.as_ref(), body);
+            assert_eq!(body_tab, expected, "{content_type:?} {body:?}");
+            let map = analyze(
+                media.as_ref(),
+                content_type,
+                || ReadBodyOutcome::Complete(body.to_vec()),
+                || BodyAnalysis::Unstructured,
+            );
+            assert_eq!(
+                MapReading::of(&map),
+                Some(MapReading::expected_for(body_tab)),
+                "{content_type:?} {body:?}"
+            );
+        }
     }
 }
