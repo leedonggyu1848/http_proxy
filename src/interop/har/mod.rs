@@ -26,17 +26,10 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::exchange::{CaptureSource, Exchange, HeaderPreview, Outcome, TunnelState};
+use crate::http_semantics::is_sensitive_header;
 use serde_json::{Map, Value, json};
 
 use self::timings::{Phases, iso8601, millis};
-
-/// Header fields whose values the engine never retains.
-const SENSITIVE_HEADERS: [&str; 4] = [
-    "authorization",
-    "proxy-authorization",
-    "cookie",
-    "set-cookie",
-];
 
 /// What an export adds on top of the default, which leaves out bodies and
 /// sensitive header fields.
@@ -250,15 +243,9 @@ fn headers(headers: &HeaderPreview, options: HarOptions) -> Value {
     headers
         .entries()
         .iter()
-        .filter(|header| options.include_sensitive_headers || !is_sensitive(header.name()))
+        .filter(|header| options.include_sensitive_headers || !is_sensitive_header(header.name()))
         .map(|header| json!({ "name": header.name(), "value": header.value() }))
         .collect()
-}
-
-fn is_sensitive(name: &str) -> bool {
-    SENSITIVE_HEADERS
-        .iter()
-        .any(|sensitive| sensitive.eq_ignore_ascii_case(name))
 }
 
 fn entry_notes(record: &Exchange) -> Vec<String> {
