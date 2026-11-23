@@ -519,7 +519,7 @@ fn encoding_layers(values: &[String]) -> Vec<String> {
 ///
 /// After the first chunk that cannot be stored, later chunks are skipped so
 /// the stored bytes are always an exact prefix of the body.
-pub(in crate::engine) struct BodyRecorder {
+pub(crate) struct BodyRecorder {
     store: BodyStore,
     key: BodyKey,
     stopped: bool,
@@ -527,7 +527,7 @@ pub(in crate::engine) struct BodyRecorder {
 }
 
 impl BodyRecorder {
-    pub(in crate::engine) fn new(store: BodyStore, record: u64, side: BodySide) -> Self {
+    pub(crate) fn new(store: BodyStore, record: u64, side: BodySide) -> Self {
         let key = BodyKey { record, side };
         store.update_index(|index| index.begin(key));
         Self {
@@ -538,7 +538,7 @@ impl BodyRecorder {
         }
     }
 
-    pub(in crate::engine) fn observe(&mut self, data: &[u8]) {
+    pub(crate) fn observe(&mut self, data: &[u8]) {
         if self.stopped || data.is_empty() {
             return;
         }
@@ -549,7 +549,7 @@ impl BodyRecorder {
     }
 
     /// Records how the body ended. Only the first call has an effect.
-    pub(in crate::engine) fn end(&mut self, lifecycle: BodyLifecycle) {
+    pub(crate) fn end(&mut self, lifecycle: BodyLifecycle) {
         if !self.ended {
             self.ended = true;
             let key = self.key;

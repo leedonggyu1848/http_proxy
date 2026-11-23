@@ -72,7 +72,7 @@ impl FullLog {
         Self::with_body_limit(SESSION_BODY_LIMIT_BYTES)
     }
 
-    pub(in crate::engine) fn with_body_limit(body_limit: u64) -> io::Result<Self> {
+    pub(crate) fn with_body_limit(body_limit: u64) -> io::Result<Self> {
         let journal = NamedTempFile::new()?;
         let writer = BufWriter::new(journal.reopen()?);
         let (sender, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
@@ -165,38 +165,32 @@ impl FullLog {
         }
     }
 
-    pub(in crate::engine) fn request_head(
-        &self,
-        id: u64,
-        method: &Method,
-        target: &str,
-        headers: &HeaderMap,
-    ) {
+    pub(crate) fn request_head(&self, id: u64, method: &Method, target: &str, headers: &HeaderMap) {
         self.text(format!(
             "[{id}] Request {method} {target}\n{}",
             full_headers(headers)
         ));
     }
 
-    pub(in crate::engine) fn replay_of(&self, id: u64, original: RecordId) {
+    pub(crate) fn replay_of(&self, id: u64, original: RecordId) {
         self.text(format!("[{id}] Replay of #{}\n", original.value()));
     }
 
-    pub(in crate::engine) fn response_head(&self, id: u64, headers: &HeaderMap) {
+    pub(crate) fn response_head(&self, id: u64, headers: &HeaderMap) {
         self.text(format!(
             "[{id}] Response headers\n{}",
             full_headers(headers)
         ));
     }
 
-    pub(in crate::engine) fn failure(&self, id: u64, stage: FailureStage, message: &str) {
+    pub(crate) fn failure(&self, id: u64, stage: FailureStage, message: &str) {
         self.text(format!(
             "[{id}] Failure {stage}: {}\n",
             message.escape_debug()
         ));
     }
 
-    pub(in crate::engine) fn settled(&self, id: u64, outcome: &Outcome, elapsed: Duration) {
+    pub(crate) fn settled(&self, id: u64, outcome: &Outcome, elapsed: Duration) {
         let timing_label = if matches!(outcome, Outcome::Response(_)) {
             "Response headers in"
         } else {
@@ -208,18 +202,18 @@ impl FullLog {
         ));
     }
 
-    pub(in crate::engine) fn tunnel_ended(&self, id: u64, tunnel: &TunnelSnapshot) {
+    pub(crate) fn tunnel_ended(&self, id: u64, tunnel: &TunnelSnapshot) {
         self.text(format!("[{id}] Tunnel ended {:?} · {} bytes client→upstream · {} bytes upstream→client · {:.1} ms\n", tunnel.state(), tunnel.client_to_upstream(), tunnel.upstream_to_client(), tunnel.duration().as_secs_f64() * 1000.0));
     }
 
-    pub(in crate::engine) fn trailers(&self, id: u64, side: BodySide, headers: &HeaderMap) {
+    pub(crate) fn trailers(&self, id: u64, side: BodySide, headers: &HeaderMap) {
         self.text(format!("[{id}] {side} trailers\n{}", full_headers(headers)));
     }
 
     /// Writes body bytes while the session body budget lasts.
     ///
     /// Returns `false` when some of `bytes` were not written.
-    pub(in crate::engine) fn body(&self, id: u64, side: BodySide, bytes: &[u8]) -> bool {
+    pub(crate) fn body(&self, id: u64, side: BodySide, bytes: &[u8]) -> bool {
         let allowed = self.reserve_body(bytes.len());
         let written = bytes.get(..allowed).unwrap_or_default();
         for chunk in written.chunks(BODY_CHUNK_BYTES) {
@@ -231,7 +225,7 @@ impl FullLog {
         allowed == bytes.len()
     }
 
-    pub(in crate::engine) fn body_omitted(&self, id: u64, side: BodySide) {
+    pub(crate) fn body_omitted(&self, id: u64, side: BodySide) {
         self.text(format!(
             "[{id}] {side} body: later bytes omitted because the session body limit of {} was reached",
             self.formatted_body_limit()
@@ -250,7 +244,7 @@ impl FullLog {
         usize::try_from(remaining.min(wanted)).unwrap_or(length)
     }
 
-    pub(in crate::engine) fn body_end(&self, id: u64, side: BodySide, state: BodyLifecycle) {
+    pub(crate) fn body_end(&self, id: u64, side: BodySide, state: BodyLifecycle) {
         let state = match state {
             BodyLifecycle::Streaming => "streaming",
             BodyLifecycle::Complete => "complete",

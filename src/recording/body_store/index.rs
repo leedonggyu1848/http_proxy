@@ -8,9 +8,9 @@ use crate::exchange::BodySide;
 
 /// Identifies one body: the record it belongs to and its direction.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(in crate::engine) struct BodyKey {
-    pub(in crate::engine) record: u64,
-    pub(in crate::engine) side: BodySide,
+pub(super) struct BodyKey {
+    pub(super) record: u64,
+    pub(super) side: BodySide,
 }
 
 /// Why some bytes of a body are missing from the body store.
