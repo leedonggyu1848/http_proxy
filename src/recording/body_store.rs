@@ -88,6 +88,7 @@ use self::file_name::NameSource;
 use self::index::{BodyKey, Index};
 use self::location::SessionDirectory;
 use self::writer::Command;
+use super::lock_recovering;
 use crate::exchange::BodySide;
 use crate::exchange::{BodyLifecycle, BodyRetention, Exchange, MediaType, Outcome, RecordId};
 
@@ -121,9 +122,13 @@ struct Shared {
 
 impl Shared {
     fn mark_gap(&self, key: BodyKey, gap: StoreGap) {
-        if let Ok(mut index) = self.index.lock() {
-            index.mark_gap(key, gap);
-        }
+        lock_recovering(&self.index).mark_gap(key, gap);
+    }
+
+    fn record_write_error(&self, error: &io::Error) {
+        self.failed.store(true, Ordering::Release);
+        lock_recovering(&self.error)
+            .get_or_insert_with(|| format!("Body store writing failed: {error}"));
     }
 
     /// Reserves `length` bytes of the session limit.
@@ -156,8 +161,8 @@ impl Drop for Owner {
         // Every sender is gone by now, so the writer drains what is queued
         // without writing it and exits.
         self.shared.closing.store(true, Ordering::Release);
-        if let Ok(mut writer) = self.writer.lock()
-            && let Some(writer) = writer.take()
+        let writer = lock_recovering(&self.writer).take();
+        if let Some(writer) = writer
             && writer.join().is_err()
         {
             tracing::error!("body store writer panicked");
@@ -290,10 +295,7 @@ impl BodyStore {
     /// Returns the write error that stopped the store, if any.
     #[must_use]
     pub fn error(&self) -> Option<String> {
-        self.shared.error.lock().map_or_else(
-            |_| Some("The body store state is unavailable".to_owned()),
-            |error| error.clone(),
-        )
+        lock_recovering(&self.shared.error).clone()
     }
 
     /// Returns what the store holds for one body, or `None` when it never saw it.
@@ -303,7 +305,7 @@ impl BodyStore {
             record: record.value(),
             side,
         };
-        self.shared.index.lock().ok()?.info(key)
+        lock_recovering(&self.shared.index).info(key)
     }
 
     /// Reads and decompresses a complete stored body into memory, bounded by
@@ -327,13 +329,7 @@ impl BodyStore {
             record: record.value(),
             side,
         };
-        let Some((segments, body)) = self
-            .shared
-            .index
-            .lock()
-            .ok()
-            .and_then(|index| index.segments(key))
-        else {
+        let Some((segments, body)) = lock_recovering(&self.shared.index).segments(key) else {
             return ReadBodyOutcome::NotFound;
         };
         if !body.is_complete() {
@@ -388,11 +384,7 @@ impl BodyStore {
             record: request.record.value(),
             side: request.side,
         };
-        let (segments, body) = self
-            .shared
-            .index
-            .lock()
-            .map_err(|_| io::Error::other("The body store index is unavailable"))?
+        let (segments, body) = lock_recovering(&self.shared.index)
             .segments(key)
             .ok_or_else(|| {
                 io::Error::new(
@@ -506,9 +498,7 @@ impl BodyStore {
     }
 
     fn update_index(&self, update: impl FnOnce(&mut Index)) {
-        if let Ok(mut index) = self.shared.index.lock() {
-            update(&mut index);
-        }
+        update(&mut lock_recovering(&self.shared.index));
     }
 }
 
@@ -865,6 +855,67 @@ mod tests {
         assert_eq!(
             store.read_complete_decoded(RecordId::new(99), BodySide::Response, &[], 1024),
             ReadBodyOutcome::NotFound
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn poisoned_index_recovers_recorded_bodies_and_accepts_new_updates() -> io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let store = BodyStore::with_limits(root.path(), 1024, 0)?;
+
+        let mut first = BodyRecorder::new(store.clone(), 1, BodySide::Response);
+        first.observe(b"hello");
+        first.end(BodyLifecycle::Complete);
+        store.wait_for_writer()?;
+
+        crate::recording::poison(&store.shared.index);
+
+        let body = store.body(RecordId::new(1), BodySide::Response);
+        assert_eq!(body.map(|body| body.stored_bytes()), Some(5));
+        assert!(body.is_some_and(|body| body.is_complete()));
+        assert_eq!(
+            store.read_complete_decoded(RecordId::new(1), BodySide::Response, &[], 1024),
+            ReadBodyOutcome::Complete(b"hello".to_vec())
+        );
+
+        let mut second = BodyRecorder::new(store.clone(), 2, BodySide::Response);
+        second.observe(b"world");
+        second.end(BodyLifecycle::Complete);
+        let second_body = stored(&store, 2);
+        assert_eq!(second_body.map(|body| body.stored_bytes()), Some(5));
+        assert!(second_body.is_some_and(|body| body.is_complete()));
+
+        store.shared.mark_gap(
+            BodyKey {
+                record: 3,
+                side: BodySide::Response,
+            },
+            StoreGap::WriteFailed,
+        );
+        assert_eq!(
+            store
+                .body(RecordId::new(3), BodySide::Response)
+                .and_then(|body| body.gap()),
+            Some(StoreGap::WriteFailed)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn poisoned_error_slot_still_records_and_reports_write_errors() -> io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let store = BodyStore::with_limits(root.path(), 1024, 0)?;
+        crate::recording::poison(&store.shared.error);
+
+        assert_eq!(store.error(), None);
+        store
+            .shared
+            .record_write_error(&io::Error::other("disk full"));
+        assert!(
+            store
+                .error()
+                .is_some_and(|message| message.contains("disk full"))
         );
         Ok(())
     }

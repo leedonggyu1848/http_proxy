@@ -11,6 +11,7 @@ use std::time::Duration;
 use http::{HeaderMap, Method};
 use tempfile::NamedTempFile;
 
+use super::lock_recovering;
 use crate::exchange::{BodyLifecycle, BodySide, FailureStage, Outcome, RecordId, TunnelSnapshot};
 use crate::http_semantics::redacted_value;
 
@@ -123,10 +124,7 @@ impl FullLog {
     /// Returns the first error that made this journal incomplete.
     #[must_use]
     pub fn error(&self) -> Option<String> {
-        self.failure.lock().map_or_else(
-            |_| Some("The session journal error state is unavailable".to_owned()),
-            |failure| failure.clone(),
-        )
+        lock_recovering(&self.failure).clone()
     }
 
     fn text(&self, mut text: String) {
@@ -160,9 +158,7 @@ impl FullLog {
     }
 
     fn record_failure(&self, message: &str) {
-        if let Ok(mut failure) = self.failure.lock() {
-            failure.get_or_insert_with(|| message.to_owned());
-        }
+        lock_recovering(&self.failure).get_or_insert_with(|| message.to_owned());
     }
 
     pub(crate) fn request_head(&self, id: u64, method: &Method, target: &str, headers: &HeaderMap) {
@@ -275,7 +271,8 @@ impl FullLog {
             Ok(sender) => sender,
             Err(TryLockError::WouldBlock) => return Err(busy()),
             Err(TryLockError::Poisoned(_)) => {
-                return Err(io::Error::other("The session journal queue is unavailable"));
+                self.record_failure(QUEUE_UNAVAILABLE);
+                return Err(io::Error::other(QUEUE_UNAVAILABLE));
             }
         };
         if let Some(message) = self.error() {
@@ -388,9 +385,7 @@ fn run(
 fn record_write_failure(failure: &Failure, local: &mut Option<String>, error: &io::Error) {
     let message = format!("Session logging failed; the log is incomplete: {error}");
     *local = Some(message.clone());
-    if let Ok(mut failure) = failure.lock() {
-        failure.get_or_insert(message);
-    }
+    lock_recovering(failure).get_or_insert(message);
 }
 
 fn copy_snapshot(reader: File, length: u64, path: &Path) -> ExportResult {
@@ -852,5 +847,43 @@ mod tests {
         );
         drop(error);
         Ok(())
+    }
+
+    #[test]
+    fn poisoned_failure_slot_still_records_and_reports_errors() {
+        let (sender, _receiver) = mpsc::sync_channel(1);
+        let failure = Arc::new(Mutex::new(None));
+        crate::recording::poison(&failure);
+        let log = FullLog::from_parts(sender, Arc::clone(&failure), SESSION_BODY_LIMIT_BYTES);
+
+        assert_eq!(log.error(), None);
+        log.record_failure("disk full");
+        assert_eq!(log.error().as_deref(), Some("disk full"));
+
+        let write_failure = Arc::new(Mutex::new(None));
+        crate::recording::poison(&write_failure);
+        let mut local = None;
+        record_write_failure(&write_failure, &mut local, &io::Error::other("io error"));
+        assert!(
+            lock_recovering(&write_failure)
+                .as_deref()
+                .is_some_and(|message| message.contains("io error"))
+        );
+    }
+
+    #[test]
+    fn poisoned_sender_marks_journal_failed_and_blocks_export() {
+        let (sender, _receiver) = mpsc::sync_channel(1);
+        let log = FullLog::from_parts(sender, Arc::new(Mutex::new(None)), SESSION_BODY_LIMIT_BYTES);
+        crate::recording::poison(&log.sender);
+
+        assert!(log.export(PathBuf::from("unused.txt")).is_err());
+        assert_eq!(log.error().as_deref(), Some(QUEUE_UNAVAILABLE));
+
+        let (sender, _receiver) = mpsc::sync_channel(1);
+        let log = FullLog::from_parts(sender, Arc::new(Mutex::new(None)), SESSION_BODY_LIMIT_BYTES);
+        crate::recording::poison(&log.sender);
+        log.text("lost".to_owned());
+        assert_eq!(log.error().as_deref(), Some(QUEUE_UNAVAILABLE));
     }
 }

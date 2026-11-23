@@ -138,14 +138,14 @@ impl Index {
     /// merging the range into the previous one when they are adjacent.
     pub(super) fn append(&mut self, key: BodyKey, offset: u64, length: u64) {
         let entry = self.entry(key);
-        entry.body.stored_bytes = entry.body.stored_bytes.saturating_add(length);
         if let Some(last) = entry.segments.last_mut()
             && last.offset.saturating_add(last.length) == offset
         {
             last.length = last.length.saturating_add(length);
-            return;
+        } else {
+            entry.segments.push(Segment { offset, length });
         }
-        entry.segments.push(Segment { offset, length });
+        entry.body.stored_bytes = entry.body.stored_bytes.saturating_add(length);
     }
 
     /// Records how the body stream ended. Only the first end is kept.

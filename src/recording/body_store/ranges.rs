@@ -13,6 +13,7 @@ use super::index::{BodyKey, Segment};
 use super::{BodyStore, SaveBody, SavedBody, encoding_layers};
 use crate::exchange::BodyLifecycle;
 use crate::exchange::BodySide;
+use crate::recording::lock_recovering;
 
 /// Gaps listed in an incomplete reason before the rest are counted.
 const LISTED_GAPS: usize = 5;
@@ -385,11 +386,7 @@ impl BodyStore {
     ) -> io::Result<SavedBody> {
         self.wait_for_writer()?;
         let parts = {
-            let index = self
-                .shared
-                .index
-                .lock()
-                .map_err(|_| io::Error::other("The body store index is unavailable"))?;
+            let index = lock_recovering(&self.shared.index);
             plan.pieces
                 .iter()
                 .map(|piece| {
