@@ -1,11 +1,11 @@
 //! Builds the [`TreeModel`] of an XML preview, with an `XPath` for every
-//! element. [`Document::parse`] applies the node and depth limits.
+//! element. Document parsing applies the node and depth limits.
 
 use super::pretty::push_leaf;
 use super::{Document, Element, NodeKind};
-use crate::ui::body_format::tag::{Dialect, Spacing, push_tag};
-use crate::ui::body_format::tree::{CopyLabels, TreeModel, TreeNode, elide};
-use crate::ui::body_format::{Styled, TokenKind};
+use crate::content::format::tag::{Dialect, Spacing, push_tag};
+use crate::content::format::tree::{CopyLabels, TreeModel, TreeNode, elide};
+use crate::content::format::{Styled, TokenKind};
 
 const COPY: CopyLabels = CopyLabels {
     path: "Copy XPath",
@@ -14,7 +14,7 @@ const COPY: CopyLabels = CopyLabels {
 
 /// Builds the rows of `text` as far as it could be read. Whitespace-only
 /// text is left out; fails when `text` has no element.
-pub(in crate::ui) fn build(text: &str) -> Result<TreeModel, String> {
+pub(in crate::content::format) fn build(text: &str) -> Result<TreeModel, String> {
     let document = Document::parse(text)?;
     let mut builder = Builder {
         document: &document,
@@ -202,7 +202,7 @@ fn row_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::body_format::tree::ROW_TEXT;
+    use crate::content::format::tree::ROW_TEXT;
 
     fn rows(tree: &TreeModel, parent: Option<usize>) -> Vec<(String, Option<String>, usize)> {
         tree.children(parent)

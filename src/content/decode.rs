@@ -5,7 +5,7 @@ const MAX_ENCODINGS: usize = 4;
 const INTERMEDIATE_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug)]
-pub(in crate::ui) enum BodyText {
+pub enum BodyText {
     Ready {
         text: String,
         notice: Option<String>,
@@ -13,7 +13,8 @@ pub(in crate::ui) enum BodyText {
     Unavailable(String),
 }
 
-pub(in crate::ui) fn decode(bytes: &[u8], encodings: &[&str], complete: bool) -> BodyText {
+#[must_use]
+pub fn decode(bytes: &[u8], encodings: &[&str], complete: bool) -> BodyText {
     let encodings = match content_encodings(encodings) {
         Ok(encodings) => encodings,
         Err(message) => return BodyText::Unavailable(message),
@@ -60,19 +61,17 @@ pub(in crate::ui) fn decode(bytes: &[u8], encodings: &[&str], complete: bool) ->
 
 /// Decoded bytes of a retained body, bounded like the text preview.
 #[derive(Debug, Eq, PartialEq)]
-pub(in crate::ui) struct DecodedPrefix {
-    pub(in crate::ui) bytes: Vec<u8>,
+pub struct DecodedPrefix {
+    pub bytes: Vec<u8>,
     /// More decoded bytes exist than the preview limit keeps.
-    pub(in crate::ui) cut: bool,
+    pub cut: bool,
 }
 
 /// Decodes at most the first 8 KiB of `bytes` under the same limits as the
-/// text preview, so search sees what the preview shows. A decoding error
-/// after some output keeps that output, as an incomplete capture would.
-pub(in crate::ui) fn decode_prefix(
-    bytes: &[u8],
-    encodings: &[&str],
-) -> Result<DecodedPrefix, String> {
+/// text preview, so search sees what the preview shows.
+///
+/// A decoding error after some output keeps that output, as an incomplete capture would.
+pub fn decode_prefix(bytes: &[u8], encodings: &[&str]) -> Result<DecodedPrefix, String> {
     let encodings = content_encodings(encodings)?;
     let mut decoded = if encodings.is_empty() {
         bytes.get(..=PREVIEW_BYTES).unwrap_or(bytes).to_vec()
@@ -97,11 +96,7 @@ pub(in crate::ui) fn decode_prefix(
 ///
 /// Fails when an encoding is unsupported, the data is invalid, or decoding
 /// would produce more than `limit` bytes.
-pub(in crate::ui) fn decode_complete(
-    bytes: &[u8],
-    encodings: &[&str],
-    limit: usize,
-) -> Result<Vec<u8>, String> {
+pub fn decode_complete(bytes: &[u8], encodings: &[&str], limit: usize) -> Result<Vec<u8>, String> {
     let encodings = content_encodings(encodings)?;
     if encodings.is_empty() {
         return Ok(bytes.to_vec());

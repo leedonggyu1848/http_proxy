@@ -8,9 +8,9 @@ use http_proxy::{
     ImageFormat, RecordId,
 };
 
-use crate::ui::body_view;
-use crate::ui::image_decode::{self, PreviewImage};
 use crate::ui::theme::Palette;
+use http_proxy::content::decode as body_view;
+use http_proxy::content::image::{self as image_decode, PreviewImage};
 
 /// Raw bytes shown in the hexadecimal view.
 const HEX_BYTES: usize = 8 * 1024;

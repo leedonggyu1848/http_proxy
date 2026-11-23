@@ -2,13 +2,14 @@
 
 use crate::ui::InspectorApp;
 use crate::ui::body_display::{BodySide, BodySource, BodyViewCache, Capture};
-use crate::ui::body_format::{BodyFormat, ViewMode, form, highlight::SyntaxPalette};
 use crate::ui::detail_tabs::{self, DetailTab};
+use crate::ui::highlight::SyntaxPalette;
 use crate::ui::search::Query;
 use crate::ui::search::highlight::{self, MatchColors};
 use crate::ui::theme::Palette;
 use crate::ui::{image_view, outcome_view, replay_panel, scope_help};
 use eframe::egui;
+use http_proxy::content::format::{BodyFormat, ViewMode, form};
 use http_proxy::{
     BodyLifecycle, BodyPreview, BodyRetention, CapturedRequest, Exchange, HeaderPreview, MediaType,
     Outcome, RecordId, TunnelPreview,

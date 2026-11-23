@@ -4,7 +4,8 @@ use super::{Styled, TokenKind};
 
 /// Percent-decodes each `key=value` pair of a form body or query string.
 /// Empty pairs are skipped and malformed escapes are kept as written.
-pub(in crate::ui) fn pairs(text: &str) -> Vec<(String, String)> {
+#[must_use]
+pub fn pairs(text: &str) -> Vec<(String, String)> {
     text.split('&')
         .filter(|pair| !pair.is_empty())
         .map(|pair| {
@@ -33,7 +34,8 @@ pub(super) fn pretty(text: &str) -> Styled {
 
 /// Escapes control characters so a decoded line break cannot look like the
 /// start of another pair.
-pub(in crate::ui) fn visible(text: &str) -> String {
+#[must_use]
+pub fn visible(text: &str) -> String {
     text.chars()
         .flat_map(|c| {
             let escaped: Vec<char> = if c.is_control() {

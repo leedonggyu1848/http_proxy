@@ -9,12 +9,12 @@ use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::num::NonZeroU64;
 
-use http_proxy::ImageFormat;
+use crate::ImageFormat;
 use resvg::{tiny_skia, usvg};
 use usvg::roxmltree;
 
 /// Widest or tallest image the decoder accepts.
-pub(in crate::ui) const MAX_IMAGE_SIDE: u32 = 8_192;
+const MAX_IMAGE_SIDE: u32 = 8_192;
 /// Most pixels the decoder accepts, which bounds the RGBA buffer to 64 MiB.
 const MAX_IMAGE_PIXELS: u64 = 4_096 * 4_096;
 /// Allocation ceiling handed to decoders: the RGBA frame plus working buffers.
@@ -33,18 +33,18 @@ const XLINK_NS: &str = "http://www.w3.org/1999/xlink";
 
 /// A decoded image frame as unmultiplied 8-bit RGBA pixels.
 #[derive(Debug)]
-pub(in crate::ui) struct PreviewImage {
-    pub(in crate::ui) width: u32,
-    pub(in crate::ui) height: u32,
-    pub(in crate::ui) rgba: Vec<u8>,
+pub struct PreviewImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
     /// Facts about the file the pixels alone do not show, such as the number
     /// of animation frames.
-    pub(in crate::ui) notes: Vec<String>,
+    pub notes: Vec<String>,
 }
 
 /// Why an image file could not be drawn.
 #[derive(Debug, thiserror::Error)]
-pub(in crate::ui) enum ImageError {
+pub enum ImageError {
     #[error(
         "The image is {width}×{height} px, larger than the {MAX_IMAGE_SIDE} px per side or 16 megapixel preview limit."
     )]
@@ -58,7 +58,7 @@ pub(in crate::ui) enum ImageError {
 }
 
 /// Decodes an image file of `format` to its first frame.
-pub(in crate::ui) fn decode(format: ImageFormat, bytes: &[u8]) -> Result<PreviewImage, ImageError> {
+pub fn decode(format: ImageFormat, bytes: &[u8]) -> Result<PreviewImage, ImageError> {
     match format {
         ImageFormat::Png => decode_png(bytes),
         ImageFormat::Jpeg => decode_jpeg(bytes),
@@ -518,7 +518,7 @@ mod tests {
     use std::io::ErrorKind;
     use std::net::TcpListener;
 
-    use http_proxy::ImageFormat;
+    use crate::ImageFormat;
 
     use super::{ImageError, PreviewImage, decode};
 

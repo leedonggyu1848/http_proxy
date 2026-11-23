@@ -3,25 +3,24 @@
 //! classified tokens for syntax highlighting.
 //!
 //! Each format lives in its own module and only turns text into a [`Styled`]
-//! token stream; [`highlight`] maps the shared [`TokenKind`]s to theme colors.
+//! token stream; UI highlighting maps the shared [`TokenKind`]s to theme colors.
 //! The result never feeds back into forwarding or the full log.
 
 mod css;
-pub(in crate::ui) mod form;
-pub(in crate::ui) mod highlight;
+pub mod form;
 mod javascript;
 mod json;
 mod json_tree;
 mod markup;
 mod tag;
-pub(in crate::ui) mod tree;
-pub(in crate::ui) mod xml;
+pub mod tree;
+mod xml;
 
-use http_proxy::MediaType;
+use crate::MediaType;
 
 /// Body syntax detected from `Content-Type`.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(in crate::ui) enum BodyFormat {
+pub enum BodyFormat {
     Json,
     Css,
     Form,
@@ -34,7 +33,8 @@ pub(in crate::ui) enum BodyFormat {
 impl BodyFormat {
     /// Detects the format from the body's media type. Unknown or missing
     /// types are plain text.
-    pub(in crate::ui) fn from_media_type(media_type: Option<&MediaType>) -> Self {
+    #[must_use]
+    pub fn from_media_type(media_type: Option<&MediaType>) -> Self {
         let Some(media_type) = media_type else {
             return Self::Text;
         };
@@ -55,7 +55,7 @@ impl BodyFormat {
     }
 
     /// What this format supports, declared in [`FormatSpec`].
-    pub(in crate::ui) const fn spec(self) -> &'static FormatSpec {
+    pub const fn spec(self) -> &'static FormatSpec {
         match self {
             Self::Json => &FormatSpec {
                 label: "JSON",
@@ -102,34 +102,35 @@ impl BodyFormat {
         }
     }
 
-    pub(in crate::ui) const fn label(self) -> &'static str {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
         self.spec().label
     }
 }
 
 /// Reads text as a format and returns it formatted, or why it could not.
-pub(in crate::ui) type PrettyFn = fn(&str) -> Result<Formatted, String>;
+type PrettyFn = fn(&str) -> Result<Formatted, String>;
 
 /// Reads text as a format and returns its tree, or why it could not.
-pub(in crate::ui) type TreeFn = fn(&str) -> Result<tree::TreeModel, String>;
+type TreeFn = fn(&str) -> Result<tree::TreeModel, String>;
 
 /// Everything the body view needs to know about one format. Adding a format
 /// means adding its [`BodyFormat::spec`] entry and its formatter module.
 #[derive(Debug)]
-pub(in crate::ui) struct FormatSpec {
+pub struct FormatSpec {
     /// Name shown next to the view mode.
-    pub(in crate::ui) label: &'static str,
+    label: &'static str,
     /// Pretty printer; without one Pretty shows the original text.
-    pub(in crate::ui) pretty: Option<PrettyFn>,
+    pretty: Option<PrettyFn>,
     /// Tree builder; without one Tree shows Pretty with a notice.
-    pub(in crate::ui) tree: Option<TreeFn>,
+    tree: Option<TreeFn>,
     /// Whether Pretty and Raw are shown with line numbers.
-    pub(in crate::ui) numbered: bool,
+    pub numbered: bool,
 }
 
 /// How a body preview is shown. Formats without a tree show Tree as Pretty.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub(in crate::ui) enum ViewMode {
+pub enum ViewMode {
     #[default]
     Pretty,
     Raw,
@@ -137,9 +138,10 @@ pub(in crate::ui) enum ViewMode {
 }
 
 impl ViewMode {
-    pub(in crate::ui) const ALL: [Self; 3] = [Self::Pretty, Self::Raw, Self::Tree];
+    pub const ALL: [Self; 3] = [Self::Pretty, Self::Raw, Self::Tree];
 
-    pub(in crate::ui) const fn label(self) -> &'static str {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Pretty => "Pretty",
             Self::Raw => "Raw",
@@ -150,7 +152,7 @@ impl ViewMode {
 
 /// Syntactic role of a piece of displayed text, shared by every format.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(in crate::ui) enum TokenKind {
+pub enum TokenKind {
     Text,
     Key,
     String,
@@ -175,31 +177,32 @@ pub(in crate::ui) enum TokenKind {
 /// (`offset` immediately follows `\n`) without inserting whitespace into
 /// [`Styled::text`].
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::ui) struct LineIndent {
+pub struct LineIndent {
     /// Byte offset in [`Styled::text`] where the indented line starts.
-    pub(in crate::ui) offset: usize,
+    pub offset: usize,
     /// Reference prefix whose rendered width in the active monospace font sets
     /// the visual indentation of the line.
-    pub(in crate::ui) align_to: String,
+    pub align_to: String,
 }
 
 /// Text with every byte assigned to a [`TokenKind`]; adjacent pieces of the
 /// same kind are merged.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(in crate::ui) struct Styled {
+pub struct Styled {
     text: String,
     spans: Vec<(std::ops::Range<usize>, TokenKind)>,
     indents: Vec<LineIndent>,
 }
 
 impl Styled {
-    pub(in crate::ui) fn plain(text: &str) -> Self {
+    #[must_use]
+    fn plain(text: &str) -> Self {
         let mut styled = Self::default();
         styled.push(text, TokenKind::Text);
         styled
     }
 
-    pub(in crate::ui) fn push(&mut self, piece: &str, kind: TokenKind) {
+    pub fn push(&mut self, piece: &str, kind: TokenKind) {
         if piece.is_empty() {
             return;
         }
@@ -214,7 +217,7 @@ impl Styled {
 
     /// Appends `piece` and aligns every non-empty continuation line inside it
     /// visually to `align_to`, without adding spaces to [`Self::text`].
-    pub(super) fn push_multiline(&mut self, piece: &str, kind: TokenKind, align_to: &str) {
+    pub fn push_multiline(&mut self, piece: &str, kind: TokenKind, align_to: &str) {
         let start = self.text.len();
         self.push(piece, kind);
         if align_to.is_empty() || !piece.contains('\n') {
@@ -299,18 +302,18 @@ impl Styled {
         }
     }
 
-    pub(in crate::ui) fn text(&self) -> &str {
+    #[must_use]
+    pub fn text(&self) -> &str {
         &self.text
     }
 
-    pub(in crate::ui) fn indents(&self) -> &[LineIndent] {
+    #[must_use]
+    pub fn indents(&self) -> &[LineIndent] {
         &self.indents
     }
 
     /// Iterates over the byte ranges and kinds in order.
-    pub(in crate::ui) fn span_ranges(
-        &self,
-    ) -> impl Iterator<Item = (std::ops::Range<usize>, TokenKind)> + '_ {
+    pub fn span_ranges(&self) -> impl Iterator<Item = (std::ops::Range<usize>, TokenKind)> + '_ {
         self.spans
             .iter()
             .map(|(range, kind)| (range.clone(), *kind))
@@ -318,7 +321,7 @@ impl Styled {
 
     /// Iterates over the text pieces and their kinds in order.
     #[cfg(test)]
-    pub(in crate::ui) fn pieces(&self) -> impl Iterator<Item = (&str, TokenKind)> {
+    fn pieces(&self) -> impl Iterator<Item = (&str, TokenKind)> {
         self.spans
             .iter()
             .filter_map(|(range, kind)| Some((self.text.get(range.clone())?, *kind)))
@@ -373,7 +376,7 @@ pub(super) fn comment_align(base_line: &str, comment: &str, open: &str) -> Strin
 
 /// How a [`Notice`] is shown.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::ui) enum NoticeLevel {
+pub enum NoticeLevel {
     /// Neutral information, such as the decoding used or a source map URL.
     Info,
     /// Something the shown text leaves out or could not do.
@@ -382,20 +385,20 @@ pub(in crate::ui) enum NoticeLevel {
 
 /// One line of information shown above a body.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::ui) struct Notice {
-    pub(in crate::ui) level: NoticeLevel,
-    pub(in crate::ui) text: String,
+pub struct Notice {
+    pub level: NoticeLevel,
+    pub text: String,
 }
 
 impl Notice {
-    pub(in crate::ui) fn info(text: impl Into<String>) -> Self {
+    pub fn info(text: impl Into<String>) -> Self {
         Self {
             level: NoticeLevel::Info,
             text: text.into(),
         }
     }
 
-    pub(in crate::ui) fn warning(text: impl Into<String>) -> Self {
+    pub fn warning(text: impl Into<String>) -> Self {
         Self {
             level: NoticeLevel::Warning,
             text: text.into(),
@@ -406,14 +409,15 @@ impl Notice {
 /// Body text prepared for one view mode, with what the reader should know
 /// about it in display order.
 #[derive(Debug, Eq, PartialEq)]
-pub(in crate::ui) struct Formatted {
-    pub(in crate::ui) styled: Styled,
-    pub(in crate::ui) notices: Vec<Notice>,
+pub struct Formatted {
+    pub styled: Styled,
+    pub notices: Vec<Notice>,
 }
 
 impl Formatted {
     /// Formatted text with nothing to point out.
-    pub(in crate::ui) const fn plain(styled: Styled) -> Self {
+    #[must_use]
+    const fn plain(styled: Styled) -> Self {
         Self {
             styled,
             notices: Vec::new(),
@@ -421,11 +425,12 @@ impl Formatted {
     }
 }
 
-/// Formats `text` for `mode`. Pretty falls back to the original text with a
-/// reason when the format has no pretty printer or the text cannot be read
-/// as that format; truncated input is formatted as far as it goes.
+/// Formats `text` for `mode` and explains Pretty fallback.
+/// Truncated input is formatted as far as it goes.
+///
 /// Tree has no text of its own, so it is formatted as Pretty here.
-pub(in crate::ui) fn format(format: BodyFormat, mode: ViewMode, text: &str) -> Formatted {
+#[must_use]
+pub fn format(format: BodyFormat, mode: ViewMode, text: &str) -> Formatted {
     let spec = format.spec();
     let pretty = match (mode, spec.pretty) {
         (ViewMode::Raw, _) | (_, None) => return Formatted::plain(Styled::plain(text)),

@@ -14,9 +14,9 @@ use http_proxy::{
 };
 
 use crate::ui::body_display::BodySide;
-use crate::ui::body_view;
 use crate::ui::outcome_view;
 use crate::ui::search::SearchScope;
+use http_proxy::content::decode as body_view;
 
 /// Bytes at the start of a decoded body that are checked for NUL when the
 /// media type does not say whether the body is text.
