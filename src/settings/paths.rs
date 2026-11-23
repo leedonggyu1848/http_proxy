@@ -3,6 +3,9 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+/// Directory name this application uses under each platform base directory.
+const APP_DIRECTORY: &str = "http-inspector";
+
 /// Returns the application settings directory, ignoring invalid environment paths.
 pub fn settings_directory(mut lookup: impl FnMut(&str) -> Option<OsString>) -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
@@ -29,14 +32,34 @@ pub fn ca_directory(mut lookup: impl FnMut(&str) -> Option<OsString>) -> Option<
 pub fn body_store_directory(mut lookup: impl FnMut(&str) -> Option<OsString>) -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     let directory =
-        absolute_path(lookup("HOME")).map(|home| home.join("Library/Caches/http-inspector"));
+        home_directory(&mut lookup).map(|home| home.join("Library/Caches").join(APP_DIRECTORY));
     #[cfg(not(target_os = "macos"))]
     let directory = xdg_directory(&mut lookup, "XDG_CACHE_HOME", ".cache");
     directory.map(|directory| directory.join("bodies"))
 }
 
+/// Returns the user's home directory from `HOME` when it is an absolute path.
+pub fn home_directory(mut lookup: impl FnMut(&str) -> Option<OsString>) -> Option<PathBuf> {
+    absolute_path(lookup("HOME"))
+}
+
+/// Returns the user data base directory shared by applications: an absolute
+/// `XDG_DATA_HOME`, otherwise `$HOME/.local/share`.
+pub fn data_home(mut lookup: impl FnMut(&str) -> Option<OsString>) -> Option<PathBuf> {
+    xdg_base(&mut lookup, "XDG_DATA_HOME", ".local/share")
+}
+
 fn absolute_path(value: Option<OsString>) -> Option<PathBuf> {
     value.map(PathBuf::from).filter(|path| path.is_absolute())
+}
+
+fn xdg_base(
+    lookup: &mut impl FnMut(&str) -> Option<OsString>,
+    variable: &str,
+    fallback: &str,
+) -> Option<PathBuf> {
+    absolute_path(lookup(variable))
+        .or_else(|| home_directory(&mut *lookup).map(|home| home.join(fallback)))
 }
 
 #[cfg(any(test, not(target_os = "macos")))]
@@ -45,15 +68,12 @@ fn xdg_directory(
     variable: &str,
     fallback: &str,
 ) -> Option<PathBuf> {
-    absolute_path(lookup(variable))
-        .or_else(|| absolute_path(lookup("HOME")).map(|home| home.join(fallback)))
-        .map(|base| base.join("http-inspector"))
+    xdg_base(lookup, variable, fallback).map(|base| base.join(APP_DIRECTORY))
 }
 
 #[cfg(any(test, target_os = "macos"))]
 fn macos_directory(lookup: &mut impl FnMut(&str) -> Option<OsString>) -> Option<PathBuf> {
-    absolute_path(lookup("HOME"))
-        .map(|home| home.join("Library/Application Support/http-inspector"))
+    home_directory(lookup).map(|home| home.join("Library/Application Support").join(APP_DIRECTORY))
 }
 
 #[cfg(test)]
@@ -156,5 +176,47 @@ mod tests {
         assert_eq!(settings_directory(environment(&[])), None);
         assert_eq!(ca_directory(environment(&[])), None);
         assert_eq!(body_store_directory(environment(&[])), None);
+    }
+
+    /// Every `XDG_DATA_HOME`/`HOME` combination keeps the locations used
+    /// before these rules moved out of the UI.
+    #[test]
+    fn data_locations_match_previous_values_for_every_environment() {
+        let homes = [None, Some(""), Some("relative"), Some("/home/test")];
+        let data_homes = [None, Some(""), Some("relative"), Some("/data")];
+        for home in homes {
+            for data_home_value in data_homes {
+                let mut values = Vec::new();
+                if let Some(home) = home {
+                    values.push(("HOME", home));
+                }
+                if let Some(data) = data_home_value {
+                    values.push(("XDG_DATA_HOME", data));
+                }
+                let absolute_home = home.filter(|home| home.starts_with('/'));
+                let expected_base = if data_home_value == Some("/data") {
+                    Some(PathBuf::from("/data"))
+                } else {
+                    absolute_home.map(|home| PathBuf::from(home).join(".local/share"))
+                };
+                assert_eq!(data_home(environment(&values)), expected_base, "{values:?}");
+                assert_eq!(
+                    home_directory(environment(&values)),
+                    absolute_home.map(PathBuf::from),
+                    "{values:?}"
+                );
+                #[cfg(not(target_os = "macos"))]
+                let expected_ca = expected_base.map(|base| base.join("http-inspector/ca"));
+                #[cfg(target_os = "macos")]
+                let expected_ca = absolute_home.map(|home| {
+                    PathBuf::from(home).join("Library/Application Support/http-inspector/ca")
+                });
+                assert_eq!(
+                    ca_directory(environment(&values)),
+                    expected_ca,
+                    "{values:?}"
+                );
+            }
+        }
     }
 }

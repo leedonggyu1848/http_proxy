@@ -230,7 +230,7 @@ impl InspectorApp {
                     .map(|error| error.to_string());
             }
             Err(error) => {
-                self.error = Some(settings::port::start_error_text(&error, port));
+                self.error = Some(toolbar::start_error_text(&error, port));
             }
         }
     }

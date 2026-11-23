@@ -98,10 +98,7 @@ fn is_snap_wrapper(path: &std::path::Path) -> bool {
 #[cfg(target_os = "macos")]
 fn bundle_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    if let Some(home) = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-    {
+    if let Some(home) = crate::settings::paths::home_directory(|name| std::env::var_os(name)) {
         paths.push(home.join("Applications"));
     }
     paths.push(PathBuf::from("/Applications"));

@@ -7,6 +7,7 @@ use rustls::pki_types::{CertificateDer, pem::PemObject};
 use tokio::process::Command;
 
 use super::{CaTrustError, CaTrustStatus, linux};
+use crate::settings::paths;
 
 #[derive(Debug)]
 pub(super) enum PlatformStore {
@@ -18,9 +19,7 @@ impl PlatformStore {
     pub(super) const DESCRIPTION: &'static str = "Chrome/Safari (login keychain)";
 
     pub(super) fn for_current_user() -> Result<Self, CaTrustError> {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .filter(|home| home.is_absolute())
+        let home = paths::home_directory(|name| std::env::var_os(name))
             .ok_or(CaTrustError::MissingHome)?;
         Ok(Self::Login(
             home.join("Library/Keychains/login.keychain-db"),

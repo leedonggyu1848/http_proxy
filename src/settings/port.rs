@@ -6,8 +6,6 @@ use std::fs;
 use std::io::{self, Write as _};
 use std::path::Path;
 
-use crate::StartError;
-
 /// Port used when nothing else chooses one.
 pub const DEFAULT_PORT: ProxyPort = ProxyPort(crate::DEFAULT_PORT);
 /// Environment variable that overrides the saved port for one run.
@@ -34,6 +32,13 @@ impl ProxyPort {
     #[must_use]
     pub const fn value(self) -> u16 {
         self.0
+    }
+}
+
+impl From<u16> for ProxyPort {
+    /// Every `u16` is a valid listener port, so no validation is needed.
+    fn from(value: u16) -> Self {
+        Self(value)
     }
 }
 
@@ -169,20 +174,6 @@ pub fn save_port(directory: &Path, port: ProxyPort) -> io::Result<()> {
         .map_err(|error| error.error)
 }
 
-/// Explains a failed start in terms of what the user can change.
-#[must_use]
-pub fn start_error_text(error: &StartError, port: ProxyPort) -> String {
-    match error {
-        StartError::Bind(bind) if bind.kind() == io::ErrorKind::AddrInUse => format!(
-            "Port {port} is already in use by another program. Enter another port, or 0 to pick a free one, then press Start."
-        ),
-        StartError::Bind(bind) if bind.kind() == io::ErrorKind::PermissionDenied => format!(
-            "Port {port} needs administrator privileges. Use a port from 1024 to 65535, or 0 to pick a free one."
-        ),
-        other => other.to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,6 +251,24 @@ mod tests {
     }
 
     #[test]
+    fn reads_settings_written_by_previous_versions() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        fs::write(directory.path().join("settings"), "proxy_port=9123\n")?;
+        assert_eq!(load_port(directory.path()), Some(ProxyPort(9123)));
+        fs::write(
+            directory.path().join("settings"),
+            "other=1\n proxy_port = 0 \n",
+        )?;
+        assert_eq!(load_port(directory.path()), Some(ProxyPort(0)));
+        save_port(directory.path(), ProxyPort(18081))?;
+        assert_eq!(
+            fs::read_to_string(directory.path().join("settings"))?,
+            "proxy_port=18081\n"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn saves_and_loads_the_port() -> io::Result<()> {
         let directory = tempfile::tempdir()?;
         let settings = directory.path().join("nested");
@@ -270,20 +279,6 @@ mod tests {
         assert_eq!(load_port(&settings), Some(ProxyPort(0)));
         fs::write(settings.join(SETTINGS_FILE), "proxy_port=nope\n")?;
         assert_eq!(load_port(&settings), None);
-        Ok(())
-    }
-
-    #[test]
-    fn explains_an_occupied_port() -> io::Result<()> {
-        let occupied = std::net::TcpListener::bind("127.0.0.1:0")?;
-        let port = ProxyPort(occupied.local_addr()?.port());
-        let Err(error) = crate::ProxyHandle::start(crate::ProxyConfig::loopback(port.value()))
-        else {
-            return Err(io::Error::other("binding an occupied port succeeded"));
-        };
-        let text = start_error_text(&error, port);
-        assert!(text.contains("already in use"), "{text}");
-        assert!(text.contains(&port.to_string()), "{text}");
         Ok(())
     }
 }

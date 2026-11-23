@@ -4,7 +4,8 @@ use crate::ui::theme::Palette;
 use crate::ui::{InspectorApp, MAX_RECORDS};
 use eframe::egui::{self, RichText};
 use http_proxy::settings;
-use http_proxy::{FullLog, ProxyHandle};
+use http_proxy::{FullLog, ProxyHandle, StartError};
+use std::io;
 use std::path::PathBuf;
 
 /// Port typed in the toolbar and where its current value came from.
@@ -46,6 +47,22 @@ impl PortChoice {
             return Err(settings::port::PortSaveError::SettingsDirectoryUnavailable);
         };
         settings::port::save_port(directory, port).map_err(settings::port::PortSaveError::Save)
+    }
+}
+
+/// Explains a failed start in terms of what the user can change.
+pub(in crate::ui) fn start_error_text(
+    error: &StartError,
+    port: settings::port::ProxyPort,
+) -> String {
+    match error {
+        StartError::Bind(bind) if bind.kind() == io::ErrorKind::AddrInUse => format!(
+            "Port {port} is already in use by another program. Enter another port, or 0 to pick a free one, then press Start."
+        ),
+        StartError::Bind(bind) if bind.kind() == io::ErrorKind::PermissionDenied => format!(
+            "Port {port} needs administrator privileges. Use a port from 1024 to 65535, or 0 to pick a free one."
+        ),
+        other => other.to_string(),
     }
 }
 
@@ -282,8 +299,9 @@ fn copy_menu(ui: &mut egui::Ui, address: std::net::SocketAddr) {
 
 #[cfg(test)]
 mod port_choice_tests {
-    use super::PortChoice;
+    use super::{PortChoice, start_error_text};
     use http_proxy::settings::port::{PortOrigin, PortSaveError, ProxyPort};
+    use std::io;
 
     #[test]
     fn remember_reports_typed_errors_and_skips_non_user_ports()
@@ -304,6 +322,21 @@ mod port_choice_tests {
         assert!(matches!(choice.remember(port), Err(PortSaveError::Save(_))));
         choice.origin = PortOrigin::Environment;
         assert!(choice.remember(port).is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn explains_an_occupied_port() -> io::Result<()> {
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let port = ProxyPort::from(occupied.local_addr()?.port());
+        let Err(error) =
+            http_proxy::ProxyHandle::start(http_proxy::ProxyConfig::loopback(port.value()))
+        else {
+            return Err(io::Error::other("binding an occupied port succeeded"));
+        };
+        let text = start_error_text(&error, port);
+        assert!(text.contains("already in use"), "{text}");
+        assert!(text.contains(&port.to_string()), "{text}");
         Ok(())
     }
 }

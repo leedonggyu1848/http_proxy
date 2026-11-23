@@ -11,6 +11,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 use super::{CaTrustError, CaTrustStatus};
+#[cfg(target_os = "linux")]
+use crate::settings::paths;
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long `lock` keeps retrying a contended lock before reporting another registration.
@@ -36,25 +38,20 @@ impl PlatformStore {
 
     #[cfg(target_os = "linux")]
     pub(super) fn for_current_user() -> Result<Self, CaTrustError> {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .ok_or(CaTrustError::MissingHome)?;
-        let data_home = std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute());
-        Ok(Self::for_user(&home, data_home.as_deref()))
+        let environment = |name: &str| std::env::var_os(name);
+        let home = paths::home_directory(environment).ok_or(CaTrustError::MissingHome)?;
+        // Resolves whenever HOME does, so the same error covers both.
+        let data_home = paths::data_home(environment).ok_or(CaTrustError::MissingHome)?;
+        Ok(Self::for_user(&home, &data_home))
     }
 
     #[cfg(target_os = "linux")]
-    fn for_user(home: &Path, data_home: Option<&Path>) -> Self {
+    fn for_user(home: &Path, data_home: &Path) -> Self {
         let legacy = home.join(".pki/nssdb");
         let database = if legacy.is_dir() {
             legacy
         } else {
-            data_home
-                .map_or_else(|| home.join(".local/share"), Path::to_owned)
-                .join("pki/nssdb")
+            data_home.join("pki/nssdb")
         };
         Self { database }
     }
@@ -370,17 +367,17 @@ mod tests {
     fn selects_chromium_database_with_legacy_precedence() -> Result<(), Box<dyn Error>> {
         let home = tempfile::tempdir()?;
         assert_eq!(
-            PlatformStore::for_user(home.path(), None).location(),
+            PlatformStore::for_user(home.path(), &home.path().join(".local/share")).location(),
             home.path().join(".local/share/pki/nssdb")
         );
         let data_home = home.path().join("custom-data");
         assert_eq!(
-            PlatformStore::for_user(home.path(), Some(&data_home)).location(),
+            PlatformStore::for_user(home.path(), &data_home).location(),
             data_home.join("pki/nssdb")
         );
         fs::create_dir_all(home.path().join(".pki/nssdb"))?;
         assert_eq!(
-            PlatformStore::for_user(home.path(), Some(&data_home)).location(),
+            PlatformStore::for_user(home.path(), &data_home).location(),
             home.path().join(".pki/nssdb")
         );
         Ok(())
@@ -393,7 +390,7 @@ mod tests {
         let ca = CaInfo::load_or_create(&home.path().join("ca"))?;
         let other_ca = CaInfo::load_or_create(&home.path().join("other-ca"))?;
         let store = CaTrustStore {
-            platform: PlatformStore::for_user(home.path(), None),
+            platform: PlatformStore::for_user(home.path(), &home.path().join(".local/share")),
         };
         assert_eq!(store.status(&ca).await?, CaTrustStatus::NotInstalled);
         assert_eq!(store.remove(&ca).await?, CaTrustStatus::NotInstalled);
@@ -426,7 +423,7 @@ mod tests {
         let ca = CaInfo::load_or_create(&home.path().join("ca"))?;
         let other_ca = CaInfo::load_or_create(&home.path().join("other-ca"))?;
         let store = CaTrustStore {
-            platform: PlatformStore::for_user(home.path(), None),
+            platform: PlatformStore::for_user(home.path(), &home.path().join(".local/share")),
         };
         let certificate = public_certificate(&ca)?;
         let other_certificate = public_certificate(&other_ca)?;
@@ -462,7 +459,7 @@ mod tests {
         let original = fs::read_to_string(ca.certificate_path())?;
         fs::copy(other_ca.certificate_path(), ca.certificate_path())?;
         let store = CaTrustStore {
-            platform: PlatformStore::for_user(home.path(), None),
+            platform: PlatformStore::for_user(home.path(), &home.path().join(".local/share")),
         };
         assert!(matches!(
             store.install(&ca).await,
@@ -486,7 +483,7 @@ mod tests {
         let home = tempfile::tempdir()?;
         let ca = CaInfo::load_or_create(&home.path().join("ca"))?;
         let store = CaTrustStore {
-            platform: PlatformStore::for_user(home.path(), None),
+            platform: PlatformStore::for_user(home.path(), &home.path().join(".local/share")),
         };
         fs::create_dir_all(store.location())?;
         fs::write(store.location().join("key4.db"), b"existing key database")?;
