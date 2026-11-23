@@ -467,6 +467,15 @@ async fn proxy_captures() -> Result<Captures, Box<dyn Error>> {
         .await?;
     let (pending_server, _) = upstream.accept().await?;
     let pending = proxy.receive().await.ok_or("missing pending request")?;
+    // The upstream accepting the connection can race the proxy recording
+    // it, so wait until the request is forwarded as the fixture describes.
+    while pending
+        .request()
+        .body()
+        .is_none_or(|body| body.lifecycle() == BodyLifecycle::Streaming)
+    {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
 
     drop(upstream);
     let mut failed_client = TcpStream::connect(proxy.local_addr()).await?;
