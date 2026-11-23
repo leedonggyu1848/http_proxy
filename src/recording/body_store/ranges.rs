@@ -138,6 +138,13 @@ impl RangePlan {
         &self.gaps
     }
 
+    /// Returns each missing range and its byte count.
+    pub fn gaps_with_lengths(&self) -> impl Iterator<Item = (u64, u64, u64)> + '_ {
+        self.gaps
+            .iter()
+            .map(|&(first, last)| (first, last, last - first + 1))
+    }
+
     /// Returns the validator (`ETag` or `Last-Modified`) the parts share.
     #[must_use]
     pub fn validator(&self) -> Option<&str> {

@@ -342,8 +342,8 @@ fn write_manifest(root: &Path, manifest: &Value) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::body_store::BodyRecorder;
     use crate::exchange::{BodyLifecycle, RecordId};
+    use crate::recording::body_store::BodyRecorder;
 
     fn body(record: u64, target: &str, directory: &Path) -> SaveBody {
         SaveBody {

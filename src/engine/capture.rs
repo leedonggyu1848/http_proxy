@@ -6,14 +6,14 @@ use bytes::Bytes;
 use http::HeaderMap;
 use http_body::{Body, Frame, SizeHint};
 
-use crate::engine::body_store::BodyRecorder;
-use crate::engine::journal::FullLog;
 use crate::exchange::AuthScheme;
 use crate::exchange::BodyLifecycle;
 use crate::exchange::RetentionBudget;
 use crate::exchange::{BodyPreview, CapturedHeader, HeaderPreview};
 use crate::exchange::{BodySide, ImageFormat, MediaType};
 use crate::http_semantics::redacted_value;
+use crate::recording::body_store::BodyRecorder;
+use crate::recording::journal::FullLog;
 
 /// Most bytes one non-image body keeps in memory for its preview.
 pub const BODY_PREVIEW_BYTES: usize = 8 * 1024;
