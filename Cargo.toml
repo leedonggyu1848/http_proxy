@@ -32,6 +32,7 @@ image-webp = "0.2"
 jpeg-decoder = { version = "0.3", default-features = false }
 memchr = "2.8"
 png = "0.18"
+psl = "2"
 quick-xml = { version = "0.41", default-features = false }
 rcgen = { version = "0.14", features = ["x509-parser"] }
 regex-automata = "0.4"
@@ -72,6 +73,10 @@ criterion = { version = "0.8.2", default-features = false }
 
 [[bench]]
 name = "search"
+harness = false
+
+[[bench]]
+name = "url_map"
 harness = false
 
 [target.'cfg(target_os = "linux")'.dependencies]
