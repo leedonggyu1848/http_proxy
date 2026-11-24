@@ -4,6 +4,8 @@
 
 이 문서는 HTTP Inspector를 개발하고 검증할 때 필요한 환경, 명령과 설계 문서를 모은다. 작업 흐름, 커밋과 PR 규칙은 [AGENTS.md](../AGENTS.md)를 따른다.
 
+프록시 요청이 어떻게 캡처되어 화면과 저장소에 반영되는지는 [코드베이스 가이드](developer-guide/README.md)에서 따라갈 수 있다.
+
 ## 개발 환경
 
 프로젝트는 Rust 1.100.0을 사용한다. `rustup`은 `rust-toolchain.toml`에 지정된 툴체인을 설치한다. Linux에서는 X11을 사용하며, macOS에서는 X11이 필요하지 않다.
