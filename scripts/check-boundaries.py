@@ -1,19 +1,21 @@
-"""Check domain module dependency boundaries and write-handle ownership.
+"""Check intra-crate module boundaries, crate dependency invariants, and write-handle ownership.
 
-Enforces the module architecture defined in issues #152 and #161:
-1. src/lib.rs declares domain modules and app constants only (no flat `pub use`).
-2. No library module (anything in src/ outside src/ui/ and src/main.rs) may
-   reference `eframe`, `egui`, or `egui_extras`.
-3. Every intra-crate reference (`crate::`, `http_proxy::`, `self::`, `super::`)
-   in a domain module is normalized against the file's module path (including
-   inline `mod` blocks) and must follow the allowed dependency graph (`exchange`
-   and `http_semantics` depend on no other domain module; `content`, `analysis`,
-   and `interop` never depend on `interception`, `recording`, `https`, or
-   `replay`). Crate-root imports/aliases (`use crate;`, `use crate as ...;`,
-   `use super as ...;` landing on the crate root) are also rejected.
-4. `Exchange` write handles (`ExchangeWriter`, `BodyPreviewWriter`,
-   `TunnelWriter`) may be used in production code only inside `exchange`,
-   `interception`, and `replay`.
+Cross-crate domain dependencies (e.g., preventing `content`, `analysis`, and
+`interop` from depending on `core` or UI crates) are enforced at compile time
+by Cargo workspace manifests. This script enforces the remaining invariants
+that Cargo alone does not check:
+1. Pure domain crates (`http-inspector-exchange`, `http-inspector-content`,
+   `http-inspector-analysis`, `http-inspector-interop`) must not declare normal
+   dependencies on `tokio`, `hyper`, `hyper-util`, `eframe`, `egui`, or
+   `egui_extras`; `http-inspector-core` must not depend on UI crates.
+2. Multi-module crates (`http-inspector-exchange`, `http-inspector-core`) keep
+   their internal module dependency direction (`crate::`, `<crate>::`, `self::`,
+   `super::` normalized against the file's module path, including inline `mod`
+   blocks, and crate-root aliases rejected).
+3. `Exchange` write handles (`ExchangeWriter`, `BodyPreviewWriter`,
+   `TunnelWriter`) may be used in production code only inside
+   `http-inspector-exchange` and `http-inspector-core`'s `interception` and
+   `replay` modules.
 """
 
 from __future__ import annotations
@@ -21,48 +23,72 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import sys
+import tomllib
 
-ROOT_CONSTANTS: frozenset[str] = frozenset({"APP_NAME", "DEFAULT_PORT"})
+UI_CRATES: frozenset[str] = frozenset({"eframe", "egui", "egui_extras"})
+RUNTIME_CRATES: frozenset[str] = frozenset({"tokio", "hyper", "hyper-util"})
 
-FORBIDDEN_UI_CRATES: frozenset[str] = frozenset({"eframe", "egui", "egui_extras"})
+FORBIDDEN_NORMAL_DEPS: dict[str, frozenset[str]] = {
+    "http-inspector-exchange": UI_CRATES | RUNTIME_CRATES,
+    "http-inspector-content": UI_CRATES | RUNTIME_CRATES,
+    "http-inspector-analysis": UI_CRATES | RUNTIME_CRATES,
+    "http-inspector-interop": UI_CRATES | RUNTIME_CRATES,
+    "http-inspector-core": UI_CRATES,
+}
 
 WRITER_HANDLES: frozenset[str] = frozenset(
     {"ExchangeWriter", "BodyPreviewWriter", "TunnelWriter"}
 )
-WRITER_ALLOWED_MODULES: frozenset[str] = frozenset(
-    {"exchange", "interception", "replay"}
+
+
+@dataclass(frozen=True)
+class CrateBoundarySpec:
+    crate_dir: str
+    crate_ident: str
+    allowed_deps: dict[str, frozenset[str]]
+    root_constants: frozenset[str]
+    writer_allowed_modules: frozenset[str]
+
+
+# Internal module dependency rules for multi-module workspace crates.
+# Every top-level module in each listed crate must be classified here.
+INTRA_CRATE_SPECS: tuple[CrateBoundarySpec, ...] = (
+    CrateBoundarySpec(
+        crate_dir="crates/http-inspector-exchange",
+        crate_ident="http_inspector_exchange",
+        allowed_deps={
+            "exchange": frozenset(),
+            "http_semantics": frozenset(),
+            "capture": frozenset({"exchange", "http_semantics"}),
+            "exchange_builder": frozenset({"exchange", "capture"}),
+        },
+        root_constants=frozenset({"APP_NAME"}),
+        writer_allowed_modules=frozenset(
+            {"exchange", "capture", "exchange_builder"}
+        ),
+    ),
+    CrateBoundarySpec(
+        crate_dir="crates/http-inspector-core",
+        crate_ident="http_inspector_core",
+        allowed_deps={
+            "settings": frozenset(),
+            "https": frozenset({"settings"}),
+            "launcher": frozenset({"https", "settings"}),
+            "recording": frozenset(),
+            "interception": frozenset({"https", "recording"}),
+            "replay": frozenset({"interception"}),
+        },
+        root_constants=frozenset({"DEFAULT_PORT"}),
+        writer_allowed_modules=frozenset({"interception", "replay"}),
+    ),
 )
 
-# Allowed cross-domain dependencies for each top-level library module.
-# Keeping this table exhaustive ensures new top-level modules are classified
-# before they can introduce unchecked edges.
-ALLOWED_DEPS: dict[str, frozenset[str]] = {
-    "exchange": frozenset(),
-    "http_semantics": frozenset(),
-    "settings": frozenset(),
-    "content": frozenset({"exchange", "http_semantics"}),
-    "analysis": frozenset({"content", "exchange"}),
-    "interop": frozenset({"analysis", "content", "http_semantics", "exchange"}),
-    "https": frozenset({"settings"}),
-    "launcher": frozenset({"https", "settings"}),
-    "recording": frozenset({"http_semantics", "exchange"}),
-    "interception": frozenset({"https", "recording", "http_semantics", "exchange"}),
-    "replay": frozenset({"interception", "http_semantics", "exchange"}),
-}
-
-# `ExchangeBuilder` currently lives in `interception` because it reuses
-# `interception::capture` rules. Unit tests in these modules may import only
-# these `test-support` fixture items under `#[cfg(test)]` without opening any
-# dependency on the proxy runtime or other domains.
-TEST_FIXTURE_CONSUMERS: frozenset[str] = frozenset({"analysis", "interop", "recording"})
-TEST_FIXTURE_ITEMS: frozenset[str] = frozenset(
-    {
-        "BODY_PREVIEW_BYTES",
-        "ConnectExchangeBuilder",
-        "ExchangeBuilder",
-        "FixtureError",
-        "ResponseFixture",
-    }
+# Crates whose production code must never reference `Exchange` write handles.
+NO_WRITER_CRATE_SRCS: tuple[str, ...] = (
+    "crates/http-inspector-content/src",
+    "crates/http-inspector-analysis/src",
+    "crates/http-inspector-interop/src",
+    "src",
 )
 
 
@@ -281,14 +307,10 @@ def tokenize_rust(source: str) -> list[Token]:
 
 
 def _is_cfg_test_attr(tokens: list[Token], start: int) -> tuple[bool, int]:
-    """Check if `tokens[start:]` is an outer `#[cfg(...test...)]` attribute.
-
-    Returns `(is_cfg_test, next_index_after_attr)`.
-    """
+    """Check if `tokens[start:]` is an outer `#[cfg(...test...)]` attribute."""
     n = len(tokens)
     if start + 1 >= n or tokens[start].text != "#" or tokens[start + 1].text != "[":
         return False, start
-    # Find matching `]`.
     depth = 0
     end = start + 1
     while end < n:
@@ -304,7 +326,6 @@ def _is_cfg_test_attr(tokens: list[Token], start: int) -> tuple[bool, int]:
 
     inner = tokens[start + 2 : end]
     if len(inner) >= 3 and inner[0].kind == "IDENT" and inner[0].text == "cfg":
-        # Check for `test` token inside `cfg(...)`, excluding `not(test)`.
         saw_test = False
         for idx, tok in enumerate(inner):
             if tok.kind == "IDENT" and tok.text == "test":
@@ -351,7 +372,6 @@ def annotate_scopes(
         in_test_now = whole_file_is_test or test_enter_depth is not None or pending_test
         cur_mod = file_mod_path + tuple(name for name, _ in mod_stack)
 
-        # Detect outer attributes (`#[...]`) at the start of an item.
         if tok.text == "#" and i + 1 < n and tokens[i + 1].text == "[":
             is_cfg_test, next_i = _is_cfg_test_attr(tokens, i)
             if not whole_file_is_test and is_cfg_test and test_enter_depth is None:
@@ -370,7 +390,6 @@ def annotate_scopes(
             i = next_i
             continue
 
-        # Detect inline module definitions (`mod foo { ... }`).
         if (
             tok.kind == "IDENT"
             and tok.text == "mod"
@@ -507,18 +526,13 @@ def _parse_use_tree(
 
 
 def normalize_crate_path(
-    raw_path: list[str], cur_mod_path: tuple[str, ...]
+    raw_path: list[str], cur_mod_path: tuple[str, ...], crate_ident: str
 ) -> list[str] | None:
-    """Resolve `crate::`, `http_proxy::`, `self::`, or `super::` paths to crate-root segments.
-
-    Returns `None` for external paths (e.g. `std::...`), `[]` for paths that
-    resolve to the crate root itself (e.g. `use crate as root;`), or the
-    normalized path segments from the crate root.
-    """
+    """Resolve `crate::`, `<crate_ident>::`, `self::`, or `super::` paths to crate-root segments."""
     if not raw_path:
         return None
     head = raw_path[0]
-    if head in ("crate", "http_proxy"):
+    if head in ("crate", crate_ident):
         resolved: list[str] = []
         segments = raw_path[1:]
     elif head in ("self", "super"):
@@ -538,27 +552,26 @@ def normalize_crate_path(
     return resolved
 
 
-def extract_crate_refs(tokens: list[Token]) -> list[CrateRef]:
+def extract_crate_refs(tokens: list[Token], crate_ident: str) -> list[CrateRef]:
     """Extract and normalize all intra-crate paths from `use` items and inline paths."""
     refs: list[CrateRef] = []
     n = len(tokens)
     i = 0
+    roots = ("crate", crate_ident, "self", "super")
     while i < n:
         tok = tokens[i]
-        # Handle `use ...;` statements cleanly (including nested `{...}` groups).
         if tok.kind == "IDENT" and tok.text == "use":
             paths, next_i = _parse_use_tree(tokens, i + 1, [])
             for path, line, in_test, mod_path in paths:
-                resolved = normalize_crate_path(path, mod_path)
+                resolved = normalize_crate_path(path, mod_path, crate_ident)
                 if resolved is not None:
                     refs.append(CrateRef(resolved, "::".join(path), line, in_test))
             i = next_i + 1
             continue
 
-        # Handle inline paths (`crate::...`, `http_proxy::...`, `self::...`, `super::...`).
         if (
             tok.kind == "IDENT"
-            and tok.text in ("crate", "http_proxy", "self", "super")
+            and tok.text in roots
             and (i == 0 or tokens[i - 1].text != "::")
             and i + 2 < n
             and tokens[i + 1].text == "::"
@@ -569,7 +582,7 @@ def extract_crate_refs(tokens: list[Token]) -> list[CrateRef]:
             while j + 1 < n and tokens[j].text == "::" and tokens[j + 1].kind == "IDENT":
                 raw.append(tokens[j + 1].text)
                 j += 2
-            resolved = normalize_crate_path(raw, tok.mod_path)
+            resolved = normalize_crate_path(raw, tok.mod_path, crate_ident)
             if resolved is not None:
                 refs.append(CrateRef(resolved, "::".join(raw), tok.line, tok.in_test))
             i = j
@@ -579,125 +592,120 @@ def extract_crate_refs(tokens: list[Token]) -> list[CrateRef]:
     return refs
 
 
-def check_lib_rs(lib_rs: Path) -> list[Violation]:
-    """Ensure src/lib.rs contains no flat `pub use` re-exports."""
+def top_level_module(src_dir: Path, path: Path) -> str | None:
+    rel = path.relative_to(src_dir)
+    first = rel.parts[0]
+    if first in ("lib.rs", "main.rs"):
+        return None
+    return first.removesuffix(".rs")
+
+
+def check_manifest_deps(root: Path) -> list[Violation]:
+    """Verify normal `[dependencies]` of domain crates exclude forbidden runtime/UI crates."""
     violations: list[Violation] = []
-    tokens = tokenize_rust(lib_rs.read_text())
-    for i in range(len(tokens) - 1):
-        if (
-            tokens[i].kind == "IDENT"
-            and tokens[i].text == "pub"
-            and tokens[i + 1].kind == "IDENT"
-            and tokens[i + 1].text == "use"
-        ):
+    crates_dir = root / "crates"
+    for manifest_path in sorted(crates_dir.glob("*/Cargo.toml")):
+        manifest = tomllib.loads(manifest_path.read_text())
+        pkg_name = manifest.get("package", {}).get("name", manifest_path.parent.name)
+        if pkg_name not in FORBIDDEN_NORMAL_DEPS:
             violations.append(
                 Violation(
-                    lib_rs,
-                    tokens[i].line,
-                    "src/lib.rs must declare domain modules and app constants only (no flat `pub use`)",
+                    manifest_path,
+                    1,
+                    f"unknown workspace crate `{pkg_name}`; classify it in scripts/check-boundaries.py",
+                )
+            )
+            continue
+        forbidden = FORBIDDEN_NORMAL_DEPS[pkg_name]
+        normal_deps: set[str] = set(manifest.get("dependencies", {}).keys())
+        for target_cfg in manifest.get("target", {}).values():
+            if isinstance(target_cfg, dict):
+                normal_deps.update(target_cfg.get("dependencies", {}).keys())
+        for dep in sorted(normal_deps & forbidden):
+            violations.append(
+                Violation(
+                    manifest_path,
+                    1,
+                    f"crate `{pkg_name}` must not have a normal dependency on `{dep}`",
                 )
             )
     return violations
 
 
-def domain_module_for(src_dir: Path, path: Path) -> str | None:
-    rel = path.relative_to(src_dir)
-    first = rel.parts[0]
-    if first in ("lib.rs", "main.rs", "ui"):
-        return None
-    return first.removesuffix(".rs")
+def check_writer_handles_forbidden(
+    rs_file: Path, tokens: list[Token], scope_label: str
+) -> list[Violation]:
+    violations: list[Violation] = []
+    for tok in tokens:
+        if (
+            not tok.in_test
+            and tok.kind == "IDENT"
+            and tok.text in WRITER_HANDLES
+        ):
+            violations.append(
+                Violation(
+                    rs_file,
+                    tok.line,
+                    f"{scope_label} must not use write handle `{tok.text}` "
+                    f"(allowed in production only in http-inspector-exchange and "
+                    f"http-inspector-core::{{interception, replay}})",
+                )
+            )
+    return violations
 
 
-def check_repository(root: Path) -> list[Violation]:
-    src_dir = root / "src"
+def check_intra_crate(root: Path, spec: CrateBoundarySpec) -> list[Violation]:
+    src_dir = root / spec.crate_dir / "src"
     violations: list[Violation] = []
 
-    lib_rs = src_dir / "lib.rs"
-    violations.extend(check_lib_rs(lib_rs))
-
-    # Verify every top-level entry in src/ is classified.
     for entry in sorted(src_dir.iterdir()):
-        if entry.name in ("lib.rs", "main.rs", "ui"):
+        if entry.name == "lib.rs":
             continue
         mod_name = entry.name.removesuffix(".rs")
-        if mod_name not in ALLOWED_DEPS:
+        if mod_name not in spec.allowed_deps:
             violations.append(
                 Violation(
                     entry,
                     1,
-                    f"unknown domain module `{mod_name}`; classify it in scripts/check-boundaries.py",
+                    f"unknown module `{mod_name}` in `{spec.crate_dir}`; "
+                    f"classify it in scripts/check-boundaries.py",
                 )
             )
 
     test_files = discover_cfg_test_files(src_dir)
 
     for rs_file in sorted(src_dir.rglob("*.rs")):
-        rel = rs_file.relative_to(src_dir)
-        if rel.parts[0] in ("ui", "main.rs"):
-            continue
-
         whole_file_is_test = rs_file.resolve() in test_files
         tokens = annotate_scopes(
             tokenize_rust(rs_file.read_text()),
             whole_file_is_test,
             module_path_for(src_dir, rs_file),
         )
-
-        # Rule 2: No eframe/egui references anywhere outside src/ui/ and src/main.rs.
-        for tok in tokens:
-            if tok.kind == "IDENT" and tok.text in FORBIDDEN_UI_CRATES:
-                violations.append(
-                    Violation(
-                        rs_file,
-                        tok.line,
-                        f"library code must not reference UI crate `{tok.text}`",
-                    )
-                )
-
-        src_mod = domain_module_for(src_dir, rs_file)
-        if src_mod is None or src_mod not in ALLOWED_DEPS:
+        src_mod = top_level_module(src_dir, rs_file)
+        if src_mod is None or src_mod not in spec.allowed_deps:
             continue
 
-        # Rule 5: Exchange write handles are owned exclusively by exchange/interception/replay.
-        if src_mod not in WRITER_ALLOWED_MODULES:
-            for tok in tokens:
-                if (
-                    not tok.in_test
-                    and tok.kind == "IDENT"
-                    and tok.text in WRITER_HANDLES
-                ):
-                    violations.append(
-                        Violation(
-                            rs_file,
-                            tok.line,
-                            f"module `{src_mod}` must not use write handle `{tok.text}` "
-                            f"(allowed only in {sorted(WRITER_ALLOWED_MODULES)})",
-                        )
-                    )
+        if src_mod not in spec.writer_allowed_modules:
+            violations.extend(
+                check_writer_handles_forbidden(
+                    rs_file, tokens, f"module `{spec.crate_ident}::{src_mod}`"
+                )
+            )
 
-        # Rule 3 & 4: Domain dependency direction (including `self::`/`super::` and crate aliases).
-        allowed = ALLOWED_DEPS[src_mod]
-        for ref in extract_crate_refs(tokens):
+        allowed = spec.allowed_deps[src_mod]
+        for ref in extract_crate_refs(tokens, spec.crate_ident):
             if not ref.resolved:
                 violations.append(
                     Violation(
                         rs_file,
                         ref.line,
                         f"forbidden crate-root import or alias via `{ref.raw}` "
-                        f"in module `{src_mod}`",
+                        f"in `{spec.crate_ident}::{src_mod}`",
                     )
                 )
                 continue
             target = ref.resolved[0]
-            if target == src_mod or target in ROOT_CONSTANTS or target in allowed:
-                continue
-            item = ref.resolved[1] if len(ref.resolved) > 1 else None
-            if (
-                ref.in_test
-                and src_mod in TEST_FIXTURE_CONSUMERS
-                and target == "interception"
-                and item in TEST_FIXTURE_ITEMS
-            ):
+            if target == src_mod or target in spec.root_constants or target in allowed:
                 continue
             normalized = "crate::" + "::".join(ref.resolved)
             via = (
@@ -710,9 +718,35 @@ def check_repository(root: Path) -> list[Violation]:
                 Violation(
                     rs_file,
                     ref.line,
-                    f"forbidden dependency `{src_mod}` -> `{target}` via {via} "
-                    f"(allowed domain deps for `{src_mod}`: {allowed_list})",
+                    f"forbidden intra-crate dependency `{spec.crate_ident}::{src_mod}` -> `{target}` via {via} "
+                    f"(allowed intra-crate deps: {allowed_list})",
                 )
+            )
+
+    return violations
+
+
+def check_repository(root: Path) -> list[Violation]:
+    violations: list[Violation] = []
+    violations.extend(check_manifest_deps(root))
+
+    for spec in INTRA_CRATE_SPECS:
+        violations.extend(check_intra_crate(root, spec))
+
+    for rel_src in NO_WRITER_CRATE_SRCS:
+        src_dir = root / rel_src
+        if not src_dir.exists():
+            continue
+        test_files = discover_cfg_test_files(src_dir)
+        for rs_file in sorted(src_dir.rglob("*.rs")):
+            whole_file_is_test = rs_file.resolve() in test_files
+            tokens = annotate_scopes(
+                tokenize_rust(rs_file.read_text()),
+                whole_file_is_test,
+                module_path_for(src_dir, rs_file),
+            )
+            violations.extend(
+                check_writer_handles_forbidden(rs_file, tokens, f"`{rel_src}`")
             )
 
     return violations
@@ -732,7 +766,8 @@ def main(argv: list[str]) -> int:
         return 1
 
     print(
-        f"Boundary check passed ({len(ALLOWED_DEPS)} domain modules verified, 0 violations)."
+        f"Boundary check passed ({len(FORBIDDEN_NORMAL_DEPS)} workspace crates and "
+        f"{len(INTRA_CRATE_SPECS)} intra-crate module graphs verified, 0 violations)."
     )
     return 0
 

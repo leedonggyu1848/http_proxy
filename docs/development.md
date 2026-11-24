@@ -34,7 +34,9 @@ cargo build --release
 
 통합 테스트는 실제 TCP 연결을 사용한다. 테스트는 HTTP 전달과 `CONNECT` 터널의 양방향 전송을 검증한다.
 
-프록시를 띄우지 않고 캡처 레코드(`Exchange`)가 필요한 테스트는 `test-support` feature의 `http_proxy::interception::ExchangeBuilder`로 레코드를 만든다. 빌더는 캡처 경로와 같은 쓰기 핸들과 헤더 마스킹·길이 제한 규칙을 쓴다. 본문을 읽는 분석 코드(엔드포인트 스키마)는 `BodySource` 포트로 본문을 받으므로, 테스트에서는 본문 저장소 대신 디코딩된 본문을 메모리에 둔 `http_proxy::exchange::MemoryBodySource`를 넘긴다. `Cargo.toml`의 `dev-dependencies`가 이 패키지 자신을 `test-support`와 함께 참조하므로 테스트·벤치마크·문서 테스트 빌드에서만 feature가 켜지고, `cargo build --release` 결과물에는 빌더가 들어가지 않는다.
+도메인 크레이트 단독 테스트는 `cargo test -p <crate>`로 실행한다(`http-inspector-exchange`, `http-inspector-content`, `http-inspector-analysis`, `http-inspector-interop`, `http-inspector-core`).
+
+프록시를 띄우지 않고 캡처 레코드(`Exchange`)가 필요한 테스트는 `http-inspector-exchange` 크레이트의 `test-support` feature가 제공하는 `http_inspector_exchange::ExchangeBuilder`로 레코드를 만든다. 빌더는 캡처 경로(`http_inspector_exchange::capture`)와 같은 쓰기 핸들과 헤더 마스킹·길이 제한 규칙을 쓴다. 본문을 읽는 분석 코드(엔드포인트 스키마)는 `BodySource` 포트로 본문을 받으므로, 테스트에서는 본문 저장소 대신 디코딩된 본문을 메모리에 둔 `http_inspector_exchange::MemoryBodySource`를 넘긴다. 각 크레이트의 `dev-dependencies`에서만 `http-inspector-exchange`의 `test-support` feature를 켜므로 테스트·벤치마크·문서 테스트 빌드에서만 빌더가 컴파일되고, `cargo build --release` 결과물에는 들어가지 않는다.
 
 macOS 실환경에서 키체인 등록·상태 확인·제거와 Chrome 검사 창 실행을 확인하려면 다음 검사를 실행한다. 첫 검사는 임시 CA를 로그인 키체인에 등록한 뒤 제거하며, macOS 인증 창이 나타날 수 있다.
 
@@ -74,47 +76,55 @@ CI는 Ubuntu 24.04 x86_64, macOS 15 arm64, macOS 15 Intel에서 각각 네이티
 
 Actions의 [파일 권한 제한](https://github.com/actions/upload-artifact/tree/v4#permission-loss) 때문에 실행 파일을 tar.gz로 감싼다. 대상은 GitHub의 [호스팅 runner 목록](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)에 따라 고정하고, 공개에는 GitHub CLI의 [draft와 verify-tag 옵션](https://cli.github.com/manual/gh_release_create)을 사용한다.
 
-## 모듈 구조와 의존 규칙
+## 워크스페이스 구조와 의존 규칙
 
-라이브러리 크레이트(`src/lib.rs`)는 도메인 모듈 선언과 앱 상수(`APP_NAME`, `DEFAULT_PORT`)만 두고, 타입을 최상위에 평평하게 다시 내보내지 않는다. 바이너리(`src/ui/`), 통합 테스트(`tests/`), 벤치마크(`benches/`)는 `http_proxy::exchange::Exchange`, `http_proxy::recording::FullLog`처럼 도메인 경로로 API를 사용한다.
+저장소는 Cargo workspace로 구성되며, 루트 패키지 `http-proxy`가 앱 바이너리(`src/main.rs`, `src/ui/`), 통합 테스트(`tests/`), 벤치마크(`benches/`)를 두고, 도메인 라이브러리를 `crates/` 아래 5개 크레이트로 나눈다. 루트 `Cargo.toml`은 `[workspace.package]`, `[workspace.dependencies]`, `[workspace.lints]`를 모든 크레이트에 공통 적용하고, 루트에서의 `cargo run`, `cargo build --release`, `cargo test --test ...`, `cargo bench --bench ...` 진입점을 그대로 유지한다.
 
-| 모듈 | 위치 | 책임 |
-| --- | --- | --- |
-| `exchange` | `src/exchange.rs`, `src/exchange/` | 공유 캡처 모델(`RecordId`, `Exchange`, 헤더·본문 미리보기, `Outcome`, 터널, `MediaType`, `BodySide`, `BodySource` 포트) |
-| `http_semantics` | `src/http_semantics.rs`, `src/http_semantics/` | 내부 HTTP 규칙(hop-by-hop 헤더 제거, 민감 헤더 마스킹) |
-| `settings` | `src/settings.rs`, `src/settings/` | 저장 위치 규칙과 프록시 포트 검증 |
-| `content` | `src/content/` | `Content-Encoding` 해제, 본문 형식 감지·포맷 토큰화, 이미지 디코딩 |
-| `analysis` | `src/analysis/` | 캡처 이벤트 파이프라인, URL 정규화·맵, 엔드포인트 스키마, 검색, 레코드 필터 |
-| `interop` | `src/interop/` | 외부 형식 변환(HAR 1.2, cURL, URL 맵 Text/JSON/Mermaid/DOT) |
-| `https` | `src/https.rs`, `src/https/` | 로컬 CA 생성·발급과 OS trust store 등록 |
-| `launcher` | `src/launcher.rs`, `src/launcher/` | 프록시가 설정된 브라우저 탐색·실행 |
-| `recording` | `src/recording.rs`, `src/recording/` | 전체 세션 로그(`FullLog`)와 본문 저장소(`BodyStore`, `BodySource` 구현) |
-| `interception` | `src/interception.rs`, `src/interception/` | 로컬 프록시 리스너, 업스트림 전달, `CONNECT` 터널, 캡처, `test-support` 픽스처 빌더 |
-| `replay` | `src/replay.rs`, `src/replay/` | 재전송 초안 검증과 실행 요청 |
-| `ui` (바이너리) | `src/main.rs`, `src/ui/` (`app`, `requests`, `detail`, `map`, `dialogs`, `style`) | eframe/egui 데스크톱 화면 |
+### 크레이트 분리 기준
 
-아래 그림은 허용하는 모듈 의존 방향을 보여 준다. 화살표 반대 방향 참조는 허용하지 않는다.
+1. **런타임·UI 의존 여부**: 비동기 프록시 런타임(`tokio`, `hyper`, `rustls`)이나 데스크톱 UI(`eframe`, `egui`)가 필요 없는 순수 도메인 크레이트(`exchange`, `content`, `analysis`, `interop`)를 런타임 크레이트(`core`)와 UI 바이너리(`http-proxy`)에서 분리해 Cargo가 컴파일 타임에 의존 방향을 강제하게 한다.
+2. **함께 바뀌는 모듈 묶음**:
+   - `http-inspector-exchange`는 공유 캡처 모델(`exchange`), HTTP 헤더 규칙(`http_semantics`), 순수 HTTP 캡처 규칙(`capture`), `test-support` 픽스처(`ExchangeBuilder`, `MemoryBodySource`)를 함께 둔다. 순수 캡처 규칙과 `ExchangeBuilder`를 `interception`에서 `exchange`로 옮김으로써 프록시 캡처 경로와 단일 진실 공급원을 유지하면서도 `exchange`·`content`·`analysis`·`interop`가 `core`(`tokio`·`hyper`) 없이 단독 빌드·테스트할 수 있다.
+   - `http-inspector-core`는 비동기 런타임·OS 연동·파일시스템 상태를 다루며 함께 변하는 6개 모듈(`interception`, `https`, `recording`, `replay`, `launcher`, `settings`)을 묶는다.
+
+### 최종 크레이트 구성
+
+| 크레이트 | 위치 | 포함 모듈·책임 | `tokio`/`hyper` | `eframe`/`egui` |
+| --- | --- | --- | --- | --- |
+| `http-inspector-exchange` | `crates/http-inspector-exchange/` | `exchange` 공유 캡처 모델(`RecordId`, `Exchange`, `Outcome`, `MediaType`, `BodySource` 포트), `http_semantics`(hop-by-hop 제거·민감 헤더 마스킹), `capture`(순수 캡처 규칙), `APP_NAME`, `test-support` 픽스처(`ExchangeBuilder`, `MemoryBodySource`) | 없음 | 없음 |
+| `http-inspector-content` | `crates/http-inspector-content/` | `decode`, `detect`, `format`, `image` (`Content-Encoding` 해제, 본문 형식 감지·포맷 토큰화, 이미지 디코딩) | 없음 | 없음 |
+| `http-inspector-analysis` | `crates/http-inspector-analysis/` | `pipeline`, `url`, `url_map`, `endpoint_schema`, `endpoint_analysis`, `search`, `filter` | 없음 | 없음 |
+| `http-inspector-interop` | `crates/http-inspector-interop/` | `har`, `curl`, `map_export` (HAR 1.2, cURL, URL 맵 Text/JSON/Mermaid/DOT) | 없음 | 없음 |
+| `http-inspector-core` | `crates/http-inspector-core/` | `interception`, `https`, `recording`, `replay`, `launcher`, `settings`, `DEFAULT_PORT` | 사용 | 없음 |
+| `http-proxy` (바이너리) | `src/main.rs`, `src/ui/` (`app`, `requests`, `detail`, `map`, `dialogs`, `style`) | eframe/egui 데스크톱 화면, 통합 테스트(`tests/`), 벤치마크(`benches/`) | 사용 | 사용 |
+
+아래 그림은 Cargo가 강제하는 크레이트 간 의존 방향과 `http-inspector-core` 내부 모듈 의존 방향을 보여 준다. 화살표 반대 방향 참조는 허용하지 않는다.
 
 ```mermaid
 graph TD
-  ui["ui (바이너리)"] --> interop & analysis & content & replay & launcher & settings & interception & recording & https & exchange
-  interception --> https & recording & http_semantics & exchange
-  replay --> interception & http_semantics & exchange
-  launcher --> https & settings
-  https --> settings
-  recording --> http_semantics & exchange
-  interop --> analysis & content & http_semantics & exchange
-  analysis --> content & exchange
-  content --> http_semantics & exchange
+  ui["http-proxy (ui 바이너리)"] --> interop & analysis & content & core & exchange
+  interop["http-inspector-interop"] --> analysis & content & exchange
+  analysis["http-inspector-analysis"] --> content & exchange
+  content["http-inspector-content"] --> exchange
+  core["http-inspector-core"] --> exchange
+
+  subgraph core_inner["http-inspector-core 내부 모듈"]
+    replay --> interception
+    interception --> https & recording
+    launcher --> https & settings
+    https --> settings
+  end
 ```
 
-`scripts/check-boundaries.py`가 로컬과 CI(`quality` 작업)에서 다음 규칙을 검사한다(`crate::`뿐 아니라 `super::`·`self::` 상대 경로도 파일의 모듈 경로 기준으로 정규화해 검사하며, `use crate;`·`use crate as ...;` 등 크레이트 루트 별칭을 금지한다).
+### 경계 검사
 
-- `src/lib.rs`에 최상위 `pub use` 재노출을 두지 않는다.
-- `src/ui/`와 `src/main.rs`를 제외한 `src/`의 모든 코드는 `eframe`·`egui`·`egui_extras`를 참조하지 않는다.
-- `exchange`·`http_semantics`·`settings`는 다른 도메인 모듈을 참조하지 않는다.
-- `content`·`analysis`·`interop`는 `interception`·`recording`·`https`·`replay`를 참조하지 않는다. 본문은 `exchange::BodySource` 포트로 읽는다. 단, `test-support`의 `ExchangeBuilder` 등이 `interception::capture` 규칙을 재사용하므로 `analysis`·`interop`·`recording`의 `#[cfg(test)]` 단위 테스트에서만 해당 픽스처 항목(`ExchangeBuilder`, `ConnectExchangeBuilder`, `ResponseFixture`, `FixtureError`, `BODY_PREVIEW_BYTES`) 참조를 허용한다.
-- `Exchange` 쓰기 핸들(`ExchangeWriter`, `BodyPreviewWriter`, `TunnelWriter`)은 프로덕션 코드에서 `exchange`·`interception`·`replay`에서만 사용한다.
+크레이트 간 의존 방향(예: `content`·`analysis`·`interop`가 `core`나 `eframe`에 의존하지 않음)은 Cargo 워크스페이스 의존 그래프가 컴파일 타임에 강제한다. `scripts/check-boundaries.py`는 Cargo가 직접 막지 않는 아래 규칙을 로컬과 CI(`quality` 작업)에서 추가로 검사한다.
+
+- **매니페스트 의존 불변식**: `http-inspector-exchange`·`http-inspector-content`·`http-inspector-analysis`·`http-inspector-interop`의 normal `[dependencies]`에 `tokio`·`hyper`·`hyper-util`·`eframe`·`egui`·`egui_extras`를 두지 않고, `http-inspector-core`의 normal `[dependencies]`에 `eframe`·`egui`·`egui_extras`를 두지 않는다.
+- **크레이트 내부 모듈 방향** (`crate::`, `self::`, `super::` 상대 경로 정규화 및 크레이트 루트 별칭 금지):
+  - `http-inspector-exchange`: `exchange`와 `http_semantics`는 서로 참조하지 않으며, `capture`는 `exchange`·`http_semantics`만, `exchange_builder`는 `exchange`·`capture`만 참조한다.
+  - `http-inspector-core`: `settings`·`recording`은 다른 내부 모듈을 참조하지 않고, `https -> settings`, `launcher -> https, settings`, `interception -> https, recording`, `replay -> interception`만 허용한다.
+- **쓰기 핸들 소유권**: `Exchange` 쓰기 핸들(`ExchangeWriter`, `BodyPreviewWriter`, `TunnelWriter`)은 프로덕션 코드에서 `http-inspector-exchange`와 `http-inspector-core`의 `interception`·`replay`에서만 사용한다.
 
 ## 설계 문서
 

@@ -10,7 +10,13 @@ import tarfile
 import tempfile
 import tomllib
 
-version = tomllib.loads(Path("Cargo.toml").read_text())["package"]["version"]
+manifest = tomllib.loads(Path("Cargo.toml").read_text())
+raw_version = manifest["package"]["version"]
+version = (
+    manifest["workspace"]["package"]["version"]
+    if isinstance(raw_version, dict) and raw_version.get("workspace")
+    else raw_version
+)
 tag = os.environ.get("REF_NAME", "")
 if os.environ.get("REF_TYPE") == "tag":
     if not re.fullmatch(r"v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", tag) or tag != f"v{version}":
