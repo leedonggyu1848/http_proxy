@@ -1,6 +1,8 @@
-//! Traffic analysis over captured HTTP exchanges: URL normalization and ID
-//! folding, real-time URL map, per-endpoint schema inference, text search, and
-//! record filtering.
+//! Traffic analysis over captured HTTP exchanges.
+//!
+//! It covers the capture event pipeline that feeds every analyzer, URL
+//! normalization and ID folding, the real-time URL map, per-endpoint schema
+//! inference, text search, and record filtering.
 //!
 //! Privacy invariant: query parameter values, header values, cookies,
 //! credentials, and body field values are never retained in URL map or
@@ -11,6 +13,7 @@
 pub mod endpoint_analysis;
 pub mod endpoint_schema;
 pub mod filter;
+pub mod pipeline;
 pub mod search;
 pub mod url;
 pub mod url_map;
