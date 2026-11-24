@@ -6,8 +6,9 @@ alone does not guarantee:
    crate's `[dependencies]` (including `target.*.dependencies` and
    `build-dependencies`) may only depend on explicitly allowed workspace crates,
    blocking reverse dependencies and transitive pulls of `http-inspector-core`.
-2. Runtime and UI isolation: pure domain crates (`http-inspector-exchange`,
-   `http-inspector-content`, `http-inspector-analysis`, `http-inspector-interop`)
+2. Runtime and UI isolation: runtime-independent crates (`http-inspector-exchange`,
+   `http-inspector-content`, `http-inspector-analysis`, `http-inspector-interop`,
+   `http-inspector-file`)
    must not depend on `tokio`, `hyper`, `hyper-util`, `eframe`, `egui`, or
    `egui_extras` in normal dependencies or `dev-dependencies` (nor on
    `http-inspector-core` in `dev-dependencies`, allowing only self
@@ -37,6 +38,7 @@ RUNTIME_CRATES: frozenset[str] = frozenset({"tokio", "hyper", "hyper-util"})
 
 ALLOWED_WORKSPACE_DEPS: dict[str, frozenset[str]] = {
     "http-inspector-exchange": frozenset(),
+    "http-inspector-file": frozenset(),
     "http-inspector-content": frozenset({"http-inspector-exchange"}),
     "http-inspector-analysis": frozenset(
         {"http-inspector-exchange", "http-inspector-content"}
@@ -46,13 +48,15 @@ ALLOWED_WORKSPACE_DEPS: dict[str, frozenset[str]] = {
             "http-inspector-exchange",
             "http-inspector-content",
             "http-inspector-analysis",
+            "http-inspector-file",
         }
     ),
-    "http-inspector-core": frozenset({"http-inspector-exchange"}),
+    "http-inspector-core": frozenset({"http-inspector-exchange", "http-inspector-file"}),
 }
 
 FORBIDDEN_NORMAL_DEPS: dict[str, frozenset[str]] = {
     "http-inspector-exchange": UI_CRATES | RUNTIME_CRATES,
+    "http-inspector-file": UI_CRATES | RUNTIME_CRATES,
     "http-inspector-content": UI_CRATES | RUNTIME_CRATES,
     "http-inspector-analysis": UI_CRATES | RUNTIME_CRATES,
     "http-inspector-interop": UI_CRATES | RUNTIME_CRATES,
@@ -61,6 +65,9 @@ FORBIDDEN_NORMAL_DEPS: dict[str, frozenset[str]] = {
 
 FORBIDDEN_DEV_DEPS: dict[str, frozenset[str]] = {
     "http-inspector-exchange": (
+        UI_CRATES | RUNTIME_CRATES | frozenset({"http-inspector-core"})
+    ),
+    "http-inspector-file": (
         UI_CRATES | RUNTIME_CRATES | frozenset({"http-inspector-core"})
     ),
     "http-inspector-content": (
@@ -124,6 +131,7 @@ INTRA_CRATE_SPECS: tuple[CrateBoundarySpec, ...] = (
 
 # Crates whose production code must never reference `Exchange` write handles.
 NO_WRITER_CRATE_SRCS: tuple[str, ...] = (
+    "crates/http-inspector-file/src",
     "crates/http-inspector-content/src",
     "crates/http-inspector-analysis/src",
     "crates/http-inspector-interop/src",

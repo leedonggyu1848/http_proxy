@@ -1,6 +1,7 @@
 //! Theme selection, accessible status colors, and settings at the filesystem boundary.
 use eframe::egui::{self, Color32};
 pub(crate) use egui::Theme;
+use http_inspector_file::{ExistingFile, publish};
 
 pub(crate) struct Palette {
     pub(crate) success: Color32,
@@ -156,10 +157,9 @@ impl ThemeSettings {
             .parent()
             .ok_or_else(|| std::io::Error::other("invalid settings path"))?;
         std::fs::create_dir_all(parent)?;
-        let mut file = tempfile::NamedTempFile::new_in(parent)?;
-        writeln!(file, "{}", serialize(self.preference))?;
-        file.persist(path).map_err(|error| error.error)?;
-        Ok(())
+        publish(path, ExistingFile::Replace, |file| {
+            writeln!(file, "{}", serialize(self.preference))
+        })
     }
 }
 

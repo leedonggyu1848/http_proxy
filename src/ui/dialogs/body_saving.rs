@@ -10,6 +10,7 @@ use http_inspector_core::recording::{
     StoredBody,
 };
 use http_inspector_exchange::{BodySide, ByteSize, Exchange};
+use http_inspector_file::{ExistingFile, publish};
 
 use crate::ui::dialogs::save::SaveControls;
 use crate::ui::style::theme::Palette;
@@ -338,10 +339,9 @@ impl BodySaving {
             .parent()
             .ok_or_else(|| io::Error::other("invalid settings path"))?;
         std::fs::create_dir_all(parent)?;
-        let mut file = tempfile::NamedTempFile::new_in(parent)?;
-        writeln!(file, "{LIMIT_KEY}={}", self.limit_mib)?;
-        file.persist(path).map_err(|error| error.error)?;
-        Ok(())
+        publish(path, ExistingFile::Replace, |file| {
+            writeln!(file, "{LIMIT_KEY}={}", self.limit_mib)
+        })
     }
 
     /// Body store warnings and the result of the last body save, for the status bar.
@@ -447,6 +447,31 @@ mod tests {
         for text in ["", "limit_mib=0", "limit_mib=x", "limit_mib=99999999"] {
             assert_eq!(parse_limit(text), None, "{text}");
         }
+    }
+
+    #[test]
+    fn saves_and_replaces_limit_settings() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("settings").join(SETTINGS_FILE);
+        let mut saving = BodySaving {
+            store: None,
+            init_error: None,
+            limit_mib: 64,
+            settings_path: Some(path.clone()),
+            settings_error: None,
+            pending: None,
+            status: None,
+            confirmation: None,
+            privacy_acknowledged: false,
+            bulk: crate::ui::dialogs::bulk_save::BulkControls::default(),
+            merge: crate::ui::dialogs::range_merge::MergeControls::default(),
+        };
+        for limit in [64, 128] {
+            saving.limit_mib = limit;
+            saving.save_settings()?;
+            assert_eq!(parse_limit(&std::fs::read_to_string(&path)?), Some(limit));
+        }
+        Ok(())
     }
 
     #[test]

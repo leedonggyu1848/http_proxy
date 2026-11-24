@@ -16,6 +16,7 @@ use http_inspector_exchange::http_semantics::redacted_value;
 use http_inspector_exchange::{
     BodyLifecycle, BodySide, ByteSize, FailureStage, Outcome, RecordId, TunnelSnapshot,
 };
+use http_inspector_file::{ExistingFile, publish};
 
 fn full_headers(headers: &HeaderMap) -> String {
     headers
@@ -377,22 +378,16 @@ fn record_write_failure(failure: &Failure, local: &mut Option<String>, error: &i
 }
 
 fn copy_snapshot(reader: File, length: u64, path: &Path) -> ExportResult {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let mut destination = NamedTempFile::new_in(parent)?;
-    let copied = io::copy(&mut reader.take(length), destination.as_file_mut())?;
-    if copied != length {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "The session journal snapshot ended early",
-        ));
-    }
-    destination.as_file_mut().sync_all()?;
-    destination
-        .persist_noclobber(path)
-        .map_err(|error| error.error)?;
+    publish(path, ExistingFile::Preserve, |destination| {
+        let copied = io::copy(&mut reader.take(length), destination)?;
+        if copied != length {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "The session journal snapshot ended early",
+            ));
+        }
+        destination.sync_all()
+    })?;
     Ok(path.to_path_buf())
 }
 
@@ -650,6 +645,18 @@ mod tests {
         );
         assert_eq!(std::fs::read_to_string(first_path)?, "first\n");
         assert!(log.error().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn short_snapshot_is_not_published() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let source = directory.path().join("journal.txt");
+        std::fs::write(&source, b"short")?;
+        let destination = directory.path().join("export.txt");
+        let result = copy_snapshot(File::open(&source)?, 6, &destination);
+        assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::UnexpectedEof));
+        assert!(!destination.exists());
         Ok(())
     }
 

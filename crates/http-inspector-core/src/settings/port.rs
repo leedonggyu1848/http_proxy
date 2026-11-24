@@ -6,6 +6,8 @@ use std::fs;
 use std::io::{self, Write as _};
 use std::path::Path;
 
+use http_inspector_file::{ExistingFile, publish};
+
 /// Port used when nothing else chooses one.
 pub const DEFAULT_PORT: ProxyPort = ProxyPort(crate::DEFAULT_PORT);
 /// Environment variable that overrides the saved port for one run.
@@ -166,11 +168,11 @@ pub enum PortSaveError {
 /// Saves `port` so the next launch starts with it.
 pub fn save_port(directory: &Path, port: ProxyPort) -> io::Result<()> {
     fs::create_dir_all(directory)?;
-    let mut file = tempfile::NamedTempFile::new_in(directory)?;
-    writeln!(file, "{PORT_KEY}={port}")?;
-    file.persist(directory.join(SETTINGS_FILE))
-        .map(|_| ())
-        .map_err(|error| error.error)
+    publish(
+        &directory.join(SETTINGS_FILE),
+        ExistingFile::Replace,
+        |file| writeln!(file, "{PORT_KEY}={port}"),
+    )
 }
 
 #[cfg(test)]

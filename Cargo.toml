@@ -33,6 +33,7 @@ http-inspector-analysis = { path = "crates/http-inspector-analysis" }
 http-inspector-content = { path = "crates/http-inspector-content" }
 http-inspector-core = { path = "crates/http-inspector-core" }
 http-inspector-exchange = { path = "crates/http-inspector-exchange" }
+http-inspector-file = { path = "crates/http-inspector-file" }
 http-inspector-interop = { path = "crates/http-inspector-interop" }
 hyper = { version = "1", features = ["client", "http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
@@ -124,6 +125,7 @@ http-inspector-analysis.workspace = true
 http-inspector-content.workspace = true
 http-inspector-core.workspace = true
 http-inspector-exchange.workspace = true
+http-inspector-file.workspace = true
 http-inspector-interop.workspace = true
 png.workspace = true
 serde_json.workspace = true

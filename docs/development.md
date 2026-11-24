@@ -36,7 +36,7 @@ cargo build --release
 
 통합 테스트는 실제 TCP 연결을 사용한다. 테스트는 HTTP 전달과 `CONNECT` 터널의 양방향 전송을 검증한다.
 
-도메인 크레이트 단독 테스트는 `cargo test -p <crate>`로 실행한다(`http-inspector-exchange`, `http-inspector-content`, `http-inspector-analysis`, `http-inspector-interop`, `http-inspector-core`).
+라이브러리 크레이트 단독 테스트는 `cargo test -p <crate>`로 실행한다. 크레이트 이름은 아래 구성 표에서 확인한다.
 
 프록시를 띄우지 않고 캡처 레코드(`Exchange`)가 필요한 테스트는 `http-inspector-exchange` 크레이트의 `test-support` feature가 제공하는 `http_inspector_exchange::ExchangeBuilder`로 레코드를 만든다. 빌더는 캡처 경로(`http_inspector_exchange::capture`)와 같은 쓰기 핸들과 헤더 마스킹·길이 제한 규칙을 쓴다. 본문을 읽는 분석 코드(엔드포인트 스키마)는 `BodySource` 포트로 본문을 받으므로, 테스트에서는 본문 저장소 대신 디코딩된 본문을 메모리에 둔 `http_inspector_exchange::MemoryBodySource`를 넘긴다. 각 크레이트의 `dev-dependencies`에서만 `http-inspector-exchange`의 `test-support` feature를 켜므로 테스트·벤치마크·문서 테스트 빌드에서만 빌더가 컴파일되고, `cargo build --release` 결과물에는 들어가지 않는다.
 
@@ -80,7 +80,7 @@ Actions의 [파일 권한 제한](https://github.com/actions/upload-artifact/tre
 
 ## 워크스페이스 구조와 의존 규칙
 
-저장소는 Cargo workspace로 구성되며, 루트 패키지 `http-proxy`가 앱 바이너리(`src/main.rs`, `src/ui/`), 통합 테스트(`tests/`), 벤치마크(`benches/`)를 두고, 도메인 라이브러리를 `crates/` 아래 5개 크레이트로 나눈다. 루트 `Cargo.toml`은 `[workspace.package]`, `[workspace.dependencies]`, `[workspace.lints]`를 모든 크레이트에 공통 적용하고, 루트에서의 `cargo run`, `cargo build --release`, `cargo test --test ...`, `cargo bench --bench ...` 진입점을 그대로 유지한다.
+저장소는 Cargo workspace로 구성된다. 루트 패키지 `http-proxy`는 앱 바이너리(`src/main.rs`, `src/ui/`), 통합 테스트(`tests/`), 벤치마크(`benches/`)를 두고, 라이브러리 크레이트는 `crates/` 아래에 둔다. 루트 `Cargo.toml`은 `[workspace.package]`, `[workspace.dependencies]`, `[workspace.lints]`를 모든 크레이트에 공통 적용한다. `cargo run`, `cargo build --release`, `cargo test --test ...`, `cargo bench --bench ...`는 저장소 루트에서 실행한다.
 
 ### 크레이트 분리 기준
 
@@ -88,6 +88,7 @@ Actions의 [파일 권한 제한](https://github.com/actions/upload-artifact/tre
 2. **함께 바뀌는 모듈 묶음**:
    - `http-inspector-exchange`는 공유 캡처 모델(`exchange`), HTTP 헤더 규칙(`http_semantics`), 순수 HTTP 캡처 규칙(`capture`), `test-support` 픽스처(`ExchangeBuilder`, `MemoryBodySource`)를 함께 둔다. 순수 캡처 규칙과 `ExchangeBuilder`를 `interception`에서 `exchange`로 옮김으로써 프록시 캡처 경로와 단일 진실 공급원을 유지하면서도 `exchange`·`content`·`analysis`·`interop`가 `core`(`tokio`·`hyper`) 없이 단독 빌드·테스트할 수 있다.
    - `http-inspector-core`는 비동기 런타임·OS 연동·파일시스템 상태를 다루며 함께 변하는 6개 모듈(`interception`, `https`, `recording`, `replay`, `launcher`, `settings`)을 묶는다.
+   - `http-inspector-file`은 `core`·`interop`·UI가 공유하는 파일 발행 절차를 갖는다. 기존 파일을 보존할지 교체할지는 호출부에서 지정한다.
 
 ### 크레이트 구성
 
@@ -97,6 +98,7 @@ Actions의 [파일 권한 제한](https://github.com/actions/upload-artifact/tre
 | `http-inspector-content` | `crates/http-inspector-content/` | `decode`, `detect`, `format`, `image` (`Content-Encoding` 해제, 본문 형식 감지·포맷 토큰화, 이미지 디코딩) | 없음 | 없음 |
 | `http-inspector-analysis` | `crates/http-inspector-analysis/` | `pipeline`, `url`, `url_map`, `endpoint_schema`, `endpoint_analysis`, `search`, `filter` | 없음 | 없음 |
 | `http-inspector-interop` | `crates/http-inspector-interop/` | `har`, `curl`, `map_export` (HAR 1.2, cURL, URL 맵 Text/JSON/Mermaid/DOT) | 없음 | 없음 |
+| `http-inspector-file` | `crates/http-inspector-file/` | 내보내기·설정의 임시 파일 작성과 발행 | 없음 | 없음 |
 | `http-inspector-core` | `crates/http-inspector-core/` | `interception`, `https`, `recording`, `replay`, `launcher`, `settings`, `DEFAULT_PORT` | 사용 | 없음 |
 | `http-proxy` (바이너리) | `src/main.rs`, `src/ui/` (`app`, `requests`, `detail`, `map`, `dialogs`, `style`) | eframe/egui 데스크톱 화면, 통합 테스트(`tests/`), 벤치마크(`benches/`) | 사용 | 사용 |
 
@@ -104,11 +106,11 @@ Actions의 [파일 권한 제한](https://github.com/actions/upload-artifact/tre
 
 ```mermaid
 graph TD
-  ui["http-proxy (ui 바이너리)"] --> interop & analysis & content & core & exchange
-  interop["http-inspector-interop"] --> analysis & content & exchange
+  ui["http-proxy (ui 바이너리)"] --> interop & analysis & content & core & exchange & file
+  interop["http-inspector-interop"] --> analysis & content & exchange & file
   analysis["http-inspector-analysis"] --> content & exchange
   content["http-inspector-content"] --> exchange
-  core["http-inspector-core"] --> exchange
+  core["http-inspector-core"] --> exchange & file["http-inspector-file"]
 
   subgraph core_inner["http-inspector-core 내부 모듈"]
     replay --> interception
@@ -122,8 +124,8 @@ graph TD
 
 `scripts/check-boundaries.py`는 Cargo의 비순환 의존 그래프만으로는 막히지 않는 크레이트 간 의존 방향·전이 유입·내부 모듈 경계·쓰기 핸들 소유권을 로컬과 CI(`quality` 작업)에서 함께 검사한다.
 
-- **워크스페이스 크레이트 의존 방향 (`ALLOWED_WORKSPACE_DEPS`)**: 각 도메인 크레이트의 `[dependencies]`(`target.*.dependencies`와 `build-dependencies` 포함)에 허용 목록 밖의 워크스페이스 크레이트가 들어오는 것을 차단한다(`http-inspector-exchange`: 없음, `http-inspector-content`: `exchange`, `http-inspector-analysis`: `exchange`·`content`, `http-inspector-interop`: `exchange`·`content`·`analysis`, `http-inspector-core`: `exchange`). 이를 통해 역방향 의존과 `http-inspector-core`를 통한 런타임 전이 유입을 함께 막는다.
-- **런타임·UI 격리와 `dev-dependencies` 검사**: `http-inspector-exchange`·`http-inspector-content`·`http-inspector-analysis`·`http-inspector-interop`는 normal 의존성과 `[dev-dependencies]`(`target.*.dev-dependencies` 포함) 모두에서 `tokio`·`hyper`·`hyper-util`·`eframe`·`egui`·`egui_extras` 및 `http-inspector-core` 의존을 금지한다(`http-inspector-exchange`가 `test-support` 활성화를 위해 자기 자신을 `dev-dependencies`에 두는 경우 등 자기 자신 및 허용된 하위 워크스페이스 크레이트만 허용). `http-inspector-core`는 normal 의존성과 `dev-dependencies` 모두에서 `eframe`·`egui`·`egui_extras` 의존을 금지한다. `dep = { package = "..." }` 형태(직접 선언 및 `[workspace.dependencies]` 상속 포함)의 별칭도 실제 패키지 이름으로 해석해 검사한다.
+- **워크스페이스 크레이트 의존 방향 (`ALLOWED_WORKSPACE_DEPS`)**: 각 라이브러리 크레이트의 `[dependencies]`(`target.*.dependencies`와 `build-dependencies` 포함)에 허용 목록 밖의 워크스페이스 크레이트가 들어오는 것을 차단한다(`http-inspector-exchange`·`http-inspector-file`: 없음, `http-inspector-content`: `exchange`, `http-inspector-analysis`: `exchange`·`content`, `http-inspector-interop`: `exchange`·`content`·`analysis`·`file`, `http-inspector-core`: `exchange`·`file`). 이를 통해 역방향 의존과 `http-inspector-core`를 통한 런타임 전이 유입을 함께 막는다.
+- **런타임·UI 격리와 `dev-dependencies` 검사**: `http-inspector-exchange`·`http-inspector-content`·`http-inspector-analysis`·`http-inspector-interop`·`http-inspector-file`은 normal 의존성과 `[dev-dependencies]`(`target.*.dev-dependencies` 포함) 모두에서 `tokio`·`hyper`·`hyper-util`·`eframe`·`egui`·`egui_extras` 및 `http-inspector-core` 의존을 금지한다(`http-inspector-exchange`가 `test-support` 활성화를 위해 자기 자신을 `dev-dependencies`에 두는 경우 등 자기 자신 및 허용된 하위 워크스페이스 크레이트만 허용). `http-inspector-core`는 normal 의존성과 `dev-dependencies` 모두에서 `eframe`·`egui`·`egui_extras` 의존을 금지한다. `dep = { package = "..." }` 형태(직접 선언 및 `[workspace.dependencies]` 상속 포함)의 별칭도 실제 패키지 이름으로 해석해 검사한다.
 - **크레이트 내부 모듈 방향** (`crate::`, `self::`, `super::` 상대 경로 정규화 및 크레이트 루트 별칭 금지):
   - `http-inspector-exchange`: `exchange`와 `http_semantics`는 서로 참조하지 않으며, `capture`는 `exchange`·`http_semantics`만, `exchange_builder`는 `exchange`·`capture`만 참조한다.
   - `http-inspector-core`: `settings`·`recording`은 다른 내부 모듈을 참조하지 않고, `https -> settings`, `launcher -> https, settings`, `interception -> https, recording`, `replay -> interception`만 허용한다.
