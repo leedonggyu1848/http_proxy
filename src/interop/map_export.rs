@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
 
-use crate::url_map::{
+use crate::analysis::url_map::{
     EdgeKind, ForceLayout, NodeStats, SortDirection, TreeFilter, TreeSortField, UrlMap, ViewNode,
     build_view_roots,
 };
@@ -315,7 +315,8 @@ mod tests {
     use http::Method;
 
     use super::*;
-    use crate::url_map::{ObservedInput, StatusBucket, parse_origin_header, parse_url};
+    use crate::analysis::url::{parse_origin_header, parse_url};
+    use crate::analysis::url_map::{ObservedInput, StatusBucket};
 
     #[test]
     fn exports_contain_structure_and_never_leak_query_values() {

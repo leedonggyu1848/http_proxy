@@ -1,51 +1,18 @@
-//! Request filtering by outcome kind, and the controls above the list.
+//! Request filtering controls above the list, backed by
+//! [`http_proxy::analysis::filter`].
 
-use http_proxy::{Exchange, Outcome};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::ui) enum RecordFilter {
-    All,
-    Responses,
-    Failures,
-    Tunnels,
-}
-
-impl RecordFilter {
-    pub(in crate::ui) const ALL: [Self; 4] =
-        [Self::All, Self::Responses, Self::Failures, Self::Tunnels];
-
-    pub(in crate::ui) const fn label(self) -> &'static str {
-        match self {
-            Self::All => "All",
-            Self::Responses => "Responses",
-            Self::Failures => "Failures",
-            Self::Tunnels => "Tunnels",
-        }
-    }
-}
-
-/// Reports whether `record` has the outcome kind `filter` selects. Text
-/// search is applied separately by [`crate::ui::search::RequestSearch`].
-pub(in crate::ui) fn record_matches(record: &Exchange, filter: RecordFilter) -> bool {
-    let outcome = record.outcome();
-    match filter {
-        RecordFilter::All => true,
-        RecordFilter::Responses => matches!(outcome, Outcome::Response(_)),
-        RecordFilter::Failures => outcome.is_failure(),
-        RecordFilter::Tunnels => {
-            matches!(outcome, Outcome::Tunnel(_) | Outcome::InspectionEstablished)
-        }
-    }
-}
+use eframe::egui;
+use http_proxy::Exchange;
+use http_proxy::analysis::filter::{
+    self as analysis_filter, RecordFilter, RecordList, ScopeFilter,
+};
+use http_proxy::analysis::url_map::RequestScope;
 
 use crate::ui::InspectorApp;
 use crate::ui::map_panel::RecordMatchCache;
-use crate::ui::records::RecordList;
 use crate::ui::replay_panel;
 use crate::ui::search::RequestSearch;
 use crate::ui::theme::Palette;
-use eframe::egui;
-use http_proxy::url_map::RequestScope;
 
 impl InspectorApp {
     /// Filter, list options, and Clear, shown right above the request list.
@@ -178,20 +145,12 @@ pub(in crate::ui) fn visible_records<'a>(
     map_filter: Option<&RequestScope>,
     map_cache: Option<&RecordMatchCache>,
 ) -> Vec<&'a Exchange> {
-    let fresh_cache = map_filter
-        .zip(map_cache)
-        .filter(|(key, cache)| cache.is_fresh_for(key, records))
-        .map(|(_, cache)| cache);
-    records
-        .iter()
-        .filter(|record| record_matches(record, filter))
-        .filter(|record| match (map_filter, fresh_cache) {
-            (None, _) => true,
-            (Some(_), Some(cache)) => cache.contains(record.id()),
-            (Some(key), None) => key.matches_exchange(record),
-        })
-        .filter(|record| search.shows(record.id()))
-        .collect()
+    let scope = map_filter.map(|key| {
+        map_cache
+            .and_then(|cache| cache.fresh_ids(key, records))
+            .map_or(ScopeFilter::Live(key), ScopeFilter::Cached)
+    });
+    analysis_filter::visible_records(records, filter, scope, |id| search.shows(id))
 }
 
 /// Tells the user what to do next when the list shows no rows.
@@ -208,9 +167,9 @@ fn empty_list_text(captured: usize, proxy: Option<std::net::SocketAddr>) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::search::SearchScope;
-    use crate::ui::search::document::{self, BodyCache};
-    use http_proxy::text_search::{MatchOptions, Matcher};
+    use http_proxy::analysis::filter::record_matches;
+    use http_proxy::analysis::search::document::{self, BodyCache};
+    use http_proxy::analysis::search::{MatchOptions, Matcher, SearchScope};
     use http_proxy::{ProxyConfig, ProxyHandle};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::{TcpListener, TcpStream};
@@ -326,7 +285,7 @@ mod tests {
             assert!(found(&record, "authorization", SearchScope::Headers, false));
             assert!(!found(&record, "secret-token", SearchScope::All, false));
 
-            let mut records = crate::ui::records::RecordList::new(4);
+            let mut records = RecordList::new(4);
             let _evicted = records.push(record.clone());
             let context = eframe::egui::Context::default();
             let mut search = crate::ui::search::RequestSearch::new(&context);
@@ -370,7 +329,7 @@ mod tests {
             assert!(checked.coverage.partial);
             assert!(found(&record, "aaaa", SearchScope::ResponseBody, false));
 
-            let mut records = crate::ui::records::RecordList::new(4);
+            let mut records = RecordList::new(4);
             let _evicted = records.push(record.clone());
             let context = eframe::egui::Context::default();
             let mut search = crate::ui::search::RequestSearch::new(&context);

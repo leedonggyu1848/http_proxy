@@ -7,8 +7,8 @@
 use super::body::{BodyAnalysis, BodyParse, ExclusionReason};
 use super::endpoint::{BodyObservation, EndpointObservation, ResponseObservation};
 use super::value::ValueShape;
+use crate::analysis::url::{classify_id_segment, parse_exchange_target, visit_query_values};
 use crate::content::detect as content_detect;
-use crate::url_map::{classify_id_segment, parse_exchange_target, visit_query_values};
 use crate::{
     BodyLifecycle, BodyPreview, BodySide, BodySource, Exchange, HeaderPreview, MediaType, Outcome,
     ReadBodyOutcome,
@@ -219,8 +219,8 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::analysis::endpoint_schema::FieldShape;
     use crate::content::format::BodyFormat;
-    use crate::endpoint_schema::FieldShape;
     use crate::{ExchangeBuilder, MemoryBodySource, ReadBodyOutcome, ResponseFixture};
 
     type TestResult = Result<(), Box<dyn Error>>;

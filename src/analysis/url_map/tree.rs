@@ -6,13 +6,12 @@ use std::time::{Duration, Instant, SystemTime};
 
 use http::Method;
 
-use crate::url_map::edges::{EdgeKind, RelationshipGraph};
-use crate::url_map::normalize::{
-    NormalizedUrl, OriginKey, parse_exchange_target, parse_origin_header, parse_url,
-    resolve_location,
+use super::edges::{EdgeKind, RelationshipGraph};
+use super::stats::{NodeStats, StatusBucket};
+use crate::analysis::url::{
+    NormalizedUrl, OriginKey, PathSegmentPattern, classify_id_segment, is_third_party,
+    parse_exchange_target, parse_origin_header, parse_url, resolve_location,
 };
-use crate::url_map::site::is_third_party;
-use crate::url_map::stats::{NodeStats, StatusBucket};
 use crate::{Exchange, Outcome};
 
 /// Default upper bound on total tree nodes kept in memory.
@@ -189,7 +188,7 @@ impl UrlMap {
     /// Returns the cumulative request count matching `key`'s origin and path
     /// prefix (including folded `{id}` patterns) without rebuilding the view.
     #[must_use]
-    pub fn matching_request_count(&self, key: &crate::url_map::view::ViewNodeKey) -> u64 {
+    pub fn matching_request_count(&self, key: &super::view::ViewNodeKey) -> u64 {
         self.matching_node_ids(key)
             .into_iter()
             .filter_map(|id| self.nodes.get(id.0))
@@ -201,7 +200,7 @@ impl UrlMap {
     /// Returns the raw nodes whose path matches `key` exactly, with each
     /// folded `{id}` pattern matching every ID-like segment.
     #[must_use]
-    pub fn matching_node_ids(&self, key: &crate::url_map::view::ViewNodeKey) -> Vec<NodeId> {
+    pub fn matching_node_ids(&self, key: &super::view::ViewNodeKey) -> Vec<NodeId> {
         let Some(&origin_id) = self.origins.get(&key.origin) else {
             return Vec::new();
         };
@@ -213,14 +212,14 @@ impl UrlMap {
                     continue;
                 };
                 match pattern {
-                    crate::url_map::id_fold::PathSegmentPattern::Literal(seg) => {
+                    PathSegmentPattern::Literal(seg) => {
                         if let Some(&child_id) = node.children.get(seg) {
                             next.push(child_id);
                         }
                     }
-                    crate::url_map::id_fold::PathSegmentPattern::FoldedId => {
+                    PathSegmentPattern::FoldedId => {
                         for (seg, &child_id) in &node.children {
-                            if crate::url_map::id_fold::classify_id_segment(seg).is_some() {
+                            if classify_id_segment(seg).is_some() {
                                 next.push(child_id);
                             }
                         }
@@ -779,7 +778,7 @@ mod tests {
             map.graph()
                 .domains()
                 .get("cdn.thirdparty.net")
-                .is_some_and(crate::url_map::edges::DomainSummary::is_third_party)
+                .is_some_and(super::super::edges::DomainSummary::is_third_party)
         );
     }
 }

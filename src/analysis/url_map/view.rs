@@ -7,13 +7,13 @@ use std::time::Instant;
 
 use http::Method;
 
+use super::stats::NodeStats;
+use super::tree::{NodeId, UrlMap};
 use crate::Exchange;
-use crate::url_map::id_fold::{ID_FOLD_THRESHOLD, PathSegmentPattern, classify_id_segment};
-use crate::url_map::normalize::{
-    NormalizedUrl, OriginKey, parse_exchange_target, percent_decode_display,
+use crate::analysis::url::{
+    ID_FOLD_THRESHOLD, NormalizedUrl, OriginKey, PathSegmentPattern, classify_id_segment,
+    parse_exchange_target, percent_decode_display,
 };
-use crate::url_map::stats::NodeStats;
-use crate::url_map::tree::{NodeId, UrlMap};
 
 /// Stable identity of a rendered tree node, preserved across live updates and
 /// shared with `Show in Requests` filtering and endpoint details (#69).
@@ -816,11 +816,10 @@ mod tests {
 
     use http::Method;
 
+    use super::super::stats::StatusBucket;
+    use super::super::tree::ObservedInput;
     use super::*;
-    use crate::url_map::id_fold::IdKind;
-    use crate::url_map::normalize::parse_url;
-    use crate::url_map::stats::StatusBucket;
-    use crate::url_map::tree::ObservedInput;
+    use crate::analysis::url::{IdKind, parse_url};
 
     fn obs(url: &str, status: StatusBucket, ct: &str, bytes: u64) -> ObservedInput {
         let Some(target) = parse_url(url) else {

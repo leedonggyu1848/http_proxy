@@ -6,13 +6,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use http_proxy::text_search::{MatchOptions, Matcher};
+use http_proxy::analysis::filter::RecordList;
+use http_proxy::analysis::search::document::{self, BodyCache, Checked};
+use http_proxy::analysis::search::{MatchOptions, Matcher, Query, SearchScope, SearchWorker};
 use http_proxy::{Exchange, RecordId};
 
-use crate::ui::records::RecordList;
-use crate::ui::search::SearchScope;
-use crate::ui::search::document::{self, BodyCache, Checked};
-use crate::ui::search::worker::{Query, SearchWorker};
 use crate::ui::theme::Palette;
 
 /// Wait after the last keystroke before a search starts, so typing a word
@@ -111,7 +109,7 @@ impl RequestSearch {
         ui.add(
             egui::TextEdit::singleline(&mut self.text)
                 .desired_width(search_width)
-                .hint_text(self.scope.hint()),
+                .hint_text(scope_hint(self.scope)),
         );
         egui::ComboBox::from_id_salt("search-scope")
             .selected_text(self.scope.label())
@@ -395,6 +393,16 @@ fn coverage_text(summary: Summary) -> Option<String> {
             parts.join(", ")
         )
     })
+}
+
+const fn scope_hint(scope: SearchScope) -> &'static str {
+    match scope {
+        SearchScope::All => "Filter: method, URL, status, header, or body",
+        SearchScope::Url => "Filter: URL",
+        SearchScope::Headers => "Filter: header name or value",
+        SearchScope::RequestBody => "Filter: request body",
+        SearchScope::ResponseBody => "Filter: response body",
+    }
 }
 
 fn capitalized(text: &str) -> String {

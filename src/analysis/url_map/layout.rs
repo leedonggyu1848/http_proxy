@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::f32::consts::TAU;
 
-use crate::url_map::edges::{EdgeKind, RelationshipGraph};
+use super::edges::{EdgeKind, RelationshipGraph};
 
 /// Default maximum number of domains shown in the relationship graph.
 pub const DEFAULT_MAX_GRAPH_DOMAINS: usize = 40;
@@ -134,7 +134,7 @@ impl ForceLayout {
         }
         for edge in &mut self.edges {
             if let (Some(from), Some(to)) = (self.nodes.get(edge.from), self.nodes.get(edge.to)) {
-                let key = crate::url_map::edges::DomainEdgeKey {
+                let key = super::edges::DomainEdgeKey {
                     from_host: from.host.clone(),
                     to_host: to.host.clone(),
                     kind: edge.kind,
@@ -379,7 +379,7 @@ fn initial_circle_position(index: usize, count: usize) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::url_map::normalize::OriginKey;
+    use crate::analysis::url::OriginKey;
 
     #[test]
     fn caps_top_n_domains_and_settles_deterministically() {

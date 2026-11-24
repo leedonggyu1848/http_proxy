@@ -2,10 +2,10 @@
 //! [`egui::Painter`].
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
-use http_proxy::interop::map_export::format_bytes;
-use http_proxy::url_map::{
+use http_proxy::analysis::url_map::{
     EdgeKind, ForceLayout, GraphEdge, GraphNode, RelationshipGraph, STEPS_PER_FRAME,
 };
+use http_proxy::interop::map_export::format_bytes;
 
 use super::EdgeVisibility;
 use crate::ui::theme::Palette;
@@ -493,7 +493,7 @@ fn format_node_tooltip(graph: &RelationshipGraph, node: &GraphNode) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use http_proxy::url_map::OriginKey;
+    use http_proxy::analysis::url::OriginKey;
 
     #[test]
     fn legend_reflects_filtered_edge_count() {

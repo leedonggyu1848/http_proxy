@@ -9,12 +9,11 @@ use std::fmt::Write as _;
 
 use eframe::egui::{self, RichText};
 use http::Method;
-use http_proxy::endpoint_schema::{
+use http_proxy::analysis::endpoint_schema::{
     BodySchema, EndpointSchema, EndpointSchemas, FieldShape, ResponseKey, TypeCounts, ValueKind,
 };
-use http_proxy::url_map::{
-    NodeId, PathSegmentPattern, RequestScope, ViewNode, ViewNodeKey, percent_decode_display,
-};
+use http_proxy::analysis::url::{PathSegmentPattern, percent_decode_display};
+use http_proxy::analysis::url_map::{NodeId, RequestScope, ViewNode, ViewNodeKey};
 
 use super::MapAction;
 use crate::ui::theme::Palette;

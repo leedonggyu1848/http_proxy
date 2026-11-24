@@ -5,11 +5,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 
-use http_proxy::text_search::Matcher;
-use http_proxy::{Exchange, RecordId};
-
-use crate::ui::search::SearchScope;
-use crate::ui::search::document::{self, BodyCache, Checked};
+use super::SearchScope;
+use super::document::{self, BodyCache, Checked};
+use super::text_search::Matcher;
+use crate::{Exchange, RecordId};
 
 /// Exchanges checked before results are sent, so progress shows while a
 /// long search runs.
@@ -23,10 +22,13 @@ const CACHE_PRUNE_LEN: usize = 4_096;
 
 /// One compiled query; `generation` grows each time the query changes.
 #[derive(Debug)]
-pub(in crate::ui) struct Query {
-    pub(in crate::ui) generation: u64,
-    pub(in crate::ui) matcher: Matcher,
-    pub(in crate::ui) scope: SearchScope,
+pub struct Query {
+    /// Monotonic identifier of this query revision.
+    pub generation: u64,
+    /// Compiled byte matcher.
+    pub matcher: Matcher,
+    /// Which exchange fields this query searches.
+    pub scope: SearchScope,
 }
 
 struct Job {
@@ -37,20 +39,24 @@ struct Job {
 }
 
 /// Results of part of one job.
-pub(in crate::ui) struct Report {
-    pub(in crate::ui) generation: u64,
-    pub(in crate::ui) checked: Vec<Checked>,
+#[derive(Debug)]
+pub struct Report {
+    /// Query revision that produced these results.
+    pub generation: u64,
+    /// Checked exchange results in this batch.
+    pub checked: Vec<Checked>,
 }
 
-pub(in crate::ui) struct SearchWorker {
+/// Handle to the background search worker thread.
+pub struct SearchWorker {
     jobs: SyncSender<Job>,
     reports: Receiver<Report>,
     latest: Arc<AtomicU64>,
 }
 
 impl SearchWorker {
-    /// Starts the search thread; `wake` asks the UI to read new results.
-    pub(in crate::ui) fn spawn(wake: impl Fn() + Send + 'static) -> std::io::Result<Self> {
+    /// Starts the search thread; `wake` asks the caller to read new results.
+    pub fn spawn(wake: impl Fn() + Send + 'static) -> std::io::Result<Self> {
         let (jobs, job_receiver) = mpsc::sync_channel(JOB_CAPACITY);
         let (report_sender, reports) = mpsc::sync_channel(REPORT_CAPACITY);
         let latest = Arc::new(AtomicU64::new(0));
@@ -66,13 +72,13 @@ impl SearchWorker {
     }
 
     /// Makes queued and running work for older queries stop early.
-    pub(in crate::ui) fn supersede(&self, generation: u64) {
+    pub fn supersede(&self, generation: u64) {
         self.latest.store(generation, Ordering::Release);
     }
 
     /// Queues `records` for `query`. Returns the records back when the
     /// queue is full, so the caller can try again on a later frame.
-    pub(in crate::ui) fn submit(
+    pub fn submit(
         &self,
         query: &Arc<Query>,
         records: Vec<Exchange>,
@@ -89,7 +95,8 @@ impl SearchWorker {
     }
 
     /// Returns a result batch, if one is ready.
-    pub(in crate::ui) fn try_report(&self) -> Option<Report> {
+    #[must_use]
+    pub fn try_report(&self) -> Option<Report> {
         self.reports.try_recv().ok()
     }
 }

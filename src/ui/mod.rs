@@ -7,7 +7,6 @@ mod ca_panel;
 mod copy_curl;
 mod detail_tabs;
 mod detail_view;
-mod endpoint_analysis;
 mod filter;
 mod fonts;
 mod har_dialog;
@@ -16,7 +15,6 @@ mod image_view;
 mod map_panel;
 mod outcome_view;
 mod range_merge;
-mod records;
 mod replay_panel;
 mod request_table;
 mod save;
@@ -27,22 +25,25 @@ mod toolbar;
 mod tree_view;
 
 use self::detail_tabs::DetailTab;
-use self::filter::RecordFilter;
 use self::map_panel::{MapAction, MapExportFormat, MapSubView};
 use self::toolbar::PortChoice;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use eframe::egui;
+use http_proxy::analysis::endpoint_analysis::EndpointAnalysis;
+use http_proxy::analysis::filter::{RecordFilter, RecordList};
+use http_proxy::analysis::url_map::{RequestScope, UrlMap};
 use http_proxy::content::format as body_format;
 use http_proxy::interop::map_export::{
     export_graph_dot, export_graph_mermaid, export_tree_json, export_tree_text,
 };
 use http_proxy::settings;
-use http_proxy::url_map::{RequestScope, UrlMap};
 use http_proxy::{
-    EngineState, Exchange, FullLog, HttpsInspection, ProxyConfig, ProxyHandle, RecordId,
+    BodySource, EngineState, Exchange, FullLog, HttpsInspection, PreviewBodies, ProxyConfig,
+    ProxyHandle, RecordId,
 };
 
 const MAX_RECORDS: usize = 2_000;
@@ -103,12 +104,12 @@ struct InspectorApp {
     replay: Option<replay_panel::ReplayPanel>,
     curl: copy_curl::CurlCopy,
     proxy: Option<ProxyHandle>,
-    records: records::RecordList<Exchange>,
+    records: RecordList<Exchange>,
     url_map: UrlMap,
     map_panel: map_panel::MapPanel,
     map_path_filter: Option<RequestScope>,
     map_filter_cache: map_panel::RecordMatchCache,
-    endpoints: endpoint_analysis::EndpointAnalysis,
+    endpoints: EndpointAnalysis,
     selected: Option<RecordId>,
     search: search::RequestSearch,
     record_filter: RecordFilter,
@@ -150,17 +151,23 @@ impl InspectorApp {
             ),
         };
         let body_saving = body_saving::BodySaving::open();
+        let bodies: Arc<dyn BodySource> = match body_saving.store() {
+            Some(store) => Arc::new(store.clone()),
+            None => Arc::new(PreviewBodies),
+        };
+        let wake_context = context.clone();
+        let endpoints = EndpointAnalysis::start(bodies, move || wake_context.request_repaint());
         let mut app = Self {
             main_view: MainView::Requests,
             replay: None,
             curl: copy_curl::CurlCopy::default(),
             proxy: None,
-            records: records::RecordList::new(MAX_RECORDS),
+            records: RecordList::new(MAX_RECORDS),
             url_map: UrlMap::new(),
             map_panel: map_panel::MapPanel::new(),
             map_path_filter: None,
             map_filter_cache: map_panel::RecordMatchCache::default(),
-            endpoints: endpoint_analysis::EndpointAnalysis::start(body_saving.store(), &context),
+            endpoints,
             selected: None,
             search: search::RequestSearch::new(&context),
             record_filter: RecordFilter::All,
@@ -662,15 +669,17 @@ fn request_shortcuts_allowed(ctx: &egui::Context) -> bool {
 #[cfg(test)]
 mod layout_tests {
     use super::{
-        DEFAULT_DETAIL_SHARE, DEFAULT_WINDOW, DetailTab, InspectorApp, MAX_RECORDS,
-        MIN_DETAIL_WIDTH, MIN_MAIN_HEIGHT, MIN_TABLE_WIDTH, MIN_WINDOW, MainView, PortChoice,
-        RecordFilter, UrlMap, body_display, body_format, body_saving, browser_panel, ca_panel,
-        copy_curl, endpoint_analysis, fonts, har_dialog, image_view, main_height, map_panel,
-        records, replay_panel, request_table, save, search, split_detail_width, theme, toolbar,
+        DEFAULT_DETAIL_SHARE, DEFAULT_WINDOW, DetailTab, EndpointAnalysis, InspectorApp,
+        MAX_RECORDS, MIN_DETAIL_WIDTH, MIN_MAIN_HEIGHT, MIN_TABLE_WIDTH, MIN_WINDOW, MainView,
+        PortChoice, PreviewBodies, RecordFilter, RecordList, UrlMap, body_display, body_format,
+        body_saving, browser_panel, ca_panel, copy_curl, fonts, har_dialog, image_view,
+        main_height, map_panel, replay_panel, request_table, save, search, split_detail_width,
+        theme, toolbar,
     };
     use eframe::egui;
     use http_proxy::settings;
     use http_proxy::{Exchange, ProxyConfig, ProxyHandle};
+    use std::sync::Arc;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::{TcpListener, TcpStream};
@@ -684,12 +693,12 @@ mod layout_tests {
             replay: None,
             curl: copy_curl::CurlCopy::default(),
             proxy: None,
-            records: records::RecordList::new(MAX_RECORDS),
+            records: RecordList::new(MAX_RECORDS),
             url_map: UrlMap::new(),
             map_panel: map_panel::MapPanel::new(),
             map_path_filter: None,
             map_filter_cache: map_panel::RecordMatchCache::default(),
-            endpoints: endpoint_analysis::EndpointAnalysis::disabled(),
+            endpoints: EndpointAnalysis::disabled(),
             selected: None,
             search: search::RequestSearch::new(&context),
             record_filter: RecordFilter::All,
@@ -1435,18 +1444,18 @@ mod layout_tests {
         ];
         let base_time = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
         for (url, referer, origin_hdr, redirect) in synthetic_urls {
-            let target = http_proxy::url_map::parse_url(url).ok_or("valid synthetic url")?;
-            let _ = map.observe(http_proxy::url_map::ObservedInput {
+            let target = http_proxy::analysis::url::parse_url(url).ok_or("valid synthetic url")?;
+            let _ = map.observe(http_proxy::analysis::url_map::ObservedInput {
                 target,
                 method: http::Method::GET,
-                status: http_proxy::url_map::StatusBucket::S2xx,
+                status: http_proxy::analysis::url_map::StatusBucket::S2xx,
                 content_type: Some("application/json".to_owned()),
                 bytes: 512,
                 duration: Some(Duration::from_millis(18)),
                 started_at: base_time,
-                referer: referer.and_then(http_proxy::url_map::parse_url),
-                origin_header: origin_hdr.and_then(http_proxy::url_map::parse_origin_header),
-                redirect_location: redirect.and_then(http_proxy::url_map::parse_url),
+                referer: referer.and_then(http_proxy::analysis::url::parse_url),
+                origin_header: origin_hdr.and_then(http_proxy::analysis::url::parse_origin_header),
+                redirect_location: redirect.and_then(http_proxy::analysis::url::parse_url),
             });
         }
         Ok(())
@@ -1479,7 +1488,10 @@ mod layout_tests {
         let exchanges = timeout(Duration::from_secs(5), capture_sample_exchanges()).await??;
         let context = egui::Context::default();
         let mut app = test_app(context.clone());
-        app.endpoints = endpoint_analysis::EndpointAnalysis::start(None, &context);
+        let wake_context = context.clone();
+        app.endpoints = EndpointAnalysis::start(Arc::new(PreviewBodies), move || {
+            wake_context.request_repaint();
+        });
         for exchange in exchanges {
             if let Some(node) = app.url_map.observe_exchange(&exchange) {
                 app.endpoints.submit(node, &exchange);
@@ -1503,11 +1515,13 @@ mod layout_tests {
             .ok_or("missing origin")?;
         app.main_view = MainView::Map;
         app.map_panel.sub_view = super::MapSubView::Tree;
-        app.map_panel.selected = Some(http_proxy::url_map::ViewNodeKey {
+        app.map_panel.selected = Some(http_proxy::analysis::url_map::ViewNodeKey {
             origin,
             path: ["api", "v2", "users"]
                 .into_iter()
-                .map(|segment| http_proxy::url_map::PathSegmentPattern::Literal(segment.to_owned()))
+                .map(|segment| {
+                    http_proxy::analysis::url::PathSegmentPattern::Literal(segment.to_owned())
+                })
                 .collect(),
         });
         let tall = [DEFAULT_WINDOW[0], 2_000.0];
@@ -1559,7 +1573,7 @@ mod layout_tests {
             .next()
             .cloned()
             .ok_or("missing origin")?;
-        app.map_panel.selected = Some(http_proxy::url_map::ViewNodeKey {
+        app.map_panel.selected = Some(http_proxy::analysis::url_map::ViewNodeKey {
             origin: first_origin,
             path: Vec::new(),
         });
@@ -1594,17 +1608,19 @@ mod layout_tests {
             .find(|origin| origin.host() == "127.0.0.1")
             .cloned()
             .ok_or("missing local origin")?;
-        let users_key = http_proxy::url_map::ViewNodeKey {
+        let users_key = http_proxy::analysis::url_map::ViewNodeKey {
             origin: local_origin,
             path: vec![
-                http_proxy::url_map::PathSegmentPattern::Literal("api".to_owned()),
-                http_proxy::url_map::PathSegmentPattern::Literal("v2".to_owned()),
-                http_proxy::url_map::PathSegmentPattern::Literal("users".to_owned()),
+                http_proxy::analysis::url::PathSegmentPattern::Literal("api".to_owned()),
+                http_proxy::analysis::url::PathSegmentPattern::Literal("v2".to_owned()),
+                http_proxy::analysis::url::PathSegmentPattern::Literal("users".to_owned()),
             ],
         };
         app.handle_map_action(
             &app.context.clone(),
-            super::MapAction::ShowInRequests(http_proxy::url_map::RequestScope::subtree(users_key)),
+            super::MapAction::ShowInRequests(http_proxy::analysis::url_map::RequestScope::subtree(
+                users_key,
+            )),
         );
         assert_eq!(app.main_view, MainView::Requests);
         assert_eq!(app.filtered_records().len(), 2);
@@ -1627,7 +1643,8 @@ mod layout_tests {
     }
 
     fn seed_scale_workload(map: &mut UrlMap, count: usize) -> Duration {
-        use http_proxy::url_map::{ObservedInput, StatusBucket, parse_origin_header, parse_url};
+        use http_proxy::analysis::url::{parse_origin_header, parse_url};
+        use http_proxy::analysis::url_map::{ObservedInput, StatusBucket};
         use std::time::{Instant, SystemTime};
 
         let hosts = [
@@ -1698,7 +1715,8 @@ mod layout_tests {
 
     async fn capture_bulk_exchanges(
         count: usize,
-    ) -> Result<(Vec<Exchange>, http_proxy::url_map::OriginKey), Box<dyn std::error::Error>> {
+    ) -> Result<(Vec<Exchange>, http_proxy::analysis::url::OriginKey), Box<dyn std::error::Error>>
+    {
         let upstream = TcpListener::bind("127.0.0.1:0").await?;
         let address = upstream.local_addr()?;
         let server_task = tokio::spawn(async move {
@@ -1753,7 +1771,8 @@ mod layout_tests {
         drop(client);
         let _ = server_task.await;
         proxy.stop()?;
-        let origin = http_proxy::url_map::OriginKey::new("http", "127.0.0.1", Some(address.port()));
+        let origin =
+            http_proxy::analysis::url::OriginKey::new("http", "127.0.0.1", Some(address.port()));
         Ok((captured, origin))
     }
 
@@ -1772,7 +1791,7 @@ mod layout_tests {
         let node_count = app.url_map.node_count();
         let retained_count = app.records.len();
 
-        let selected_key = http_proxy::url_map::ViewNodeKey {
+        let selected_key = http_proxy::analysis::url_map::ViewNodeKey {
             origin: local_origin,
             path: Vec::new(),
         };
@@ -1789,7 +1808,7 @@ mod layout_tests {
 
         app.handle_map_action(
             &app.context.clone(),
-            super::MapAction::ShowInRequests(http_proxy::url_map::RequestScope::subtree(
+            super::MapAction::ShowInRequests(http_proxy::analysis::url_map::RequestScope::subtree(
                 selected_key,
             )),
         );

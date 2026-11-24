@@ -1,18 +1,15 @@
 //! Real-time URL map (site map) and domain relationship graph.
 //!
-//! This module owns canonical URL normalization, shared dynamic ID segment
-//! classification/folding (also reused by endpoint schema inference in #69),
-//! Public Suffix List third-party classification, incremental tree aggregation,
-//! and force-directed graph layout.
+//! This module owns incremental tree aggregation, domain and URL relationship
+//! edges, node statistics, force-directed graph layout, and view projection.
+//! Shared canonical URL normalization, dynamic ID classification/folding, and
+//! Public Suffix List site classification live in [`crate::analysis::url`].
 //!
 //! Privacy invariant: query parameter values are stripped at URL parse time and
 //! never retained in the tree, relationship edges, or exported files.
 
 mod edges;
-mod id_fold;
 mod layout;
-mod normalize;
-mod site;
 mod stats;
 mod tree;
 mod view;
@@ -20,13 +17,7 @@ mod view;
 pub use edges::{
     DomainEdgeKey, DomainEdgeStats, DomainSummary, EdgeKind, RelationshipGraph, UrlEdgeKey,
 };
-pub use id_fold::{ID_FOLD_THRESHOLD, IdKind, PathSegmentPattern, classify_id_segment};
 pub use layout::{DEFAULT_MAX_GRAPH_DOMAINS, ForceLayout, GraphEdge, GraphNode, STEPS_PER_FRAME};
-pub use normalize::{
-    NormalizedUrl, OriginKey, parse_exchange_target, parse_origin_header, parse_url,
-    percent_decode_display, resolve_location, visit_query_values,
-};
-pub use site::{PartyKind, is_third_party, registrable_domain};
 pub use stats::{MethodSet, NodeStats, StatusBucket, StatusCounts};
 pub use tree::{MAX_NODES, MapNode, NodeId, ObservedInput, UrlMap};
 pub use view::{

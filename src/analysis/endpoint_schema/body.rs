@@ -8,9 +8,9 @@ use serde_json::Value;
 use super::multipart::{Boundary, MAX_PARTS, PartObservation, parse_parts};
 use super::shape::{FieldShape, MAX_SHAPE_FIELDS};
 use super::value::bump;
+use crate::analysis::url::percent_decode_display;
 use crate::content::detect::{self as content_detect, Basis, Detection};
 use crate::content::format::BodyFormat;
-use crate::url_map::percent_decode_display;
 use crate::{MediaType, ReadBodyOutcome};
 
 /// How a body is parsed for its structure, following the format

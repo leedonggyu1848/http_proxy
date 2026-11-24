@@ -8,9 +8,10 @@ use std::time::{Duration, SystemTime};
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use http::Method;
-use http_proxy::url_map::{
+use http_proxy::analysis::url::{parse_origin_header, parse_url};
+use http_proxy::analysis::url_map::{
     ForceLayout, ObservedInput, STEPS_PER_FRAME, SortDirection, StatusBucket, TreeFilter,
-    TreeSortField, UrlMap, build_view_roots, flatten_visible, parse_origin_header, parse_url,
+    TreeSortField, UrlMap, build_view_roots, flatten_visible,
 };
 
 const REQUEST_COUNT: usize = 5_000;
