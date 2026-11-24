@@ -1,5 +1,6 @@
-pub(in crate::ui) mod body_render;
+mod body_cache;
 pub(in crate::ui) mod body_matches;
+pub(in crate::ui) mod body_render;
 pub(in crate::ui) mod detail_tabs;
 pub(in crate::ui) mod detail_view;
 pub(in crate::ui) mod highlight;

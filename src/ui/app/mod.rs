@@ -650,10 +650,9 @@ mod layout_tests {
     use super::{
         AnalysisPipeline, DEFAULT_DETAIL_SHARE, DEFAULT_WINDOW, DetailTab, InspectorApp,
         MAX_RECORDS, MIN_DETAIL_WIDTH, MIN_MAIN_HEIGHT, MIN_TABLE_WIDTH, MIN_WINDOW, MainView,
-        PortChoice, PreviewBodies, RecordFilter, RecordList, body_render, body_format,
-        body_saving, browser_panel, ca_panel, copy_curl, fonts, har_dialog, image_view,
-        main_height, map_panel, replay_panel, request_table, save, search, split_detail_width,
-        theme, toolbar,
+        PortChoice, PreviewBodies, RecordFilter, RecordList, body_format, body_render, body_saving,
+        browser_panel, ca_panel, copy_curl, fonts, har_dialog, image_view, main_height, map_panel,
+        replay_panel, request_table, save, search, split_detail_width, theme, toolbar,
     };
     use eframe::egui;
     use http_proxy::analysis::url_map::UrlMap;

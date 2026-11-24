@@ -24,7 +24,7 @@ struct Labels {
 
 /// A tree with what the user did to it: open rows and the search.
 pub(in crate::ui) struct TreeView {
-    model: TreeModel,
+    model: Arc<TreeModel>,
     open: Vec<bool>,
     matched: Vec<bool>,
     query: String,
@@ -32,7 +32,7 @@ pub(in crate::ui) struct TreeView {
 }
 
 impl TreeView {
-    pub(in crate::ui) fn new(model: TreeModel) -> Self {
+    pub(in crate::ui) fn new(model: Arc<TreeModel>) -> Self {
         let open = model
             .nodes()
             .iter()
@@ -48,8 +48,8 @@ impl TreeView {
         }
     }
 
-    pub(in crate::ui) fn incomplete(&self) -> Option<&str> {
-        self.model.incomplete.as_deref()
+    pub(super) fn displays(&self, model: &Arc<TreeModel>) -> bool {
+        Arc::ptr_eq(&self.model, model)
     }
 
     fn expandable(&self, index: usize) -> bool {
@@ -283,7 +283,7 @@ mod tests {
     fn view(format: BodyFormat, text: &str) -> Result<TreeView, String> {
         tree::build(format, text)
             .ok_or("no tree")?
-            .map(TreeView::new)
+            .map(|model| TreeView::new(Arc::new(model)))
             .map_err(|error| error.to_string())
     }
 

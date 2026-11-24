@@ -1,7 +1,8 @@
 //! Selected request details and body previews.
 
 use crate::ui::InspectorApp;
-use crate::ui::detail::body_render::{BodySide, BodySource, BodyViewCache, Capture};
+use crate::ui::detail::body_cache::{BodySource, Capture};
+use crate::ui::detail::body_render::BodyViewCache;
 use crate::ui::detail::detail_tabs::{self, DetailTab};
 use crate::ui::detail::highlight::SyntaxPalette;
 use crate::ui::detail::image_view;
@@ -14,8 +15,8 @@ use eframe::egui;
 use http_proxy::content::detect;
 use http_proxy::content::format::{BodyFormat, ViewMode, form};
 use http_proxy::exchange::{
-    BodyLifecycle, BodyPreview, BodyRetention, CapturedRequest, Exchange, HeaderPreview, MediaType,
-    Outcome, RecordId, TunnelPreview,
+    BodyLifecycle, BodyPreview, BodyRetention, BodySide, CapturedRequest, Exchange, HeaderPreview,
+    MediaType, Outcome, RecordId, TunnelPreview,
 };
 use std::time::Duration;
 
