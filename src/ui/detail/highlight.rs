@@ -3,7 +3,7 @@
 
 use crate::ui::style::theme::Theme;
 use eframe::egui::{self, Color32, FontId, TextFormat, text::LayoutJob};
-use http_proxy::content::format::{LineIndent, Styled, TokenKind};
+use http_inspector_content::format::{LineIndent, Styled, TokenKind};
 use std::collections::HashMap;
 
 /// Syntax colors that keep at least 4.5:1 contrast on the panel, text field,

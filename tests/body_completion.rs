@@ -3,8 +3,8 @@
 
 use std::time::Duration;
 
-use http_proxy::exchange::{BodyLifecycle, BodyRetention, CapturedResponse, Exchange, Outcome};
-use http_proxy::interception::{ProxyConfig, ProxyHandle};
+use http_inspector_core::interception::{ProxyConfig, ProxyHandle};
+use http_inspector_exchange::{BodyLifecycle, BodyRetention, CapturedResponse, Exchange, Outcome};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;

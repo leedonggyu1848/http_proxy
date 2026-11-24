@@ -8,11 +8,11 @@ use std::collections::HashSet;
 use std::time::SystemTime;
 
 use eframe::egui::{self, RichText};
-use http_proxy::analysis::endpoint_schema::EndpointSchema;
-use http_proxy::analysis::filter::RecordList;
-use http_proxy::analysis::url::{parse_exchange_target, percent_decode_display};
-use http_proxy::analysis::url_map::{NodeStats, RequestScope, ViewNode};
-use http_proxy::exchange::{ByteSize, Exchange, RecordId};
+use http_inspector_analysis::endpoint_schema::EndpointSchema;
+use http_inspector_analysis::filter::RecordList;
+use http_inspector_analysis::url::{parse_exchange_target, percent_decode_display};
+use http_inspector_analysis::url_map::{NodeStats, RequestScope, ViewNode};
+use http_inspector_exchange::{ByteSize, Exchange, RecordId};
 
 use super::{MapAction, endpoint_view};
 use crate::ui::requests::outcome_view::outcome_text;
@@ -468,10 +468,10 @@ fn format_wall_time(time: Option<SystemTime>) -> String {
 mod tests {
     use std::time::Duration;
 
-    use http_proxy::analysis::filter::RecordFilter;
-    use http_proxy::analysis::url::{OriginKey, PathSegmentPattern};
-    use http_proxy::analysis::url_map::ViewNodeKey;
-    use http_proxy::interception::{ProxyConfig, ProxyHandle};
+    use http_inspector_analysis::filter::RecordFilter;
+    use http_inspector_analysis::url::{OriginKey, PathSegmentPattern};
+    use http_inspector_analysis::url_map::ViewNodeKey;
+    use http_inspector_core::interception::{ProxyConfig, ProxyHandle};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::{TcpListener, TcpStream};
     use tokio::time::timeout;

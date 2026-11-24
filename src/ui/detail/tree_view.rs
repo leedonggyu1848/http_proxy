@@ -5,7 +5,7 @@
 use crate::ui::detail::highlight::{self, SyntaxPalette};
 use crate::ui::style::theme::Theme;
 use eframe::egui::{self, FontId, text::LayoutJob};
-use http_proxy::content::format::tree::TreeModel;
+use http_inspector_content::format::tree::TreeModel;
 use std::sync::Arc;
 
 /// Levels open when a tree is first shown.
@@ -278,7 +278,7 @@ fn highlighted(job: &LayoutJob, background: egui::Color32) -> LayoutJob {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use http_proxy::content::format::{BodyFormat, tree};
+    use http_inspector_content::format::{BodyFormat, tree};
 
     fn view(format: BodyFormat, text: &str) -> Result<TreeView, String> {
         tree::build(format, text)

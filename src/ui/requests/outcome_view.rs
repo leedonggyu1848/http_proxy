@@ -1,7 +1,7 @@
 //! Shared outcome presentation for the request list, details, and search.
 
 use eframe::egui::Color32;
-use http_proxy::exchange::{Outcome, TunnelPreview, TunnelState};
+use http_inspector_exchange::{Outcome, TunnelPreview, TunnelState};
 
 use crate::ui::style::theme::Palette;
 
@@ -121,7 +121,7 @@ pub(crate) fn elapsed_millis(duration: std::time::Duration) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use http_proxy::exchange::FailureStage;
+    use http_inspector_exchange::FailureStage;
 
     #[test]
     fn names_every_status_class() {
@@ -158,11 +158,13 @@ mod tests {
             assert_eq!(outcome_text(&outcome, &palette).1, palette.error);
         }
         let matches = |query: &str| {
-            http_proxy::analysis::search::Matcher::new(
+            http_inspector_analysis::search::Matcher::new(
                 query,
-                http_proxy::analysis::search::MatchOptions::default(),
+                http_inspector_analysis::search::MatchOptions::default(),
             )
-            .is_ok_and(|matcher| http_proxy::analysis::search::outcome_matches(&outcome, &matcher))
+            .is_ok_and(|matcher| {
+                http_inspector_analysis::search::outcome_matches(&outcome, &matcher)
+            })
         };
         assert!(matches("upstream tls handshake"));
         assert!(matches("certificate rejected"));

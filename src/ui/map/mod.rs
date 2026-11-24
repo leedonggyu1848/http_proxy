@@ -10,14 +10,14 @@ pub(crate) use detail_pane::RecordMatchCache;
 use std::collections::{HashMap, HashSet};
 
 use eframe::egui;
-use http_proxy::analysis::endpoint_schema::EndpointSchemas;
-use http_proxy::analysis::filter::RecordList;
-use http_proxy::analysis::url_map::{
+use http_inspector_analysis::endpoint_schema::EndpointSchemas;
+use http_inspector_analysis::filter::RecordList;
+use http_inspector_analysis::url_map::{
     ContentTypeFilter, DEFAULT_MAX_GRAPH_DOMAINS, EdgeKind, ForceLayout, PartyFilter, RequestScope,
     SortDirection, StatusFilter, TreeFilter, TreeSortField, UrlMap, ViewNode, ViewNodeKey,
     VisibleRow, build_view_roots, find_view_node, flatten_visible,
 };
-use http_proxy::exchange::{Exchange, RecordId};
+use http_inspector_exchange::{Exchange, RecordId};
 
 /// Active sub-view inside the Map tab.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -449,7 +449,7 @@ impl MapPanel {
                 }
                 ui.separator();
                 if ui.button("Copy Mermaid to clipboard").clicked() {
-                    let mermaid = http_proxy::interop::map_export::export_graph_mermaid(
+                    let mermaid = http_inspector_interop::map_export::export_graph_mermaid(
                         map,
                         self.layout.max_domains(),
                     );
@@ -457,7 +457,7 @@ impl MapPanel {
                     ui.close();
                 }
                 if ui.button("Copy DOT to clipboard").clicked() {
-                    let dot = http_proxy::interop::map_export::export_graph_dot(
+                    let dot = http_inspector_interop::map_export::export_graph_dot(
                         map,
                         self.layout.max_domains(),
                     );
@@ -483,8 +483,8 @@ fn collect_branch_keys(nodes: &[ViewNode], out: &mut HashSet<ViewNodeKey>) {
 mod tests {
     use super::*;
     use http::Method;
-    use http_proxy::analysis::url::parse_url;
-    use http_proxy::analysis::url_map::{ObservedInput, StatusBucket};
+    use http_inspector_analysis::url::parse_url;
+    use http_inspector_analysis::url_map::{ObservedInput, StatusBucket};
     use std::time::{Duration, SystemTime};
 
     #[test]

@@ -6,10 +6,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use http_proxy::analysis::filter::RecordList;
-use http_proxy::analysis::search::document::{self, BodyCache, Checked};
-use http_proxy::analysis::search::{MatchOptions, Matcher, Query, SearchScope, SearchWorker};
-use http_proxy::exchange::{Exchange, RecordId};
+use http_inspector_analysis::filter::RecordList;
+use http_inspector_analysis::search::document::{self, BodyCache, Checked};
+use http_inspector_analysis::search::{MatchOptions, Matcher, Query, SearchScope, SearchWorker};
+use http_inspector_exchange::{Exchange, RecordId};
 
 use crate::ui::style::theme::Palette;
 
@@ -378,7 +378,7 @@ fn coverage_text(summary: Summary) -> Option<String> {
         parts.push(format!(
             "{} only in their first {} KiB",
             summary.partial,
-            http_proxy::interception::BODY_PREVIEW_BYTES / 1024
+            http_inspector_exchange::capture::BODY_PREVIEW_BYTES / 1024
         ));
     }
     if summary.binary > 0 {

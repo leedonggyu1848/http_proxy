@@ -1,0 +1,28 @@
+[package]
+name = "http-inspector-analysis"
+description = "Traffic analysis pipeline, URL normalization and map, endpoint schema inference, search, and filtering for HTTP Inspector"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+http.workspace = true
+http-inspector-content.workspace = true
+http-inspector-exchange.workspace = true
+memchr.workspace = true
+psl.workspace = true
+regex-automata.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+flate2.workspace = true
+http-inspector-exchange = { workspace = true, features = ["test-support"] }
+zstd.workspace = true
+
+[lints]
+workspace = true

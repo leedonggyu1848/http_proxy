@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
-use http_proxy::exchange::{BodyLifecycle, CaptureSource, FailureStage, Outcome};
-use http_proxy::interception::{ProxyConfig, ProxyHandle};
+use http_inspector_core::interception::{ProxyConfig, ProxyHandle};
+use http_inspector_exchange::{BodyLifecycle, CaptureSource, FailureStage, Outcome};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;

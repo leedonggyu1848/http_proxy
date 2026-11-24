@@ -1,0 +1,24 @@
+[package]
+name = "http-inspector-exchange"
+description = "Shared HTTP capture models, HTTP semantics rules, and test fixtures for HTTP Inspector"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+http.workspace = true
+thiserror = { workspace = true, optional = true }
+
+[features]
+# Exchange fixtures for tests (`ExchangeBuilder`, `MemoryBodySource`). Release
+# builds leave it off; tests turn it on via dev-dependencies.
+test-support = ["dep:thiserror"]
+
+[dev-dependencies]
+http-inspector-exchange = { path = ".", features = ["test-support"] }
+
+[lints]
+workspace = true

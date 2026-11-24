@@ -1,8 +1,8 @@
 //! Manual replay editor. Sensitive inputs live only as long as the editor.
 use eframe::egui;
-use http_proxy::exchange::{Exchange, RecordId};
-use http_proxy::interception::ProxyHandle;
-use http_proxy::replay::{ReplayDraft, ReplayError, ReplayField, ReplayTask};
+use http_inspector_core::interception::ProxyHandle;
+use http_inspector_core::replay::{ReplayDraft, ReplayError, ReplayField, ReplayTask};
+use http_inspector_exchange::{Exchange, RecordId};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -357,12 +357,12 @@ fn summary(record: &Exchange) -> String {
     if let Some(body) = record
         .request()
         .body()
-        .and_then(http_proxy::exchange::BodyPreview::snapshot)
+        .and_then(http_inspector_exchange::BodyPreview::snapshot)
     {
         text.push_str(&String::from_utf8_lossy(body.bytes()));
         text.push('\n');
     }
-    if let http_proxy::exchange::Outcome::Response(response) = record.outcome() {
+    if let http_inspector_exchange::Outcome::Response(response) = record.outcome() {
         let _ = writeln!(text, "Status {}", response.status());
         for field in response.headers().entries() {
             let _ = writeln!(text, "{}: {}", field.name(), field.value());

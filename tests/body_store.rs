@@ -5,9 +5,11 @@ use std::io::{self, Write as _};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use http_proxy::exchange::{BodyLifecycle, BodySide, Exchange};
-use http_proxy::interception::{ProxyConfig, ProxyHandle};
-use http_proxy::recording::{BodyLayout, BodyStore, SaveBody, SaveFormat, SavedBody, StoreGap};
+use http_inspector_core::interception::{ProxyConfig, ProxyHandle};
+use http_inspector_core::recording::{
+    BodyLayout, BodyStore, SaveBody, SaveFormat, SavedBody, StoreGap,
+};
+use http_inspector_exchange::{BodyLifecycle, BodySide, Exchange};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};

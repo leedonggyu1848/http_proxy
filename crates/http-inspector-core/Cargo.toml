@@ -1,0 +1,39 @@
+[package]
+name = "http-inspector-core"
+description = "Local HTTP/HTTPS proxy interception, CA and trust store management, recording, replay, browser launcher, and settings for HTTP Inspector"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+brotli-decompressor.workspace = true
+bytes.workspace = true
+flate2.workspace = true
+fs2.workspace = true
+http.workspace = true
+http-body.workspace = true
+http-body-util.workspace = true
+http-inspector-exchange.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tracing.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+http-inspector-exchange = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

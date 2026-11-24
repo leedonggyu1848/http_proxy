@@ -10,7 +10,7 @@ use std::io::{Read as _, Write as _};
 
 use aho_corasick::AhoCorasick;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use http_proxy::analysis::search::{MatchOptions, Matcher};
+use http_inspector_analysis::search::{MatchOptions, Matcher};
 
 const RECORDS: usize = 2_000;
 const PREVIEW_BYTES: usize = 8 * 1024;

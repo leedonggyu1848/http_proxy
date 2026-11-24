@@ -1727,37 +1727,116 @@ dependencies = [
 ]
 
 [[package]]
+name = "http-inspector-analysis"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "http",
+ "http-inspector-content",
+ "http-inspector-exchange",
+ "memchr",
+ "psl",
+ "regex-automata",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+ "zstd",
+]
+
+[[package]]
+name = "http-inspector-content"
+version = "0.1.0"
+dependencies = [
+ "brotli-decompressor",
+ "cssparser",
+ "flate2",
+ "gif",
+ "http-inspector-exchange",
+ "image",
+ "image-webp",
+ "jpeg-decoder",
+ "png",
+ "quick-xml",
+ "resvg",
+ "serde_json",
+ "thiserror 2.0.21",
+ "zstd",
+]
+
+[[package]]
+name = "http-inspector-core"
+version = "0.1.0"
+dependencies = [
+ "brotli-decompressor",
+ "bytes",
+ "flate2",
+ "fs2",
+ "http",
+ "http-body",
+ "http-body-util",
+ "http-inspector-exchange",
+ "hyper",
+ "hyper-util",
+ "rcgen",
+ "rustls",
+ "rustls-native-certs",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "zstd",
+]
+
+[[package]]
+name = "http-inspector-exchange"
+version = "0.1.0"
+dependencies = [
+ "http",
+ "http-inspector-exchange",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "http-inspector-interop"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "http",
+ "http-inspector-analysis",
+ "http-inspector-content",
+ "http-inspector-exchange",
+ "serde_json",
+ "tempfile",
+ "time",
+]
+
+[[package]]
 name = "http-proxy"
 version = "0.1.0"
 dependencies = [
  "aho-corasick",
- "brotli-decompressor",
  "bytes",
  "criterion",
- "cssparser",
  "eframe",
  "egui_extras",
  "flate2",
- "fs2",
- "gif",
  "http",
  "http-body",
  "http-body-util",
- "http-proxy",
+ "http-inspector-analysis",
+ "http-inspector-content",
+ "http-inspector-core",
+ "http-inspector-exchange",
+ "http-inspector-interop",
  "hyper",
  "hyper-util",
- "image",
- "image-webp",
- "jpeg-decoder",
- "memchr",
  "png",
- "psl",
- "quick-xml",
  "rcgen",
- "regex-automata",
- "resvg",
  "rustls",
- "rustls-native-certs",
  "serde_json",
  "sha2",
  "skrifa",
@@ -1768,7 +1847,6 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "tracing-subscriber",
- "zstd",
 ]
 
 [[package]]

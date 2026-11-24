@@ -7,9 +7,9 @@ use crate::ui::detail::search::highlight::MatchColors;
 use crate::ui::detail::tree_view::TreeView;
 use crate::ui::style::theme::{Palette, Theme};
 use eframe::egui::{self, Galley, text::LayoutJob};
-use http_proxy::analysis::search::Query;
-use http_proxy::content::format::{BodyFormat, Notice, NoticeLevel, Styled, ViewMode};
-use http_proxy::exchange::BodySide;
+use http_inspector_analysis::search::Query;
+use http_inspector_content::format::{BodyFormat, Notice, NoticeLevel, Styled, ViewMode};
+use http_inspector_exchange::BodySide;
 use std::sync::Arc;
 
 /// Height of the numbered line view before it scrolls.
@@ -363,7 +363,7 @@ mod tests {
     use super::*;
     use crate::ui::detail::body_cache::Capture;
     use crate::ui::detail::body_cache::fixtures::{media, partial_capture, source};
-    use http_proxy::content::format::tree;
+    use http_inspector_content::format::tree;
 
     fn run(
         cache: &mut BodyViewCache,
@@ -764,12 +764,12 @@ mod tests {
         let mut cache = BodyViewCache::default();
         let query = Query {
             generation: 1,
-            matcher: http_proxy::analysis::search::Matcher::new(
+            matcher: http_inspector_analysis::search::Matcher::new(
                 "line",
-                http_proxy::analysis::search::MatchOptions::default(),
+                http_inspector_analysis::search::MatchOptions::default(),
             )
             .map_err(|e| e.to_string())?,
-            scope: http_proxy::analysis::search::SearchScope::All,
+            scope: http_inspector_analysis::search::SearchScope::All,
         };
         let xml = BodySource {
             media_type: media("application/xml"),

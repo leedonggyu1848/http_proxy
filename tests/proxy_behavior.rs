@@ -2,13 +2,13 @@ use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
 
-use http_proxy::exchange::{
+use http_inspector_core::https::HttpsInspection;
+use http_inspector_core::interception::{EngineState, ProxyConfig, ProxyHandle};
+use http_inspector_core::replay::{REPLAY_BODY_FILE_LIMIT_BYTES, ReplayDraft, ReplayField};
+use http_inspector_exchange::{
     BodyLifecycle, BodyRetention, CapturedHeader, FailureStage, HeaderPreview, Outcome,
     TunnelPreview, TunnelSnapshot, TunnelState,
 };
-use http_proxy::https::HttpsInspection;
-use http_proxy::interception::{EngineState, ProxyConfig, ProxyHandle};
-use http_proxy::replay::{REPLAY_BODY_FILE_LIMIT_BYTES, ReplayDraft, ReplayField};
 use rcgen::{
     BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa,
     Issuer, KeyPair, KeyUsagePurpose,

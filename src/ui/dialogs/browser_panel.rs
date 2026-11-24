@@ -3,7 +3,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use eframe::egui;
-use http_proxy::launcher::{Browser, BrowserEvent, BrowserSession};
+use http_inspector_core::launcher::{Browser, BrowserEvent, BrowserSession};
 
 pub(crate) struct BrowserPanel {
     installed: Vec<Browser>,

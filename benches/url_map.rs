@@ -8,8 +8,8 @@ use std::time::{Duration, SystemTime};
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use http::Method;
-use http_proxy::analysis::url::{parse_origin_header, parse_url};
-use http_proxy::analysis::url_map::{
+use http_inspector_analysis::url::{parse_origin_header, parse_url};
+use http_inspector_analysis::url_map::{
     ForceLayout, ObservedInput, STEPS_PER_FRAME, SortDirection, StatusBucket, TreeFilter,
     TreeSortField, UrlMap, build_view_roots, flatten_visible,
 };

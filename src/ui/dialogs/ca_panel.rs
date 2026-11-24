@@ -4,7 +4,9 @@ use std::time::Duration;
 use crate::ui::style::theme::Palette;
 
 use eframe::egui::{self, Color32, RichText};
-use http_proxy::https::{CaInfo, CaTrustError, CaTrustStatus, CaTrustStore, HttpsSetupError};
+use http_inspector_core::https::{
+    CaInfo, CaTrustError, CaTrustStatus, CaTrustStore, HttpsSetupError,
+};
 
 use super::background_task::{BackgroundTask, TaskPoll};
 
