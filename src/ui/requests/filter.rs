@@ -10,7 +10,6 @@ use http_proxy::exchange::Exchange;
 
 use crate::ui::InspectorApp;
 use crate::ui::detail::search::RequestSearch;
-use crate::ui::dialogs::replay_panel;
 use crate::ui::map::RecordMatchCache;
 use crate::ui::style::theme::Palette;
 
@@ -18,15 +17,15 @@ impl InspectorApp {
     /// Filter, list options, and Clear, shown right above the request list.
     pub(in crate::ui) fn filters(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            self.search.controls(ui);
+            self.requests.search.controls(ui);
             egui::ComboBox::from_id_salt("record-filter")
-                .selected_text(self.record_filter.label())
+                .selected_text(self.requests.record_filter.label())
                 .show_ui(ui, |ui| {
                     for filter in RecordFilter::ALL {
-                        ui.selectable_value(&mut self.record_filter, filter, filter.label());
+                        ui.selectable_value(&mut self.requests.record_filter, filter, filter.label());
                     }
                 });
-            self.table.controls(ui);
+            self.requests.table.controls(ui);
             if ui
                 .button("Clear")
                 .on_hover_text(
@@ -38,16 +37,18 @@ impl InspectorApp {
             }
         });
         self.map_filter_banner(ui);
-        self.search.status(ui);
+        self.requests.search.status(ui);
     }
 
     fn map_filter_banner(&mut self, ui: &mut egui::Ui) {
-        let Some(key) = self.map_path_filter.clone() else {
+        let Some(key) = self.requests.map_path_filter.clone() else {
             return;
         };
-        self.map_filter_cache.sync(&key, &self.records, false);
+        self.requests
+            .map_filter_cache
+            .sync(&key, &self.requests.records, false);
         let palette = Palette::of(ui);
-        let retained = self.map_filter_cache.matched_count();
+        let retained = self.requests.map_filter_cache.matched_count();
         let total = self.map_scope_total(&key, retained);
         let evicted = total.saturating_sub(u64::try_from(retained).unwrap_or(u64::MAX));
         let mut clear = false;
@@ -75,8 +76,7 @@ impl InspectorApp {
             }
         });
         if clear {
-            self.map_path_filter = None;
-            self.map_filter_cache.clear();
+            self.requests.clear_map_filter();
         }
     }
 
@@ -84,10 +84,15 @@ impl InspectorApp {
     /// fewer than the `retained` ones still listed.
     fn map_scope_total(&self, scope: &RequestScope, retained: usize) -> u64 {
         let counted = scope.method.as_ref().map_or_else(
-            || self.analysis.url_map().matching_request_count(&scope.key),
+            || {
+                self.map
+                    .analysis
+                    .url_map()
+                    .matching_request_count(&scope.key)
+            },
             |method| {
-                self.analysis.endpoint_schemas().request_count(
-                    &self.analysis.url_map().matching_node_ids(&scope.key),
+                self.map.analysis.endpoint_schemas().request_count(
+                    &self.map.analysis.url_map().matching_node_ids(&scope.key),
                     method,
                 )
             },
@@ -96,21 +101,20 @@ impl InspectorApp {
     }
 
     pub(in crate::ui) fn request_table(&mut self, ui: &mut egui::Ui, shortcuts_allowed: bool) {
-        self.search.update(&self.records, ui.ctx());
-        if let Some(key) = self.map_path_filter.as_ref() {
-            self.map_filter_cache.sync(key, &self.records, false);
-        }
+        let requests = &mut self.requests;
+        requests.update_filters(ui.ctx());
         let rows = visible_records(
-            &self.records,
-            self.record_filter,
-            &self.search,
-            self.map_path_filter.as_ref(),
-            Some(&self.map_filter_cache),
+            &requests.records,
+            requests.record_filter,
+            &requests.search,
+            requests.map_path_filter.as_ref(),
+            Some(&requests.map_filter_cache),
         );
         if rows.is_empty() {
             let message = empty_list_text(
-                self.records.len(),
-                self.proxy
+                requests.records.len(),
+                self.session
+                    .proxy
                     .as_ref()
                     .map(http_proxy::interception::ProxyHandle::local_addr),
             );
@@ -119,27 +123,29 @@ impl InspectorApp {
             });
             return;
         }
-        self.table.saving_body = self.body_saving.is_busy();
-        if let Some(selected) = self.table.show(ui, rows, self.selected, shortcuts_allowed) {
-            self.selected = Some(selected);
+        requests.table.saving_body = self.session.body_saving.is_busy();
+        if let Some(selected) = requests
+            .table
+            .show(ui, rows, requests.selected, shortcuts_allowed)
+        {
+            requests.selected = Some(selected);
         }
-        if let Some(record) = self.table.copy_curl.take() {
-            self.curl.copy(ui.ctx(), &record);
+        if let Some(record) = requests.table.copy_curl.take() {
+            self.detail.curl.copy(ui.ctx(), &record);
         }
-        if let Some((record, side)) = self.table.save_body.take() {
-            let directory = self.save.directory();
-            self.body_saving.request(
+        if let Some((record, side)) = requests.table.save_body.take() {
+            let directory = self.dialogs.save.directory();
+            self.session.body_saving.request(
                 &record,
                 side,
                 http_proxy::recording::SaveFormat::Decoded,
                 directory,
             );
         }
-        if let Some(original) = self.table.replay.take() {
-            match replay_panel::ReplayPanel::new(original) {
-                Ok(panel) => self.replay = Some(panel),
-                Err(error) => self.error = Some(error.to_string()),
-            }
+        if let Some(original) = requests.table.replay.take()
+            && let Err(error) = self.detail.open_replay(original)
+        {
+            self.session.error = Some(error.to_string());
         }
     }
 }

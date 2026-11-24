@@ -319,40 +319,42 @@ pub(in crate::ui) fn new_folder(directory: &Path) -> PathBuf {
 impl InspectorApp {
     /// Shows the `Save bodies…` dialog and starts the save it confirms.
     pub(in crate::ui) fn bulk_body_save(&mut self, context: &egui::Context) {
-        self.body_saving.bulk.poll(context);
+        self.session.body_saving.bulk.poll(context);
         let counts = ScopeCounts {
-            all: self.records.len(),
-            filtered: self.filtered_records().len(),
-            selected: usize::from(self.selected.is_some()),
+            all: self.requests.records.len(),
+            filtered: self.requests.filtered_records().len(),
+            selected: usize::from(self.requests.selected.is_some()),
         };
-        let Some(choice) = self.body_saving.bulk.show(context, counts) else {
+        let Some(choice) = self.session.body_saving.bulk.show(context, counts) else {
             return;
         };
-        let directory = match self.save.directory() {
+        let directory = match self.dialogs.save.directory() {
             Ok(directory) => directory,
             Err(error) => {
-                self.body_saving.bulk.result = Some(BulkResult::Failed(error.to_string()));
+                self.session.body_saving.bulk.result = Some(BulkResult::Failed(error.to_string()));
                 return;
             }
         };
-        let Some(store) = self.body_saving.store().cloned() else {
-            self.body_saving.bulk.result = Some(BulkResult::Failed(
+        let Some(store) = self.session.body_saving.store().cloned() else {
+            self.session.body_saving.bulk.result = Some(BulkResult::Failed(
                 "Saving bodies is unavailable".to_owned(),
             ));
             return;
         };
         let records: Vec<&Exchange> = match choice.scope {
-            BulkScope::All => self.records.iter().collect(),
-            BulkScope::Filtered => self.filtered_records(),
+            BulkScope::All => self.requests.records.iter().collect(),
+            BulkScope::Filtered => self.requests.filtered_records(),
             BulkScope::Selected => self
+                .requests
                 .records
                 .iter()
-                .filter(|record| Some(record.id()) == self.selected)
+                .filter(|record| Some(record.id()) == self.requests.selected)
                 .collect(),
         };
         let folder = new_folder(&directory);
         let bodies = bodies_to_save(&records, choice, &store, &folder);
-        self.body_saving
+        self.session
+            .body_saving
             .bulk
             .start(&store, bodies, choice.layout, folder);
     }

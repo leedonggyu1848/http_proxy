@@ -1,30 +1,21 @@
-use crate::ui::detail::detail_tabs::DetailTab;
-use crate::ui::detail::{body_render, image_view, search};
-use crate::ui::dialogs::{
-    body_saving, browser_panel, ca_panel, copy_curl, har_dialog, replay_panel, save,
-};
-use crate::ui::map::{self as map_panel, MapAction, MapExportFormat, MapSubView};
-use crate::ui::requests::toolbar::PortChoice;
-use crate::ui::requests::{filter, request_table, toolbar};
-use crate::ui::style::{fonts, theme};
+mod state;
 
-use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
+use self::state::{
+    DetailState, Dialogs, LayoutState, MainView, MapState, RequestsState, SessionState,
+};
+use crate::ui::dialogs::har_dialog;
+use crate::ui::map::{MapAction, MapExportFormat, MapSubView};
+use crate::ui::style::fonts;
+
 use eframe::egui;
-use http_proxy::analysis::filter::{RecordFilter, RecordList};
 use http_proxy::analysis::pipeline::AnalysisPipeline;
-use http_proxy::analysis::url_map::RequestScope;
-use http_proxy::content::format as body_format;
-use http_proxy::exchange::{BodySource, Exchange, RecordId};
-use http_proxy::https::HttpsInspection;
-use http_proxy::interception::{EngineState, ProxyConfig, ProxyHandle};
+use http_proxy::exchange::Exchange;
+use http_proxy::interception::{EngineState, ProxyHandle};
 use http_proxy::interop::map_export::{
     export_graph_dot, export_graph_mermaid, export_tree_json, export_tree_text,
 };
-use http_proxy::recording::{FullLog, PreviewBodies};
-use http_proxy::settings;
 
 pub(in crate::ui) const MAX_RECORDS: usize = 2_000;
 /// Repaint interval while pending requests or streaming bodies change on screen.
@@ -70,169 +61,51 @@ fn init_tracing() {
         .is_err();
 }
 
-/// Top-level inspector view switcher (`Requests` list vs `Map` site/relationship map).
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(in crate::ui) enum MainView {
-    #[default]
-    Requests,
-    Map,
-}
-
 pub(in crate::ui) struct InspectorApp {
-    pub(in crate::ui) theme: theme::ThemeSettings,
-    pub(in crate::ui) main_view: MainView,
-    pub(in crate::ui) replay: Option<replay_panel::ReplayPanel>,
-    pub(in crate::ui) curl: copy_curl::CurlCopy,
-    pub(in crate::ui) proxy: Option<ProxyHandle>,
-    pub(in crate::ui) records: RecordList<Exchange>,
-    /// Capture analysis: URL map, endpoint schemas and any other analyzer.
-    pub(in crate::ui) analysis: AnalysisPipeline,
-    pub(in crate::ui) map_panel: map_panel::MapPanel,
-    pub(in crate::ui) map_path_filter: Option<RequestScope>,
-    pub(in crate::ui) map_filter_cache: map_panel::RecordMatchCache,
-    pub(in crate::ui) selected: Option<RecordId>,
-    pub(in crate::ui) search: search::RequestSearch,
-    pub(in crate::ui) record_filter: RecordFilter,
-    pub(in crate::ui) https_inspection: bool,
-    pub(in crate::ui) authorization_notice: toolbar::AuthorizationNotice,
-    pub(in crate::ui) ca_directory: Option<PathBuf>,
-    pub(in crate::ui) ca_panel: ca_panel::CaPanel,
-    pub(in crate::ui) browsers: browser_panel::BrowserPanel,
-    pub(in crate::ui) error: Option<String>,
-    pub(in crate::ui) full_log: Option<FullLog>,
-    pub(in crate::ui) log_init_error: Option<String>,
-    pub(in crate::ui) save: save::SaveControls,
-    pub(in crate::ui) har_dialog: har_dialog::HarDialog,
-    pub(in crate::ui) body_saving: body_saving::BodySaving,
-    pub(in crate::ui) port: PortChoice,
-    pub(in crate::ui) table: request_table::RequestTable,
-    pub(in crate::ui) detail_tab: DetailTab,
-    pub(in crate::ui) body_mode: body_format::ViewMode,
-    pub(in crate::ui) body_cache: body_render::BodyViewCache,
-    pub(in crate::ui) image: image_view::ImagePanel,
-    /// Height of the status bar in the previous frame, reserved below the
-    /// main area so that it fits in the window without scrolling.
-    pub(in crate::ui) status_bar_height: f32,
-    /// Fraction of the main area given to the details pane before clamping.
-    /// Updated only when the user drags the divider, so shrinking the window
-    /// and widening it again restores the split instead of staying narrow.
-    pub(in crate::ui) detail_share: f32,
-    pub(in crate::ui) context: egui::Context,
+    pub(in crate::ui) session: SessionState,
+    pub(in crate::ui) requests: RequestsState,
+    pub(in crate::ui) detail: DetailState,
+    pub(in crate::ui) map: MapState,
+    pub(in crate::ui) dialogs: Dialogs,
+    pub(in crate::ui) layout: LayoutState,
+    context: egui::Context,
 }
 
 impl InspectorApp {
     fn new(context: egui::Context) -> Self {
-        let theme = theme::ThemeSettings::new(&context);
-        let (full_log, log_init_error) = match FullLog::new() {
-            Ok(log) => (Some(log), None),
-            Err(error) => (
-                None,
-                Some(format!("Full-session logging is unavailable: {error}")),
-            ),
-        };
-        let body_saving = body_saving::BodySaving::open();
-        let bodies: Arc<dyn BodySource> = match body_saving.store() {
-            Some(store) => Arc::new(store.clone()),
-            None => Arc::new(PreviewBodies),
-        };
+        let layout = LayoutState::new(&context);
+        let session = SessionState::new();
         let wake_context = context.clone();
-        let analysis = AnalysisPipeline::start(bodies, move || wake_context.request_repaint());
+        let analysis = AnalysisPipeline::start(session.body_source(), move || {
+            wake_context.request_repaint();
+        });
         let mut app = Self {
-            main_view: MainView::Requests,
-            replay: None,
-            curl: copy_curl::CurlCopy::default(),
-            proxy: None,
-            records: RecordList::new(MAX_RECORDS),
-            analysis,
-            map_panel: map_panel::MapPanel::new(),
-            map_path_filter: None,
-            map_filter_cache: map_panel::RecordMatchCache::default(),
-            selected: None,
-            search: search::RequestSearch::new(&context),
-            record_filter: RecordFilter::All,
-            https_inspection: false,
-            authorization_notice: toolbar::AuthorizationNotice::default(),
-            ca_directory: settings::paths::ca_directory(|name| std::env::var_os(name)),
-            ca_panel: ca_panel::CaPanel::default(),
-            browsers: browser_panel::BrowserPanel::default(),
-            error: None,
-            full_log,
-            log_init_error,
-            save: save::SaveControls::new(),
-            har_dialog: har_dialog::HarDialog::default(),
-            body_saving,
-            port: PortChoice::from_launch(),
-            table: request_table::RequestTable::new(),
-            detail_tab: DetailTab::Headers,
-            body_mode: body_format::ViewMode::default(),
-            body_cache: body_render::BodyViewCache::default(),
-            image: image_view::ImagePanel::default(),
-            status_bar_height: 0.0,
-            detail_share: DEFAULT_DETAIL_SHARE,
-            theme,
+            session,
+            requests: RequestsState::new(&context),
+            detail: DetailState::default(),
+            map: MapState::new(analysis),
+            dialogs: Dialogs::new(),
+            layout,
             context,
         };
-        app.start_proxy();
+        app.session.start_proxy(&app.context);
         app
     }
 
-    pub(in crate::ui) fn start_proxy(&mut self) {
-        let port = match settings::port::ProxyPort::parse(&self.port.text) {
-            Ok(port) => port,
-            Err(error) => {
-                self.error = Some(error.to_string());
-                return;
-            }
-        };
-        let mut config = ProxyConfig::loopback(port.value());
-        if self.https_inspection {
-            let Some(directory) = self.ca_directory.as_ref() else {
-                self.error = Some(
-                    "HTTPS inspection requires an application data directory; check HOME and platform storage settings"
-                        .to_owned(),
-                );
-                return;
-            };
-            config = config.with_https_inspection(HttpsInspection::new(directory.clone()));
-        }
-        if let Some(store) = self.body_saving.store() {
-            config = config.with_body_store(store.clone());
-        }
-        let result = self.full_log.as_ref().map_or_else(
-            || ProxyHandle::start(config.clone()),
-            |log| ProxyHandle::start_recording(config.clone(), log.clone()),
-        );
-        match result {
-            Ok(proxy) => {
-                let context = self.context.clone();
-                let _first_notifier = proxy.notify_on_event(move || context.request_repaint());
-                self.proxy = Some(proxy);
-                self.error = self
-                    .port
-                    .remember(port)
-                    .err()
-                    .map(|error| error.to_string());
-            }
-            Err(error) => {
-                self.error = Some(toolbar::start_error_text(&error, port));
-            }
-        }
-    }
-
     pub(in crate::ui) fn stop_proxy(&mut self) {
-        self.browsers.close();
-        self.ca_panel.refresh();
+        self.dialogs.close_proxy_controls();
         if let Some(proxy) = self.take_proxy()
             && let Err(error) = proxy.stop()
         {
-            self.error = Some(error.to_string());
+            self.session.error = Some(error.to_string());
         }
     }
 
     /// Releases a proxy whose engine stopped on its own so the toolbar shows
     /// `Stopped` with the cause and `Start` can be pressed again.
     fn release_failed_proxy(&mut self) {
-        let Some(EngineState::Failed { message }) = self.proxy.as_ref().map(ProxyHandle::state)
+        let Some(EngineState::Failed { message }) =
+            self.session.proxy.as_ref().map(ProxyHandle::state)
         else {
             return;
         };
@@ -243,46 +116,29 @@ impl InspectorApp {
         {
             error = format!("{error} ({stop_error})");
         }
-        self.error = Some(error);
+        self.session.error = Some(error);
     }
 
     /// Detaches the running proxy, keeping its drop count for the toolbar.
     fn take_proxy(&mut self) -> Option<ProxyHandle> {
-        let proxy = self.proxy.take()?;
-        self.records.proxy_stopped(proxy.dropped_records());
+        let proxy = self.session.proxy.take()?;
+        self.requests.records.proxy_stopped(proxy.dropped_records());
         Some(proxy)
     }
 
-    pub(in crate::ui) fn engine_dropped(&self) -> u64 {
-        self.proxy.as_ref().map_or(0, ProxyHandle::dropped_records)
-    }
-
     fn receive_records(&mut self) {
-        let Some(proxy) = self.proxy.as_mut() else {
+        let Some(proxy) = self.session.proxy.as_mut() else {
             return;
         };
         while let Some(record) = proxy.try_receive() {
-            self.analysis.record_added(&record);
-            if let Some(removed) = self.records.push(record)
-                && self.selected == Some(removed.id())
-            {
-                self.selected = None;
-            }
+            self.map.analysis.record_added(&record);
+            self.requests.record_added(record);
         }
     }
 
     pub(in crate::ui) fn clear_session(&mut self) {
-        self.records.clear(self.engine_dropped());
-        self.selected = None;
-        self.analysis.session_cleared();
-        self.map_panel.clear();
-        self.map_path_filter = None;
-        self.map_filter_cache.clear();
-    }
-
-    /// Reports whether any displayed value still changes over time.
-    fn has_live_records(&self) -> bool {
-        self.records.iter().any(Exchange::is_live)
+        self.requests.clear(self.session.engine_dropped());
+        self.map.clear();
     }
 }
 
@@ -300,19 +156,14 @@ impl InspectorApp {
     /// Renders one frame of the inspector inside `ui`.
     pub(in crate::ui) fn render_ui(&mut self, ui: &mut egui::Ui) {
         self.receive_records();
-        let _changed = self.analysis.update();
+        let _changed = self.map.analysis.update();
         self.release_failed_proxy();
-        self.body_saving.update(ui.ctx());
-        if let Some(panel) = self.replay.as_mut() {
-            let latest = self
-                .records
-                .iter()
-                .rev()
-                .find(|record| record.replay_of() == Some(panel.original_id()));
-            if !panel.show(ui.ctx(), self.proxy.as_ref(), latest) {
-                self.replay = None;
-            }
-        }
+        self.session.body_saving.update(ui.ctx());
+        self.detail.update_replay(
+            ui.ctx(),
+            self.session.proxy.as_ref(),
+            &self.requests.records,
+        );
         self.har_export(ui.ctx());
         self.bulk_body_save(ui.ctx());
         self.range_merge(ui.ctx());
@@ -328,23 +179,25 @@ impl InspectorApp {
                 self.notices(ui);
                 ui.separator();
                 self.view_switcher(ui);
-                match self.main_view {
+                match self.layout.main_view {
                     MainView::Requests => {
                         self.filters(ui);
                         let used = ui.cursor().top() - top + ui.spacing().item_spacing.y;
-                        let height = main_height(viewport_height, used, self.status_bar_height);
+                        let height =
+                            main_height(viewport_height, used, self.layout.status_bar_height);
                         self.main_area(ui, height, shortcuts_allowed);
                     }
                     MainView::Map => {
-                        if let Some(action) = self.map_panel.controls(
+                        if let Some(action) = self.map.panel.controls(
                             ui,
-                            self.analysis.url_map(),
-                            self.save.is_busy(),
+                            self.map.analysis.url_map(),
+                            self.dialogs.save.is_busy(),
                         ) {
                             pending_map_action = Some(action);
                         }
                         let used = ui.cursor().top() - top + ui.spacing().item_spacing.y;
-                        let height = main_height(viewport_height, used, self.status_bar_height);
+                        let height =
+                            main_height(viewport_height, used, self.layout.status_bar_height);
                         if let Some(action) = self.map_area(ui, height, shortcuts_allowed) {
                             pending_map_action = Some(action);
                         }
@@ -353,7 +206,7 @@ impl InspectorApp {
                 let status_top = ui.cursor().top();
                 ui.separator();
                 self.status_bar(ui);
-                self.status_bar_height = ui.min_rect().bottom() - status_top;
+                self.layout.status_bar_height = ui.min_rect().bottom() - status_top;
             });
 
         if let Some(action) = pending_map_action {
@@ -363,61 +216,63 @@ impl InspectorApp {
         // New exchanges wake the UI through the proxy's notifier. Periodic
         // repaints are needed only for values that change without an event
         // and for noticing an engine that stopped on its own.
-        if self.has_live_records() {
+        if self.requests.has_live_records() {
             ui.ctx().request_repaint_after(LIVE_REPAINT);
-        } else if self.proxy.is_some() {
+        } else if self.session.proxy.is_some() {
             ui.ctx().request_repaint_after(IDLE_REPAINT);
         }
     }
 
     fn view_switcher(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            let req_label = format!("Requests ({})", self.records.len());
-            ui.selectable_value(&mut self.main_view, MainView::Requests, req_label);
+            let req_label = format!("Requests ({})", self.requests.records.len());
+            ui.selectable_value(&mut self.layout.main_view, MainView::Requests, req_label);
             let map_label = format!(
                 "Map ({} hosts · {} nodes)",
-                self.analysis.url_map().origins().len(),
-                self.analysis.url_map().node_count()
+                self.map.analysis.url_map().origins().len(),
+                self.map.analysis.url_map().node_count()
             );
-            ui.selectable_value(&mut self.main_view, MainView::Map, map_label);
+            ui.selectable_value(&mut self.layout.main_view, MainView::Map, map_label);
         });
     }
 
     fn handle_map_action(&mut self, ctx: &egui::Context, action: MapAction) {
         match action {
             MapAction::ShowInRequests(key) => {
-                self.map_filter_cache.sync(&key, &self.records, false);
-                self.map_path_filter = Some(key);
-                self.main_view = MainView::Requests;
-                self.selected = None;
+                self.requests.show_map_scope(key);
+                self.layout.main_view = MainView::Requests;
                 ctx.request_repaint();
             }
             MapAction::SelectRequest(id) => {
-                self.selected = Some(id);
-                self.main_view = MainView::Requests;
+                self.requests.selected = Some(id);
+                self.layout.main_view = MainView::Requests;
                 ctx.request_repaint();
             }
             MapAction::Export(format) => {
                 let content = match format {
                     MapExportFormat::TreeText => {
-                        export_tree_text(self.analysis.url_map(), self.map_panel.fold_ids())
+                        export_tree_text(self.map.analysis.url_map(), self.map.panel.fold_ids())
                     }
                     MapExportFormat::TreeJson => serde_json::to_string_pretty(&export_tree_json(
-                        self.analysis.url_map(),
-                        self.map_panel.fold_ids(),
+                        self.map.analysis.url_map(),
+                        self.map.panel.fold_ids(),
                     ))
                     .unwrap_or_else(|_| "{}".to_owned()),
                     MapExportFormat::GraphMermaid => export_graph_mermaid(
-                        self.analysis.url_map(),
-                        self.map_panel.max_graph_domains(),
+                        self.map.analysis.url_map(),
+                        self.map.panel.max_graph_domains(),
                     ),
                     MapExportFormat::GraphDot => export_graph_dot(
-                        self.analysis.url_map(),
-                        self.map_panel.max_graph_domains(),
+                        self.map.analysis.url_map(),
+                        self.map.panel.max_graph_domains(),
                     ),
                 };
-                self.save
-                    .save_text_file(ctx, format.file_prefix(), format.extension(), content);
+                self.dialogs.save.save_text_file(
+                    ctx,
+                    format.file_prefix(),
+                    format.extension(),
+                    content,
+                );
             }
             MapAction::ClearAll => {
                 self.clear_session();
@@ -428,41 +283,39 @@ impl InspectorApp {
 
     /// Shows the `Export HAR` window and starts the export it confirms.
     fn har_export(&mut self, context: &egui::Context) {
-        if !self.har_dialog.is_open() {
+        if !self.dialogs.har.is_open() {
             return;
         }
         let counts = har_dialog::ScopeCounts {
-            all: self.records.len(),
-            filtered: self.filtered_records().len(),
+            all: self.requests.records.len(),
+            filtered: self.requests.filtered_records().len(),
         };
-        let Some(export) = self.har_dialog.show(context, counts, self.save.is_busy()) else {
+        let Some(export) = self
+            .dialogs
+            .har
+            .show(context, counts, self.dialogs.save.is_busy())
+        else {
             return;
         };
         let records: Vec<Exchange> = match export.scope {
-            har_dialog::HarScope::All => self.records.iter().cloned().collect(),
-            har_dialog::HarScope::Filtered => {
-                self.filtered_records().into_iter().cloned().collect()
-            }
+            har_dialog::HarScope::All => self.requests.records.iter().cloned().collect(),
+            har_dialog::HarScope::Filtered => self
+                .requests
+                .filtered_records()
+                .into_iter()
+                .cloned()
+                .collect(),
         };
-        self.save
+        self.dialogs
+            .save
             .export_har(context, records, export.options, export.path);
-    }
-
-    pub(in crate::ui) fn filtered_records(&self) -> Vec<&Exchange> {
-        filter::visible_records(
-            &self.records,
-            self.record_filter,
-            &self.search,
-            self.map_path_filter.as_ref(),
-            Some(&self.map_filter_cache),
-        )
     }
 
     /// Requests on the left and details on the right, split by a draggable
     /// divider. Each pane is strictly clipped to its own disjoint rectangle
     /// so wide content in either pane can never paint over the other.
     fn main_area(&mut self, ui: &mut egui::Ui, height: f32, shortcuts_allowed: bool) {
-        let mut share = self.detail_share;
+        let mut share = self.layout.detail_share;
         split_panes(
             ui,
             height,
@@ -473,7 +326,7 @@ impl InspectorApp {
                 self.detail_panel(right_ui, shortcuts_allowed);
             },
         );
-        self.detail_share = share;
+        self.layout.detail_share = share;
     }
 
     /// Map main area: split tree + detail panes in Tree sub-view, or full-width
@@ -484,7 +337,7 @@ impl InspectorApp {
         height: f32,
         shortcuts_allowed: bool,
     ) -> Option<MapAction> {
-        if self.map_panel.sub_view == MapSubView::Graph {
+        if self.map.panel.sub_view == MapSubView::Graph {
             let size = egui::vec2(ui.available_width(), height);
             let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
             let mut main = ui.new_child(
@@ -494,12 +347,13 @@ impl InspectorApp {
                     .layout(egui::Layout::top_down(egui::Align::Min)),
             );
             main.shrink_clip_rect(rect);
-            self.map_panel
-                .show_graph_pane(&mut main, self.analysis.url_map());
+            self.map
+                .panel
+                .show_graph_pane(&mut main, self.map.analysis.url_map());
             return None;
         }
 
-        let mut share = self.detail_share;
+        let mut share = self.layout.detail_share;
         let action = split_panes(
             ui,
             height,
@@ -511,17 +365,20 @@ impl InspectorApp {
                 "map-detail-pane",
             ),
             |left_ui, right_ui| {
-                self.map_panel
-                    .show_tree_pane(left_ui, self.analysis.url_map(), shortcuts_allowed);
-                self.map_panel.show_detail_pane(
+                self.map.panel.show_tree_pane(
+                    left_ui,
+                    self.map.analysis.url_map(),
+                    shortcuts_allowed,
+                );
+                self.map.panel.show_detail_pane(
                     right_ui,
-                    self.analysis.url_map(),
-                    &self.records,
-                    self.analysis.endpoint_schemas(),
+                    self.map.analysis.url_map(),
+                    &self.requests.records,
+                    self.map.analysis.endpoint_schemas(),
                 )
             },
         );
-        self.detail_share = share;
+        self.layout.detail_share = share;
         action
     }
 }
@@ -648,16 +505,19 @@ pub(in crate::ui) fn request_shortcuts_allowed(ctx: &egui::Context) -> bool {
 #[cfg(test)]
 mod layout_tests {
     use super::{
-        AnalysisPipeline, DEFAULT_DETAIL_SHARE, DEFAULT_WINDOW, DetailTab, InspectorApp,
-        MAX_RECORDS, MIN_DETAIL_WIDTH, MIN_MAIN_HEIGHT, MIN_TABLE_WIDTH, MIN_WINDOW, MainView,
-        PortChoice, PreviewBodies, RecordFilter, RecordList, body_format, body_render, body_saving,
-        browser_panel, ca_panel, copy_curl, fonts, har_dialog, image_view, main_height, map_panel,
-        replay_panel, request_table, save, search, split_detail_width, theme, toolbar,
+        AnalysisPipeline, DEFAULT_DETAIL_SHARE, DEFAULT_WINDOW, DetailState, Dialogs, InspectorApp,
+        LayoutState, MAX_RECORDS, MIN_DETAIL_WIDTH, MIN_MAIN_HEIGHT, MIN_TABLE_WIDTH, MIN_WINDOW,
+        MainView, MapState, RequestsState, SessionState, fonts, main_height, split_detail_width,
     };
+    use crate::ui::detail::detail_tabs::DetailTab;
+    use crate::ui::dialogs::{body_saving::BodySaving, har_dialog, replay_panel};
+    use crate::ui::requests::toolbar::PortChoice;
     use eframe::egui;
     use http_proxy::analysis::url_map::UrlMap;
+    use http_proxy::content::format as body_format;
     use http_proxy::exchange::Exchange;
     use http_proxy::interception::{ProxyConfig, ProxyHandle};
+    use http_proxy::recording::PreviewBodies;
     use http_proxy::settings;
     use std::sync::Arc;
     use std::time::Duration;
@@ -668,45 +528,95 @@ mod layout_tests {
     fn test_app(context: egui::Context) -> InspectorApp {
         fonts::configure_fonts(&context);
         InspectorApp {
-            theme: theme::ThemeSettings::new(&context),
-            main_view: MainView::Requests,
-            replay: None,
-            curl: copy_curl::CurlCopy::default(),
-            proxy: None,
-            records: RecordList::new(MAX_RECORDS),
-            analysis: AnalysisPipeline::disabled(),
-            map_panel: map_panel::MapPanel::new(),
-            map_path_filter: None,
-            map_filter_cache: map_panel::RecordMatchCache::default(),
-            selected: None,
-            search: search::RequestSearch::new(&context),
-            record_filter: RecordFilter::All,
-            https_inspection: false,
-            authorization_notice: toolbar::AuthorizationNotice::default(),
-            ca_directory: None,
-            ca_panel: ca_panel::CaPanel::default(),
-            browsers: browser_panel::BrowserPanel::default(),
-            error: None,
-            full_log: None,
-            log_init_error: None,
-            save: save::SaveControls::new(),
-            har_dialog: har_dialog::HarDialog::default(),
-            body_saving: body_saving::BodySaving::without_store(),
-            port: PortChoice {
-                text: "0".to_owned(),
-                origin: settings::port::PortOrigin::Default,
-                settings_directory: None,
-                launch_warning: None,
+            session: SessionState {
+                proxy: None,
+                full_log: None,
+                log_init_error: None,
+                body_saving: BodySaving::without_store(),
+                https_inspection: false,
+                ca_directory: None,
+                port: PortChoice {
+                    text: "0".to_owned(),
+                    origin: settings::port::PortOrigin::Default,
+                    settings_directory: None,
+                    launch_warning: None,
+                },
+                error: None,
             },
-            table: request_table::RequestTable::new(),
-            detail_tab: DetailTab::Headers,
-            body_mode: body_format::ViewMode::Pretty,
-            body_cache: body_render::BodyViewCache::default(),
-            image: image_view::ImagePanel::default(),
-            status_bar_height: 0.0,
-            detail_share: DEFAULT_DETAIL_SHARE,
+            requests: RequestsState::new(&context),
+            detail: DetailState::default(),
+            map: MapState::new(AnalysisPipeline::disabled()),
+            dialogs: Dialogs::new(),
+            layout: LayoutState::new(&context),
             context,
         }
+    }
+
+    #[test]
+    fn clear_drops_capture_state_and_keeps_view_preferences()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use http::Method;
+        use http_proxy::analysis::filter::RecordFilter;
+        use http_proxy::analysis::url::OriginKey;
+        use http_proxy::analysis::url_map::{RequestScope, ViewNodeKey};
+        use http_proxy::interception::ExchangeBuilder;
+
+        let mut app = test_app(egui::Context::default());
+        let record = ExchangeBuilder::http(Method::GET, "http://fixture.test/api")?.in_flight()?;
+        let key = ViewNodeKey {
+            origin: OriginKey::new("http", "fixture.test", None),
+            path: Vec::new(),
+        };
+        app.map.analysis.record_added(&record);
+        app.map.panel.selected = Some(key.clone());
+        app.map.panel.sub_view = super::MapSubView::Graph;
+        let id = record.id();
+        app.requests.record_added(record);
+        app.requests.show_map_scope(RequestScope::subtree(key));
+        app.requests.selected = Some(id);
+        app.requests.record_filter = RecordFilter::Failures;
+        app.detail.tab = DetailTab::Body;
+        app.detail.body_mode = body_format::ViewMode::Raw;
+        app.dialogs.har.open("fixture.har".to_owned());
+        app.session.port.text = "8081".to_owned();
+        app.layout.main_view = MainView::Map;
+        app.layout.detail_share = 0.52;
+        assert!(app.map.analysis.url_map().node_count() > 0);
+        assert_eq!(app.requests.map_filter_cache.matched_count(), 1);
+
+        app.clear_session();
+
+        assert!(app.requests.records.is_empty());
+        assert_eq!(app.requests.selected, None);
+        assert_eq!(app.requests.records.evicted(), 0);
+        assert!(app.requests.map_path_filter.is_none());
+        assert_eq!(app.requests.map_filter_cache.matched_count(), 0);
+        assert_eq!(app.map.analysis.url_map().node_count(), 0);
+        assert!(app.map.panel.selected.is_none());
+
+        assert_eq!(app.requests.record_filter, RecordFilter::Failures);
+        assert_eq!(app.map.panel.sub_view, super::MapSubView::Graph);
+        assert_eq!(app.detail.tab, DetailTab::Body);
+        assert_eq!(app.detail.body_mode, body_format::ViewMode::Raw);
+        assert!(app.dialogs.har.is_open());
+        assert_eq!(app.session.port.text, "8081");
+        assert_eq!(app.layout.main_view, MainView::Map);
+        assert!((app.layout.detail_share - 0.52).abs() < f32::EPSILON);
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_port_leaves_proxy_stopped_with_a_toolbar_error() {
+        let mut app = test_app(egui::Context::default());
+        app.session.port.text.clear();
+
+        app.session.start_proxy(&app.context);
+
+        assert!(app.session.proxy.is_none());
+        assert_eq!(
+            app.session.error.as_deref(),
+            Some("Enter a port number, or 0 to pick a free port.")
+        );
     }
 
     #[test]
@@ -901,8 +811,8 @@ mod layout_tests {
         let ctx = egui::Context::default();
         let mut app = test_app(ctx);
         for exchange in exchanges {
-            app.selected = Some(exchange.id());
-            let _evicted = app.records.push(exchange);
+            app.requests.selected = Some(exchange.id());
+            let _evicted = app.requests.records.push(exchange);
         }
 
         for size in [
@@ -913,7 +823,7 @@ mod layout_tests {
             [MIN_WINDOW[0], 900.0],
             [1_100.0, 700.0],
         ] {
-            app.detail_tab = DetailTab::Headers;
+            app.detail.tab = DetailTab::Headers;
             let viewport =
                 egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size[0], size[1]));
             let drawn = render_settled(&mut app, size);
@@ -954,8 +864,8 @@ mod layout_tests {
         }
 
         for mode in body_format::ViewMode::ALL {
-            app.detail_tab = DetailTab::Body;
-            app.body_mode = mode;
+            app.detail.tab = DetailTab::Body;
+            app.detail.body_mode = mode;
             let viewport = egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
                 egui::vec2(MIN_WINDOW[0], MIN_WINDOW[1]),
@@ -965,8 +875,8 @@ mod layout_tests {
         }
 
         // Empty list and unselected detail pane at minimum window size.
-        app.records.clear(0);
-        app.selected = None;
+        app.requests.records.clear(0);
+        app.requests.selected = None;
         let min_viewport =
             egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(MIN_WINDOW[0], MIN_WINDOW[1]));
         let drawn = render_settled(&mut app, MIN_WINDOW);
@@ -1020,8 +930,8 @@ mod layout_tests {
         let exchanges = timeout(Duration::from_secs(5), capture_sample_exchanges()).await??;
         let mut app = test_app(egui::Context::default());
         for exchange in exchanges {
-            app.selected = Some(exchange.id());
-            let _evicted = app.records.push(exchange);
+            app.requests.selected = Some(exchange.id());
+            let _evicted = app.requests.records.push(exchange);
         }
 
         let wide = [1_100.0, 700.0];
@@ -1029,7 +939,8 @@ mod layout_tests {
 
         // CentralPanel defaults to 8px horizontal margin on each side.
         let main_width = wide[0] - 16.0;
-        let start_x = (8.0 + main_width - split_detail_width(main_width, app.detail_share)).round();
+        let start_x =
+            (8.0 + main_width - split_detail_width(main_width, app.layout.detail_share)).round();
         let (drag_delay, release_delay) = drag_pointer(
             &mut app,
             wide,
@@ -1049,11 +960,11 @@ mod layout_tests {
 
         let (after_drag, _) = render_frame(&mut app, wide, Vec::new());
         assert!(
-            app.detail_share > 0.50,
+            app.layout.detail_share > 0.50,
             "expected dragged detail_share > 0.50, got {}",
-            app.detail_share
+            app.layout.detail_share
         );
-        let dragged_share = app.detail_share;
+        let dragged_share = app.layout.detail_share;
         let dragged_edit_left = text_left(&after_drag, "Edit and Resend")?;
         assert!(
             dragged_edit_left < initial_edit_left - 100.0,
@@ -1065,7 +976,7 @@ mod layout_tests {
             egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(MIN_WINDOW[0], MIN_WINDOW[1]));
         let narrow_drawn = render_settled(&mut app, MIN_WINDOW);
         assert_no_text_overlap(&narrow_drawn, min_viewport, "dragged-shrunk@640x420");
-        assert!((app.detail_share - dragged_share).abs() < f32::EPSILON);
+        assert!((app.layout.detail_share - dragged_share).abs() < f32::EPSILON);
 
         // Enlarge back to wide: user-dragged split width is restored.
         let wide_viewport =
@@ -1134,7 +1045,7 @@ mod layout_tests {
         // Bulk body save modal at 640x420.
         let ctx = egui::Context::default();
         let mut app = test_app(ctx);
-        app.body_saving.open_bulk();
+        app.session.body_saving.open_bulk();
         let mut drawn = Vec::new();
         for _ in 0..3 {
             let input = egui::RawInput {
@@ -1335,11 +1246,11 @@ mod layout_tests {
 
         let mut app = test_app(egui::Context::default());
         for exchange in exchanges {
-            let _evicted = app.records.push(exchange);
+            let _evicted = app.requests.records.push(exchange);
         }
-        app.selected = Some(post_id);
-        app.detail_tab = DetailTab::Body;
-        app.body_mode = body_format::ViewMode::Pretty;
+        app.requests.selected = Some(post_id);
+        app.detail.tab = DetailTab::Body;
+        app.detail.body_mode = body_format::ViewMode::Pretty;
 
         let size = DEFAULT_WINDOW;
         let mut time = 0.0;
@@ -1366,7 +1277,7 @@ mod layout_tests {
         assert!(!super::request_shortcuts_allowed(&app.context));
         press_key(&mut app, size, &mut time, egui::Key::ArrowUp);
         assert_eq!(
-            app.selected,
+            app.requests.selected,
             Some(post_id),
             "ArrowUp while body text is focused must not switch selected request"
         );
@@ -1387,7 +1298,7 @@ mod layout_tests {
         assert!(super::request_shortcuts_allowed(&app.context));
         press_key(&mut app, size, &mut time, egui::Key::ArrowUp);
         assert_eq!(
-            app.selected,
+            app.requests.selected,
             Some(first_id),
             "ArrowUp after Escape must resume navigating the request list"
         );
@@ -1449,11 +1360,11 @@ mod layout_tests {
         let mut url_map = UrlMap::new();
         for exchange in exchanges {
             let _ = url_map.observe_exchange(&exchange);
-            let _evicted = app.records.push(exchange);
+            let _evicted = app.requests.records.push(exchange);
         }
         let _ = url_map.sync_live();
         seed_synthetic_map_data(&mut url_map)?;
-        app.analysis = AnalysisPipeline::seeded(url_map);
+        app.map.analysis = AnalysisPipeline::seeded(url_map);
         Ok(())
     }
 
@@ -1485,22 +1396,23 @@ mod layout_tests {
         let context = egui::Context::default();
         let mut app = test_app(context.clone());
         let wake_context = context.clone();
-        app.analysis = AnalysisPipeline::start(Arc::new(PreviewBodies), move || {
+        app.map.analysis = AnalysisPipeline::start(Arc::new(PreviewBodies), move || {
             wake_context.request_repaint();
         });
         for exchange in exchanges {
-            app.analysis.record_added(&exchange);
-            let _evicted = app.records.push(exchange);
+            app.map.analysis.record_added(&exchange);
+            let _evicted = app.requests.records.push(exchange);
         }
         timeout(Duration::from_secs(5), async {
-            while app.analysis.endpoint_schemas().version() < 3 {
-                let _changed = app.analysis.update();
+            while app.map.analysis.endpoint_schemas().version() < 3 {
+                let _changed = app.map.analysis.update();
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
         .await?;
 
         let origin = app
+            .map
             .analysis
             .url_map()
             .origins()
@@ -1508,9 +1420,9 @@ mod layout_tests {
             .next()
             .cloned()
             .ok_or("missing origin")?;
-        app.main_view = MainView::Map;
-        app.map_panel.sub_view = super::MapSubView::Tree;
-        app.map_panel.selected = Some(http_proxy::analysis::url_map::ViewNodeKey {
+        app.layout.main_view = MainView::Map;
+        app.map.panel.sub_view = super::MapSubView::Tree;
+        app.map.panel.selected = Some(http_proxy::analysis::url_map::ViewNodeKey {
             origin,
             path: ["api", "v2", "users"]
                 .into_iter()
@@ -1555,8 +1467,9 @@ mod layout_tests {
         let mut app = test_app(egui::Context::default());
         load_synthetic_map(&mut app, exchanges)?;
 
-        app.main_view = MainView::Map;
+        app.layout.main_view = MainView::Map;
         let first_origin = app
+            .map
             .analysis
             .url_map()
             .origins()
@@ -1564,7 +1477,7 @@ mod layout_tests {
             .next()
             .cloned()
             .ok_or("missing origin")?;
-        app.map_panel.selected = Some(http_proxy::analysis::url_map::ViewNodeKey {
+        app.map.panel.selected = Some(http_proxy::analysis::url_map::ViewNodeKey {
             origin: first_origin,
             path: Vec::new(),
         });
@@ -1576,7 +1489,7 @@ mod layout_tests {
                 (super::MapSubView::Tree, "map-tree"),
                 (super::MapSubView::Graph, "map-graph"),
             ] {
-                app.map_panel.sub_view = sub;
+                app.map.panel.sub_view = sub;
                 let drawn = render_settled(&mut app, size);
                 assert!(!drawn.is_empty());
                 assert_no_text_overlap(&drawn, viewport, &format!("{tag}@{size:?}"));
@@ -1584,15 +1497,16 @@ mod layout_tests {
             }
         }
 
-        app.map_panel.sub_view = super::MapSubView::Tree;
+        app.map.panel.sub_view = super::MapSubView::Tree;
         let mut time = 0.0;
         let _ = run_app_frame(&mut app, DEFAULT_WINDOW, time, Vec::new());
         press_key(&mut app, DEFAULT_WINDOW, &mut time, egui::Key::ArrowDown);
-        assert!(app.map_panel.selected.is_some());
+        assert!(app.map.panel.selected.is_some());
         press_key(&mut app, DEFAULT_WINDOW, &mut time, egui::Key::ArrowRight);
         let _ = run_app_frame(&mut app, DEFAULT_WINDOW, time + 0.05, Vec::new());
 
         let local_origin = app
+            .map
             .analysis
             .url_map()
             .origins()
@@ -1614,8 +1528,8 @@ mod layout_tests {
                 users_key,
             )),
         );
-        assert_eq!(app.main_view, MainView::Requests);
-        assert_eq!(app.filtered_records().len(), 2);
+        assert_eq!(app.layout.main_view, MainView::Requests);
+        assert_eq!(app.requests.filtered_records().len(), 2);
 
         let min_viewport =
             egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(MIN_WINDOW[0], MIN_WINDOW[1]));
@@ -1628,9 +1542,9 @@ mod layout_tests {
         );
 
         app.clear_session();
-        assert_eq!(app.records.len(), 0);
-        assert_eq!(app.analysis.url_map().node_count(), 0);
-        assert!(app.map_path_filter.is_none());
+        assert_eq!(app.requests.records.len(), 0);
+        assert_eq!(app.map.analysis.url_map().node_count(), 0);
+        assert!(app.requests.map_path_filter.is_none());
         Ok(())
     }
 
@@ -1777,27 +1691,27 @@ mod layout_tests {
         let mut url_map = UrlMap::new();
         for record in exchanges {
             let _ = url_map.observe_exchange(&record);
-            let _evicted = app.records.push(record);
+            let _evicted = app.requests.records.push(record);
         }
         let _ = url_map.sync_live();
         let insert_elapsed = seed_scale_workload(&mut url_map, 3_000);
-        app.analysis = AnalysisPipeline::seeded(url_map);
-        let node_count = app.analysis.url_map().node_count();
-        let retained_count = app.records.len();
+        app.map.analysis = AnalysisPipeline::seeded(url_map);
+        let node_count = app.map.analysis.url_map().node_count();
+        let retained_count = app.requests.records.len();
 
         let selected_key = http_proxy::analysis::url_map::ViewNodeKey {
             origin: local_origin,
             path: Vec::new(),
         };
-        app.main_view = MainView::Map;
-        app.map_panel.sub_view = super::MapSubView::Tree;
-        app.map_panel.selected = Some(selected_key.clone());
+        app.layout.main_view = MainView::Map;
+        app.map.panel.sub_view = super::MapSubView::Tree;
+        app.map.panel.selected = Some(selected_key.clone());
 
         let mut time = 0.0;
         let tree_cold = measure_frames(&mut app, &mut time, 1);
         let tree_frames = measure_frames(&mut app, &mut time, 60);
 
-        app.map_panel.sub_view = super::MapSubView::Graph;
+        app.map.panel.sub_view = super::MapSubView::Graph;
         let graph_frames = measure_frames(&mut app, &mut time, 60);
 
         app.handle_map_action(
