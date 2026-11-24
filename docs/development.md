@@ -108,7 +108,7 @@ graph TD
   content --> http_semantics & exchange
 ```
 
-`scripts/check-boundaries.py`가 로컬과 CI(`quality` 작업)에서 다음 규칙을 검사한다.
+`scripts/check-boundaries.py`가 로컬과 CI(`quality` 작업)에서 다음 규칙을 검사한다(`crate::`뿐 아니라 `super::`·`self::` 상대 경로도 파일의 모듈 경로 기준으로 정규화해 검사하며, `use crate;`·`use crate as ...;` 등 크레이트 루트 별칭을 금지한다).
 
 - `src/lib.rs`에 최상위 `pub use` 재노출을 두지 않는다.
 - `src/ui/`와 `src/main.rs`를 제외한 `src/`의 모든 코드는 `eframe`·`egui`·`egui_extras`를 참조하지 않는다.

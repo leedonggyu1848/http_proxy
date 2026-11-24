@@ -4,10 +4,13 @@ Enforces the module architecture defined in issues #152 and #161:
 1. src/lib.rs declares domain modules and app constants only (no flat `pub use`).
 2. No library module (anything in src/ outside src/ui/ and src/main.rs) may
    reference `eframe`, `egui`, or `egui_extras`.
-3. Every `crate::...` reference in a domain module must follow the allowed
-   dependency graph (`exchange` and `http_semantics` depend on no other domain
-   module; `content`, `analysis`, and `interop` never depend on `interception`,
-   `recording`, `https`, or `replay`).
+3. Every intra-crate reference (`crate::`, `http_proxy::`, `self::`, `super::`)
+   in a domain module is normalized against the file's module path (including
+   inline `mod` blocks) and must follow the allowed dependency graph (`exchange`
+   and `http_semantics` depend on no other domain module; `content`, `analysis`,
+   and `interop` never depend on `interception`, `recording`, `https`, or
+   `replay`). Crate-root imports/aliases (`use crate;`, `use crate as ...;`,
+   `use super as ...;` landing on the crate root) are also rejected.
 4. `Exchange` write handles (`ExchangeWriter`, `BodyPreviewWriter`,
    `TunnelWriter`) may be used in production code only inside `exchange`,
    `interception`, and `replay`.
@@ -69,6 +72,15 @@ class Token:
     text: str
     line: int
     in_test: bool = False
+    mod_path: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CrateRef:
+    resolved: list[str]
+    raw: str
+    line: int
+    in_test: bool
 
 
 @dataclass(frozen=True)
@@ -307,60 +319,106 @@ def _is_cfg_test_attr(tokens: list[Token], start: int) -> tuple[bool, int]:
     return False, end + 1
 
 
-def annotate_test_scope(tokens: list[Token], whole_file_is_test: bool) -> list[Token]:
-    """Mark every token with whether it lies inside a `#[cfg(test)]` item."""
-    if whole_file_is_test:
-        return [Token(t.kind, t.text, t.line, in_test=True) for t in tokens]
+def module_path_for(src_dir: Path, rs_file: Path) -> tuple[str, ...]:
+    """Return the Rust module path segments for `rs_file` relative to `src_dir`."""
+    rel = rs_file.relative_to(src_dir)
+    parts = list(rel.parts)
+    if parts == ["lib.rs"] or parts == ["main.rs"]:
+        return ()
+    if parts[-1] == "mod.rs":
+        return tuple(parts[:-1])
+    parts[-1] = parts[-1].removesuffix(".rs")
+    return tuple(parts)
 
+
+def annotate_scopes(
+    tokens: list[Token],
+    whole_file_is_test: bool,
+    file_mod_path: tuple[str, ...] = (),
+) -> list[Token]:
+    """Mark every token with its `#[cfg(test)]` scope and effective module path."""
     annotated: list[Token] = []
     n = len(tokens)
     i = 0
     brace_depth = 0
     pending_test = False
     test_enter_depth: int | None = None
+    pending_mod_name: str | None = None
+    mod_stack: list[tuple[str, int]] = []
 
     while i < n:
         tok = tokens[i]
-        in_test_now = test_enter_depth is not None or pending_test
+        in_test_now = whole_file_is_test or test_enter_depth is not None or pending_test
+        cur_mod = file_mod_path + tuple(name for name, _ in mod_stack)
 
         # Detect outer attributes (`#[...]`) at the start of an item.
         if tok.text == "#" and i + 1 < n and tokens[i + 1].text == "[":
             is_cfg_test, next_i = _is_cfg_test_attr(tokens, i)
-            if is_cfg_test and test_enter_depth is None:
+            if not whole_file_is_test and is_cfg_test and test_enter_depth is None:
                 pending_test = True
                 in_test_now = True
             for attr_tok in tokens[i:next_i]:
                 annotated.append(
-                    Token(attr_tok.kind, attr_tok.text, attr_tok.line, in_test_now)
+                    Token(
+                        attr_tok.kind,
+                        attr_tok.text,
+                        attr_tok.line,
+                        in_test_now,
+                        cur_mod,
+                    )
                 )
             i = next_i
             continue
 
+        # Detect inline module definitions (`mod foo { ... }`).
+        if (
+            tok.kind == "IDENT"
+            and tok.text == "mod"
+            and i + 2 < n
+            and tokens[i + 1].kind == "IDENT"
+            and tokens[i + 2].text == "{"
+        ):
+            pending_mod_name = tokens[i + 1].text
+
         if tok.text == "{":
-            if pending_test and test_enter_depth is None:
+            if not whole_file_is_test and pending_test and test_enter_depth is None:
                 test_enter_depth = brace_depth
                 pending_test = False
                 in_test_now = True
+            if pending_mod_name is not None:
+                mod_stack.append((pending_mod_name, brace_depth))
+                pending_mod_name = None
+                cur_mod = file_mod_path + tuple(name for name, _ in mod_stack)
             brace_depth += 1
-            annotated.append(Token(tok.kind, tok.text, tok.line, in_test_now))
+            annotated.append(
+                Token(tok.kind, tok.text, tok.line, in_test_now, cur_mod)
+            )
             i += 1
             continue
 
         if tok.text == "}":
             brace_depth = max(0, brace_depth - 1)
-            annotated.append(Token(tok.kind, tok.text, tok.line, in_test_now))
-            if test_enter_depth is not None and brace_depth <= test_enter_depth:
+            annotated.append(
+                Token(tok.kind, tok.text, tok.line, in_test_now, cur_mod)
+            )
+            if (
+                not whole_file_is_test
+                and test_enter_depth is not None
+                and brace_depth <= test_enter_depth
+            ):
                 test_enter_depth = None
+            while mod_stack and brace_depth <= mod_stack[-1][1]:
+                mod_stack.pop()
             i += 1
             continue
 
         if tok.text == ";" and pending_test:
-            annotated.append(Token(tok.kind, tok.text, tok.line, True))
+            annotated.append(Token(tok.kind, tok.text, tok.line, True, cur_mod))
             pending_test = False
             i += 1
             continue
 
-        annotated.append(Token(tok.kind, tok.text, tok.line, in_test_now))
+        annotated.append(Token(tok.kind, tok.text, tok.line, in_test_now, cur_mod))
         i += 1
 
     return annotated
@@ -370,7 +428,11 @@ def discover_cfg_test_files(src_dir: Path) -> set[Path]:
     """Find files loaded via `#[cfg(test)] mod <name>;`."""
     test_files: set[Path] = set()
     for rs_file in sorted(src_dir.rglob("*.rs")):
-        tokens = annotate_test_scope(tokenize_rust(rs_file.read_text()), False)
+        tokens = annotate_scopes(
+            tokenize_rust(rs_file.read_text()),
+            False,
+            module_path_for(src_dir, rs_file),
+        )
         for idx in range(len(tokens) - 2):
             tok = tokens[idx]
             if (
@@ -396,13 +458,14 @@ def discover_cfg_test_files(src_dir: Path) -> set[Path]:
 
 def _parse_use_tree(
     tokens: list[Token], pos: int, prefix: list[str]
-) -> tuple[list[tuple[list[str], int, bool]], int]:
+) -> tuple[list[tuple[list[str], int, bool, tuple[str, ...]]], int]:
     """Parse a Rust `use` tree starting at `pos`, returning `(paths, next_pos)`."""
-    results: list[tuple[list[str], int, bool]] = []
+    results: list[tuple[list[str], int, bool, tuple[str, ...]]] = []
     n = len(tokens)
     current = list(prefix)
     line = tokens[pos].line if pos < n else 0
     in_test = tokens[pos].in_test if pos < n else False
+    mod_path = tokens[pos].mod_path if pos < n else ()
 
     while pos < n:
         tok = tokens[pos]
@@ -418,11 +481,11 @@ def _parse_use_tree(
             return results, pos
         if tok.text in (",", "}", ";"):
             if current:
-                results.append((current, line, in_test))
+                results.append((current, line, in_test, mod_path))
             return results, pos
         if tok.kind == "IDENT" and tok.text == "as":
             if current:
-                results.append((current, line, in_test))
+                results.append((current, line, in_test, mod_path))
             pos += 2  # skip `as <alias>`
             return results, pos
         if tok.text == "::":
@@ -432,19 +495,52 @@ def _parse_use_tree(
             if not current:
                 line = tok.line
                 in_test = tok.in_test
+                mod_path = tok.mod_path
             current.append(tok.text)
             pos += 1
             continue
         pos += 1
 
     if current:
-        results.append((current, line, in_test))
+        results.append((current, line, in_test, mod_path))
     return results, pos
 
 
-def extract_crate_refs(tokens: list[Token]) -> list[tuple[list[str], int, bool]]:
-    """Extract all `crate::...` and `http_proxy::...` paths from token stream."""
-    refs: list[tuple[list[str], int, bool]] = []
+def normalize_crate_path(
+    raw_path: list[str], cur_mod_path: tuple[str, ...]
+) -> list[str] | None:
+    """Resolve `crate::`, `http_proxy::`, `self::`, or `super::` paths to crate-root segments.
+
+    Returns `None` for external paths (e.g. `std::...`), `[]` for paths that
+    resolve to the crate root itself (e.g. `use crate as root;`), or the
+    normalized path segments from the crate root.
+    """
+    if not raw_path:
+        return None
+    head = raw_path[0]
+    if head in ("crate", "http_proxy"):
+        resolved: list[str] = []
+        segments = raw_path[1:]
+    elif head in ("self", "super"):
+        resolved = list(cur_mod_path)
+        segments = raw_path
+    else:
+        return None
+
+    for seg in segments:
+        if seg == "self":
+            continue
+        if seg == "super":
+            if resolved:
+                resolved.pop()
+            continue
+        resolved.append(seg)
+    return resolved
+
+
+def extract_crate_refs(tokens: list[Token]) -> list[CrateRef]:
+    """Extract and normalize all intra-crate paths from `use` items and inline paths."""
+    refs: list[CrateRef] = []
     n = len(tokens)
     i = 0
     while i < n:
@@ -452,26 +548,30 @@ def extract_crate_refs(tokens: list[Token]) -> list[tuple[list[str], int, bool]]
         # Handle `use ...;` statements cleanly (including nested `{...}` groups).
         if tok.kind == "IDENT" and tok.text == "use":
             paths, next_i = _parse_use_tree(tokens, i + 1, [])
-            for path, line, in_test in paths:
-                if len(path) >= 2 and path[0] in ("crate", "http_proxy"):
-                    refs.append((path[1:], line, in_test))
+            for path, line, in_test, mod_path in paths:
+                resolved = normalize_crate_path(path, mod_path)
+                if resolved is not None:
+                    refs.append(CrateRef(resolved, "::".join(path), line, in_test))
             i = next_i + 1
             continue
 
-        # Handle inline paths (`crate::foo::bar`, `pub(in crate::exchange)`).
+        # Handle inline paths (`crate::...`, `http_proxy::...`, `self::...`, `super::...`).
         if (
             tok.kind == "IDENT"
-            and tok.text in ("crate", "http_proxy")
+            and tok.text in ("crate", "http_proxy", "self", "super")
+            and (i == 0 or tokens[i - 1].text != "::")
             and i + 2 < n
             and tokens[i + 1].text == "::"
             and tokens[i + 2].kind == "IDENT"
         ):
-            path = [tokens[i + 2].text]
+            raw = [tok.text, tokens[i + 2].text]
             j = i + 3
             while j + 1 < n and tokens[j].text == "::" and tokens[j + 1].kind == "IDENT":
-                path.append(tokens[j + 1].text)
+                raw.append(tokens[j + 1].text)
                 j += 2
-            refs.append((path, tok.line, tok.in_test))
+            resolved = normalize_crate_path(raw, tok.mod_path)
+            if resolved is not None:
+                refs.append(CrateRef(resolved, "::".join(raw), tok.line, tok.in_test))
             i = j
             continue
 
@@ -537,8 +637,10 @@ def check_repository(root: Path) -> list[Violation]:
             continue
 
         whole_file_is_test = rs_file.resolve() in test_files
-        tokens = annotate_test_scope(
-            tokenize_rust(rs_file.read_text()), whole_file_is_test
+        tokens = annotate_scopes(
+            tokenize_rust(rs_file.read_text()),
+            whole_file_is_test,
+            module_path_for(src_dir, rs_file),
         )
 
         # Rule 2: No eframe/egui references anywhere outside src/ui/ and src/main.rs.
@@ -573,27 +675,42 @@ def check_repository(root: Path) -> list[Violation]:
                         )
                     )
 
-        # Rule 3 & 4: Domain dependency direction.
+        # Rule 3 & 4: Domain dependency direction (including `self::`/`super::` and crate aliases).
         allowed = ALLOWED_DEPS[src_mod]
-        for path_parts, line, in_test in extract_crate_refs(tokens):
-            target = path_parts[0]
+        for ref in extract_crate_refs(tokens):
+            if not ref.resolved:
+                violations.append(
+                    Violation(
+                        rs_file,
+                        ref.line,
+                        f"forbidden crate-root import or alias via `{ref.raw}` "
+                        f"in module `{src_mod}`",
+                    )
+                )
+                continue
+            target = ref.resolved[0]
             if target == src_mod or target in ROOT_CONSTANTS or target in allowed:
                 continue
-            item = path_parts[1] if len(path_parts) > 1 else None
+            item = ref.resolved[1] if len(ref.resolved) > 1 else None
             if (
-                in_test
+                ref.in_test
                 and src_mod in TEST_FIXTURE_CONSUMERS
                 and target == "interception"
                 and item in TEST_FIXTURE_ITEMS
             ):
                 continue
-            rendered = "crate::" + "::".join(path_parts)
+            normalized = "crate::" + "::".join(ref.resolved)
+            via = (
+                f"`{normalized}`"
+                if ref.raw == normalized
+                else f"`{ref.raw}` (resolved to `{normalized}`)"
+            )
             allowed_list = ", ".join(sorted(allowed)) if allowed else "none"
             violations.append(
                 Violation(
                     rs_file,
-                    line,
-                    f"forbidden dependency `{src_mod}` -> `{target}` via `{rendered}` "
+                    ref.line,
+                    f"forbidden dependency `{src_mod}` -> `{target}` via {via} "
                     f"(allowed domain deps for `{src_mod}`: {allowed_list})",
                 )
             )
