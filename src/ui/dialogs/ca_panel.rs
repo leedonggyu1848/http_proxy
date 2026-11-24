@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::time::Duration;
 
 use crate::ui::style::theme::Palette;
@@ -7,11 +6,13 @@ use crate::ui::style::theme::Palette;
 use eframe::egui::{self, Color32, RichText};
 use http_proxy::https::{CaInfo, CaTrustError, CaTrustStatus, CaTrustStore, HttpsSetupError};
 
+use super::background_task::{BackgroundTask, TaskPoll};
+
 #[derive(Default)]
 pub(in crate::ui) struct CaPanel {
     info: Option<CaInfo>,
     registration: Option<Registration>,
-    pending: Option<Receiver<Event>>,
+    pending: Option<BackgroundTask<Event>>,
     pending_action: Option<Action>,
     error: Option<String>,
     notice: Option<&'static str>,
@@ -39,6 +40,8 @@ enum CaRegistrationError {
     Trust(#[from] CaTrustError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error("Could not start CA registration: {0}")]
+    Start(std::io::Error),
     #[error("CA registration worker stopped")]
     WorkerStopped,
 }
@@ -236,21 +239,13 @@ impl CaPanel {
         self.notice = None;
         self.registration = None;
         let directory = directory.to_owned();
-        let context = context.clone();
-        let (sender, receiver) = mpsc::sync_channel(2);
-        match std::thread::Builder::new()
-            .name("ca-registration".to_owned())
-            .spawn(move || {
-                let result = registration(action, &directory, &sender);
-                let _receiver_closed = sender.send(Event::Finished(action, result)).is_err();
-                context.request_repaint();
-            }) {
-            Ok(_worker) => {
-                self.pending = Some(receiver);
-                self.pending_action = Some(action);
-            }
-            Err(error) => self.error = Some(format!("Could not start CA registration: {error}")),
-        }
+        let (task, starter) = BackgroundTask::deferred();
+        starter.start_reporting("ca-registration", context, move |report| {
+            let result = registration(action, &directory, |info| report(Event::Prepared(info)));
+            Ok(Event::Finished(action, result))
+        });
+        self.pending = Some(task);
+        self.pending_action = Some(action);
     }
 
     fn receive(&mut self) {
@@ -258,19 +253,18 @@ impl CaPanel {
     }
 
     fn receive_event(&mut self) -> bool {
-        let Some(receiver) = &self.pending else {
+        let Some(task) = &self.pending else {
             return false;
         };
-        let (action, result) = match receiver.try_recv() {
-            Ok(Event::Prepared(info)) => {
+        let (action, result) = match task.poll() {
+            TaskPoll::Ready(Ok(Event::Prepared(info))) => {
                 self.info = Some(info);
                 return true;
             }
-            Ok(Event::Finished(action, result)) => (action, result),
-            Err(TryRecvError::Empty) => return false,
-            Err(TryRecvError::Disconnected) => {
-                (Action::Check, Err(CaRegistrationError::WorkerStopped))
-            }
+            TaskPoll::Ready(Ok(Event::Finished(action, result))) => (action, result),
+            TaskPoll::Pending => return false,
+            TaskPoll::Ready(Err(error)) => (Action::Check, Err(CaRegistrationError::Start(error))),
+            TaskPoll::Disconnected => (Action::Check, Err(CaRegistrationError::WorkerStopped)),
         };
         self.pending = None;
         self.pending_action = None;
@@ -293,12 +287,12 @@ impl CaPanel {
 fn registration(
     action: Action,
     directory: &Path,
-    sender: &SyncSender<Event>,
+    report_prepared: impl FnOnce(CaInfo) -> bool,
 ) -> Result<Registration, CaRegistrationError> {
     let info = CaInfo::load_or_create(directory)?;
-    sender
-        .send(Event::Prepared(info.clone()))
-        .map_err(|_| CaRegistrationError::WorkerStopped)?;
+    if !report_prepared(info.clone()) {
+        return Err(CaRegistrationError::WorkerStopped);
+    }
     let store = CaTrustStore::for_current_user()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
