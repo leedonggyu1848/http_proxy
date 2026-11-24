@@ -181,14 +181,18 @@ impl std::fmt::Display for AuthScheme {
 /// prefix. Each retained byte is reserved before it is copied and returned
 /// when the preview is dropped.
 #[derive(Debug)]
-pub struct RetentionBudget {
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-wide type inside private module; `pub` would trip `unreachable_pub`"
+)]
+pub(crate) struct RetentionBudget {
     available: AtomicUsize,
 }
 
 impl RetentionBudget {
     /// Creates a shared retention budget of `bytes`.
     #[must_use]
-    pub const fn new(bytes: usize) -> Self {
+    pub(crate) const fn new(bytes: usize) -> Self {
         Self {
             available: AtomicUsize::new(bytes),
         }
@@ -275,7 +279,7 @@ impl BodyPreviewWriter {
     /// `budget` when one is given. Bytes the budget cannot cover are not
     /// retained and the preview becomes [`BodyRetention::Truncated`].
     #[must_use]
-    pub fn with_budget(limit: usize, budget: Option<&'static RetentionBudget>) -> Self {
+    pub(crate) fn with_budget(limit: usize, budget: Option<&'static RetentionBudget>) -> Self {
         Self {
             preview: BodyPreview {
                 inner: Arc::new(BodyPreviewInner {

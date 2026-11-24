@@ -28,10 +28,6 @@ pub use config::ProxyConfig;
 pub use execute::ReplayTask;
 pub(crate) use execute::{ReplayExecutionError, execute_replay};
 pub use handle::{ProxyHandle, StartError, StopError};
-pub use http_inspector_exchange::capture::{
-    BODY_PREVIEW_BYTES, IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES,
-    is_previewable_image_media_type,
-};
 pub use status::EngineState;
 
 type ProxyBody = BoxBody<Bytes, hyper::Error>;

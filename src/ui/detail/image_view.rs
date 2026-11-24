@@ -3,7 +3,7 @@
 use std::fmt::Write as _;
 
 use eframe::egui::{self, TextureHandle, TextureOptions};
-use http_inspector_core::interception::{IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES};
+use http_inspector_exchange::capture::{IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES};
 use http_inspector_exchange::{BodyLifecycle, BodyRetention, BodySnapshot, ImageFormat, RecordId};
 
 use crate::ui::style::theme::Palette;

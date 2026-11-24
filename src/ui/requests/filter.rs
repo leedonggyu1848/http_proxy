@@ -240,7 +240,7 @@ mod tests {
     {
         let body = format!(
             "{}tail-word",
-            "a".repeat(http_inspector_core::interception::BODY_PREVIEW_BYTES + 100)
+            "a".repeat(http_inspector_exchange::capture::BODY_PREVIEW_BYTES + 100)
         );
         let record = ExchangeBuilder::http(Method::GET, "http://api.example.test/large")?.respond(
             ResponseFixture::new(StatusCode::OK)

@@ -378,7 +378,7 @@ fn coverage_text(summary: Summary) -> Option<String> {
         parts.push(format!(
             "{} only in their first {} KiB",
             summary.partial,
-            http_inspector_core::interception::BODY_PREVIEW_BYTES / 1024
+            http_inspector_exchange::capture::BODY_PREVIEW_BYTES / 1024
         ));
     }
     if summary.binary > 0 {

@@ -63,7 +63,7 @@ impl Capture {
             Self::Whole => return None,
             Self::Truncated => format!(
                 "Only part of the body was captured (at most {} KiB is kept); the view ends where the capture ends.",
-                http_inspector_core::interception::BODY_PREVIEW_BYTES / 1024
+                http_inspector_exchange::capture::BODY_PREVIEW_BYTES / 1024
             ),
             Self::Streaming => {
                 "The body is still being received; the view shows what has arrived so far."
