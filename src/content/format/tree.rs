@@ -2,7 +2,7 @@
 //! into a [`TreeModel`]; the UI tree view draws any model the same
 //! way.
 
-use super::{BodyFormat, Styled};
+use super::{BodyFormat, FormatError, Styled};
 
 /// Longest text shown on one tree row; the rest is elided.
 pub(in crate::content::format) const ROW_TEXT: usize = 200;
@@ -97,7 +97,7 @@ impl TreeModel {
 /// Builds the tree of `text` for `format`; `None` when the format has no
 /// tree. The builders apply their format's node and depth limits.
 #[must_use]
-pub fn build(format: BodyFormat, text: &str) -> Option<Result<TreeModel, String>> {
+pub fn build(format: BodyFormat, text: &str) -> Option<Result<TreeModel, FormatError>> {
     format.spec().tree.map(|build| build(text))
 }
 

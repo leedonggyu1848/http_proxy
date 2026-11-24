@@ -200,6 +200,11 @@ impl ProxyHandle {
         self.stop_inner()
     }
 
+    #[cfg(test)]
+    pub(crate) fn halt_for_test(&mut self) -> Result<(), StopError> {
+        self.stop_inner()
+    }
+
     fn stop_inner(&mut self) -> Result<(), StopError> {
         let _receiver_closed = self.shutdown.send(true).is_err();
         if let Some(thread) = self.thread.take() {

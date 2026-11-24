@@ -1,5 +1,5 @@
 //! Builds the [`TreeModel`] of a JSON body within node and depth limits.
-use super::json::{self, Lexeme};
+use super::json::{self, JsonFormatError, Lexeme};
 use super::tree::{CopyLabels, TreeModel, TreeNode, elide};
 use super::{Styled, TokenKind};
 use serde_json::Value;
@@ -14,7 +14,7 @@ const COPY: CopyLabels = CopyLabels {
 
 /// Reads `text` as one JSON value. Member order, duplicate keys and number
 /// spelling are kept as written.
-pub(super) fn build(text: &str) -> Result<TreeModel, String> {
+pub(super) fn build(text: &str) -> Result<TreeModel, JsonFormatError> {
     let mut parser = Parser {
         text,
         offset: 0,
@@ -23,7 +23,7 @@ pub(super) fn build(text: &str) -> Result<TreeModel, String> {
     };
     parser.value("$".into(), "$", None, 0)?;
     if parser.tokens.peek().is_some() || !parser.rest()?.trim_matches(json_whitespace).is_empty() {
-        return Err("unexpected data after JSON value".into());
+        return Err(JsonFormatError::TrailingData);
     }
     Ok(TreeModel::new(parser.nodes, None, COPY))
 }
@@ -38,28 +38,28 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    fn rest(&self) -> Result<&str, String> {
+    fn rest(&self) -> Result<&str, JsonFormatError> {
         self.text
             .get(self.offset..)
-            .ok_or_else(|| "invalid JSON offset".into())
+            .ok_or(JsonFormatError::InvalidOffset)
     }
 
-    fn take(&mut self) -> Result<Lexeme<'a>, String> {
-        let token = self.tokens.next().ok_or("unfinished JSON value")?;
+    fn take(&mut self) -> Result<Lexeme<'a>, JsonFormatError> {
+        let token = self.tokens.next().ok_or(JsonFormatError::UnfinishedValue)?;
         let rest = self.rest()?;
         let trimmed = rest.trim_start_matches(json_whitespace);
         if !trimmed.starts_with(token.text()) {
-            return Err("invalid JSON whitespace".into());
+            return Err(JsonFormatError::InvalidWhitespace);
         }
         self.offset += rest.len() - trimmed.len() + token.text().len();
         Ok(token)
     }
 
-    fn expect(&mut self, expected: Lexeme<'_>) -> Result<(), String> {
+    fn expect(&mut self, expected: Lexeme<'_>) -> Result<(), JsonFormatError> {
         if self.take()? == expected {
             Ok(())
         } else {
-            Err("unexpected JSON token".into())
+            Err(JsonFormatError::UnexpectedToken)
         }
     }
 
@@ -69,11 +69,12 @@ impl<'a> Parser<'a> {
         path: &str,
         parent: Option<usize>,
         depth: usize,
-    ) -> Result<(), String> {
+    ) -> Result<(), JsonFormatError> {
         if depth > MAX_DEPTH || self.nodes.len() >= MAX_NODES {
-            return Err(format!(
-                "tree limit exceeded ({MAX_DEPTH} levels, {MAX_NODES} nodes)"
-            ));
+            return Err(JsonFormatError::TreeLimitExceeded {
+                max_depth: MAX_DEPTH,
+                max_nodes: MAX_NODES,
+            });
         }
         let start = self.offset + self.rest()?.len()
             - self.rest()?.trim_start_matches(json_whitespace).len();
@@ -81,12 +82,12 @@ impl<'a> Parser<'a> {
         let kind = match token {
             Lexeme::Open(_) => TokenKind::Punctuation,
             Lexeme::String(text) => {
-                serde_json::from_str::<String>(text).map_err(|error| error.to_string())?;
+                serde_json::from_str::<String>(text)?;
                 TokenKind::String
             }
             Lexeme::Number(text) if valid_number(text) => TokenKind::Number,
             Lexeme::Literal("true" | "false" | "null") => TokenKind::Literal,
-            _ => return Err("invalid JSON value".into()),
+            _ => return Err(JsonFormatError::InvalidValue),
         };
         let open = match token {
             Lexeme::Open(open) => Some(open),
@@ -110,13 +111,13 @@ impl<'a> Parser<'a> {
         let raw = self
             .text
             .get(start..self.offset)
-            .ok_or("invalid JSON span")?;
+            .ok_or(JsonFormatError::InvalidSpan)?;
         let summary = match open {
             Some("{") => format!("{{{count} keys}}"),
             Some(_) => format!("[{count} items]"),
             None => raw.into(),
         };
-        let node = self.nodes.get_mut(id).ok_or("missing JSON node")?;
+        let node = self.nodes.get_mut(id).ok_or(JsonFormatError::MissingNode)?;
         node.label.push(&format!("{}:", node.name), TokenKind::Key);
         node.label.push(" ", TokenKind::Text);
         node.label.push(&elide(&summary), kind);
@@ -130,7 +131,7 @@ impl<'a> Parser<'a> {
         parent: usize,
         path: &str,
         depth: usize,
-    ) -> Result<usize, String> {
+    ) -> Result<usize, JsonFormatError> {
         let close = Lexeme::Close(if object { "}" } else { "]" });
         if self.tokens.peek() == Some(&close) {
             self.expect(close)?;
@@ -140,9 +141,9 @@ impl<'a> Parser<'a> {
         loop {
             let (key, child_path) = if object {
                 let Lexeme::String(raw) = self.take()? else {
-                    return Err("expected JSON key".into());
+                    return Err(JsonFormatError::ExpectedKey);
                 };
-                let key: String = serde_json::from_str(raw).map_err(|error| error.to_string())?;
+                let key: String = serde_json::from_str(raw)?;
                 let display = raw.to_owned();
                 let child_path = child_path(path, &key);
                 self.expect(Lexeme::Colon)?;
@@ -160,7 +161,7 @@ impl<'a> Parser<'a> {
                 Some(Lexeme::Comma) => {
                     self.expect(Lexeme::Comma)?;
                 }
-                _ => return Err("expected comma or closing bracket".into()),
+                _ => return Err(JsonFormatError::ExpectedSeparatorOrClose),
             }
         }
     }
@@ -229,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn summaries_and_paths() -> Result<(), String> {
+    fn summaries_and_paths() -> Result<(), Box<dyn std::error::Error>> {
         let tree = build(r#"{"data":{"items":[{"id":42}]},"a.b":"long"}"#)?;
         assert_eq!(tree.nodes().first().map(summary), Some("{2 keys}"));
         assert_eq!(
@@ -250,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn elides_long_values_only_on_the_row() -> Result<(), String> {
+    fn elides_long_values_only_on_the_row() -> Result<(), Box<dyn std::error::Error>> {
         let long = "x".repeat(ROW_TEXT * 2);
         let tree = build(&format!("[\"{long}\"]"))?;
         let leaf = tree.node(1).ok_or("missing leaf")?;
@@ -261,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_member_order_duplicates_and_source_values() -> Result<(), String> {
+    fn preserves_member_order_duplicates_and_source_values() -> Result<(), JsonFormatError> {
         let text =
             r#"{ "b":12345678901234567890123, "a":1e2, "b":-0, "nested": {"z": 1E+9999, "z":2} }"#;
         let tree = build(text)?;
@@ -307,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn validates_grammar_without_numeric_conversion() -> Result<(), String> {
+    fn validates_grammar_without_numeric_conversion() -> Result<(), JsonFormatError> {
         for text in [
             "0",
             "-0",

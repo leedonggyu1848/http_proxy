@@ -61,6 +61,12 @@ struct Summary {
     undecodable: usize,
 }
 
+/// Background search worker, or an inline fallback when thread creation fails.
+enum SearchBackend {
+    Worker(SearchWorker),
+    Inline { notice: String, cache: BodyCache },
+}
+
 pub(in crate::ui) struct RequestSearch {
     text: String,
     scope: SearchScope,
@@ -75,17 +81,21 @@ pub(in crate::ui) struct RequestSearch {
     /// Records sent to the worker for the active query and not reported yet.
     queued: HashSet<RecordId>,
     summary: Summary,
-    worker: Result<SearchWorker, String>,
-    /// Used only when the search thread could not start.
-    inline_cache: BodyCache,
+    backend: SearchBackend,
 }
 
 impl RequestSearch {
     pub(in crate::ui) fn new(context: &egui::Context) -> Self {
         let context = context.clone();
-        let worker = SearchWorker::spawn(move || context.request_repaint()).map_err(|error| {
-            format!("Background search is unavailable ({error}); searching on the UI thread.")
-        });
+        let backend = match SearchWorker::spawn(move || context.request_repaint()) {
+            Ok(worker) => SearchBackend::Worker(worker),
+            Err(error) => SearchBackend::Inline {
+                notice: format!(
+                    "Background search is unavailable ({error}); searching on the UI thread."
+                ),
+                cache: BodyCache::default(),
+            },
+        };
         Self {
             text: String::new(),
             scope: SearchScope::All,
@@ -98,8 +108,7 @@ impl RequestSearch {
             results: HashMap::new(),
             queued: HashSet::new(),
             summary: Summary::default(),
-            worker,
-            inline_cache: BodyCache::default(),
+            backend,
         }
     }
 
@@ -130,8 +139,8 @@ impl RequestSearch {
     /// while no search is active.
     pub(in crate::ui) fn status(&self, ui: &mut egui::Ui) {
         let palette = Palette::of(ui);
-        if let Err(message) = &self.worker {
-            ui.colored_label(palette.warning, message);
+        if let SearchBackend::Inline { notice, .. } = &self.backend {
+            ui.colored_label(palette.warning, notice);
         }
         if let Some(error) = &self.error {
             ui.colored_label(palette.error, error);
@@ -214,7 +223,7 @@ impl RequestSearch {
     fn apply(&mut self, settings: Settings) {
         let finished = self.queued.is_empty();
         self.generation += 1;
-        if let Ok(worker) = &self.worker {
+        if let SearchBackend::Worker(worker) = &self.backend {
             worker.supersede(self.generation);
         }
         self.queued.clear();
@@ -247,7 +256,7 @@ impl RequestSearch {
     }
 
     fn receive(&mut self) {
-        let Ok(worker) = &self.worker else {
+        let SearchBackend::Worker(worker) = &self.backend else {
             return;
         };
         while let Some(report) = worker.try_report() {
@@ -290,8 +299,8 @@ impl RequestSearch {
         if pending.is_empty() {
             return true;
         }
-        match &self.worker {
-            Ok(worker) => {
+        match &mut self.backend {
+            SearchBackend::Worker(worker) => {
                 let ids: Vec<RecordId> = pending.iter().map(Exchange::id).collect();
                 let oldest = records.iter().next().map(Exchange::id);
                 if worker.submit(&query, pending, oldest).is_err() {
@@ -299,14 +308,9 @@ impl RequestSearch {
                 }
                 self.queued.extend(ids);
             }
-            Err(_) => {
+            SearchBackend::Inline { cache, .. } => {
                 for record in &pending {
-                    let checked = document::check(
-                        record,
-                        &query.matcher,
-                        query.scope,
-                        &mut self.inline_cache,
-                    );
+                    let checked = document::check(record, &query.matcher, query.scope, cache);
                     self.results.insert(checked.id, checked);
                 }
             }

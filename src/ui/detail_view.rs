@@ -50,7 +50,7 @@ impl InspectorApp {
             {
                 match replay_panel::ReplayPanel::new(record.clone()) {
                     Ok(panel) => self.replay = Some(panel),
-                    Err(error) => self.error = Some(error),
+                    Err(error) => self.error = Some(error.to_string()),
                 }
             }
             self.curl.controls(ui, record);

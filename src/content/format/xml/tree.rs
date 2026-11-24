@@ -2,7 +2,7 @@
 //! element. Document parsing applies the node and depth limits.
 
 use super::pretty::push_leaf;
-use super::{Document, Element, NodeKind};
+use super::{Document, Element, NodeKind, XmlFormatError};
 use crate::content::format::tag::{Dialect, Spacing, push_tag};
 use crate::content::format::tree::{CopyLabels, TreeModel, TreeNode, elide};
 use crate::content::format::{Styled, TokenKind};
@@ -14,7 +14,7 @@ const COPY: CopyLabels = CopyLabels {
 
 /// Builds the rows of `text` as far as it could be read. Whitespace-only
 /// text is left out; fails when `text` has no element.
-pub(in crate::content::format) fn build(text: &str) -> Result<TreeModel, String> {
+pub(in crate::content::format) fn build(text: &str) -> Result<TreeModel, XmlFormatError> {
     let document = Document::parse(text)?;
     let mut builder = Builder {
         document: &document,
@@ -219,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_rows_with_paths_and_child_counts() -> Result<(), String> {
+    fn builds_rows_with_paths_and_child_counts() -> Result<(), Box<dyn std::error::Error>> {
         let tree = build(concat!(
             "<?xml version=\"1.0\"?>\n<rss version=\"2.0\"><channel><title>News</title>",
             "<item><title>A</title></item><!-- x --><item><title>B</title><n:x/></item>",
@@ -240,7 +240,7 @@ mod tests {
         let rss = tree.children(None).get(1).copied();
         let channel = rss.and_then(|rss| tree.children(Some(rss)).first().copied());
         let Some(channel_node) = channel.and_then(|index| tree.node(index)) else {
-            return Err("missing channel".to_owned());
+            return Err("missing channel".into());
         };
         assert_eq!(channel_node.depth, 1);
         assert_eq!(channel_node.summary.as_deref(), Some("… 4 children"));
@@ -287,7 +287,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_partial_trees_and_elides_long_rows() -> Result<(), String> {
+    fn keeps_partial_trees_and_elides_long_rows() -> Result<(), XmlFormatError> {
         let long = "word ".repeat(100);
         let text = format!("<a><b>{long}</b><c>\n  mixed <d/></c><e");
         let tree = build(&text)?;

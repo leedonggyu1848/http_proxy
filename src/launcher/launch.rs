@@ -10,11 +10,9 @@ use tempfile::TempDir;
 use tokio::process::Command;
 use tokio::sync::oneshot;
 
-use super::{Browser, BrowserEvent, BrowserSession, Kind};
+use super::{Browser, BrowserEvent, BrowserLaunchError, BrowserSession, Kind};
 use crate::https::{CaInfo, CaTrustStore};
 use crate::settings::paths;
-
-type LaunchResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 pub(super) fn open(
     browser: Browser,
@@ -29,17 +27,15 @@ pub(super) fn open(
             let result = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .map_err(|error| error.to_string())
+                .map_err(BrowserLaunchError::from)
                 .and_then(|runtime| {
-                    runtime
-                        .block_on(run(
-                            &browser,
-                            proxy,
-                            ca_directory.as_deref(),
-                            receiver,
-                            &sender,
-                        ))
-                        .map_err(|error| error.to_string())
+                    runtime.block_on(run(
+                        &browser,
+                        proxy,
+                        ca_directory.as_deref(),
+                        receiver,
+                        &sender,
+                    ))
                 });
             let _closed = sender.send(BrowserEvent::Finished(result)).is_err();
         })?;
@@ -56,7 +52,7 @@ async fn run(
     ca_directory: Option<&Path>,
     mut stop: oneshot::Receiver<()>,
     events: &SyncSender<BrowserEvent>,
-) -> LaunchResult<()> {
+) -> Result<(), BrowserLaunchError> {
     let profile = tokio::select! {
         result = prepare(browser, proxy, ca_directory) => result?,
         _ = &mut stop => return Ok(()),
@@ -64,7 +60,12 @@ async fn run(
     let mut child = command(browser, proxy, profile.path()).spawn()?;
     // A missing package or sandbox failure should appear as an error, not "open".
     tokio::select! {
-        status = child.wait() => return Err(format!("{} exited before opening a window ({})", browser.name, status?).into()),
+        status = child.wait() => {
+            return Err(BrowserLaunchError::ExitedBeforeOpen {
+                browser: browser.name,
+                status: status?,
+            });
+        }
         () = tokio::time::sleep(Duration::from_millis(700)) => {},
         _ = &mut stop => { child.kill().await?; return Ok(()); },
     }
@@ -74,7 +75,10 @@ async fn run(
         _ = &mut stop => { child.kill().await?; return Ok(()); },
     };
     if !status.success() {
-        return Err(format!("{} exited with {status}", browser.name).into());
+        return Err(BrowserLaunchError::ExitedWithStatus {
+            browser: browser.name,
+            status,
+        });
     }
     Ok(())
 }
@@ -83,9 +87,9 @@ async fn prepare(
     browser: &Browser,
     proxy: SocketAddr,
     ca_directory: Option<&Path>,
-) -> LaunchResult<TempDir> {
+) -> Result<TempDir, BrowserLaunchError> {
     if !proxy.ip().is_loopback() || proxy.port() == 0 {
-        return Err("Browser inspection requires a listening loopback proxy".into());
+        return Err(BrowserLaunchError::InvalidProxyAddress);
     }
     let profile = profile_directory(browser.kind)?;
     if matches!(browser.kind, Kind::Firefox { .. }) {
@@ -102,14 +106,14 @@ async fn prepare(
     Ok(profile)
 }
 
-fn profile_directory(kind: Kind) -> LaunchResult<TempDir> {
+fn profile_directory(kind: Kind) -> Result<TempDir, BrowserLaunchError> {
     let mut builder = tempfile::Builder::new();
     builder
         .prefix("http-inspector-browser-")
         .permissions(fs::Permissions::from_mode(0o700));
     if kind == (Kind::Firefox { snap: true }) {
         let home = paths::home_directory(|name| std::env::var_os(name))
-            .ok_or("Firefox Snap requires an absolute HOME")?;
+            .ok_or(BrowserLaunchError::MissingSnapHome)?;
         let common = home.join("snap/firefox/common");
         fs::create_dir_all(&common)?;
         Ok(builder.tempdir_in(common)?)
@@ -177,6 +181,8 @@ mod tests {
 
     use super::*;
     use crate::https::CaTrustStatus;
+
+    type LaunchResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
     fn firefox(executable: PathBuf) -> Browser {
         Browser {

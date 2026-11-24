@@ -65,13 +65,19 @@ pub(in crate::ui) struct ScopeCounts {
     pub(in crate::ui) selected: usize,
 }
 
+/// Outcome of the most recent bulk save.
+enum BulkResult {
+    Finished(BulkSummary),
+    Failed(String),
+}
+
 /// The bulk save dialog, the running save and its last result.
 #[derive(Default)]
 pub(in crate::ui) struct BulkControls {
     dialog: Option<BulkChoice>,
     last_choice: Option<BulkChoice>,
     running: Option<BulkSave>,
-    result: Option<Result<BulkSummary, String>>,
+    result: Option<BulkResult>,
 }
 
 impl BulkControls {
@@ -120,8 +126,12 @@ impl BulkControls {
             return;
         };
         match running.try_finish() {
-            Some(result) => {
-                self.result = Some(result.map_err(|error| error.to_string()));
+            Some(Ok(summary)) => {
+                self.result = Some(BulkResult::Finished(summary));
+                self.running = None;
+            }
+            Some(Err(error)) => {
+                self.result = Some(BulkResult::Failed(error.to_string()));
                 self.running = None;
             }
             None => context.request_repaint_after(Duration::from_millis(200)),
@@ -155,11 +165,11 @@ impl BulkControls {
             return;
         }
         match &self.result {
-            Some(Ok(summary)) => {
+            Some(BulkResult::Finished(summary)) => {
                 ui.separator();
                 ui.label(summary_text(summary));
             }
-            Some(Err(error)) => {
+            Some(BulkResult::Failed(error)) => {
                 ui.separator();
                 ui.colored_label(
                     Palette::of(ui).error,
@@ -180,7 +190,7 @@ impl BulkControls {
         self.result = None;
         match store.save_all(bodies, layout, folder) {
             Ok(running) => self.running = Some(running),
-            Err(error) => self.result = Some(Err(error.to_string())),
+            Err(error) => self.result = Some(BulkResult::Failed(error.to_string())),
         }
     }
 }
@@ -321,12 +331,14 @@ impl InspectorApp {
         let directory = match self.save.directory() {
             Ok(directory) => directory,
             Err(error) => {
-                self.body_saving.bulk.result = Some(Err(error.to_string()));
+                self.body_saving.bulk.result = Some(BulkResult::Failed(error.to_string()));
                 return;
             }
         };
         let Some(store) = self.body_saving.store().cloned() else {
-            self.body_saving.bulk.result = Some(Err("Saving bodies is unavailable".to_owned()));
+            self.body_saving.bulk.result = Some(BulkResult::Failed(
+                "Saving bodies is unavailable".to_owned(),
+            ));
             return;
         };
         let records: Vec<&Exchange> = match choice.scope {

@@ -16,6 +16,24 @@ mod tag;
 pub mod tree;
 mod xml;
 
+pub use javascript::JavaScriptFormatError;
+pub use json::JsonFormatError;
+pub use markup::MarkupFormatError;
+pub use xml::XmlFormatError;
+
+/// Reason a body could not be formatted or parsed into a tree.
+#[derive(Debug, thiserror::Error)]
+pub enum FormatError {
+    #[error(transparent)]
+    Json(#[from] JsonFormatError),
+    #[error(transparent)]
+    JavaScript(#[from] JavaScriptFormatError),
+    #[error(transparent)]
+    Xml(#[from] XmlFormatError),
+    #[error(transparent)]
+    Markup(#[from] MarkupFormatError),
+}
+
 /// Body syntax, as decided by [`super::detect`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum BodyFormat {
@@ -31,17 +49,22 @@ pub enum BodyFormat {
 
 impl BodyFormat {
     /// What this format supports, declared in [`FormatSpec`].
+    #[must_use]
     pub const fn spec(self) -> &'static FormatSpec {
         match self {
             Self::Json => &FormatSpec {
                 label: "JSON",
-                pretty: Some(|text| json::pretty(text).map(Formatted::plain)),
-                tree: Some(json_tree::build),
+                pretty: Some(|text| {
+                    json::pretty(text)
+                        .map(Formatted::plain)
+                        .map_err(FormatError::from)
+                }),
+                tree: Some(|text| json_tree::build(text).map_err(FormatError::from)),
                 numbered: false,
             },
             Self::Css => &FormatSpec {
                 label: "CSS",
-                pretty: Some(css::pretty),
+                pretty: Some(|text| Ok(css::pretty(text))),
                 tree: None,
                 numbered: true,
             },
@@ -59,19 +82,23 @@ impl BodyFormat {
             },
             Self::Markup => &FormatSpec {
                 label: "HTML",
-                pretty: Some(|text| markup::pretty(text).map(Formatted::plain)),
+                pretty: Some(|text| {
+                    markup::pretty(text)
+                        .map(Formatted::plain)
+                        .map_err(FormatError::from)
+                }),
                 tree: None,
                 numbered: false,
             },
             Self::Xml => &FormatSpec {
                 label: "XML",
-                pretty: Some(xml::pretty),
-                tree: Some(xml::tree::build),
+                pretty: Some(|text| xml::pretty(text).map_err(FormatError::from)),
+                tree: Some(|text| xml::tree::build(text).map_err(FormatError::from)),
                 numbered: false,
             },
             Self::JavaScript => &FormatSpec {
                 label: "JavaScript",
-                pretty: Some(javascript::pretty),
+                pretty: Some(|text| javascript::pretty(text).map_err(FormatError::from)),
                 tree: None,
                 numbered: true,
             },
@@ -91,10 +118,10 @@ impl BodyFormat {
 }
 
 /// Reads text as a format and returns it formatted, or why it could not.
-type PrettyFn = fn(&str) -> Result<Formatted, String>;
+type PrettyFn = fn(&str) -> Result<Formatted, FormatError>;
 
 /// Reads text as a format and returns its tree, or why it could not.
-type TreeFn = fn(&str) -> Result<tree::TreeModel, String>;
+type TreeFn = fn(&str) -> Result<tree::TreeModel, FormatError>;
 
 /// Everything the body view needs to know about one format. Adding a format
 /// means adding its [`BodyFormat::spec`] entry and its formatter module.

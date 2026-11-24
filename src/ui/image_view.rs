@@ -17,6 +17,27 @@ const SOURCE_BYTES: usize = 256 * 1024;
 /// Height at which drawn images are scaled down to keep the panel readable.
 const MAX_DISPLAY_HEIGHT: f32 = 480.0;
 
+/// Reason an image body could not be prepared for display.
+#[derive(Debug, thiserror::Error)]
+enum ImageViewError {
+    #[error(transparent)]
+    DecodeBody(#[from] body_view::DecodeError),
+    #[error(transparent)]
+    DecodeImage(#[from] image_decode::ImageError),
+    #[error(transparent)]
+    TextureTooLarge(#[from] TextureTooLargeError),
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "The image is {width}×{height} px, larger than this display's {max_side} px texture limit."
+)]
+struct TextureTooLargeError {
+    width: u32,
+    height: u32,
+    max_side: usize,
+}
+
 /// The image file a body holds once `Content-Encoding` is removed.
 struct ImageFile {
     bytes: Vec<u8>,
@@ -31,7 +52,7 @@ impl ImageFile {
         bytes: &[u8],
         encodings: &[&str],
         declared: ImageFormat,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, body_view::DecodeError> {
         let bytes = body_view::decode_complete(bytes, encodings, IMAGE_PREVIEW_BYTES)?;
         let format = ImageFormat::from_signature(&bytes).unwrap_or(declared);
         Ok(Self { bytes, format })
@@ -105,7 +126,7 @@ struct Loaded {
     /// The recognized format, or `None` when `Content-Encoding` could not be
     /// removed.
     format: Option<ImageFormat>,
-    drawn: Result<Drawn, String>,
+    drawn: Result<Drawn, ImageViewError>,
     /// Lossy UTF-8 text of an SVG file, cut to [`SOURCE_BYTES`].
     source: Option<String>,
     file_bytes: usize,
@@ -210,8 +231,8 @@ fn show_image(ui: &mut egui::Ui, loaded: &Loaded, received_bytes: u64, svg: bool
             );
             None
         }
-        Err(message) => {
-            ui.colored_label(Palette::of(ui).error, message);
+        Err(error) => {
+            ui.colored_label(Palette::of(ui).error, error.to_string());
             ui.horizontal_wrapped(|ui| {
                 let source =
                     (svg && ui.button("Show SVG source").clicked()).then_some(View::Source);
@@ -228,8 +249,8 @@ fn show_image(ui: &mut egui::Ui, loaded: &Loaded, received_bytes: u64, svg: bool
 
 fn show_source(ui: &mut egui::Ui, loaded: &Loaded) {
     let Some(source) = &loaded.source else {
-        if let Err(message) = &loaded.drawn {
-            ui.colored_label(Palette::of(ui).error, message);
+        if let Err(error) = &loaded.drawn {
+            ui.colored_label(Palette::of(ui).error, error.to_string());
         }
         return;
     };
@@ -310,10 +331,10 @@ fn load(
 ) -> Loaded {
     let file = match ImageFile::decode_body(bytes, encodings, declared) {
         Ok(file) => file,
-        Err(message) => {
+        Err(error) => {
             return Loaded {
                 format: None,
-                drawn: Err(message),
+                drawn: Err(ImageViewError::DecodeBody(error)),
                 source: None,
                 file_bytes: 0,
             };
@@ -324,13 +345,15 @@ fn load(
         String::from_utf8_lossy(shown).into_owned()
     });
     let drawn = image_decode::decode(file.format, &file.bytes)
-        .map_err(|error| error.to_string())
+        .map_err(ImageViewError::DecodeImage)
         .and_then(|image| {
             let image_text = image_text(file.format, &image, file.bytes.len());
-            texture(context, record, &image).map(|texture| Drawn {
-                texture,
-                image_text,
-            })
+            texture(context, record, &image)
+                .map_err(ImageViewError::TextureTooLarge)
+                .map(|texture| Drawn {
+                    texture,
+                    image_text,
+                })
         });
     Loaded {
         format: Some(file.format),
@@ -344,14 +367,16 @@ fn texture(
     context: &egui::Context,
     record: RecordId,
     image: &PreviewImage,
-) -> Result<TextureHandle, String> {
+) -> Result<TextureHandle, TextureTooLargeError> {
     let max_side = context.input(|input| input.max_texture_side);
     let (width, height) = (image.width, image.height);
     let pixels = [width, height].map(|side| usize::try_from(side).unwrap_or(usize::MAX));
     if pixels.iter().any(|&side| side > max_side) {
-        return Err(format!(
-            "The image is {width}×{height} px, larger than this display's {max_side} px texture limit."
-        ));
+        return Err(TextureTooLargeError {
+            width,
+            height,
+            max_side,
+        });
     }
     let color = egui::ColorImage::from_rgba_unmultiplied(pixels, &image.rgba);
     Ok(context.load_texture(

@@ -4,6 +4,28 @@ const PREVIEW_BYTES: usize = 8 * 1024;
 const MAX_ENCODINGS: usize = 4;
 const INTERMEDIATE_BYTES: u64 = 64 * 1024;
 
+/// Reason a `Content-Encoding` body could not be decoded.
+#[derive(Debug, thiserror::Error)]
+pub enum DecodeError {
+    #[error("Too many Content-Encoding layers to preview safely.")]
+    TooManyLayers,
+    #[error("Unsupported Content-Encoding: {encoding:?}. Raw bytes are retained in the full log.")]
+    UnsupportedEncoding { encoding: String },
+    #[error("Could not decompress the body: {source}")]
+    Init {
+        #[source]
+        source: io::Error,
+    },
+    #[error("Could not decompress the body ({}): {source}", encodings.join(", "))]
+    Decompress {
+        encodings: Vec<String>,
+        #[source]
+        source: io::Error,
+    },
+    #[error("The decompressed body is larger than {} MiB.", limit / (1024 * 1024))]
+    LimitExceeded { limit: usize },
+}
+
 #[derive(Debug)]
 pub enum BodyText {
     Ready {
@@ -17,7 +39,7 @@ pub enum BodyText {
 pub fn decode(bytes: &[u8], encodings: &[&str], complete: bool) -> BodyText {
     let encodings = match content_encodings(encodings) {
         Ok(encodings) => encodings,
-        Err(message) => return BodyText::Unavailable(message),
+        Err(error) => return BodyText::Unavailable(error.to_string()),
     };
     if encodings.is_empty() {
         // PNG responses retain more than the text preview shows.
@@ -71,15 +93,17 @@ pub struct DecodedPrefix {
 /// text preview, so search sees what the preview shows.
 ///
 /// A decoding error after some output keeps that output, as an incomplete capture would.
-pub fn decode_prefix(bytes: &[u8], encodings: &[&str]) -> Result<DecodedPrefix, String> {
+pub fn decode_prefix(bytes: &[u8], encodings: &[&str]) -> Result<DecodedPrefix, DecodeError> {
     let encodings = content_encodings(encodings)?;
     let mut decoded = if encodings.is_empty() {
         bytes.get(..=PREVIEW_BYTES).unwrap_or(bytes).to_vec()
     } else {
         let (decoded, error) = read_decoded(bytes, &encodings, PREVIEW_BYTES, INTERMEDIATE_BYTES)
-            .map_err(|error| error.to_string())?;
+            .map_err(|source| DecodeError::Init { source })?;
         match error {
-            Some(error) if decoded.is_empty() => return Err(error.to_string()),
+            Some(source) if decoded.is_empty() => {
+                return Err(DecodeError::Decompress { encodings, source });
+            }
             _ => decoded,
         }
     };
@@ -96,7 +120,11 @@ pub fn decode_prefix(bytes: &[u8], encodings: &[&str]) -> Result<DecodedPrefix, 
 ///
 /// Fails when an encoding is unsupported, the data is invalid, or decoding
 /// would produce more than `limit` bytes.
-pub fn decode_complete(bytes: &[u8], encodings: &[&str], limit: usize) -> Result<Vec<u8>, String> {
+pub fn decode_complete(
+    bytes: &[u8],
+    encodings: &[&str],
+    limit: usize,
+) -> Result<Vec<u8>, DecodeError> {
     let encodings = content_encodings(encodings)?;
     if encodings.is_empty() {
         return Ok(bytes.to_vec());
@@ -105,25 +133,19 @@ pub fn decode_complete(bytes: &[u8], encodings: &[&str], limit: usize) -> Result
     // detected instead of silently cut.
     let intermediate = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
     let (decoded, error) = read_decoded(bytes, &encodings, limit, intermediate)
-        .map_err(|error| format!("Could not decompress the body: {error}"))?;
-    if let Some(error) = error {
-        return Err(format!(
-            "Could not decompress the body ({}): {error}",
-            encodings.join(", ")
-        ));
+        .map_err(|source| DecodeError::Init { source })?;
+    if let Some(source) = error {
+        return Err(DecodeError::Decompress { encodings, source });
     }
     if decoded.len() > limit {
-        return Err(format!(
-            "The decompressed body is larger than {} MiB.",
-            limit / (1024 * 1024)
-        ));
+        return Err(DecodeError::LimitExceeded { limit });
     }
     Ok(decoded)
 }
 
 /// Splits `Content-Encoding` values into lowercase layers in the order they
 /// were applied, without `identity`, and rejects layers it cannot decode.
-fn content_encodings(values: &[&str]) -> Result<Vec<String>, String> {
+fn content_encodings(values: &[&str]) -> Result<Vec<String>, DecodeError> {
     let encodings: Vec<_> = values
         .iter()
         .flat_map(|value| value.split(','))
@@ -133,7 +155,7 @@ fn content_encodings(values: &[&str]) -> Result<Vec<String>, String> {
         .map(str::to_ascii_lowercase)
         .collect();
     if encodings.len() > MAX_ENCODINGS {
-        return Err("Too many Content-Encoding layers to preview safely.".to_owned());
+        return Err(DecodeError::TooManyLayers);
     }
     if let Some(unsupported) = encodings.iter().find(|encoding| {
         !matches!(
@@ -141,9 +163,9 @@ fn content_encodings(values: &[&str]) -> Result<Vec<String>, String> {
             "gzip" | "x-gzip" | "deflate" | "br" | "zstd"
         )
     }) {
-        return Err(format!(
-            "Unsupported Content-Encoding: {unsupported:?}. Raw bytes are retained in the full log."
-        ));
+        return Err(DecodeError::UnsupportedEncoding {
+            encoding: unsupported.clone(),
+        });
     }
     Ok(encodings)
 }
@@ -332,9 +354,22 @@ mod tests {
     fn decodes_complete_bodies_within_a_limit() -> Result<(), Box<dyn Error>> {
         assert_eq!(decode_complete(GZIP, &["gzip"], EXPECTED.len())?, EXPECTED);
         assert_eq!(decode_complete(EXPECTED, &["identity"], 1)?, EXPECTED);
-        assert!(decode_complete(GZIP, &["gzip"], EXPECTED.len() - 1).is_err());
-        assert!(decode_complete(GZIP.split_at(20).0, &["gzip"], 1 << 20).is_err());
-        assert!(decode_complete(GZIP, &["compress"], 1 << 20).is_err());
+        assert!(matches!(
+            decode_complete(GZIP, &["gzip"], EXPECTED.len() - 1),
+            Err(super::DecodeError::LimitExceeded { limit }) if limit == EXPECTED.len() - 1
+        ));
+        assert!(matches!(
+            decode_complete(GZIP.split_at(20).0, &["gzip"], 1 << 20),
+            Err(super::DecodeError::Decompress { ref encodings, .. }) if encodings == &["gzip"]
+        ));
+        assert!(matches!(
+            decode_complete(GZIP, &["compress"], 1 << 20),
+            Err(super::DecodeError::UnsupportedEncoding { ref encoding }) if encoding == "compress"
+        ));
+        assert!(matches!(
+            decode_complete(GZIP, &["gzip,gzip,gzip,gzip,gzip"], 1 << 20),
+            Err(super::DecodeError::TooManyLayers)
+        ));
         Ok(())
     }
 }

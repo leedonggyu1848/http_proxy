@@ -138,7 +138,7 @@ impl InspectorApp {
         if let Some(original) = self.table.replay.take() {
             match replay_panel::ReplayPanel::new(original) {
                 Ok(panel) => self.replay = Some(panel),
-                Err(error) => self.error = Some(error),
+                Err(error) => self.error = Some(error.to_string()),
             }
         }
     }

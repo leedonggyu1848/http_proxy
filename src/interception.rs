@@ -36,7 +36,7 @@ pub use exchange_builder::{
     ConnectExchangeBuilder, ExchangeBuilder, FixtureError, ResponseFixture,
 };
 pub use execute::ReplayTask;
-pub(crate) use execute::execute_replay;
+pub(crate) use execute::{ReplayExecutionError, execute_replay};
 pub use handle::{ProxyHandle, StartError, StopError};
 pub use status::EngineState;
 

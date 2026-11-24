@@ -15,6 +15,78 @@ use crate::http_semantics::{REDACTED_VALUE, is_sensitive_header, remove_hop_by_h
 /// Largest replacement body file the editor loads into memory.
 pub const REPLAY_BODY_FILE_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
 
+/// Reason a replay draft URL was rejected.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ReplayUrlError {
+    #[error("The captured URL was truncated; enter the complete URL")]
+    Truncated,
+    #[error("Invalid URL")]
+    Invalid,
+    #[error("Use an absolute http:// or https:// URL")]
+    UnsupportedSchemeOrMissingHost,
+    #[error("URL credentials and fragments are not supported")]
+    CredentialsOrFragment,
+    #[error("The URL targets this proxy itself")]
+    TargetsProxy,
+    #[error("Missing URL authority")]
+    MissingAuthority,
+    #[error("Invalid Host")]
+    InvalidHost,
+}
+
+/// Reason an enabled replay header row was rejected.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ReplayHeaderError {
+    #[error("Invalid header name: {name}")]
+    InvalidName { name: String },
+    #[error("Enter redacted header values or disable their rows")]
+    RedactedValue,
+    #[error(
+        "Header {name} was captured with non-UTF-8 bytes and cannot be reproduced; \
+         re-enter its value or disable the row"
+    )]
+    NonUtf8Value { name: http::HeaderName },
+    #[error("Invalid value for header {name}")]
+    InvalidValue { name: http::HeaderName },
+}
+
+/// Reason a replacement replay body file could not be loaded.
+#[derive(Debug, thiserror::Error)]
+pub enum ReplayBodyFileError {
+    #[error(
+        "Body files are limited to {} MiB",
+        REPLAY_BODY_FILE_LIMIT_BYTES / (1024 * 1024)
+    )]
+    TooLarge,
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
+/// Reason a capture cannot be drafted, validated, or dispatched for replay.
+#[derive(Debug, thiserror::Error)]
+pub enum ReplayError {
+    #[error("CONNECT tunnels cannot be replayed")]
+    ConnectTunnel,
+    #[error("Incomplete body or headers: load a complete replacement before sending")]
+    IncompleteCapture,
+    #[error("Invalid method")]
+    InvalidMethod,
+    #[error("CONNECT and TRACE cannot be replayed")]
+    DisallowedMethod,
+    #[error(transparent)]
+    Url(#[from] ReplayUrlError),
+    #[error(transparent)]
+    Header(#[from] ReplayHeaderError),
+    #[error("Invalid body length")]
+    InvalidBodyLength,
+    #[error(transparent)]
+    RequestBuild(#[from] http::Error),
+    #[error("Start the proxy before sending")]
+    ProxyNotRunning,
+    #[error("Enable HTTPS inspection before replaying HTTPS")]
+    HttpsInspectionDisabled,
+}
+
 /// An editable header or cookie; disabled rows are never sent.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplayField {
@@ -47,9 +119,9 @@ pub struct ReplayDraft {
 
 impl ReplayDraft {
     /// Copies a capture without attempting to recover redacted values.
-    pub fn new(original: Exchange) -> Result<Self, String> {
+    pub fn new(original: Exchange) -> Result<Self, ReplayError> {
         if original.source() == CaptureSource::Connect {
-            return Err("CONNECT tunnels cannot be replayed".to_owned());
+            return Err(ReplayError::ConnectTunnel);
         }
         let snapshot = original.request().body().and_then(BodyPreview::snapshot);
         let body_missing = snapshot.as_ref().is_none_or(|body| {
@@ -85,32 +157,30 @@ impl ReplayDraft {
     }
 
     /// Validates framing and fields before any network operation.
-    pub fn request(&self, proxy: SocketAddr) -> Result<Request<Full<Bytes>>, String> {
+    pub fn request(&self, proxy: SocketAddr) -> Result<Request<Full<Bytes>>, ReplayError> {
         if self.body_missing {
-            return Err(
-                "Incomplete body or headers: load a complete replacement before sending".to_owned(),
-            );
+            return Err(ReplayError::IncompleteCapture);
         }
         let method = self
             .method
             .parse::<Method>()
-            .map_err(|_| "Invalid method")?;
+            .map_err(|_| ReplayError::InvalidMethod)?;
         if method == Method::CONNECT || method == Method::TRACE {
-            return Err("CONNECT and TRACE cannot be replayed".to_owned());
+            return Err(ReplayError::DisallowedMethod);
         }
         let uri = self.url.parse::<Uri>().map_err(|_| {
             if self.url.ends_with('…') {
-                "The captured URL was truncated; enter the complete URL"
+                ReplayUrlError::Truncated
             } else {
-                "Invalid URL"
+                ReplayUrlError::Invalid
             }
         })?;
         if !matches!(uri.scheme_str(), Some("http" | "https")) || uri.host().is_none() {
-            return Err("Use an absolute http:// or https:// URL".to_owned());
+            return Err(ReplayUrlError::UnsupportedSchemeOrMissingHost.into());
         }
         let host = uri.host().unwrap_or_default();
         if host.contains('@') || self.url.contains('#') {
-            return Err("URL credentials and fragments are not supported".to_owned());
+            return Err(ReplayUrlError::CredentialsOrFragment.into());
         }
         let port = uri.port_u16().unwrap_or_else(|| {
             if uri.scheme_str() == Some("https") {
@@ -126,13 +196,12 @@ impl ReplayDraft {
                     .parse::<IpAddr>()
                     .is_ok_and(|ip| ip.is_loopback() || ip == proxy.ip()))
         {
-            return Err("The URL targets this proxy itself".to_owned());
+            return Err(ReplayUrlError::TargetsProxy.into());
         }
         let mut request = Request::builder()
             .method(method)
             .uri(uri.clone())
-            .body(Full::new(self.body.clone()))
-            .map_err(|e| e.to_string())?;
+            .body(Full::new(self.body.clone()))?;
         for field in self.headers.iter().filter(|field| field.enabled) {
             let (name, value) = header_pair(field)?;
             request.headers_mut().append(name, value);
@@ -140,10 +209,13 @@ impl ReplayDraft {
         remove_hop_by_hop_headers(request.headers_mut());
         request.headers_mut().remove(http::header::EXPECT);
         if self.automatic_host {
-            let authority = uri.authority().ok_or("Missing URL authority")?;
+            let authority = uri.authority().ok_or(ReplayUrlError::MissingAuthority)?;
             request.headers_mut().insert(
                 HOST,
-                authority.as_str().parse().map_err(|_| "Invalid Host")?,
+                authority
+                    .as_str()
+                    .parse()
+                    .map_err(|_| ReplayUrlError::InvalidHost)?,
             );
         }
         request.headers_mut().insert(
@@ -152,7 +224,7 @@ impl ReplayDraft {
                 .len()
                 .to_string()
                 .parse()
-                .map_err(|_| "Invalid body length")?,
+                .map_err(|_| ReplayError::InvalidBodyLength)?,
         );
         request.extensions_mut().insert(self.original.id());
         Ok(request)
@@ -160,25 +232,18 @@ impl ReplayDraft {
 
     /// Replaces the body with a complete file, refusing files above
     /// [`REPLAY_BODY_FILE_LIMIT_BYTES`] before reading them.
-    pub fn load_body_file(&mut self, path: &Path) -> Result<(), String> {
-        let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-        let too_large = || {
-            format!(
-                "Body files are limited to {} MiB",
-                REPLAY_BODY_FILE_LIMIT_BYTES / (1024 * 1024)
-            )
-        };
-        let length = file.metadata().map_err(|error| error.to_string())?.len();
+    pub fn load_body_file(&mut self, path: &Path) -> Result<(), ReplayBodyFileError> {
+        let file = std::fs::File::open(path)?;
+        let length = file.metadata()?.len();
         if length > REPLAY_BODY_FILE_LIMIT_BYTES {
-            return Err(too_large());
+            return Err(ReplayBodyFileError::TooLarge);
         }
         let mut body = Vec::with_capacity(usize::try_from(length).unwrap_or_default());
         // The file may grow after the size check; never read past the limit.
         file.take(REPLAY_BODY_FILE_LIMIT_BYTES + 1)
-            .read_to_end(&mut body)
-            .map_err(|error| error.to_string())?;
+            .read_to_end(&mut body)?;
         if body.len() as u64 > REPLAY_BODY_FILE_LIMIT_BYTES {
-            return Err(too_large());
+            return Err(ReplayBodyFileError::TooLarge);
         }
         self.body = Bytes::from(body);
         self.body_missing = self.original.request().headers().omitted();
@@ -193,22 +258,24 @@ impl ReplayDraft {
 }
 
 /// Converts an enabled editor row, refusing values that would not be sent as entered.
-fn header_pair(field: &ReplayField) -> Result<(http::HeaderName, http::HeaderValue), String> {
-    let name = http::HeaderName::from_bytes(field.name.as_bytes())
-        .map_err(|_| format!("Invalid header name: {}", field.name))?;
+fn header_pair(
+    field: &ReplayField,
+) -> Result<(http::HeaderName, http::HeaderValue), ReplayHeaderError> {
+    let name = http::HeaderName::from_bytes(field.name.as_bytes()).map_err(|_| {
+        ReplayHeaderError::InvalidName {
+            name: field.name.clone(),
+        }
+    })?;
     if field.value == REDACTED_VALUE
         || (field.value.is_empty() && is_sensitive_header(name.as_str()))
     {
-        return Err("Enter redacted header values or disable their rows".to_owned());
+        return Err(ReplayHeaderError::RedactedValue);
     }
     if field.value.contains(char::REPLACEMENT_CHARACTER) {
-        return Err(format!(
-            "Header {name} was captured with non-UTF-8 bytes and cannot be reproduced; \
-             re-enter its value or disable the row"
-        ));
+        return Err(ReplayHeaderError::NonUtf8Value { name });
     }
     let value = http::HeaderValue::from_str(&field.value)
-        .map_err(|_| format!("Invalid value for header {name}"))?;
+        .map_err(|_| ReplayHeaderError::InvalidValue { name: name.clone() })?;
     Ok((name, value))
 }
 
@@ -281,7 +348,7 @@ mod tests {
         writer.exchange().clone()
     }
 
-    fn base_draft() -> Result<ReplayDraft, String> {
+    fn base_draft() -> Result<ReplayDraft, ReplayError> {
         let record = exchange(
             CaptureSource::HttpProxy,
             Method::GET,
@@ -294,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn new_strips_framing_clears_redacted_and_tracks_missing_body() -> Result<(), String> {
+    fn new_strips_framing_clears_redacted_and_tracks_missing_body() -> Result<(), Box<dyn Error>> {
         let connect = exchange(
             CaptureSource::Connect,
             Method::CONNECT,
@@ -303,7 +370,12 @@ mod tests {
             false,
             None,
         );
-        assert!(ReplayDraft::new(connect).is_err());
+        let connect_err = ReplayDraft::new(connect).err().ok_or("CONNECT must fail")?;
+        assert!(matches!(connect_err, ReplayError::ConnectTunnel));
+        assert_eq!(
+            connect_err.to_string(),
+            "CONNECT tunnels cannot be replayed"
+        );
 
         let complete = exchange(
             CaptureSource::HttpProxy,
@@ -375,11 +447,22 @@ mod tests {
     }
 
     #[test]
-    fn request_validates_method_url_and_loop_guard() -> Result<(), String> {
+    fn request_validates_method_url_and_loop_guard() -> Result<(), Box<dyn Error>> {
         let mut draft = base_draft()?;
-        for bad_method in ["", "GET POST", "CONNECT", "TRACE"] {
+        for bad_method in ["", "GET POST"] {
             draft.method = bad_method.to_owned();
-            assert!(draft.request(PROXY).is_err(), "{bad_method}");
+            let err = draft.request(PROXY).err().ok_or("bad method must fail")?;
+            assert!(matches!(err, ReplayError::InvalidMethod), "{bad_method}");
+            assert_eq!(err.to_string(), "Invalid method");
+        }
+        for disallowed in ["CONNECT", "TRACE"] {
+            draft.method = disallowed.to_owned();
+            let err = draft
+                .request(PROXY)
+                .err()
+                .ok_or("disallowed method must fail")?;
+            assert!(matches!(err, ReplayError::DisallowedMethod), "{disallowed}");
+            assert_eq!(err.to_string(), "CONNECT and TRACE cannot be replayed");
         }
         draft.method = "GET".to_owned();
 
@@ -388,19 +471,40 @@ mod tests {
             .request(PROXY)
             .err()
             .ok_or("truncated URL must fail")?;
-        assert!(truncated_err.contains("truncated"), "{truncated_err}");
+        assert!(matches!(
+            truncated_err,
+            ReplayError::Url(ReplayUrlError::Truncated)
+        ));
+        assert!(
+            truncated_err.to_string().contains("truncated"),
+            "{truncated_err}"
+        );
 
-        for bad_url in [
-            "not a url",
-            "/relative/path",
-            "ftp://example.test/file",
-            "http://example.test/#section",
-            "http://127.0.0.1:8080/loop",
-            "http://localhost:8080/loop",
-            "http://[::1]:8080/loop",
-        ] {
+        let invalid_url_cases = [
+            ("not a url", ReplayUrlError::Invalid),
+            (
+                "/relative/path",
+                ReplayUrlError::UnsupportedSchemeOrMissingHost,
+            ),
+            (
+                "ftp://example.test/file",
+                ReplayUrlError::UnsupportedSchemeOrMissingHost,
+            ),
+            (
+                "http://example.test/#section",
+                ReplayUrlError::CredentialsOrFragment,
+            ),
+            ("http://127.0.0.1:8080/loop", ReplayUrlError::TargetsProxy),
+            ("http://localhost:8080/loop", ReplayUrlError::TargetsProxy),
+            ("http://[::1]:8080/loop", ReplayUrlError::TargetsProxy),
+        ];
+        for (bad_url, expected) in invalid_url_cases {
             draft.url = bad_url.to_owned();
-            assert!(draft.request(PROXY).is_err(), "{bad_url}");
+            let err = draft.request(PROXY).err().ok_or("bad URL must fail")?;
+            assert!(
+                matches!(err, ReplayError::Url(actual) if actual == expected),
+                "{bad_url}: got {err:?}"
+            );
         }
 
         for ok_url in [
@@ -415,32 +519,16 @@ mod tests {
     }
 
     #[test]
-    fn request_validates_headers_host_and_framing() -> Result<(), String> {
+    fn request_validates_headers_host_and_framing() -> Result<(), Box<dyn Error>> {
         let mut draft = base_draft()?;
         draft.body_missing = true;
-        assert!(draft.request(PROXY).is_err());
+        let incomplete_err = draft.request(PROXY).err().ok_or("missing body must fail")?;
+        assert!(matches!(incomplete_err, ReplayError::IncompleteCapture));
+        assert_eq!(
+            incomplete_err.to_string(),
+            "Incomplete body or headers: load a complete replacement before sending"
+        );
         draft.body_missing = false;
-
-        for (name, value) in [
-            ("bad name", "ok"),
-            ("x-val", "\r\n"),
-            ("authorization", ""),
-            ("cookie", ""),
-            ("x-secret", REDACTED_VALUE),
-            ("x-raw", "a\u{fffd}b"),
-        ] {
-            draft.headers.push(ReplayField {
-                enabled: true,
-                name: name.to_owned(),
-                value: value.to_owned(),
-            });
-            assert!(draft.request(PROXY).is_err(), "{name}: {value}");
-            if let Some(last) = draft.headers.last_mut() {
-                last.enabled = false;
-            }
-            assert!(draft.request(PROXY).is_ok(), "disabled {name}");
-            draft.headers.pop();
-        }
 
         draft.headers.push(ReplayField {
             enabled: true,
@@ -491,6 +579,74 @@ mod tests {
     }
 
     #[test]
+    fn request_reports_each_header_rejection_variant() -> Result<(), Box<dyn Error>> {
+        let mut draft = base_draft()?;
+        let bad_headers = [
+            (
+                "bad name",
+                "ok",
+                ReplayHeaderError::InvalidName {
+                    name: "bad name".to_owned(),
+                },
+                "Invalid header name: bad name",
+            ),
+            (
+                "x-val",
+                "\r\n",
+                ReplayHeaderError::InvalidValue {
+                    name: http::HeaderName::from_static("x-val"),
+                },
+                "Invalid value for header x-val",
+            ),
+            (
+                "authorization",
+                "",
+                ReplayHeaderError::RedactedValue,
+                "Enter redacted header values or disable their rows",
+            ),
+            (
+                "cookie",
+                "",
+                ReplayHeaderError::RedactedValue,
+                "Enter redacted header values or disable their rows",
+            ),
+            (
+                "x-secret",
+                REDACTED_VALUE,
+                ReplayHeaderError::RedactedValue,
+                "Enter redacted header values or disable their rows",
+            ),
+            (
+                "x-raw",
+                "a\u{fffd}b",
+                ReplayHeaderError::NonUtf8Value {
+                    name: http::HeaderName::from_static("x-raw"),
+                },
+                "Header x-raw was captured with non-UTF-8 bytes and cannot be reproduced; re-enter its value or disable the row",
+            ),
+        ];
+        for (name, value, expected, expected_message) in bad_headers {
+            draft.headers.push(ReplayField {
+                enabled: true,
+                name: name.to_owned(),
+                value: value.to_owned(),
+            });
+            let err = draft.request(PROXY).err().ok_or("bad header must fail")?;
+            assert!(
+                matches!(err, ReplayError::Header(ref actual) if *actual == expected),
+                "{name}: {value} -> {err:?}"
+            );
+            assert_eq!(err.to_string(), expected_message);
+            if let Some(last) = draft.headers.last_mut() {
+                last.enabled = false;
+            }
+            assert!(draft.request(PROXY).is_ok(), "disabled {name}");
+            draft.headers.pop();
+        }
+        Ok(())
+    }
+
+    #[test]
     fn load_body_file_replaces_body_and_enforces_limit() -> Result<(), Box<dyn Error>> {
         let directory = tempfile::tempdir()?;
         let ok_path = directory.path().join("body.bin");
@@ -503,8 +659,19 @@ mod tests {
 
         let large_path = directory.path().join("large.bin");
         std::fs::File::create(&large_path)?.set_len(REPLAY_BODY_FILE_LIMIT_BYTES + 1)?;
-        assert!(draft.load_body_file(&large_path).is_err());
+        let too_large = draft
+            .load_body_file(&large_path)
+            .err()
+            .ok_or("oversized file must fail")?;
+        assert!(matches!(too_large, ReplayBodyFileError::TooLarge));
+        assert_eq!(too_large.to_string(), "Body files are limited to 16 MiB");
         assert_eq!(draft.body.as_ref(), b"payload");
+
+        let missing_err = draft
+            .load_body_file(&directory.path().join("does-not-exist.bin"))
+            .err()
+            .ok_or("missing file must fail")?;
+        assert!(matches!(missing_err, ReplayBodyFileError::Io(_)));
 
         let omitted = exchange(
             CaptureSource::HttpProxy,
@@ -521,7 +688,7 @@ mod tests {
     }
 
     #[test]
-    fn needs_confirmation_flags_methods_with_side_effects() -> Result<(), String> {
+    fn needs_confirmation_flags_methods_with_side_effects() -> Result<(), Box<dyn Error>> {
         let mut draft = base_draft()?;
         for safe in ["GET", "HEAD", "OPTIONS"] {
             draft.method = safe.to_owned();
