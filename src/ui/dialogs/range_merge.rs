@@ -144,31 +144,35 @@ fn dialog(context: &egui::Context, plan: &RangePlan) -> Option<bool> {
 impl InspectorApp {
     /// Plans a requested merge and shows its dialog; call once per frame.
     pub(in crate::ui) fn range_merge(&mut self, context: &egui::Context) {
-        if let Some(record) = self.body_saving.merge.requested.take() {
+        if let Some(record) = self.session.body_saving.merge.requested.take() {
             self.start_range_plan(&record);
         }
         self.poll_range_plan(context);
-        let Some(plan) = self.body_saving.merge.plan.as_ref() else {
+        let Some(plan) = self.session.body_saving.merge.plan.as_ref() else {
             return;
         };
         let Some(save) = dialog(context, plan) else {
             return;
         };
-        let Some(plan) = self.body_saving.merge.plan.take() else {
+        let Some(plan) = self.session.body_saving.merge.plan.take() else {
             return;
         };
         if !save {
             return;
         }
-        let started = self.save.directory().and_then(|directory| {
-            self.body_saving
+        let started = self.dialogs.save.directory().and_then(|directory| {
+            self.session
+                .body_saving
                 .store()
                 .ok_or_else(|| std::io::Error::other("Saving bodies is unavailable"))?
                 .save_ranges(plan, directory)
         });
         match started {
-            Ok(receiver) => self.body_saving.track(BackgroundTask::track(receiver)),
-            Err(error) => self.error = Some(format!("Merging ranges failed: {error}")),
+            Ok(receiver) => self
+                .session
+                .body_saving
+                .track(BackgroundTask::track(receiver)),
+            Err(error) => self.session.error = Some(format!("Merging ranges failed: {error}")),
         }
     }
 }
@@ -176,7 +180,7 @@ impl InspectorApp {
 impl InspectorApp {
     /// Starts planning a merge for `record` on a background thread.
     fn start_range_plan(&mut self, record: &Exchange) {
-        let Some(store) = self.body_saving.store() else {
+        let Some(store) = self.session.body_saving.store() else {
             return;
         };
         let directory = PathBuf::new();
@@ -191,16 +195,18 @@ impl InspectorApp {
         let Some(target) = response(record) else {
             return;
         };
-        let candidates: Vec<SaveBody> = self.records.iter().filter_map(response).collect();
+        let candidates: Vec<SaveBody> = self.requests.records.iter().filter_map(response).collect();
         match store.plan_ranges_in_background(target, candidates) {
-            Ok(receiver) => self.body_saving.merge.planning = Some(BackgroundTask::track(receiver)),
-            Err(error) => self.error = Some(format!("Merging ranges failed: {error}")),
+            Ok(receiver) => {
+                self.session.body_saving.merge.planning = Some(BackgroundTask::track(receiver));
+            }
+            Err(error) => self.session.error = Some(format!("Merging ranges failed: {error}")),
         }
     }
 
     /// Shows a waiting dialog until the plan arrives, then keeps it for the merge dialog.
     fn poll_range_plan(&mut self, context: &egui::Context) {
-        let Some(task) = self.body_saving.merge.planning.as_ref() else {
+        let Some(task) = self.session.body_saving.merge.planning.as_ref() else {
             return;
         };
         let result = match task.poll() {
@@ -216,7 +222,7 @@ impl InspectorApp {
                 });
                 if cancelled {
                     // The worker finishes on its own; its result is dropped.
-                    self.body_saving.merge.planning = None;
+                    self.session.body_saving.merge.planning = None;
                 } else {
                     context.request_repaint_after(Duration::from_millis(100));
                 }
@@ -226,10 +232,10 @@ impl InspectorApp {
                 "The range planning worker stopped unexpectedly",
             )),
         };
-        self.body_saving.merge.planning = None;
+        self.session.body_saving.merge.planning = None;
         match result {
-            Ok(plan) => self.body_saving.merge.plan = plan,
-            Err(error) => self.error = Some(format!("Merging ranges failed: {error}")),
+            Ok(plan) => self.session.body_saving.merge.plan = plan,
+            Err(error) => self.session.error = Some(format!("Merging ranges failed: {error}")),
         }
     }
 }

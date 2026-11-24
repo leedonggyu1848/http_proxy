@@ -8,7 +8,7 @@ use crate::ui::detail::highlight::SyntaxPalette;
 use crate::ui::detail::image_view;
 use crate::ui::detail::search::Query;
 use crate::ui::detail::search::highlight::{self, MatchColors};
-use crate::ui::dialogs::{replay_panel, scope_help};
+use crate::ui::dialogs::scope_help;
 use crate::ui::requests::outcome_view;
 use crate::ui::style::theme::Palette;
 use eframe::egui;
@@ -22,7 +22,10 @@ use std::time::Duration;
 
 impl InspectorApp {
     pub(in crate::ui) fn detail_panel(&mut self, ui: &mut egui::Ui, shortcuts_allowed: bool) {
-        let Some(selected) = self.selected else {
+        let detail = &mut self.detail;
+        let requests = &mut self.requests;
+        let body_saving = &mut self.session.body_saving;
+        let Some(selected) = requests.selected else {
             ui.centered_and_justified(|ui| {
                 ui.add(
                     egui::Label::new("Select a request to inspect headers and body previews.")
@@ -31,15 +34,15 @@ impl InspectorApp {
             });
             return;
         };
-        let Some(record) = self.records.iter().find(|record| record.id() == selected) else {
+        let Some(record) = requests.records.iter().find(|row| row.id() == selected) else {
             return;
         };
 
         if shortcuts_allowed {
-            detail_tabs::apply_shortcuts(ui, &mut self.detail_tab);
+            detail_tabs::apply_shortcuts(ui, &mut detail.tab);
         }
         let request = record.request();
-        let search = self.search.active_query().map(AsRef::as_ref);
+        let search = requests.search.active_query().map(AsRef::as_ref);
         render_title(ui, record, search);
         ui.horizontal_wrapped(|ui| {
             let (status, color) = outcome_view::outcome_text(record.outcome(), &Palette::of(ui));
@@ -50,36 +53,34 @@ impl InspectorApp {
                     egui::Button::new("Edit and Resend"),
                 )
                 .clicked()
+                && let Err(error) = detail.open_replay(record.clone())
             {
-                match replay_panel::ReplayPanel::new(record.clone()) {
-                    Ok(panel) => self.replay = Some(panel),
-                    Err(error) => self.error = Some(error.to_string()),
-                }
+                self.session.error = Some(error.to_string());
             }
-            self.curl.controls(ui, record);
+            detail.curl.controls(ui, record);
             if let Some(original) = record.replay_of()
                 && ui
                     .link(format!("Replay of #{} — show original", original.value()))
                     .clicked()
             {
-                self.selected = Some(original);
+                requests.selected = Some(original);
             }
         });
-        detail_tabs::show(ui, &mut self.detail_tab);
+        detail_tabs::show(ui, &mut detail.tab);
 
         egui::ScrollArea::vertical()
-            .id_salt(("details-scroll", self.detail_tab))
+            .id_salt(("details-scroll", detail.tab))
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 render_timing(ui, record);
                 ui.separator();
                 let mut body = BodyPanel {
                     record: record.id(),
-                    mode: self.body_mode,
-                    cache: &mut self.body_cache,
+                    mode: detail.body_mode,
+                    cache: &mut detail.body_cache,
                     search,
                 };
-                match self.detail_tab {
+                match detail.tab {
                     DetailTab::Headers => {
                         render_query(ui, request.target());
                         ui.strong("Request headers");
@@ -94,14 +95,14 @@ impl InspectorApp {
                         let has_tree = has_tree(request.media_type())
                             || matches!(record.outcome(),
                             Outcome::Response(response) if has_tree(response.media_type()));
-                        body.mode = view_mode_bar(ui, &mut self.body_mode, has_tree);
-                        self.body_saving.menus(ui, record, &self.save);
+                        body.mode = view_mode_bar(ui, &mut detail.body_mode, has_tree);
+                        body_saving.menus(ui, record, &self.dialogs.save);
                         ui.strong("Request body");
                         render_optional_body(ui, request, &mut body);
                     }
                 }
                 ui.separator();
-                render_outcome(ui, record, self.detail_tab, &mut body, &mut self.image);
+                render_outcome(ui, record, detail.tab, &mut body, &mut detail.image);
             });
     }
 }

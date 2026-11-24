@@ -98,38 +98,41 @@ impl InspectorApp {
             ui.separator();
             self.https_controls(ui);
             ui.separator();
-            if self.browsers.toolbar(
+            if self.dialogs.browsers.toolbar(
                 ui,
-                self.proxy.as_ref().map(ProxyHandle::local_addr),
-                self.ca_directory
+                self.session.proxy.as_ref().map(ProxyHandle::local_addr),
+                self.session
+                    .ca_directory
                     .as_deref()
-                    .filter(|_| self.https_inspection),
+                    .filter(|_| self.session.https_inspection),
             ) {
-                self.ca_panel.refresh();
+                self.dialogs.ca_panel.refresh();
             }
-            match self.save.menu(ui, self.full_log.as_ref()) {
+            match self.dialogs.save.menu(ui, self.session.full_log.as_ref()) {
                 Some(crate::ui::dialogs::save::SaveMenuAction::ExportHar) => {
-                    self.har_dialog.open(self.save.suggested_path("har"));
+                    self.dialogs
+                        .har
+                        .open(self.dialogs.save.suggested_path("har"));
                 }
                 Some(crate::ui::dialogs::save::SaveMenuAction::SaveBodies) => {
-                    self.body_saving.open_bulk();
+                    self.session.body_saving.open_bulk();
                 }
                 None => {}
             }
             ui.menu_button("Settings", |ui| {
-                self.theme.menu(ui);
+                self.layout.theme.menu(ui);
                 ui.separator();
-                self.body_saving.settings_menu(ui);
+                self.session.body_saving.settings_menu(ui);
             });
             crate::ui::dialogs::scope_help::button(
                 ui,
-                self.proxy.as_ref().map(ProxyHandle::local_addr),
+                self.session.proxy.as_ref().map(ProxyHandle::local_addr),
             );
         });
     }
 
     fn proxy_controls(&mut self, ui: &mut egui::Ui) {
-        if let Some(proxy) = self.proxy.as_ref() {
+        if let Some(proxy) = self.session.proxy.as_ref() {
             let address = proxy.local_addr();
             ui.label(RichText::new("● Running").color(Palette::of(ui).success));
             ui.monospace(address.to_string());
@@ -141,62 +144,65 @@ impl InspectorApp {
             ui.label(RichText::new("● Stopped").color(Palette::of(ui).error));
             ui.label("Port");
             let edited = ui
-                .add(egui::TextEdit::singleline(&mut self.port.text).desired_width(56.0))
+                .add(egui::TextEdit::singleline(&mut self.session.port.text).desired_width(56.0))
                 .on_hover_text(
                     "Loopback port for the proxy. 0 picks a free port. A port you type is remembered.",
                 )
                 .changed();
             if edited {
-                self.port.origin = settings::port::PortOrigin::User;
+                self.session.port.origin = settings::port::PortOrigin::User;
             }
             if ui.button("Start").clicked() {
-                self.start_proxy();
+                self.session.start_proxy(ui.ctx());
             }
         }
     }
 
     fn https_controls(&mut self, ui: &mut egui::Ui) {
-        let hover = if self.proxy.is_some() {
+        let hover = if self.session.proxy.is_some() {
             format!("Stop the proxy to change this setting. {AUTHORIZATION_WARNING}")
         } else {
             format!("Decrypt HTTPS in new connections with the app CA. {AUTHORIZATION_WARNING}")
         };
         let toggled = ui
             .add_enabled(
-                self.proxy.is_none(),
-                egui::Checkbox::new(&mut self.https_inspection, "Decrypt HTTPS"),
+                self.session.proxy.is_none(),
+                egui::Checkbox::new(&mut self.session.https_inspection, "Decrypt HTTPS"),
             )
             .on_hover_text(&hover)
             .on_disabled_hover_text(&hover)
             .changed();
-        if toggled && self.https_inspection {
-            self.authorization_notice = self.authorization_notice.inspection_enabled();
+        if toggled && self.session.https_inspection {
+            self.dialogs.authorization_notice =
+                self.dialogs.authorization_notice.inspection_enabled();
         }
-        if self.https_inspection {
-            self.ca_panel.summary(ui, self.ca_directory.as_deref());
+        if self.session.https_inspection {
+            self.dialogs
+                .ca_panel
+                .summary(ui, self.session.ca_directory.as_deref());
         }
     }
 
     /// Errors and warnings that need attention, shown right below the toolbar.
     pub(in crate::ui) fn notices(&mut self, ui: &mut egui::Ui) {
         let palette = Palette::of(ui);
-        if let Some(warning) = self.port.launch_warning.as_ref() {
+        if let Some(warning) = self.session.port.launch_warning.as_ref() {
             ui.colored_label(palette.warning, warning);
         }
-        if let Some(error) = self.error.as_ref() {
+        if let Some(error) = self.session.error.as_ref() {
             ui.colored_label(palette.error, error);
         }
-        if let Some(error) = self.browsers.error() {
+        if let Some(error) = self.dialogs.browsers.error() {
             ui.colored_label(palette.error, error);
         }
-        self.curl.notice(ui);
-        if self.https_inspection {
-            self.ca_panel.messages(ui);
-            if self.authorization_notice == AuthorizationNotice::Showing {
+        self.detail.curl.notice(ui);
+        if self.session.https_inspection {
+            self.dialogs.ca_panel.messages(ui);
+            if self.dialogs.authorization_notice == AuthorizationNotice::Showing {
                 ui.horizontal_wrapped(|ui| {
                     ui.colored_label(palette.warning, AUTHORIZATION_WARNING);
                     if ui.small_button("Dismiss").clicked() {
-                        self.authorization_notice = AuthorizationNotice::Dismissed;
+                        self.dialogs.authorization_notice = AuthorizationNotice::Dismissed;
                     }
                 });
             }
@@ -207,8 +213,8 @@ impl InspectorApp {
     pub(in crate::ui) fn status_bar(&self, ui: &mut egui::Ui) {
         let palette = Palette::of(ui);
         ui.horizontal_wrapped(|ui| {
-            ui.label(format!("{} requests", self.records.len()));
-            let dropped = self.records.dropped(self.engine_dropped());
+            ui.label(format!("{} requests", self.requests.records.len()));
+            let dropped = self.requests.records.dropped(self.session.engine_dropped());
             if dropped > 0 {
                 ui.separator();
                 ui.colored_label(palette.error, format!("{dropped} records dropped"))
@@ -216,7 +222,7 @@ impl InspectorApp {
                         "The capture queue was full, so these exchanges were forwarded but not shown.",
                     );
             }
-            let evicted = self.records.evicted();
+            let evicted = self.requests.records.evicted();
             if evicted > 0 {
                 ui.separator();
                 ui.colored_label(palette.warning, format!("{evicted} older records removed"))
@@ -224,26 +230,26 @@ impl InspectorApp {
                         "Only the newest {MAX_RECORDS} requests are kept on screen. The full-session log keeps every record."
                     ));
             }
-            if self.analysis.url_map().node_limit_reached() {
+            if self.map.analysis.url_map().node_limit_reached() {
                 ui.separator();
                 ui.colored_label(
                     palette.warning,
                     format!(
                         "URL map reached its {} node limit; deeper paths are folded into parent nodes.",
-                        self.analysis.url_map().max_nodes()
+                        self.map.analysis.url_map().max_nodes()
                     ),
                 );
             }
             if let Some(error) = self
-                .log_init_error
+                .session.log_init_error
                 .clone()
-                .or_else(|| self.full_log.as_ref().and_then(FullLog::error))
+                .or_else(|| self.session.full_log.as_ref().and_then(FullLog::error))
             {
                 ui.separator();
                 ui.colored_label(palette.error, error);
             }
             if let Some(log) = self
-                .full_log
+                .session.full_log
                 .as_ref()
                 .filter(|log| log.body_limit_reached())
             {
@@ -256,9 +262,9 @@ impl InspectorApp {
                     ),
                 );
             }
-            self.save.status(ui);
-            self.body_saving.status(ui);
-            self.theme.status(ui);
+            self.dialogs.save.status(ui);
+            self.session.body_saving.status(ui);
+            self.layout.theme.status(ui);
         });
     }
 }
