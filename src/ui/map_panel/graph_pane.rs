@@ -5,7 +5,7 @@ use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec
 use http_proxy::analysis::url_map::{
     EdgeKind, ForceLayout, GraphEdge, GraphNode, RelationshipGraph, STEPS_PER_FRAME,
 };
-use http_proxy::interop::map_export::format_bytes;
+use http_proxy::exchange::ByteSize;
 
 use super::EdgeVisibility;
 use crate::ui::theme::Palette;
@@ -486,7 +486,7 @@ fn format_node_tooltip(graph: &RelationshipGraph, node: &GraphNode) -> String {
         node.site,
         node.request_count,
         node.error_count,
-        format_bytes(bytes),
+        ByteSize::new(bytes),
     )
 }
 

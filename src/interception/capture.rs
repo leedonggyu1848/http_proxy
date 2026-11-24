@@ -438,7 +438,7 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(path)?,
             "[9] Response body bytes: abc\n\
-             [9] Response body: later bytes omitted because the session body limit of 3 bytes was reached\n\
+             [9] Response body: later bytes omitted because the session body limit of 3 B was reached\n\
              [9] Response body: complete\n"
         );
         Ok(())
