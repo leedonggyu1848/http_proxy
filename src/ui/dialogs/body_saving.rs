@@ -2,7 +2,6 @@
 
 use std::io;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
 use eframe::egui;
@@ -14,6 +13,8 @@ use http_proxy::recording::{
 
 use crate::ui::dialogs::save::SaveControls;
 use crate::ui::style::theme::Palette;
+
+use super::background_task::{BackgroundTask, TaskPoll};
 
 const MIB: u64 = 1024 * 1024;
 const SETTINGS_FILE: &str = "body-store";
@@ -43,7 +44,7 @@ pub(in crate::ui) struct BodySaving {
     limit_mib: u64,
     settings_path: Option<PathBuf>,
     settings_error: Option<String>,
-    pending: Option<Receiver<io::Result<SavedBody>>>,
+    pending: Option<BackgroundTask<SavedBody>>,
     status: Option<SaveStatus>,
     confirmation: Option<Confirmation>,
     privacy_acknowledged: bool,
@@ -225,9 +226,9 @@ impl BodySaving {
     }
 
     /// Shows the result of a save started elsewhere, such as a range merge.
-    pub(in crate::ui) fn track(&mut self, receiver: Receiver<io::Result<SavedBody>>) {
+    pub(super) fn track(&mut self, task: BackgroundTask<SavedBody>) {
         self.status = None;
-        self.pending = Some(receiver);
+        self.pending = Some(task);
     }
 
     fn start(&mut self, request: SaveBody) {
@@ -235,7 +236,7 @@ impl BodySaving {
             return;
         };
         match store.save(request) {
-            Ok(receiver) => self.pending = Some(receiver),
+            Ok(receiver) => self.pending = Some(BackgroundTask::track(receiver)),
             Err(error) => self.status = Some(SaveStatus::Failed(error.to_string())),
         }
     }
@@ -285,14 +286,14 @@ impl BodySaving {
     }
 
     fn poll(&mut self) {
-        let Some(receiver) = self.pending.as_ref() else {
+        let Some(task) = self.pending.as_ref() else {
             return;
         };
-        let status = match receiver.try_recv() {
-            Ok(Ok(saved)) => SaveStatus::Saved(saved),
-            Ok(Err(error)) => SaveStatus::Failed(error.to_string()),
-            Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => {
+        let status = match task.poll() {
+            TaskPoll::Ready(Ok(saved)) => SaveStatus::Saved(saved),
+            TaskPoll::Ready(Err(error)) => SaveStatus::Failed(error.to_string()),
+            TaskPoll::Pending => return,
+            TaskPoll::Disconnected => {
                 SaveStatus::Failed("The save worker stopped unexpectedly".to_owned())
             }
         };
@@ -456,14 +457,14 @@ mod tests {
 
     #[test]
     fn a_running_save_blocks_a_new_request() -> io::Result<()> {
-        let (_sender, receiver) = std::sync::mpsc::channel();
+        let (task, _starter) = BackgroundTask::deferred();
         let mut saving = BodySaving {
             store: None,
             init_error: None,
             limit_mib: 1,
             settings_path: None,
             settings_error: None,
-            pending: Some(receiver),
+            pending: Some(task),
             status: Some(SaveStatus::Failed("earlier".to_owned())),
             confirmation: None,
             privacy_acknowledged: true,

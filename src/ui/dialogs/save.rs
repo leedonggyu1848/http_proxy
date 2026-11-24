@@ -1,13 +1,14 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use eframe::egui::{self, Color32, ColorImage};
 use http_proxy::exchange::Exchange;
 use http_proxy::interop::har::{self, HarOptions};
 use http_proxy::recording::FullLog;
+
+use super::background_task::{BackgroundTask, TaskPoll};
 
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 
@@ -22,7 +23,7 @@ pub(in crate::ui) enum SaveMenuAction {
 
 pub(in crate::ui) struct SaveControls {
     directory: String,
-    pending: Option<Receiver<SaveCompletion>>,
+    pending: Option<BackgroundTask<PathBuf>>,
     status: Option<SaveCompletion>,
 }
 
@@ -76,20 +77,11 @@ impl SaveControls {
         path: PathBuf,
     ) {
         self.status = None;
-        let (sender, receiver) = mpsc::channel();
-        let worker_context = context.clone();
-        let spawned = std::thread::Builder::new()
-            .name("export-har".to_owned())
-            .spawn(move || {
-                let document = har::document(&records, options, SystemTime::now());
-                drop(records);
-                let _receiver_closed = sender.send(har::write(&path, &document));
-                worker_context.request_repaint();
-            });
-        match spawned {
-            Ok(_worker) => self.pending = Some(receiver),
-            Err(error) => self.status = Some(Err(error)),
-        }
+        self.pending = Some(BackgroundTask::start("export-har", context, move || {
+            let document = har::document(&records, options, SystemTime::now());
+            drop(records);
+            har::write(&path, &document)
+        }));
     }
 
     /// Writes `content` to a new, non-clobbering file inside the configured
@@ -109,19 +101,9 @@ impl SaveControls {
                 return;
             }
         };
-        let (sender, receiver) = mpsc::channel();
-        let worker_context = context.clone();
-        let spawned = std::thread::Builder::new()
-            .name("save-url-map".to_owned())
-            .spawn(move || {
-                let result = save_text_atomic(&path, text.as_bytes()).map(|()| path);
-                let _receiver_closed = sender.send(result);
-                worker_context.request_repaint();
-            });
-        match spawned {
-            Ok(_worker) => self.pending = Some(receiver),
-            Err(error) => self.status = Some(Err(error)),
-        }
+        self.pending = Some(BackgroundTask::start("save-url-map", context, move || {
+            save_text_atomic(&path, text.as_bytes()).map(|()| path)
+        }));
     }
 
     fn menu_items(&mut self, ui: &mut egui::Ui, log: Option<&FullLog>) -> Option<SaveMenuAction> {
@@ -149,7 +131,7 @@ impl SaveControls {
             ui.close();
             self.status = None;
             match self.destination("log").and_then(|path| log.export(path)) {
-                Ok(receiver) => self.pending = Some(receiver),
+                Ok(receiver) => self.pending = Some(BackgroundTask::track(receiver)),
                 Err(error) => self.status = Some(Err(error)),
             }
         }
@@ -195,15 +177,13 @@ impl SaveControls {
     }
 
     fn poll(&mut self) {
-        let Some(receiver) = &self.pending else {
+        let Some(task) = &self.pending else {
             return;
         };
-        let result = match receiver.try_recv() {
-            Ok(result) => result,
-            Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => {
-                Err(io::Error::other("The save worker stopped unexpectedly"))
-            }
+        let result = match task.poll() {
+            TaskPoll::Ready(result) => result,
+            TaskPoll::Pending => return,
+            TaskPoll::Disconnected => Err(io::Error::other("The save worker stopped unexpectedly")),
         };
         self.pending = None;
         self.status = Some(result);
@@ -248,23 +228,13 @@ impl SaveControls {
                 return;
             }
         };
-        let (sender, receiver) = mpsc::channel();
-        self.pending = Some(receiver);
+        let (task, starter) = BackgroundTask::deferred();
+        self.pending = Some(task);
         let context = context.clone();
         context.clone().request_screenshot(move |image| {
-            let worker_sender = sender.clone();
-            let worker_context = context.clone();
-            if let Err(error) = std::thread::Builder::new()
-                .name("save-window-png".to_owned())
-                .spawn(move || {
-                    let result = save_png(&path, &image).map(|()| path);
-                    let _receiver_closed = worker_sender.send(result);
-                    worker_context.request_repaint();
-                })
-            {
-                let _receiver_closed = sender.send(Err(error));
-                context.request_repaint();
-            }
+            starter.start("save-window-png", &context, move || {
+                save_png(&path, &image).map(|()| path)
+            });
         });
     }
 }

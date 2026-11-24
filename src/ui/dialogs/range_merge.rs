@@ -2,7 +2,6 @@
 
 use std::io;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
 use eframe::egui;
@@ -14,6 +13,8 @@ use crate::ui::InspectorApp;
 use crate::ui::dialogs::body_saving::PRIVACY_NOTICE;
 use crate::ui::style::theme::Palette;
 
+use super::background_task::{BackgroundTask, TaskPoll};
+
 /// Gaps listed in the dialog before the rest are counted.
 const SHOWN_GAPS: usize = 8;
 
@@ -22,7 +23,7 @@ const SHOWN_GAPS: usize = 8;
 pub(in crate::ui) struct MergeControls {
     requested: Option<Exchange>,
     /// A plan being made on a background thread.
-    planning: Option<Receiver<io::Result<Option<RangePlan>>>>,
+    planning: Option<BackgroundTask<Option<RangePlan>>>,
     plan: Option<RangePlan>,
 }
 
@@ -166,7 +167,7 @@ impl InspectorApp {
                 .save_ranges(plan, directory)
         });
         match started {
-            Ok(receiver) => self.body_saving.track(receiver),
+            Ok(receiver) => self.body_saving.track(BackgroundTask::track(receiver)),
             Err(error) => self.error = Some(format!("Merging ranges failed: {error}")),
         }
     }
@@ -192,19 +193,19 @@ impl InspectorApp {
         };
         let candidates: Vec<SaveBody> = self.records.iter().filter_map(response).collect();
         match store.plan_ranges_in_background(target, candidates) {
-            Ok(receiver) => self.body_saving.merge.planning = Some(receiver),
+            Ok(receiver) => self.body_saving.merge.planning = Some(BackgroundTask::track(receiver)),
             Err(error) => self.error = Some(format!("Merging ranges failed: {error}")),
         }
     }
 
     /// Shows a waiting dialog until the plan arrives, then keeps it for the merge dialog.
     fn poll_range_plan(&mut self, context: &egui::Context) {
-        let Some(receiver) = self.body_saving.merge.planning.as_ref() else {
+        let Some(task) = self.body_saving.merge.planning.as_ref() else {
             return;
         };
-        let result = match receiver.try_recv() {
-            Ok(result) => result,
-            Err(TryRecvError::Empty) => {
+        let result = match task.poll() {
+            TaskPoll::Ready(result) => result,
+            TaskPoll::Pending => {
                 let mut cancelled = false;
                 egui::Modal::new(egui::Id::unique("plan-ranges")).show(context, |ui| {
                     ui.horizontal(|ui| {
@@ -221,7 +222,7 @@ impl InspectorApp {
                 }
                 return;
             }
-            Err(TryRecvError::Disconnected) => Err(io::Error::other(
+            TaskPoll::Disconnected => Err(io::Error::other(
                 "The range planning worker stopped unexpectedly",
             )),
         };

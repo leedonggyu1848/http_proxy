@@ -1,3 +1,4 @@
+mod background_task;
 pub(in crate::ui) mod body_saving;
 pub(in crate::ui) mod browser_panel;
 pub(in crate::ui) mod bulk_save;
