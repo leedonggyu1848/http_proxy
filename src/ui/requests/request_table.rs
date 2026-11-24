@@ -159,14 +159,14 @@ fn keyboard_selection(
 }
 
 /// Sort state and scrolling preference of the request list.
-pub(in crate::ui) struct RequestTable {
-    pub(in crate::ui) replay: Option<Exchange>,
+pub(crate) struct RequestTable {
+    pub(super) replay: Option<Exchange>,
     /// Record whose "Copy as cURL" menu item was chosen this frame.
-    pub(in crate::ui) copy_curl: Option<Exchange>,
+    pub(super) copy_curl: Option<Exchange>,
     /// A body save chosen from a row's context menu.
-    pub(in crate::ui) save_body: Option<(Exchange, http_proxy::exchange::BodySide)>,
+    pub(super) save_body: Option<(Exchange, http_proxy::exchange::BodySide)>,
     /// Whether a body save is running, which disables the save menu items.
-    pub(in crate::ui) saving_body: bool,
+    pub(super) saving_body: bool,
     sort: Sort,
     follow_newest: bool,
     keyboard_row: Option<usize>,
@@ -175,7 +175,7 @@ pub(in crate::ui) struct RequestTable {
 }
 
 impl RequestTable {
-    pub(in crate::ui) const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             sort: Sort {
                 field: None,
@@ -193,7 +193,7 @@ impl RequestTable {
     }
 
     /// Shows the list options inline in the filter row.
-    pub(in crate::ui) fn controls(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn controls(&mut self, ui: &mut egui::Ui) {
         ui.checkbox(&mut self.follow_newest, "Follow newest")
             .on_hover_text("Keep the newest request in view while sorted by arrival.");
         if self.follow_newest {
@@ -218,7 +218,7 @@ impl RequestTable {
     }
 
     /// Shows `rows` (oldest first) and returns a newly selected record.
-    pub(in crate::ui) fn show(
+    pub(super) fn show(
         &mut self,
         ui: &mut egui::Ui,
         mut rows: Vec<&Exchange>,

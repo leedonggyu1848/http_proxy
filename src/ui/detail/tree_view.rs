@@ -23,7 +23,7 @@ struct Labels {
 }
 
 /// A tree with what the user did to it: open rows and the search.
-pub(in crate::ui) struct TreeView {
+pub(super) struct TreeView {
     model: Arc<TreeModel>,
     open: Vec<bool>,
     matched: Vec<bool>,
@@ -32,7 +32,7 @@ pub(in crate::ui) struct TreeView {
 }
 
 impl TreeView {
-    pub(in crate::ui) fn new(model: Arc<TreeModel>) -> Self {
+    pub(super) fn new(model: Arc<TreeModel>) -> Self {
         let open = model
             .nodes()
             .iter()
@@ -65,12 +65,12 @@ impl TreeView {
     }
 
     #[cfg(test)]
-    pub(in crate::ui) fn collapse_all(&mut self) {
+    pub(super) fn collapse_all(&mut self) {
         self.set_all(false);
     }
 
     #[cfg(test)]
-    pub(in crate::ui) fn open_rows(&self) -> Vec<bool> {
+    pub(super) fn open_rows(&self) -> Vec<bool> {
         self.open.clone()
     }
 
@@ -154,7 +154,7 @@ impl TreeView {
     }
 
     /// Shows the controls and the visible rows, colored for `theme`.
-    pub(in crate::ui) fn show(&mut self, ui: &mut egui::Ui, theme: Theme, font: &FontId) {
+    pub(super) fn show(&mut self, ui: &mut egui::Ui, theme: Theme, font: &FontId) {
         ui.weak("Right-click a node to copy its path or value.");
         ui.horizontal_wrapped(|ui| {
             if ui.button("Expand all").clicked() {
@@ -250,7 +250,7 @@ impl TreeView {
 
 /// Draws indentation and the expand/collapse disclosure control shared by
 /// body trees and the URL map tree. Returns `true` when the toggle was clicked.
-pub(in crate::ui) fn tree_row_prefix(
+pub(crate) fn tree_row_prefix(
     ui: &mut egui::Ui,
     depth: usize,
     expandable: bool,

@@ -10,15 +10,15 @@ use crate::ui::style::theme::Theme;
 
 /// Background of every match, and of the match the user moved to.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::ui) struct MatchColors {
-    pub(in crate::ui) other: Color32,
-    pub(in crate::ui) current: Color32,
+pub(crate) struct MatchColors {
+    pub(crate) other: Color32,
+    pub(crate) current: Color32,
 }
 
 impl MatchColors {
     /// Pale backgrounds in light mode and dark ones in dark mode, so the
     /// syntax colors of each theme stay readable on them.
-    pub(in crate::ui) const fn for_theme(theme: Theme) -> Self {
+    pub(crate) const fn for_theme(theme: Theme) -> Self {
         match theme {
             Theme::Light => Self {
                 other: Color32::from_rgb(255, 236, 150),
@@ -33,7 +33,7 @@ impl MatchColors {
 }
 
 /// Byte ranges of the matches in `text`, on character boundaries.
-pub(in crate::ui) fn ranges(matcher: &Matcher, text: &str) -> Vec<Range<usize>> {
+pub(crate) fn ranges(matcher: &Matcher, text: &str) -> Vec<Range<usize>> {
     matcher
         .find_all(text.as_bytes())
         .into_iter()
@@ -43,7 +43,7 @@ pub(in crate::ui) fn ranges(matcher: &Matcher, text: &str) -> Vec<Range<usize>> 
 
 /// Gives the bytes of `ranges` in `job` a background; the range at index
 /// `current` gets the stronger one. `ranges` must be sorted and disjoint.
-pub(in crate::ui) fn mark(
+pub(crate) fn mark(
     job: &mut LayoutJob,
     ranges: &[Range<usize>],
     current: Option<usize>,
@@ -93,7 +93,7 @@ pub(in crate::ui) fn mark(
 }
 
 /// One line of plain text with its matches marked.
-pub(in crate::ui) fn plain(
+pub(crate) fn plain(
     text: &str,
     matcher: &Matcher,
     font: FontId,

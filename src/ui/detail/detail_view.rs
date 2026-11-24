@@ -21,7 +21,7 @@ use http_proxy::exchange::{
 use std::time::Duration;
 
 impl InspectorApp {
-    pub(in crate::ui) fn detail_panel(&mut self, ui: &mut egui::Ui, shortcuts_allowed: bool) {
+    pub(crate) fn detail_panel(&mut self, ui: &mut egui::Ui, shortcuts_allowed: bool) {
         let detail = &mut self.detail;
         let requests = &mut self.requests;
         let body_saving = &mut self.session.body_saving;

@@ -1,11 +1,35 @@
-pub(in crate::ui) mod app;
-pub(in crate::ui) mod detail;
-pub(in crate::ui) mod dialogs;
-pub(in crate::ui) mod map;
-pub(in crate::ui) mod requests;
-pub(in crate::ui) mod style;
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "cross-screen items in a private module; `pub` triggers `unreachable_pub`"
+)]
+mod app;
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "cross-screen items in a private module; `pub` triggers `unreachable_pub`"
+)]
+mod detail;
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "cross-screen items in a private module; `pub` triggers `unreachable_pub`"
+)]
+mod dialogs;
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "cross-screen items in a private module; `pub` triggers `unreachable_pub`"
+)]
+mod map;
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "cross-screen items in a private module; `pub` triggers `unreachable_pub`"
+)]
+mod requests;
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "cross-screen items in a private module; `pub` triggers `unreachable_pub`"
+)]
+mod style;
 
 pub use app::main;
 #[cfg(test)]
-pub(in crate::ui) use app::request_shortcuts_allowed;
-pub(in crate::ui) use app::{InspectorApp, MAX_RECORDS};
+use app::request_shortcuts_allowed;
+use app::{InspectorApp, MAX_RECORDS};

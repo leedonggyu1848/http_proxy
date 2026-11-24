@@ -5,7 +5,7 @@ use eframe::egui::{self, Key, Modifiers};
 
 /// Section of the selected request shown in the detail panel.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(in crate::ui) enum DetailTab {
+pub(crate) enum DetailTab {
     Headers,
     Body,
 }
@@ -54,7 +54,7 @@ fn tab_step(key: Key, modifiers: Modifiers) -> Option<TabStep> {
 }
 
 /// Applies and consumes the tab shortcuts pressed this frame.
-pub(in crate::ui) fn apply_shortcuts(ui: &egui::Ui, tab: &mut DetailTab) {
+pub(super) fn apply_shortcuts(ui: &egui::Ui, tab: &mut DetailTab) {
     ui.input_mut(|input| {
         input.events.retain(|event| {
             if let egui::Event::Key {
@@ -78,7 +78,7 @@ pub(in crate::ui) fn apply_shortcuts(ui: &egui::Ui, tab: &mut DetailTab) {
 ///
 /// The tab list scope sits inside `horizontal` so the bar stays one row tall;
 /// a scope with its own horizontal layout would claim the rest of the panel.
-pub(in crate::ui) fn show(ui: &mut egui::Ui, current: &mut DetailTab) -> egui::Rect {
+pub(super) fn show(ui: &mut egui::Ui, current: &mut DetailTab) -> egui::Rect {
     ui.horizontal(|ui| {
         ui.scope_builder(
             egui::UiBuilder::new()

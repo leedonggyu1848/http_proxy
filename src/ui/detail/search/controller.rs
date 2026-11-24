@@ -67,7 +67,7 @@ enum SearchBackend {
     Inline { notice: String, cache: BodyCache },
 }
 
-pub(in crate::ui) struct RequestSearch {
+pub(crate) struct RequestSearch {
     text: String,
     scope: SearchScope,
     options: MatchOptions,
@@ -85,7 +85,7 @@ pub(in crate::ui) struct RequestSearch {
 }
 
 impl RequestSearch {
-    pub(in crate::ui) fn new(context: &egui::Context) -> Self {
+    pub(crate) fn new(context: &egui::Context) -> Self {
         let context = context.clone();
         let backend = match SearchWorker::spawn(move || context.request_repaint()) {
             Ok(worker) => SearchBackend::Worker(worker),
@@ -113,7 +113,7 @@ impl RequestSearch {
     }
 
     /// The search text box, scope, and options.
-    pub(in crate::ui) fn controls(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn controls(&mut self, ui: &mut egui::Ui) {
         let search_width = ui.available_width().clamp(120.0, 260.0);
         ui.add(
             egui::TextEdit::singleline(&mut self.text)
@@ -137,7 +137,7 @@ impl RequestSearch {
 
     /// Progress, match count, and what was not searched. Draws nothing
     /// while no search is active.
-    pub(in crate::ui) fn status(&self, ui: &mut egui::Ui) {
+    pub(crate) fn status(&self, ui: &mut egui::Ui) {
         let palette = Palette::of(ui);
         if let SearchBackend::Inline { notice, .. } = &self.backend {
             ui.colored_label(palette.warning, notice);
@@ -173,11 +173,7 @@ impl RequestSearch {
 
     /// Applies edits after the debounce, collects results, and queues new
     /// or newly settled records. Call once per frame before [`Self::shows`].
-    pub(in crate::ui) fn update(
-        &mut self,
-        records: &RecordList<Exchange>,
-        context: &egui::Context,
-    ) {
+    pub(crate) fn update(&mut self, records: &RecordList<Exchange>, context: &egui::Context) {
         let settings = Settings {
             text: self.text.clone(),
             scope: self.scope,
@@ -211,12 +207,12 @@ impl RequestSearch {
     }
 
     /// Reports whether the list shows the record with `id`.
-    pub(in crate::ui) fn shows(&self, id: RecordId) -> bool {
+    pub(crate) fn shows(&self, id: RecordId) -> bool {
         self.active.is_none() || self.results.get(&id).is_some_and(|checked| checked.matched)
     }
 
     /// The query whose matches the detail panel highlights.
-    pub(in crate::ui) fn active_query(&self) -> Option<&Arc<Query>> {
+    pub(crate) fn active_query(&self) -> Option<&Arc<Query>> {
         self.active.as_ref().map(|active| &active.query)
     }
 
@@ -346,13 +342,13 @@ impl RequestSearch {
 
     /// Records that did not match although part of a body was not searched.
     #[cfg(test)]
-    pub(in crate::ui) const fn partially_searched(&self) -> usize {
+    pub(crate) const fn partially_searched(&self) -> usize {
         self.summary.partial
     }
 
     /// Runs a search to completion, skipping the debounce.
     #[cfg(test)]
-    pub(in crate::ui) fn search_now(
+    pub(crate) fn search_now(
         &mut self,
         (text, scope, options): (&str, SearchScope, MatchOptions),
         records: &RecordList<Exchange>,

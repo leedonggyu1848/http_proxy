@@ -58,7 +58,7 @@ struct SideView {
 
 /// Body text and widget state for the request and response shown together.
 #[derive(Default)]
-pub(in crate::ui) struct BodyViewCache {
+pub(crate) struct BodyViewCache {
     request: SideView,
     response: SideView,
 }

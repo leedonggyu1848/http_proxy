@@ -5,7 +5,7 @@ use std::time::Duration;
 use eframe::egui;
 use http_proxy::launcher::{Browser, BrowserEvent, BrowserSession};
 
-pub(in crate::ui) struct BrowserPanel {
+pub(crate) struct BrowserPanel {
     installed: Vec<Browser>,
     session: Option<BrowserSession>,
     opened: bool,
@@ -29,7 +29,7 @@ const PROFILE_NOTE: &str = "Opens a separate private profile. Inspector logs are
 impl BrowserPanel {
     /// Shows the `Open Browser` menu, or the open session with a close
     /// button, inline in the toolbar. Returns whether a session ended.
-    pub(in crate::ui) fn toolbar(
+    pub(crate) fn toolbar(
         &mut self,
         ui: &mut egui::Ui,
         proxy: Option<SocketAddr>,
@@ -95,7 +95,7 @@ impl BrowserPanel {
     }
 
     /// The last browser error, shown below the toolbar.
-    pub(in crate::ui) fn error(&self) -> Option<&str> {
+    pub(crate) fn error(&self) -> Option<&str> {
         self.error.as_deref()
     }
 
@@ -115,7 +115,7 @@ impl BrowserPanel {
         changed
     }
 
-    pub(in crate::ui) fn close(&mut self) {
+    pub(crate) fn close(&mut self) {
         self.session = None;
         self.opened = false;
     }

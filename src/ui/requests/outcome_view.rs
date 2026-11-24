@@ -6,7 +6,7 @@ use http_proxy::exchange::{Outcome, TunnelPreview, TunnelState};
 use crate::ui::style::theme::Palette;
 
 /// Orders responses by status code, then every other outcome after them.
-pub(in crate::ui) const fn status_rank(outcome: &Outcome) -> (u8, u16) {
+pub(super) const fn status_rank(outcome: &Outcome) -> (u8, u16) {
     match outcome {
         Outcome::Response(response) => (0, response.status().as_u16()),
         Outcome::InFlight => (1, 0),
@@ -19,7 +19,7 @@ pub(in crate::ui) const fn status_rank(outcome: &Outcome) -> (u8, u16) {
 }
 
 /// Short status text and color for one outcome.
-pub(in crate::ui) fn outcome_text(outcome: &Outcome, palette: &Palette) -> (String, Color32) {
+pub(crate) fn outcome_text(outcome: &Outcome, palette: &Palette) -> (String, Color32) {
     (short_text(outcome), outcome_color(outcome, palette))
 }
 
@@ -61,7 +61,7 @@ fn outcome_color(outcome: &Outcome, palette: &Palette) -> Color32 {
 
 /// Plain-language class of an HTTP status code, so that success and error do
 /// not depend on the status color alone.
-pub(in crate::ui) const fn status_class(code: u16) -> &'static str {
+pub(crate) const fn status_class(code: u16) -> &'static str {
     match code {
         100..=199 => "informational",
         200..=299 => "success",
@@ -74,7 +74,7 @@ pub(in crate::ui) const fn status_class(code: u16) -> &'static str {
 
 /// Status text with the response class appended, for tooltips and screen
 /// readers. Other outcomes already name their state in the text.
-pub(in crate::ui) fn outcome_summary(outcome: &Outcome) -> String {
+pub(super) fn outcome_summary(outcome: &Outcome) -> String {
     let text = short_text(outcome);
     match outcome {
         Outcome::Response(response) => {
@@ -93,7 +93,7 @@ fn tunnel_summary(tunnel: &TunnelPreview) -> String {
     }
 }
 
-pub(in crate::ui) fn detail_text(outcome: &Outcome, palette: &Palette) -> (String, Color32) {
+pub(crate) fn detail_text(outcome: &Outcome, palette: &Palette) -> (String, Color32) {
     let text = match outcome {
         Outcome::InFlight => "Waiting for the upstream server.",
         Outcome::InspectionEstablished => "HTTPS inspection session established.",
@@ -104,7 +104,7 @@ pub(in crate::ui) fn detail_text(outcome: &Outcome, palette: &Palette) -> (Strin
     (text.to_owned(), outcome_text(outcome, palette).1)
 }
 
-pub(in crate::ui) const fn timing_label(outcome: &Outcome) -> &'static str {
+pub(crate) const fn timing_label(outcome: &Outcome) -> &'static str {
     match outcome {
         Outcome::InFlight => "Waiting",
         Outcome::Response(_) => "Response headers",
@@ -114,7 +114,7 @@ pub(in crate::ui) const fn timing_label(outcome: &Outcome) -> &'static str {
 }
 
 /// Converts a duration to milliseconds for UI timing displays.
-pub(in crate::ui) fn elapsed_millis(duration: std::time::Duration) -> f64 {
+pub(crate) fn elapsed_millis(duration: std::time::Duration) -> f64 {
     duration.as_secs_f64() * 1_000.0
 }
 

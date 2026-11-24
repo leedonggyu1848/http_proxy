@@ -29,15 +29,15 @@ use crate::ui::style::theme::ThemeSettings;
 
 use super::{DEFAULT_DETAIL_SHARE, MAX_RECORDS};
 
-pub(in crate::ui) struct SessionState {
-    pub(in crate::ui) proxy: Option<ProxyHandle>,
-    pub(in crate::ui) full_log: Option<FullLog>,
-    pub(in crate::ui) log_init_error: Option<String>,
-    pub(in crate::ui) body_saving: BodySaving,
-    pub(in crate::ui) https_inspection: bool,
-    pub(in crate::ui) ca_directory: Option<PathBuf>,
-    pub(in crate::ui) port: PortChoice,
-    pub(in crate::ui) error: Option<String>,
+pub(crate) struct SessionState {
+    pub(crate) proxy: Option<ProxyHandle>,
+    pub(crate) full_log: Option<FullLog>,
+    pub(crate) log_init_error: Option<String>,
+    pub(crate) body_saving: BodySaving,
+    pub(crate) https_inspection: bool,
+    pub(crate) ca_directory: Option<PathBuf>,
+    pub(crate) port: PortChoice,
+    pub(crate) error: Option<String>,
 }
 
 impl SessionState {
@@ -68,7 +68,7 @@ impl SessionState {
         }
     }
 
-    pub(in crate::ui) fn start_proxy(&mut self, context: &egui::Context) {
+    pub(crate) fn start_proxy(&mut self, context: &egui::Context) {
         let port = match settings::port::ProxyPort::parse(&self.port.text) {
             Ok(port) => port,
             Err(error) => {
@@ -111,19 +111,19 @@ impl SessionState {
         }
     }
 
-    pub(in crate::ui) fn engine_dropped(&self) -> u64 {
+    pub(crate) fn engine_dropped(&self) -> u64 {
         self.proxy.as_ref().map_or(0, ProxyHandle::dropped_records)
     }
 }
 
-pub(in crate::ui) struct RequestsState {
-    pub(in crate::ui) records: RecordList<Exchange>,
-    pub(in crate::ui) record_filter: RecordFilter,
-    pub(in crate::ui) search: RequestSearch,
-    pub(in crate::ui) table: RequestTable,
-    pub(in crate::ui) selected: Option<RecordId>,
-    pub(in crate::ui) map_path_filter: Option<RequestScope>,
-    pub(in crate::ui) map_filter_cache: RecordMatchCache,
+pub(crate) struct RequestsState {
+    pub(crate) records: RecordList<Exchange>,
+    pub(crate) record_filter: RecordFilter,
+    pub(crate) search: RequestSearch,
+    pub(crate) table: RequestTable,
+    pub(crate) selected: Option<RecordId>,
+    pub(crate) map_path_filter: Option<RequestScope>,
+    pub(crate) map_filter_cache: RecordMatchCache,
 }
 
 impl RequestsState {
@@ -153,7 +153,7 @@ impl RequestsState {
         self.clear_map_filter();
     }
 
-    pub(in crate::ui) fn update_filters(&mut self, context: &egui::Context) {
+    pub(crate) fn update_filters(&mut self, context: &egui::Context) {
         self.search.update(&self.records, context);
         if let Some(scope) = self.map_path_filter.as_ref() {
             self.map_filter_cache.sync(scope, &self.records, false);
@@ -170,12 +170,12 @@ impl RequestsState {
         self.selected = None;
     }
 
-    pub(in crate::ui) fn clear_map_filter(&mut self) {
+    pub(crate) fn clear_map_filter(&mut self) {
         self.map_path_filter = None;
         self.map_filter_cache.clear();
     }
 
-    pub(in crate::ui) fn filtered_records(&self) -> Vec<&Exchange> {
+    pub(crate) fn filtered_records(&self) -> Vec<&Exchange> {
         filter::visible_records(
             &self.records,
             self.record_filter,
@@ -186,12 +186,12 @@ impl RequestsState {
     }
 }
 
-pub(in crate::ui) struct DetailState {
-    pub(in crate::ui) tab: DetailTab,
-    pub(in crate::ui) body_mode: ViewMode,
-    pub(in crate::ui) body_cache: BodyViewCache,
-    pub(in crate::ui) image: ImagePanel,
-    pub(in crate::ui) curl: CurlCopy,
+pub(crate) struct DetailState {
+    pub(crate) tab: DetailTab,
+    pub(crate) body_mode: ViewMode,
+    pub(crate) body_cache: BodyViewCache,
+    pub(crate) image: ImagePanel,
+    pub(crate) curl: CurlCopy,
     replay: Option<ReplayPanel>,
 }
 
@@ -209,7 +209,7 @@ impl Default for DetailState {
 }
 
 impl DetailState {
-    pub(in crate::ui) fn open_replay(&mut self, original: Exchange) -> Result<(), ReplayError> {
+    pub(crate) fn open_replay(&mut self, original: Exchange) -> Result<(), ReplayError> {
         self.replay = Some(ReplayPanel::new(original)?);
         Ok(())
     }
@@ -232,8 +232,8 @@ impl DetailState {
     }
 }
 
-pub(in crate::ui) struct MapState {
-    pub(in crate::ui) analysis: AnalysisPipeline,
+pub(crate) struct MapState {
+    pub(crate) analysis: AnalysisPipeline,
     pub(super) panel: MapPanel,
 }
 
@@ -251,12 +251,12 @@ impl MapState {
     }
 }
 
-pub(in crate::ui) struct Dialogs {
-    pub(in crate::ui) ca_panel: CaPanel,
-    pub(in crate::ui) browsers: BrowserPanel,
-    pub(in crate::ui) save: SaveControls,
-    pub(in crate::ui) har: HarDialog,
-    pub(in crate::ui) authorization_notice: AuthorizationNotice,
+pub(crate) struct Dialogs {
+    pub(crate) ca_panel: CaPanel,
+    pub(crate) browsers: BrowserPanel,
+    pub(crate) save: SaveControls,
+    pub(crate) har: HarDialog,
+    pub(crate) authorization_notice: AuthorizationNotice,
 }
 
 impl Dialogs {
@@ -284,8 +284,8 @@ pub(super) enum MainView {
     Map,
 }
 
-pub(in crate::ui) struct LayoutState {
-    pub(in crate::ui) theme: ThemeSettings,
+pub(crate) struct LayoutState {
+    pub(crate) theme: ThemeSettings,
     pub(super) main_view: MainView,
     /// Height of the status bar in the previous frame, reserved below the
     /// main area so that it fits in the window without scrolling.

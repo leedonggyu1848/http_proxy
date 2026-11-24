@@ -13,7 +13,7 @@ use crate::ui::style::theme::Palette;
 
 /// Which requests a bulk save covers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::ui) enum BulkScope {
+pub(super) enum BulkScope {
     All,
     Filtered,
     Selected,
@@ -21,7 +21,7 @@ pub(in crate::ui) enum BulkScope {
 
 /// Which bodies of each request are saved.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::ui) enum BulkSides {
+pub(super) enum BulkSides {
     Responses,
     Requests,
     Both,
@@ -39,11 +39,11 @@ impl BulkSides {
 
 /// Choices made in the dialog.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::ui) struct BulkChoice {
-    pub(in crate::ui) scope: BulkScope,
-    pub(in crate::ui) sides: BulkSides,
-    pub(in crate::ui) format: SaveFormat,
-    pub(in crate::ui) layout: BodyLayout,
+pub(super) struct BulkChoice {
+    pub(super) scope: BulkScope,
+    pub(super) sides: BulkSides,
+    pub(super) format: SaveFormat,
+    pub(super) layout: BodyLayout,
 }
 
 impl Default for BulkChoice {
@@ -59,10 +59,10 @@ impl Default for BulkChoice {
 
 /// How many requests each scope covers, shown next to the choices.
 #[derive(Clone, Copy, Debug)]
-pub(in crate::ui) struct ScopeCounts {
-    pub(in crate::ui) all: usize,
-    pub(in crate::ui) filtered: usize,
-    pub(in crate::ui) selected: usize,
+pub(super) struct ScopeCounts {
+    pub(crate) all: usize,
+    pub(crate) filtered: usize,
+    pub(super) selected: usize,
 }
 
 /// Outcome of the most recent bulk save.
@@ -73,7 +73,7 @@ enum BulkResult {
 
 /// The bulk save dialog, the running save and its last result.
 #[derive(Default)]
-pub(in crate::ui) struct BulkControls {
+pub(super) struct BulkControls {
     dialog: Option<BulkChoice>,
     last_choice: Option<BulkChoice>,
     running: Option<BulkSave>,
@@ -82,7 +82,7 @@ pub(in crate::ui) struct BulkControls {
 
 impl BulkControls {
     /// Opens the dialog unless a bulk save is already running.
-    pub(in crate::ui) fn open(&mut self) {
+    pub(super) fn open(&mut self) {
         if self.running.is_none() {
             self.dialog = Some(self.last_choice.unwrap_or_default());
         }
@@ -121,7 +121,7 @@ impl BulkControls {
     }
 
     /// Collects a finished save; call once per frame.
-    pub(in crate::ui) fn poll(&mut self, context: &egui::Context) {
+    pub(super) fn poll(&mut self, context: &egui::Context) {
         let Some(running) = self.running.as_ref() else {
             return;
         };
@@ -139,7 +139,7 @@ impl BulkControls {
     }
 
     /// Shows progress with a Cancel button, or the last result, in the status bar.
-    pub(in crate::ui) fn status(&self, ui: &mut egui::Ui) {
+    pub(super) fn status(&self, ui: &mut egui::Ui) {
         if let Some(running) = self.running.as_ref() {
             let progress = running.progress();
             ui.separator();
@@ -272,7 +272,7 @@ fn summary_text(summary: &BulkSummary) -> String {
 /// Builds the bodies to save, skipping empty complete bodies and responses
 /// that never arrived. Bodies the store never saw are kept so the manifest
 /// can report them.
-pub(in crate::ui) fn bodies_to_save(
+pub(super) fn bodies_to_save(
     records: &[&Exchange],
     choice: BulkChoice,
     store: &BodyStore,
@@ -299,7 +299,7 @@ pub(in crate::ui) fn bodies_to_save(
 }
 
 /// Returns a new folder name inside `directory` for one bulk save.
-pub(in crate::ui) fn new_folder(directory: &Path) -> PathBuf {
+pub(super) fn new_folder(directory: &Path) -> PathBuf {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs());
@@ -318,7 +318,7 @@ pub(in crate::ui) fn new_folder(directory: &Path) -> PathBuf {
 
 impl InspectorApp {
     /// Shows the `Save bodies…` dialog and starts the save it confirms.
-    pub(in crate::ui) fn bulk_body_save(&mut self, context: &egui::Context) {
+    pub(crate) fn bulk_body_save(&mut self, context: &egui::Context) {
         self.session.body_saving.bulk.poll(context);
         let counts = ScopeCounts {
             all: self.requests.records.len(),

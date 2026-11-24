@@ -9,7 +9,7 @@ use std::path::Path;
 /// Bodies above this size are summarized instead of laid out in the text editor.
 const EDITABLE_BODY_BYTES: usize = 256 * 1024;
 
-pub(in crate::ui) struct ReplayPanel {
+pub(crate) struct ReplayPanel {
     draft: ReplayDraft,
     task: Option<ReplayTask>,
     error: Option<String>,
@@ -26,7 +26,7 @@ pub(in crate::ui) struct ReplayPanel {
 }
 
 impl ReplayPanel {
-    pub(in crate::ui) fn new(original: Exchange) -> Result<Self, ReplayError> {
+    pub(crate) fn new(original: Exchange) -> Result<Self, ReplayError> {
         let draft = ReplayDraft::new(original)?;
         Ok(Self {
             body: BodyView::new(&draft.body),
@@ -44,11 +44,11 @@ impl ReplayPanel {
         })
     }
 
-    pub(in crate::ui) fn original_id(&self) -> RecordId {
+    pub(crate) fn original_id(&self) -> RecordId {
         self.draft.original.id()
     }
 
-    pub(in crate::ui) fn show(
+    pub(crate) fn show(
         &mut self,
         context: &egui::Context,
         proxy: Option<&ProxyHandle>,

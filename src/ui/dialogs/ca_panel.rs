@@ -9,7 +9,7 @@ use http_proxy::https::{CaInfo, CaTrustError, CaTrustStatus, CaTrustStore, Https
 use super::background_task::{BackgroundTask, TaskPoll};
 
 #[derive(Default)]
-pub(in crate::ui) struct CaPanel {
+pub(crate) struct CaPanel {
     info: Option<CaInfo>,
     registration: Option<Registration>,
     pending: Option<BackgroundTask<Event>>,
@@ -100,7 +100,7 @@ const REGISTER_HELP: &str = "Trust the public CA for HTTPS in Chrome/Chromium fo
 const KEYCHAIN_HELP: &str = "macOS may request authorization. Approve the keychain dialog; cancellation leaves registration incomplete.";
 
 impl CaPanel {
-    pub(in crate::ui) const fn refresh(&mut self) {
+    pub(crate) const fn refresh(&mut self) {
         self.checked = false;
     }
 
@@ -115,7 +115,7 @@ impl CaPanel {
 
     /// Shows the registration badge, the action that fits it, and a
     /// `CA details` menu, inline in the toolbar.
-    pub(in crate::ui) fn summary(&mut self, ui: &mut egui::Ui, directory: Option<&Path>) {
+    pub(crate) fn summary(&mut self, ui: &mut egui::Ui, directory: Option<&Path>) {
         self.receive();
         let palette = Palette::of(ui);
         let Some(directory) = directory else {
@@ -217,7 +217,7 @@ impl CaPanel {
 
     /// Errors and follow-up guidance shown right below the toolbar so they
     /// are never hidden in the details menu.
-    pub(in crate::ui) fn messages(&self, ui: &mut egui::Ui) {
+    pub(crate) fn messages(&self, ui: &mut egui::Ui) {
         let palette = Palette::of(ui);
         if let Some(error) = &self.error {
             ui.colored_label(palette.error, format!("CA: {error}"));

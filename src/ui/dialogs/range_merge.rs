@@ -20,7 +20,7 @@ const SHOWN_GAPS: usize = 8;
 
 /// The `Merge ranges…` request and the dialog that confirms it.
 #[derive(Default)]
-pub(in crate::ui) struct MergeControls {
+pub(super) struct MergeControls {
     requested: Option<Exchange>,
     /// A plan being made on a background thread.
     planning: Option<BackgroundTask<Option<RangePlan>>>,
@@ -29,13 +29,13 @@ pub(in crate::ui) struct MergeControls {
 
 impl MergeControls {
     /// Reports whether the dialog is open or about to open.
-    pub(in crate::ui) const fn is_open(&self) -> bool {
+    pub(super) const fn is_open(&self) -> bool {
         self.requested.is_some() || self.planning.is_some() || self.plan.is_some()
     }
 
     /// Adds the byte range and `Merge ranges…` to a response save menu.
     /// Returns whether the menu should close.
-    pub(in crate::ui) fn menu_items(&mut self, ui: &mut egui::Ui, record: &Exchange) -> bool {
+    pub(super) fn menu_items(&mut self, ui: &mut egui::Ui, record: &Exchange) -> bool {
         let Some(range) = response_range(record) else {
             return false;
         };
@@ -143,7 +143,7 @@ fn dialog(context: &egui::Context, plan: &RangePlan) -> Option<bool> {
 
 impl InspectorApp {
     /// Plans a requested merge and shows its dialog; call once per frame.
-    pub(in crate::ui) fn range_merge(&mut self, context: &egui::Context) {
+    pub(crate) fn range_merge(&mut self, context: &egui::Context) {
         if let Some(record) = self.session.body_saving.merge.requested.take() {
             self.start_range_plan(&record);
         }

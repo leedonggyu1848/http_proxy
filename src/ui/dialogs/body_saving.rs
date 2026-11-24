@@ -20,7 +20,7 @@ const MIB: u64 = 1024 * 1024;
 const SETTINGS_FILE: &str = "body-store";
 const LIMIT_KEY: &str = "limit_mib";
 const MAX_LIMIT_MIB: u64 = 1024 * 1024;
-pub(in crate::ui) const PRIVACY_NOTICE: &str = "Saved bodies can contain cookies, tokens and personal data. \
+pub(super) const PRIVACY_NOTICE: &str = "Saved bodies can contain cookies, tokens and personal data. \
      Files are created readable only by you; keep them private.";
 
 /// A save waiting for the user to confirm a warning.
@@ -38,7 +38,7 @@ enum SaveStatus {
 }
 
 /// Body store ownership, its settings, and the state of body saves.
-pub(in crate::ui) struct BodySaving {
+pub(crate) struct BodySaving {
     store: Option<BodyStore>,
     init_error: Option<String>,
     limit_mib: u64,
@@ -49,14 +49,14 @@ pub(in crate::ui) struct BodySaving {
     confirmation: Option<Confirmation>,
     privacy_acknowledged: bool,
     /// The `Save bodies…` dialog and a running bulk save.
-    pub(in crate::ui) bulk: crate::ui::dialogs::bulk_save::BulkControls,
+    pub(super) bulk: crate::ui::dialogs::bulk_save::BulkControls,
     /// The `Merge ranges…` dialog.
-    pub(in crate::ui) merge: crate::ui::dialogs::range_merge::MergeControls,
+    pub(super) merge: crate::ui::dialogs::range_merge::MergeControls,
 }
 
 impl BodySaving {
     /// Opens this session's body store with the saved limit.
-    pub(in crate::ui) fn open() -> Self {
+    pub(crate) fn open() -> Self {
         let settings_path =
             http_proxy::settings::paths::settings_directory(|name| std::env::var_os(name))
                 .map(|directory| directory.join(SETTINGS_FILE));
@@ -91,7 +91,7 @@ impl BodySaving {
     }
 
     #[cfg(test)]
-    pub(in crate::ui) fn without_store() -> Self {
+    pub(crate) fn without_store() -> Self {
         Self {
             store: None,
             init_error: None,
@@ -109,26 +109,21 @@ impl BodySaving {
 
     /// Reports whether a body save is running or waiting for confirmation;
     /// another save cannot start until it finishes.
-    pub(in crate::ui) const fn is_busy(&self) -> bool {
+    pub(crate) const fn is_busy(&self) -> bool {
         self.pending.is_some() || self.confirmation.is_some() || self.merge.is_open()
     }
 
     /// Opens the `Save bodies…` dialog.
-    pub(in crate::ui) fn open_bulk(&mut self) {
+    pub(crate) fn open_bulk(&mut self) {
         self.bulk.open();
     }
 
-    pub(in crate::ui) const fn store(&self) -> Option<&BodyStore> {
+    pub(crate) const fn store(&self) -> Option<&BodyStore> {
         self.store.as_ref()
     }
 
     /// The request and response `Save … body ▼` menus of the Body tab.
-    pub(in crate::ui) fn menus(
-        &mut self,
-        ui: &mut egui::Ui,
-        record: &Exchange,
-        save: &SaveControls,
-    ) {
+    pub(crate) fn menus(&mut self, ui: &mut egui::Ui, record: &Exchange, save: &SaveControls) {
         ui.horizontal_wrapped(|ui| {
             for side in [BodySide::Request, BodySide::Response] {
                 self.menu(ui, record, side, save);
@@ -181,7 +176,7 @@ impl BodySaving {
 
     /// Starts saving one body, asking first when it is incomplete or on the
     /// first save of the session.
-    pub(in crate::ui) fn request(
+    pub(crate) fn request(
         &mut self,
         record: &Exchange,
         side: BodySide,
@@ -242,7 +237,7 @@ impl BodySaving {
     }
 
     /// Shows the confirmation dialog and collects finished saves; call once per frame.
-    pub(in crate::ui) fn update(&mut self, ctx: &egui::Context) {
+    pub(crate) fn update(&mut self, ctx: &egui::Context) {
         self.poll();
         if self.pending.is_some() {
             ctx.request_repaint_after(Duration::from_millis(100));
@@ -302,7 +297,7 @@ impl BodySaving {
     }
 
     /// The body store limit inside the Settings menu.
-    pub(in crate::ui) fn settings_menu(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn settings_menu(&mut self, ui: &mut egui::Ui) {
         let max_width = (ui.ctx().content_rect().width() - 48.0).clamp(220.0, 380.0);
         ui.set_max_width(max_width);
         ui.label("Body store limit");
@@ -351,7 +346,7 @@ impl BodySaving {
     }
 
     /// Body store warnings and the result of the last body save, for the status bar.
-    pub(in crate::ui) fn status(&self, ui: &mut egui::Ui) {
+    pub(crate) fn status(&self, ui: &mut egui::Ui) {
         let palette = Palette::of(ui);
         for warning in self.warnings() {
             ui.separator();
