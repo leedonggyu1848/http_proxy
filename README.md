@@ -1,27 +1,22 @@
 # HTTP Inspector
 
-HTTP Inspector는 로컬 HTTP 프록시를 통해 요청·응답 기록을 보여 주는 Linux와 macOS 데스크톱 앱이다. 원하면 HTTPS도 복호화해 URL, 헤더와 본문을 확인할 수 있다. UI와 프록시 엔진은 모두 Rust로 작성했다.
+HTTP Inspector는 로컬 HTTP 프록시를 거치는 요청과 응답을 기록하는 Linux와 macOS 데스크톱 앱이다. HTTPS 복호화를 켜면 URL, 헤더와 본문도 확인할 수 있다.
 
 ![HTTPS 검사를 켠 상태에서 테스트 요청 21건을 기록한 화면](docs/screenshots/theme-dark-ca.png)
 
 ## 주요 기능
 
-- **로컬 프록시:** `127.0.0.1`에서만 연결을 받는 HTTP/1.1 프록시(기본 포트 `8080`). HTTPS는 기본적으로 `CONNECT` 터널로 전달한다.
-- **선택적 HTTPS 복호화:** 설치별 로컬 CA로 HTTPS를 복호화한다. 실제 서버 인증서와 호스트 이름은 그대로 검증한다.
-- **검사 브라우저:** 설치된 Firefox·Chrome·Chromium을 프록시와 CA가 설정된 비공개 창으로 연다.
-- **요청 목록과 상세:** 메서드, 대상, 상태, 시간을 목록으로 보고, 선택한 요청의 헤더와 본문을 확인한다. 본문까지 찾는 검색과 결과 필터를 제공한다.
-- **본문 보기:** 압축을 푼 본문을 JSON·HTML·XML·CSS·JavaScript·form 형식별로 정리해 보여 주고, 이미지 응답은 그림으로 그린다.
-- **URL 맵과 관계 그래프:** 캡처한 요청을 호스트·경로 트리로 묶고 동적 ID(`/{id}`)를 접어 요약한다. `Referer`·`Origin`·리다이렉트 헤더로 도메인 간 호출 관계와 서드파티를 시각화하며 텍스트·JSON·Mermaid·Graphviz DOT로 내보낸다. 경로를 선택하면 메서드별 쿼리·헤더 이름, 인증 방식, 요청·응답 본문 필드 구조를 값 없이 보여 준다.
-- **요청 재전송:** 기록한 요청을 수정해 다시 보내고 원본과 비교한다.
-- **저장:** 앱 창을 PNG로, 세션의 모든 요청을 텍스트 로그나 HAR 파일로, 선택한 요청·응답 본문을 원본 파일로 저장한다.
-
-전체 기능 목록과 세부 동작은 [사용자 가이드](docs/guide/README.md)에 있다.
+- **요청 검사.** HTTP/1.1 요청을 스트리밍으로 전달하면서 URL, 헤더, 본문과 응답 시간을 기록한다. 목록 검색은 압축을 푼 텍스트 본문의 앞 8KiB까지 찾는다. [요청 검색](docs/guide/search.md) · [본문 보기](docs/guide/body-view.md)
+- **HTTPS 복호화.** 기본값은 `CONNECT` 터널이다. 복호화를 켜면 Firefox, Chrome 또는 Chromium 검사 창이나 로컬 CA를 신뢰하는 다른 클라이언트의 HTTP/1.1 요청을 읽는다. 앱은 업스트림 서버 인증서와 호스트 이름을 검증한다. [HTTPS 복호화와 검사 브라우저](docs/guide/https.md)
+- **요청 재현.** 기록한 요청을 수정해 다시 보내고 원본과 비교하거나, 셸에서 실행할 `curl` 명령으로 복사한다. [요청 재전송](docs/guide/resend.md) · [cURL 명령으로 복사](docs/guide/copy-as-curl.md)
+- **URL 맵.** **Map**에서 호스트와 경로별로 요청을 묶는다. 메서드별 요청·응답 구조와 도메인 간 호출 관계를 확인하고 텍스트, JSON, Mermaid 또는 Graphviz DOT로 저장한다. [URL 맵과 관계 그래프](docs/guide/url-map.md)
+- **저장.** 앱 창은 PNG로, 세션 전체 로그는 텍스트로, 목록 기록은 HAR 1.2로 저장한다. 본문은 개별 또는 일괄 저장할 수 있고, 같은 파일의 `206 Partial Content` 응답은 위치 순서로 합칠 수 있다. [로그와 본문 저장](docs/guide/logs.md) · [HAR 내보내기](docs/guide/har.md)
 
 ## 설치
 
 ### 배포 파일로 실행
 
-[GitHub Releases](https://github.com/leedonggyu1848/http_proxy/releases)에서 버전에 맞는 `.tar.gz`와 같은 이름의 `.sha256` 파일을 받는다. 개발 빌드는 [CI 실행 목록](https://github.com/leedonggyu1848/http_proxy/actions/workflows/ci.yml)의 성공한 실행에서 **Artifacts**를 받는다(GitHub 로그인 필요, 보관 기간 14일). PR 실행에는 Linux 파일만 있고, 세 대상의 파일은 `main` 실행에 있다. CI artifact ZIP을 먼저 풀면 같은 두 파일이 나온다.
+공개 버전이 있으면 [GitHub Releases](https://github.com/leedonggyu1848/http_proxy/releases)에서 대상에 맞는 `.tar.gz`와 대응하는 `.tar.gz.sha256` 파일을 받는다. 개발 빌드는 [CI 실행 목록](https://github.com/leedonggyu1848/http_proxy/actions/workflows/ci.yml)의 성공한 실행에서 **Artifacts**를 받는다(GitHub 로그인 필요, 보관 기간 14일). PR 실행에서는 Linux 파일을 받을 수 있다. 세 대상의 파일은 `main` 푸시나 일정·수동 실행의 결과에서 찾는다. CI artifact ZIP을 먼저 풀면 같은 두 파일이 나온다.
 
 | 대상 | 파일 이름의 대상 식별자 | 빌드·실행 검증 환경 |
 | --- | --- | --- |
@@ -102,17 +97,17 @@ brew install nss
    ```
 
 2. 앱을 실행하면 프록시가 시작된다. 툴바에 `● Running`과 `127.0.0.1:8080`이 표시되면 요청을 받을 수 있다. 멈춰 있으면 **Start**를 누른다.
-3. 툴바의 **Open Browser** 메뉴에서 Firefox, Chrome 또는 Chromium을 누른다. 프록시가 설정된 검사 전용 비공개 창이 열린다.
+3. 툴바의 **Open Browser** 메뉴에서 설치된 Firefox, Chrome 또는 Chromium을 선택한다. 프록시가 설정된 검사 전용 비공개 창이 열린다.
 4. 열린 창에서 확인할 사이트에 접속한다. 요청이 앱의 목록에 나타나며, 행을 선택하면 **Headers**와 **Body** 탭에서 상세를 본다.
 
-명령줄 프로그램은 프록시 주소를 직접 지정한다. 툴바의 `Copy` 메뉴로 프록시 URL, `curl` 예시, `HTTP_PROXY` 변수를 복사할 수 있다.
+명령줄 프로그램은 프록시 주소를 직접 지정한다. 툴바의 `Copy` 메뉴로 프록시 URL, `curl` 예시, 프록시 환경 변수 설정 예시를 복사할 수 있다.
 
 ```bash
 curl --proxy http://127.0.0.1:8080 http://example.com/
-HTTP_PROXY=http://127.0.0.1:8080 HTTPS_PROXY=http://127.0.0.1:8080 your-command
+http_proxy=http://127.0.0.1:8080 https_proxy=http://127.0.0.1:8080 curl http://example.com/
 ```
 
-HTTPS 복호화를 켜지 않으면 HTTPS는 호스트·포트·바이트 수만 담은 `Tunnel` 행으로 기록된다.
+HTTPS 복호화를 끈 상태에서는 호스트, 포트, 전송 바이트 수와 연결 시간을 `Tunnel` 행에 기록한다. [프록시 포트와 캡처 범위](docs/guide/proxy-and-capture.md)
 
 ## HTTPS 복호화
 
@@ -136,27 +131,16 @@ HTTPS 복호화는 기본으로 꺼져 있으며, 사용 권한이 있는 트래
 
 CA 상태 표시의 의미, OS별 CA 저장 위치, 직접 실행한 Chrome 설정은 [HTTPS 복호화와 검사 브라우저](docs/guide/https.md)를 참고한다.
 
-## 자주 쓰는 기능
+## 기록과 저장 한도
 
-- **필터·검색:** 필터 줄에 검색어를 입력하면 메서드, URL, 헤더, 상태와 압축을 푼 요청·응답 본문(방향별 앞 8KiB)에서 찾는다. 검색 범위(All·URL·Headers·Request body·Response body), **Aa**(대소문자 구분), **.\***(정규식)와 종류(All·Responses·Failures·Tunnels)를 고른다. 상세 패널은 일치한 위치를 강조하고 **Previous**·**Next**로 이동한다. [요청 검색](docs/guide/search.md)을 참고한다. **Follow newest**는 새 요청을 따라가고 **Clear**는 화면 기록을 지운다.
+| 기록 | 범위와 한도 |
+| --- | --- |
+| 요청 목록 | 최대 2,000건. 일반 본문 미리보기는 요청과 응답 각각 최대 8KiB이며, 지원하는 이미지 응답은 조건에 따라 최대 8MiB를 보관한다. |
+| HAR | 목록에 남은 기록 전체 또는 현재 필터에 맞는 기록. 본문을 포함하면 메모리 미리보기를 쓰며, 가린 헤더는 이름과 `[REDACTED]`만 선택해서 넣을 수 있다. |
+| 전체 로그 | 앱 세션 전체. 본문 바이트는 세션당 512MiB까지 기록한다. |
+| 본문 저장소 | 파일로 저장할 본문을 별도 보관한다. 세션당 기본 2GiB이며 **Settings**의 **Body store limit**에서 바꿀 수 있다. |
 
-  ![테스트 트래픽을 quota로 검색해 압축 응답 본문·요청 본문에 단어가 있는 요청만 남기고 일치 위치를 강조한 화면](docs/screenshots/request-search-body.png)
-
-- **본문 보기:** **Body** 탭의 **View: Pretty / Raw / Tree**로 보기 방식을 바꾼다. 미리보기는 방향별 최대 8KiB다. 자세한 내용은 [본문 보기](docs/guide/body-view.md)를 참고한다.
-- **요청 재전송:** 요청을 우클릭하거나 상세 패널에서 **Edit and Resend**를 눌러 수정한 뒤 **Send**한다. [요청을 수정해 다시 보내기](docs/guide/resend.md)를 참고한다.
-- **cURL로 복사:** 요청을 우클릭하거나 상세 패널에서 **Copy as cURL**을 누르면 bash·zsh에서 실행할 수 있는 `curl` 명령이 복사된다. 값이 저장되지 않는 `Authorization`·`Cookie` 헤더는 기본으로 빼고, **Redacted placeholders**를 켜면 `<REDACTED>` 자리 표시자로 넣는다. 본문이 8KiB를 넘어 잘린 요청은 복사하지 않고 안내한다. [요청을 cURL 명령으로 복사하기](docs/guide/copy-as-curl.md)를 참고한다.
-- **로그·창 저장:** 툴바의 **Save** 메뉴에서 저장 폴더를 정하고 **Save window PNG** 또는 **Save all logs**를 누른다. 전체 로그는 앱을 종료하면 삭제되므로 종료 전에 저장한다. [창 캡처와 전체 로그 저장](docs/guide/logs.md)을 참고한다.
-- **HAR 내보내기:** **Save** 메뉴의 **Export HAR…**로 목록 전체나 필터된 요청을 HAR 1.2 파일로 저장해 Chrome DevTools에서 불러온다. 민감 헤더와 본문은 기본으로 빠지며 직접 켜야 들어간다. `CONNECT` 터널, 실패 기록, 잘린 본문의 표현은 [HAR로 내보내기](docs/guide/har.md)를 참고한다.
-- **본문 파일 저장:** **Body** 탭의 **Save request body ▼**·**Save response body ▼**에서 **Decoded**(압축 해제) 또는 **As received**(받은 그대로)를 고르거나, 요청을 우클릭해 **Save response body**를 누른다. 파일은 **Save** 메뉴의 저장 폴더에 소유자 전용 권한(`0600`)으로 만들어진다. 본문 저장소는 세션당 기본 2GiB까지 캐시 폴더에 보관하고 앱을 종료하면 지운다. **Save** 메뉴의 **Save bodies…**는 필터 결과·전체·선택한 요청의 본문을 새 폴더에 한꺼번에 저장하고 URL, 상태, 크기, SHA-256을 담은 `manifest.json`을 함께 만든다. `206` 부분 응답은 **Merge ranges…**로 위치 순서대로 합친다. [본문 파일 저장](docs/guide/logs.md#본문-파일-저장)을 참고한다.
-
-  ![Body 탭의 Save request body·Save response body 메뉴](docs/screenshots/body-save-menu.png)
-- **URL 맵과 관계 그래프:** 상단에서 **Map**으로 전환하면 호스트·경로 계층 트리(**Tree**)와 도메인 호출 관계(**Relationships**)를 실시간으로 본다. 트리에서는 동적 ID 접기(`Fold IDs`), 정렬(이름·요청 수·오류 수·크기), 필터(호스트·상태·Content-Type·서드파티), 키보드 탐색(`↑`·`↓`·`←`·`→`), **Show in Requests** 연동을 제공하며, 쿼리 매개변수는 **이름만** 수집해 쿼리 값을 남기지 않는다. **Export ▼**로 텍스트(`.txt`), JSON(`.json`), Mermaid(`.mmd`), Graphviz DOT(`.dot`) 내보내기가 가능하다. 자세한 내용은 [URL 맵과 관계 그래프](docs/guide/url-map.md)를 참고한다.
-
-  ![URL 맵 트리 보기에서 동적 ID 접기와 오른쪽 상세 패널을 표시한 화면](docs/screenshots/url-map-tree.png)
-
-  ![도메인 간 Referer, Origin, Redirect 호출 관계와 서드파티를 표시한 관계 그래프 화면](docs/screenshots/url-map-graph.png)
-- **포트 변경:** 프록시를 멈추고 툴바의 `Port` 칸에 번호를 입력해 **Start**를 누르거나, `cargo run --release -- --port 18080` 또는 `HTTP_INSPECTOR_PORT`로 실행한다. [프록시 포트와 캡처 범위](docs/guide/proxy-and-capture.md)를 참고한다.
-- **단축키:** 요청 목록에서 `↑`·`↓`·`Home`·`End`·`PageUp`·`PageDown`으로 요청을 고르고, `F6` 또는 `Ctrl+PageDown`·`Ctrl+PageUp`으로 **Headers**·**Body** 탭을 바꾼다. 전체 표와 테마·접근성 설정은 [화면과 조작](docs/guide/interface.md)에 있다.
+필요한 로그와 본문은 앱을 종료하기 전에 저장한다. **Clear**를 누르면 요청 목록과 URL 맵을 비운다. 전체 로그와 본문 저장소는 세션 종료까지 유지한다. [로그와 본문 저장](docs/guide/logs.md)
 
 ## 제한 사항
 
@@ -165,7 +149,7 @@ CA 상태 표시의 의미, OS별 CA 저장 위치, 직접 실행한 Chrome 설�
 - 프록시 설정을 무시하거나 직접 연결하는 프로그램의 통신
 - `NO_PROXY`나 프록시 우회 목록에 포함된 호스트(흔히 `localhost` 포함)
 - UDP를 사용하는 HTTP/3(QUIC). **Open Browser**로 연 검사 브라우저는 QUIC을 끈다.
-- VPN 터널이나 다른 프록시로 보낸 통신
+- 이 프록시를 거치지 않고 VPN이나 다른 프록시로 직접 보낸 통신
 
 현재 버전은 다음 기능을 제공하지 않는다.
 
@@ -178,8 +162,9 @@ CA 상태 표시의 의미, OS별 CA 저장 위치, 직접 실행한 Chrome 설�
 
 ## 문서
 
-- [사용자 가이드](docs/guide/README.md): 기능별 세부 동작과 한도
-- [개발 문서](docs/development.md): 개발 환경, 검증 명령, CI 실행 범위, 설계 문서
+화면 조작과 기능별 사용 절차는 [사용자 가이드](docs/guide/README.md)에 있다. 개발 환경, 검증 명령, CI와 코드 구조는 [개발 문서](docs/development.md)에서 확인할 수 있다.
+
+배포 파일에서 이 README를 열었다면 [GitHub의 문서](https://github.com/leedonggyu1848/http_proxy/tree/main/docs)를 참고한다.
 
 ## 라이선스
 

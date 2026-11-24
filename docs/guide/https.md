@@ -34,7 +34,7 @@ HTTPS 복호화는 사용 권한이 있는 트래픽에만 사용한다.
 4. 열린 브라우저에서 확인할 사이트에 접속한다. HTTP Inspector의 요청 목록에서 트래픽을 확인한다.
 5. 검사를 마치면 브라우저 창을 닫거나 **Close browser**를 누른다. **Stop**을 누르거나 앱을 종료해도 앱에서 연 검사 브라우저를 종료한다.
 
-**Open Browser** 메뉴의 **Refresh browsers**는 `PATH`에서 Firefox, Firefox ESR, Google Chrome의 Stable·Beta·Dev, Chromium 실행 파일을 다시 찾는다. 같은 실행 파일의 별칭은 하나만 표시한다. Firefox Snap도 지원한다. Flatpak 브라우저와 Chromium Snap은 지원하지 않는다.
+**Open Browser** 메뉴의 **Refresh browsers**는 `PATH`에서 Firefox, Firefox ESR, Google Chrome의 Stable·Beta·Dev, Chromium 실행 파일을 다시 찾는다. macOS에서는 `/Applications`와 `~/Applications`의 브라우저 앱도 찾는다. 같은 실행 파일의 별칭은 하나만 표시한다. Firefox Snap도 지원한다. Flatpak 브라우저와 Chromium Snap은 지원하지 않는다.
 
 매번 새 검사 프로필을 만들며 브라우저 프로세스가 종료되면 삭제한다. 기존 개인 프로필의 쿠키와 로그인 상태는 가져오지 않는다. Firefox Snap의 임시 프로필은 `$HOME/snap/firefox/common` 아래에 만든다. 앱이 강제 종료되면 임시 프로필이 남을 수 있다. 비공개 창을 사용해도 HTTP Inspector의 요청 기록과 전체 로그는 남는다.
 
@@ -76,7 +76,7 @@ HTTPS를 복호화하려면 **Decrypt HTTPS**를 켜고 **Register CA**를 누�
 
 macOS에서는 CA를 `~/Library/Application Support/http-inspector/ca/`에 저장한다. `XDG_DATA_HOME`은 사용하지 않는다. CA 디렉터리는 `0700`, 개인키 파일은 `0600` 권한으로 생성한다.
 
-**Open Browser**는 `/Applications`와 `~/Applications`에서 Firefox, Google Chrome, Chromium 앱 번들을 찾는다. 번들 안 실행 파일을 새 검사 프로필로 직접 실행한다. 기존 브라우저 창은 그대로 유지한다. Firefox 검사 창에서 HTTPS를 복호화하려면 Homebrew NSS(`brew install nss`)가 필요하다. Chrome 검사 창에는 NSS가 필요하지 않다.
+**Open Browser**는 앱 번들 안 실행 파일을 새 검사 프로필로 직접 실행한다. 기존 브라우저 창은 그대로 유지한다. Firefox 검사 창에서 HTTPS를 복호화하려면 Homebrew NSS(`brew install nss`)가 필요하다. Chrome 검사 창에는 NSS가 필요하지 않다.
 
 서명, 공증과 `.dmg` 배포는 지원하지 않는다. 시스템 키체인과 시스템 프록시 설정은 변경하지 않는다.
 

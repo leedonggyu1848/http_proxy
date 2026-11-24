@@ -8,7 +8,7 @@
 
 프로젝트는 Rust 1.100.0을 사용한다. `rustup`은 `rust-toolchain.toml`에 지정된 툴체인을 설치한다. Linux에서는 X11을 사용하며, macOS에서는 X11이 필요하지 않다.
 
-Linux 시스템 패키지와 macOS의 선택 도구(Homebrew NSS)는 [README의 설치](../README.md#설치)를 따른다. CI도 같은 패키지를 설치한다.
+Linux 시스템 패키지와 macOS의 선택 도구(Homebrew NSS)는 [README의 설치](../README.md#설치)를 따른다. CI의 Linux 품질 검사에는 빌드용 시스템 패키지가, 패키지 실행 검사에는 런타임 패키지와 Xvfb가 필요하다.
 
 글꼴 등록을 확인하려면 다음처럼 실행한다. 어떤 폰트를 등록했는지 로그로 확인할 수 있다.
 
@@ -18,7 +18,7 @@ RUST_LOG=http_proxy::ui::style::fonts=debug cargo run
 
 ## 검증
 
-전체 로컬 검사를 실행한다.
+문서만 바꿨다면 `git diff --check`로 변경을 검사한다. PR을 열기 전에는 저장소 루트에서 아래 전체 검사를 실행한다. `cargo-deny`가 없으면 `cargo install --locked cargo-deny`로 설치한다.
 
 ```bash
 cargo fmt --all --check
@@ -30,7 +30,7 @@ cargo deny check
 cargo build --release
 ```
 
-요청 검색 알고리즘 후보(미리보기 2,000건 × 8KiB, 전체 로그 256MiB, gzip 64MiB)의 검색 시간은 `cargo bench --bench search`로 측정한다. 결과는 `target/criterion`에 남는다.
+요청 검색은 `cargo bench --bench search`로 측정한다. URL 맵 삽입, 트리 구성과 관계 그래프 배치는 `cargo bench --bench url_map`으로 측정한다. 결과는 `target/criterion/`에 남는다.
 
 통합 테스트는 실제 TCP 연결을 사용한다. 테스트는 HTTP 전달과 `CONNECT` 터널의 양방향 전송을 검증한다.
 
@@ -87,7 +87,7 @@ Actions의 [파일 권한 제한](https://github.com/actions/upload-artifact/tre
    - `http-inspector-exchange`는 공유 캡처 모델(`exchange`), HTTP 헤더 규칙(`http_semantics`), 순수 HTTP 캡처 규칙(`capture`), `test-support` 픽스처(`ExchangeBuilder`, `MemoryBodySource`)를 함께 둔다. 순수 캡처 규칙과 `ExchangeBuilder`를 `interception`에서 `exchange`로 옮김으로써 프록시 캡처 경로와 단일 진실 공급원을 유지하면서도 `exchange`·`content`·`analysis`·`interop`가 `core`(`tokio`·`hyper`) 없이 단독 빌드·테스트할 수 있다.
    - `http-inspector-core`는 비동기 런타임·OS 연동·파일시스템 상태를 다루며 함께 변하는 6개 모듈(`interception`, `https`, `recording`, `replay`, `launcher`, `settings`)을 묶는다.
 
-### 최종 크레이트 구성
+### 크레이트 구성
 
 | 크레이트 | 위치 | 포함 모듈·책임 | `tokio`/`hyper` | `eframe`/`egui` |
 | --- | --- | --- | --- | --- |
@@ -129,11 +129,9 @@ graph TD
 
 ## 설계 문서
 
-- [네트워크 인스펙터 설계](http-network-inspector-design.md)
-- [Rust 개발 도구 및 의존성](rust-development-tooling.md)
-- [코드 품질 기준](code-quality.md)
-- [Network 상세 보기 설계](f12-network-increment-design.md)
-- [HTTPS 복호화 구현 설계](https-inspection-implementation.md)
-- [HTTPS 후속 작업](https-future-work.md)
+- [Rust 개발 도구 및 의존성](rust-development-tooling.md)과 [코드 품질 기준](code-quality.md)
+- [초기 네트워크 인스펙터 설계 기록](http-network-inspector-design.md)
+- [요청 상세와 스트리밍 캡처 설계](f12-network-increment-design.md)
+- [HTTPS 복호화 구현 설계](https-inspection-implementation.md)와 [HTTPS 후속 작업](https-future-work.md)
 
 Git 작업 흐름은 별도 문서 없이 [AGENTS.md](../AGENTS.md)의 Git·커밋·PR 지침에 정리되어 있다.

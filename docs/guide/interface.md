@@ -8,8 +8,9 @@
 
 화면은 위에서 아래로 다음 순서로 놓인다. 요청 목록과 상세가 남은 높이를 모두 쓴다.
 
-- **툴바:** 프록시 상태·주소·`Copy`·`Stop`, **Decrypt HTTPS**와 CA 상태, **Open Browser**, **Save**, **Settings**(테마), **?**(캡처 범위 안내). 창이 좁으면 다음 줄로 넘어간다.
+- **툴바:** 프록시 상태·주소·`Copy`·`Stop`, **Decrypt HTTPS**와 CA 상태, **Open Browser**, **Save**, **Settings**(테마와 본문 저장 한도), **?**(캡처 범위 안내). 창이 좁으면 다음 줄로 넘어간다.
 - **알림:** 포트 충돌, 브라우저·CA 오류처럼 확인해야 할 오류와 경고는 툴바 바로 아래에 표시한다.
+- **보기 전환:** **Requests**에서 요청 목록을 보고 **Map**에서 [URL 맵과 관계 그래프](url-map.md)를 확인한다.
 - **필터 줄:** 검색어, 검색 범위(All·URL·Headers·Request body·Response body), **Aa**(대소문자 구분), **.\***(정규식), 종류(All·Responses·Failures·Tunnels), **Follow newest**, **Clear**.
 - **요청 목록과 상세:** 가운데 경계를 끌어 너비를 조절한다. 목록의 열은 목록 영역 안에서 잘린다. 요청이 없으면 다음에 할 일을 안내한다.
 - **상태 바:** 요청 수, 누락·삭제된 기록 수, 전체 로그 오류와 한도 경고, 저장 결과.
@@ -61,7 +62,7 @@ Linux에서 Orca를 실행한 뒤 테스트 요청을 보내고 요청 선택, �
 
 ## 글꼴
 
-한글(현대 한글 11,172자)과 ASCII는 앱 바이너리에 내장한 Noto Sans KR 서브셋으로 표시하므로 OS나 폰트 설치 여부와 관계없이 보인다. 내장 폰트에 없는 한자·가나는 시스템에 Nanum 또는 Noto CJK 폰트가 있으면 그 폰트로 보완한다. Ubuntu에서 한자·가나가 네모로 보이면 `sudo apt install fonts-noto-cjk`로 폰트를 설치하고 앱을 다시 실행한다. 시스템 폰트 파일이 손상됐거나 TTF/OTF/TTC 형식이 아니면 등록하지 않고 경고 로그를 남긴 뒤 내장 폰트만 사용한다. `RUST_LOG=http_proxy::ui::style::fonts=debug cargo run`으로 실행하면 어떤 폰트를 등록했는지 확인할 수 있다.
+한글(현대 한글 11,172자)과 ASCII는 앱 바이너리에 내장한 Noto Sans KR 서브셋으로 표시하므로 OS나 폰트 설치 여부와 관계없이 보인다. 내장 글꼴에 없는 한자와 가나는 Linux에서 설치된 Nanum 또는 Noto CJK로, macOS에서 Apple SD Gothic Neo로 보완한다. Ubuntu에서 한자·가나가 네모로 보이면 `sudo apt install fonts-noto-cjk`로 폰트를 설치하고 앱을 다시 실행한다. 시스템 폰트 파일이 손상됐거나 TTF/OTF/TTC 형식이 아니면 등록하지 않고 경고 로그를 남긴 뒤 내장 폰트만 사용한다. `RUST_LOG=http_proxy::ui::style::fonts=debug cargo run`으로 실행하면 어떤 폰트를 등록했는지 확인할 수 있다.
 
 ## macOS 화면
 
