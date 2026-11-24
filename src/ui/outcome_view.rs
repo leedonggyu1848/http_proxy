@@ -1,7 +1,6 @@
 //! Shared outcome presentation for the request list, details, and search.
 
 use eframe::egui::Color32;
-use http_proxy::text_search::Matcher;
 use http_proxy::{Outcome, TunnelPreview, TunnelState};
 
 use crate::ui::theme::Palette;
@@ -94,36 +93,6 @@ fn tunnel_summary(tunnel: &TunnelPreview) -> String {
     }
 }
 
-/// Matches the status code, failure stage and message, or the keyword of
-/// an outcome without text, such as `pending` or `tunnel`. Response
-/// headers are matched with the other headers.
-pub(in crate::ui) fn outcome_matches(outcome: &Outcome, matcher: &Matcher) -> bool {
-    match outcome {
-        Outcome::Response(response) => matcher.is_match(response.status().as_str().as_bytes()),
-        Outcome::Failed { stage, message } => {
-            matcher.is_match(stage.to_string().as_bytes()) || matcher.is_match(message.as_bytes())
-        }
-        Outcome::InFlight
-        | Outcome::Tunnel(_)
-        | Outcome::InspectionEstablished
-        | Outcome::Cancelled
-        | Outcome::Incomplete => matcher.is_match(outcome_label(outcome).as_bytes()),
-    }
-}
-
-/// Lowercase search keyword for outcomes that carry no searchable text.
-const fn outcome_label(outcome: &Outcome) -> &'static str {
-    match outcome {
-        Outcome::InFlight => "pending",
-        Outcome::Response(_) => "response",
-        Outcome::Tunnel(_) => "tunnel",
-        Outcome::InspectionEstablished => "https inspection",
-        Outcome::Failed { .. } => "failed",
-        Outcome::Cancelled => "cancelled",
-        Outcome::Incomplete => "incomplete",
-    }
-}
-
 pub(in crate::ui) fn detail_text(outcome: &Outcome, palette: &Palette) -> (String, Color32) {
     let text = match outcome {
         Outcome::InFlight => "Waiting for the upstream server.",
@@ -189,8 +158,11 @@ mod tests {
             assert_eq!(outcome_text(&outcome, &palette).1, palette.error);
         }
         let matches = |query: &str| {
-            Matcher::new(query, http_proxy::text_search::MatchOptions::default())
-                .is_ok_and(|matcher| outcome_matches(&outcome, &matcher))
+            http_proxy::analysis::search::Matcher::new(
+                query,
+                http_proxy::analysis::search::MatchOptions::default(),
+            )
+            .is_ok_and(|matcher| http_proxy::analysis::search::outcome_matches(&outcome, &matcher))
         };
         assert!(matches("upstream tls handshake"));
         assert!(matches("certificate rejected"));

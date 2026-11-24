@@ -4,7 +4,7 @@
 use std::ops::Range;
 
 use eframe::egui::{self, text::LayoutJob};
-use http_proxy::text_search::Matcher;
+use http_proxy::analysis::search::Matcher;
 
 use crate::ui::search::highlight::{self, MatchColors};
 
@@ -164,7 +164,7 @@ mod tests {
     use super::*;
     use crate::ui::theme::Theme;
     use eframe::egui::text::TextFormat;
-    use http_proxy::text_search::MatchOptions;
+    use http_proxy::analysis::search::MatchOptions;
 
     fn job(text: &str) -> LayoutJob {
         let mut job = LayoutJob::default();

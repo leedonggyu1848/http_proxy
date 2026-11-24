@@ -5,11 +5,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use http::Method;
-use http_proxy::endpoint_schema::{
+use http_proxy::analysis::endpoint_schema::{
     EndpointKey, EndpointSchema, EndpointSchemas, ExclusionReason, FieldShape, ParamStats,
     ResponseKey, SchemaAnalyzer, ValueKind,
 };
-use http_proxy::url_map::{
+use http_proxy::analysis::url_map::{
     RequestScope, SortDirection, TreeFilter, TreeSortField, UrlMap, ViewNode, build_view_roots,
 };
 use http_proxy::{AuthScheme, BodyStore, Exchange, ProxyConfig, ProxyHandle};

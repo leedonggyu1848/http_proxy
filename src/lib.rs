@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
+pub mod analysis;
 pub mod content;
-pub mod endpoint_schema;
 #[expect(
     clippy::redundant_pub_crate,
     reason = "crate-wide items of a private module; `pub` would trip `unreachable_pub`"
@@ -27,8 +27,6 @@ mod launcher;
 pub mod recording;
 mod replay;
 pub mod settings;
-pub mod text_search;
-pub mod url_map;
 
 pub use exchange::BodySide;
 #[cfg(feature = "test-support")]

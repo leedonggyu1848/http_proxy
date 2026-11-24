@@ -20,11 +20,7 @@ use std::sync::Arc;
 const LINE_VIEW_HEIGHT: f32 = 480.0;
 
 /// Which body of an exchange is shown; both can be on screen at once.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(in crate::ui) enum BodySide {
-    Request,
-    Response,
-}
+pub(in crate::ui) use http_proxy::BodySide;
 
 /// A captured body preview to show.
 pub(in crate::ui) struct BodySource<'a> {
@@ -1195,12 +1191,12 @@ mod tests {
         let mut cache = BodyViewCache::default();
         let query = Query {
             generation: 1,
-            matcher: http_proxy::text_search::Matcher::new(
+            matcher: http_proxy::analysis::search::Matcher::new(
                 "line",
-                http_proxy::text_search::MatchOptions::default(),
+                http_proxy::analysis::search::MatchOptions::default(),
             )
             .map_err(|e| e.to_string())?,
-            scope: crate::ui::search::SearchScope::All,
+            scope: http_proxy::analysis::search::SearchScope::All,
         };
         let xml = BodySource {
             media_type: media("application/xml"),

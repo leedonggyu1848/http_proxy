@@ -10,15 +10,14 @@ pub(in crate::ui) use detail_pane::RecordMatchCache;
 use std::collections::{HashMap, HashSet};
 
 use eframe::egui;
-use http_proxy::endpoint_schema::EndpointSchemas;
-use http_proxy::url_map::{
+use http_proxy::analysis::endpoint_schema::EndpointSchemas;
+use http_proxy::analysis::filter::RecordList;
+use http_proxy::analysis::url_map::{
     ContentTypeFilter, DEFAULT_MAX_GRAPH_DOMAINS, EdgeKind, ForceLayout, PartyFilter, RequestScope,
     SortDirection, StatusFilter, TreeFilter, TreeSortField, UrlMap, ViewNode, ViewNodeKey,
     VisibleRow, build_view_roots, find_view_node, flatten_visible,
 };
 use http_proxy::{Exchange, RecordId};
-
-use crate::ui::records::RecordList;
 
 /// Active sub-view inside the Map tab.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -484,7 +483,8 @@ fn collect_branch_keys(nodes: &[ViewNode], out: &mut HashSet<ViewNodeKey>) {
 mod tests {
     use super::*;
     use http::Method;
-    use http_proxy::url_map::{ObservedInput, StatusBucket, parse_url};
+    use http_proxy::analysis::url::parse_url;
+    use http_proxy::analysis::url_map::{ObservedInput, StatusBucket};
     use std::time::{Duration, SystemTime};
 
     #[test]

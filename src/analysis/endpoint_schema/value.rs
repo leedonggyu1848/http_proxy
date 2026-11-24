@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use crate::url_map::classify_id_segment;
+use crate::analysis::url::{IdKind, classify_id_segment};
 
 /// JSON-compatible type observed for one value.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -234,7 +234,7 @@ fn string_format(text: &str) -> Option<StringFormat> {
         return Some(StringFormat::Url);
     }
     match classify_id_segment(text) {
-        Some(crate::url_map::IdKind::Uuid) => Some(StringFormat::Uuid),
+        Some(IdKind::Uuid) => Some(StringFormat::Uuid),
         Some(_) => Some(StringFormat::Identifier),
         None => None,
     }

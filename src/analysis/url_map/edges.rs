@@ -3,8 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::url_map::normalize::OriginKey;
-use crate::url_map::site::{is_third_party, registrable_domain};
+use crate::analysis::url::{OriginKey, is_third_party, registrable_domain};
 
 /// Maximum distinct domain-level edges retained to bound memory.
 const MAX_DOMAIN_EDGES: usize = 10_000;

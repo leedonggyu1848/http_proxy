@@ -13,9 +13,9 @@ use http::header::{
     SET_COOKIE,
 };
 use http::{HeaderName, HeaderValue, Method, StatusCode};
+use http_proxy::analysis::url_map::UrlMap;
 use http_proxy::interop::har::{HarOptions, document};
 use http_proxy::interop::map_export::{export_graph_mermaid, export_tree_json};
-use http_proxy::url_map::UrlMap;
 use http_proxy::{
     BodyLifecycle, Exchange, ExchangeBuilder, Outcome, ProxyConfig, ProxyHandle, ResponseFixture,
     TunnelState,

@@ -8,17 +8,16 @@ use std::collections::HashSet;
 use std::time::SystemTime;
 
 use eframe::egui::{self, RichText};
+use http_proxy::analysis::endpoint_schema::EndpointSchema;
+use http_proxy::analysis::filter::RecordList;
+use http_proxy::analysis::url::{parse_exchange_target, percent_decode_display};
+use http_proxy::analysis::url_map::{NodeStats, RequestScope, ViewNode};
 use http_proxy::interop::map_export::format_bytes;
-use http_proxy::url_map::{
-    NodeStats, RequestScope, ViewNode, parse_exchange_target, percent_decode_display,
-};
 use http_proxy::{Exchange, RecordId};
 
 use super::{MapAction, endpoint_view};
 use crate::ui::outcome_view::outcome_text;
-use crate::ui::records::RecordList;
 use crate::ui::theme::Palette;
-use http_proxy::endpoint_schema::EndpointSchema;
 
 /// Maximum matching retained requests listed directly inside the node detail pane.
 const MAX_INLINE_REQUESTS: usize = 100;
@@ -91,6 +90,15 @@ impl RecordMatchCache {
         self.key.as_ref() == Some(key) && self.revision == Some(records.revision())
     }
 
+    pub(in crate::ui) fn fresh_ids(
+        &self,
+        key: &RequestScope,
+        records: &RecordList<Exchange>,
+    ) -> Option<&HashSet<RecordId>> {
+        self.is_fresh_for(key, records).then_some(&self.matched_ids)
+    }
+
+    #[cfg(test)]
     pub(in crate::ui) fn contains(&self, id: RecordId) -> bool {
         self.matched_ids.contains(&id)
     }
@@ -465,14 +473,16 @@ fn format_wall_time(time: Option<SystemTime>) -> String {
 mod tests {
     use std::time::Duration;
 
-    use http_proxy::url_map::{OriginKey, PathSegmentPattern, ViewNodeKey};
+    use http_proxy::analysis::filter::RecordFilter;
+    use http_proxy::analysis::url::{OriginKey, PathSegmentPattern};
+    use http_proxy::analysis::url_map::ViewNodeKey;
     use http_proxy::{ProxyConfig, ProxyHandle};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::{TcpListener, TcpStream};
     use tokio::time::timeout;
 
     use super::*;
-    use crate::ui::filter::{RecordFilter, visible_records};
+    use crate::ui::filter::visible_records;
     use crate::ui::search::RequestSearch;
 
     async fn capture_paths(

@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 /// Two kinds of loss are tracked separately: records the engine dropped
 /// because its event queue was full, and records this list evicted to stay
 /// within its capacity.
-pub(in crate::ui) struct RecordList<T> {
+pub struct RecordList<T> {
     records: VecDeque<T>,
     capacity: usize,
     evicted: u64,
@@ -18,7 +18,9 @@ pub(in crate::ui) struct RecordList<T> {
 }
 
 impl<T> RecordList<T> {
-    pub(in crate::ui) fn new(capacity: usize) -> Self {
+    /// Creates an empty list that holds at most `capacity` records (at least 1).
+    #[must_use]
+    pub fn new(capacity: usize) -> Self {
         Self {
             records: VecDeque::with_capacity(capacity),
             capacity: capacity.max(1),
@@ -30,7 +32,7 @@ impl<T> RecordList<T> {
     }
 
     /// Appends a record and returns the oldest one when it had to be evicted.
-    pub(in crate::ui) fn push(&mut self, record: T) -> Option<T> {
+    pub fn push(&mut self, record: T) -> Option<T> {
         let removed = if self.records.len() >= self.capacity {
             self.evicted = self.evicted.saturating_add(1);
             self.records.pop_front()
@@ -46,7 +48,7 @@ impl<T> RecordList<T> {
     ///
     /// `engine_dropped` is the running proxy's cumulative drop count, or zero
     /// when no proxy runs.
-    pub(in crate::ui) fn clear(&mut self, engine_dropped: u64) {
+    pub fn clear(&mut self, engine_dropped: u64) {
         self.records.clear();
         self.evicted = 0;
         self.dropped_carried = 0;
@@ -56,36 +58,50 @@ impl<T> RecordList<T> {
 
     /// Keeps the drops of a proxy that is being stopped, because the next
     /// proxy starts counting from zero.
-    pub(in crate::ui) const fn proxy_stopped(&mut self, engine_dropped: u64) {
+    pub const fn proxy_stopped(&mut self, engine_dropped: u64) {
         self.dropped_carried = self.dropped(engine_dropped);
         self.dropped_baseline = 0;
     }
 
     /// Returns engine drops since the last Clear.
-    pub(in crate::ui) const fn dropped(&self, engine_dropped: u64) -> u64 {
+    #[must_use]
+    pub const fn dropped(&self, engine_dropped: u64) -> u64 {
         self.dropped_carried
             .saturating_add(engine_dropped.saturating_sub(self.dropped_baseline))
     }
 
     /// Returns records evicted for capacity since the last Clear.
-    pub(in crate::ui) const fn evicted(&self) -> u64 {
+    #[must_use]
+    pub const fn evicted(&self) -> u64 {
         self.evicted
     }
 
-    pub(in crate::ui) fn len(&self) -> usize {
+    /// Returns the number of currently retained records.
+    #[must_use]
+    pub fn len(&self) -> usize {
         self.records.len()
     }
 
-    pub(in crate::ui) fn get(&self, index: usize) -> Option<&T> {
+    /// Reports whether no records are retained.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    /// Returns the record at `index`, if present.
+    #[must_use]
+    pub fn get(&self, index: usize) -> Option<&T> {
         self.records.get(index)
     }
 
     /// Monotonic counter incremented on every `push` or `clear`.
-    pub(in crate::ui) const fn revision(&self) -> u64 {
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
         self.revision
     }
 
-    pub(in crate::ui) fn iter(&self) -> impl DoubleEndedIterator<Item = &T> {
+    /// Iterates over retained records from oldest to newest.
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &T> {
         self.records.iter()
     }
 }

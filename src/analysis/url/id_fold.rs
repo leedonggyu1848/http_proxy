@@ -88,7 +88,7 @@ impl PathSegmentPattern {
     #[must_use]
     pub fn display_text(&self) -> String {
         match self {
-            Self::Literal(raw) => crate::url_map::normalize::percent_decode_display(raw),
+            Self::Literal(raw) => super::normalize::percent_decode_display(raw),
             Self::FoldedId => "{id}".to_owned(),
         }
     }
