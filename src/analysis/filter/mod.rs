@@ -82,3 +82,111 @@ pub fn visible_records<'a>(
         .filter(|record| search_shows(record.id()))
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+    use std::error::Error;
+
+    use http::{Method, StatusCode};
+
+    use super::*;
+    use crate::analysis::url::{OriginKey, PathSegmentPattern};
+    use crate::analysis::url_map::ViewNodeKey;
+    use crate::{BodyLifecycle, ExchangeBuilder, FailureStage, ResponseFixture, TunnelState};
+
+    type TestResult = Result<(), Box<dyn Error>>;
+
+    fn check_filters(record: &Exchange, expected: [bool; 4]) {
+        for (filter, expected) in RecordFilter::ALL.into_iter().zip(expected) {
+            assert_eq!(
+                record_matches(record, filter),
+                expected,
+                "{filter:?}: {:?}",
+                record.outcome()
+            );
+        }
+    }
+
+    #[test]
+    fn filters_exchanges_by_outcome_kind() -> TestResult {
+        let pending = ExchangeBuilder::http(Method::GET, "http://api.example.test/items")?
+            .request_body(Vec::new(), BodyLifecycle::Complete)
+            .in_flight()?;
+        let response = ExchangeBuilder::http(Method::GET, "http://api.example.test/items")?
+            .respond(ResponseFixture::new(StatusCode::CREATED))?;
+        let tunnel =
+            ExchangeBuilder::connect("api.example.test:443").tunnel(4, 5, TunnelState::Closed)?;
+        let inspected =
+            ExchangeBuilder::connect("api.example.test:443").inspection_established()?;
+        let failed = ExchangeBuilder::http(Method::GET, "http://api.example.test/items")?
+            .fail(FailureStage::Connect, "connection refused")?;
+        let cancelled =
+            ExchangeBuilder::http(Method::GET, "http://api.example.test/items")?.cancel()?;
+        let incomplete =
+            ExchangeBuilder::http(Method::GET, "http://api.example.test/items")?.stop()?;
+
+        check_filters(&pending, [true, false, false, false]);
+        check_filters(&response, [true, true, false, false]);
+        check_filters(&tunnel, [true, false, false, true]);
+        check_filters(&inspected, [true, false, false, true]);
+        check_filters(&failed, [true, false, true, false]);
+        check_filters(&cancelled, [true, false, true, false]);
+        check_filters(&incomplete, [true, false, true, false]);
+        Ok(())
+    }
+
+    #[test]
+    fn visible_records_combines_outcome_scope_and_search_in_arrival_order() -> TestResult {
+        let users_ok = ExchangeBuilder::http(Method::GET, "http://api.example.test/api/users/1")?
+            .respond(ResponseFixture::new(StatusCode::OK))?;
+        let users_fail = ExchangeBuilder::http(Method::GET, "http://api.example.test/api/users/2")?
+            .fail(FailureStage::Connect, "refused")?;
+        let orders_ok = ExchangeBuilder::http(Method::GET, "http://api.example.test/api/orders")?
+            .respond(ResponseFixture::new(StatusCode::OK))?;
+
+        let (u1, u2, o1) = (users_ok.id(), users_fail.id(), orders_ok.id());
+        let mut list = RecordList::new(8);
+        let _ = list.push(users_ok);
+        let _ = list.push(users_fail);
+        let _ = list.push(orders_ok);
+
+        let users_scope = RequestScope::subtree(ViewNodeKey {
+            origin: OriginKey::new("http", "api.example.test", None),
+            path: vec![
+                PathSegmentPattern::Literal("api".to_owned()),
+                PathSegmentPattern::Literal("users".to_owned()),
+            ],
+        });
+
+        let all_ids: Vec<RecordId> = visible_records(&list, RecordFilter::All, None, |_| true)
+            .into_iter()
+            .map(Exchange::id)
+            .collect();
+        assert_eq!(all_ids, vec![u1, u2, o1]);
+
+        let live_users: Vec<RecordId> = visible_records(
+            &list,
+            RecordFilter::All,
+            Some(ScopeFilter::Live(&users_scope)),
+            |_| true,
+        )
+        .into_iter()
+        .map(Exchange::id)
+        .collect();
+        assert_eq!(live_users, vec![u1, u2]);
+
+        let cached: HashSet<RecordId> = [u1, o1].into_iter().collect();
+        let cached_filtered: Vec<RecordId> = visible_records(
+            &list,
+            RecordFilter::Responses,
+            Some(ScopeFilter::Cached(&cached)),
+            |id| id != o1,
+        )
+        .into_iter()
+        .map(Exchange::id)
+        .collect();
+        assert_eq!(cached_filtered, vec![u1]);
+        Ok(())
+    }
+}

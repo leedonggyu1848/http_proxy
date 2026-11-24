@@ -166,14 +166,14 @@ fn empty_list_text(captured: usize, proxy: Option<std::net::SocketAddr>) -> Stri
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write as _;
+
+    use http::header::{CONTENT_ENCODING, CONTENT_TYPE};
+    use http::{HeaderValue, Method, StatusCode};
+    use http_proxy::analysis::search::{MatchOptions, SearchScope};
+    use http_proxy::{BodyLifecycle, ExchangeBuilder, ResponseFixture};
+
     use super::*;
-    use http_proxy::analysis::filter::record_matches;
-    use http_proxy::analysis::search::document::{self, BodyCache};
-    use http_proxy::analysis::search::{MatchOptions, Matcher, SearchScope};
-    use http_proxy::{ProxyConfig, ProxyHandle};
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-    use tokio::net::{TcpListener, TcpStream};
-    use tokio::time::{Duration, timeout};
 
     #[test]
     fn empty_list_explains_the_next_step() {
@@ -183,190 +183,69 @@ mod tests {
         assert!(empty_list_text(3, Some(address)).contains("match the filter"));
     }
 
-    /// Checks `record` the way the search thread does.
-    fn found(record: &Exchange, query: &str, scope: SearchScope, case_sensitive: bool) -> bool {
-        let options = MatchOptions {
-            case_sensitive,
-            regex: false,
-        };
-        Matcher::new(query, options).is_ok_and(|matcher| {
-            document::check(record, &matcher, scope, &mut BodyCache::default()).matched
-        })
-    }
+    #[test]
+    fn request_search_filters_decoded_bodies() -> Result<(), Box<dyn std::error::Error>> {
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(br#"{"error":"Quota Exceeded"}"#)?;
+        let gzip = encoder.finish()?;
 
-    #[tokio::test]
-    async fn filters_and_search_captured_exchanges() -> Result<(), Box<dyn std::error::Error>> {
-        timeout(Duration::from_secs(5), async {
-            let upstream = TcpListener::bind("127.0.0.1:0").await?;
-            let address = upstream.local_addr()?;
-            let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0))?;
-            let mut client = TcpStream::connect(proxy.local_addr()).await?;
-            client.write_all(format!("GET http://{address}/MiXeD HTTP/1.1\r\nHost: {address}\r\nX-Request: RequestVALUE\r\nConnection: close\r\n\r\n").as_bytes()).await?;
-            let (mut server, _) = upstream.accept().await?;
-            let pending = proxy.receive().await.ok_or("missing pending capture")?;
-            check_filters(&pending, [true, false, false, false]);
-            for query in ["pending", "get", "/mixed", "x-request", "requestvalue"] {
-                assert!(found(&pending, query, SearchScope::All, false), "{query}");
-            }
-            read_request_head(&mut server).await?;
-            server.write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\nX-Response: ResponseVALUE\r\nConnection: close\r\n\r\n").await?;
-            let mut bytes = Vec::new();
-            client.read_to_end(&mut bytes).await?;
-            wait_settled(&pending).await;
-            check_filters(&pending, [true, true, false, false]);
-            for query in ["201", "x-response", "responsevalue"] {
-                assert!(found(&pending, query, SearchScope::All, false), "{query}");
-            }
-            assert!(!found(&pending, "absent", SearchScope::All, false));
+        let record = ExchangeBuilder::http(Method::POST, "http://api.example.test/submit")?
+            .header(
+                CONTENT_TYPE,
+                HeaderValue::from_static("application/x-www-form-urlencoded"),
+            )
+            .request_body("orderId=REQ-123", BodyLifecycle::Complete)
+            .respond(
+                ResponseFixture::new(StatusCode::TOO_MANY_REQUESTS)
+                    .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+                    .header(CONTENT_ENCODING, HeaderValue::from_static("gzip"))
+                    .body(gzip, BodyLifecycle::Complete),
+            )?;
 
-            let mut tunnel_client = TcpStream::connect(proxy.local_addr()).await?;
-            tunnel_client.write_all(format!("CONNECT {address} HTTP/1.1\r\nHost: {address}\r\n\r\n").as_bytes()).await?;
-            let (_tunnel_server, _) = upstream.accept().await?;
-            let tunnel = proxy.receive().await.ok_or("missing tunnel capture")?;
-            wait_settled(&tunnel).await;
-            check_filters(&tunnel, [true, false, false, true]);
-            assert!(found(&tunnel, "tunnel", SearchScope::All, false));
-
-            drop(upstream);
-            let mut failed_client = TcpStream::connect(proxy.local_addr()).await?;
-            failed_client.write_all(format!("GET http://{address}/ HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n").as_bytes()).await?;
-            let failed = proxy.receive().await.ok_or("missing failure capture")?;
-            wait_settled(&failed).await;
-            check_filters(&failed, [true, false, true, false]);
-            assert!(found(&failed, "connect", SearchScope::All, false));
-            proxy.stop()?;
-            Ok::<_, Box<dyn std::error::Error>>(())
-        }).await??;
+        let mut records = RecordList::new(4);
+        let id = record.id();
+        let _evicted = records.push(record);
+        let context = egui::Context::default();
+        let mut search = RequestSearch::new(&context);
+        let options = MatchOptions::default();
+        search.search_now(("quota", SearchScope::All, options), &records, &context);
+        assert!(search.shows(id));
+        search.search_now(
+            ("quota exceeded!", SearchScope::All, options),
+            &records,
+            &context,
+        );
+        assert!(!search.shows(id));
+        search.search_now(("", SearchScope::All, options), &records, &context);
+        assert!(search.shows(id));
         Ok(())
     }
 
-    #[tokio::test]
-    async fn searches_bodies_by_scope_and_case() -> Result<(), Box<dyn std::error::Error>> {
-        timeout(Duration::from_secs(5), async {
-            let upstream = TcpListener::bind("127.0.0.1:0").await?;
-            let address = upstream.local_addr()?;
-            let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0))?;
-            let mut client = TcpStream::connect(proxy.local_addr()).await?;
-            let body = "orderId=REQ-123";
-            client.write_all(format!("POST http://{address}/submit HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer SECRET-TOKEN\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await?;
-            let (mut server, _) = upstream.accept().await?;
-            let record = proxy.receive().await.ok_or("missing capture")?;
-            read_request_head(&mut server).await?;
-            let mut received = vec![0; body.len()];
-            server.read_exact(&mut received).await?;
-            let gzip = {
-                use std::io::Write as _;
-                let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-                encoder.write_all(br#"{"error":"Quota Exceeded"}"#)?;
-                encoder.finish()?
-            };
-            server.write_all(format!("HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", gzip.len()).as_bytes()).await?;
-            server.write_all(&gzip).await?;
-            drop(server);
-            let mut bytes = Vec::new();
-            client.read_to_end(&mut bytes).await?;
-            while !document::is_settled(&record) {
-                tokio::time::sleep(Duration::from_millis(1)).await;
-            }
+    #[test]
+    fn request_search_counts_partially_searched_previews() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let body = format!(
+            "{}tail-word",
+            "a".repeat(http_proxy::BODY_PREVIEW_BYTES + 100)
+        );
+        let record = ExchangeBuilder::http(Method::GET, "http://api.example.test/large")?.respond(
+            ResponseFixture::new(StatusCode::OK)
+                .header(CONTENT_TYPE, HeaderValue::from_static("text/plain"))
+                .body(body, BodyLifecycle::Complete),
+        )?;
 
-            // Only the gzip-compressed response body has this text.
-            assert!(found(&record, "quota exceeded", SearchScope::All, false));
-            assert!(found(&record, "quota exceeded", SearchScope::ResponseBody, false));
-            for scope in [SearchScope::RequestBody, SearchScope::Url, SearchScope::Headers] {
-                assert!(!found(&record, "quota exceeded", scope, false), "{scope:?}");
-            }
-            assert!(!found(&record, "quota exceeded", SearchScope::All, true));
-            assert!(found(&record, "Quota Exceeded", SearchScope::All, true));
-            assert!(found(&record, "REQ-123", SearchScope::RequestBody, true));
-            assert!(!found(&record, "REQ-123", SearchScope::ResponseBody, false));
-            assert!(found(&record, "/submit", SearchScope::Url, false));
-            assert!(!found(&record, "/submit", SearchScope::Headers, false));
-            // Redacted header values are not searchable.
-            assert!(found(&record, "authorization", SearchScope::Headers, false));
-            assert!(!found(&record, "secret-token", SearchScope::All, false));
-
-            let mut records = RecordList::new(4);
-            let _evicted = records.push(record.clone());
-            let context = eframe::egui::Context::default();
-            let mut search = crate::ui::search::RequestSearch::new(&context);
-            let options = MatchOptions::default();
-            search.search_now(("quota", SearchScope::All, options), &records, &context);
-            assert!(search.shows(record.id()));
-            search.search_now(("quota exceeded!", SearchScope::All, options), &records, &context);
-            assert!(!search.shows(record.id()));
-            search.search_now(("", SearchScope::All, options), &records, &context);
-            assert!(search.shows(record.id()));
-            proxy.stop()?;
-            Ok::<_, Box<dyn std::error::Error>>(())
-        }).await??;
+        let mut records = RecordList::new(4);
+        let id = record.id();
+        let _evicted = records.push(record);
+        let context = egui::Context::default();
+        let mut search = RequestSearch::new(&context);
+        search.search_now(
+            ("tail-word", SearchScope::All, MatchOptions::default()),
+            &records,
+            &context,
+        );
+        assert!(!search.shows(id));
+        assert_eq!(search.partially_searched(), 1);
         Ok(())
-    }
-
-    #[tokio::test]
-    async fn reports_bodies_searched_only_in_their_preview()
-    -> Result<(), Box<dyn std::error::Error>> {
-        timeout(Duration::from_secs(5), async {
-            let upstream = TcpListener::bind("127.0.0.1:0").await?;
-            let address = upstream.local_addr()?;
-            let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0))?;
-            let mut client = TcpStream::connect(proxy.local_addr()).await?;
-            client.write_all(format!("GET http://{address}/large HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n").as_bytes()).await?;
-            let (mut server, _) = upstream.accept().await?;
-            let record = proxy.receive().await.ok_or("missing capture")?;
-            read_request_head(&mut server).await?;
-            // The word sits after the 8 KiB the preview keeps.
-            let body = format!("{}tail-word", "a".repeat(http_proxy::BODY_PREVIEW_BYTES + 100));
-            server.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await?;
-            drop(server);
-            client.read_to_end(&mut Vec::new()).await?;
-            while !document::is_settled(&record) {
-                tokio::time::sleep(Duration::from_millis(1)).await;
-            }
-
-            let matcher = Matcher::new("tail-word", MatchOptions::default())?;
-            let checked = document::check(&record, &matcher, SearchScope::ResponseBody, &mut BodyCache::default());
-            assert!(!checked.matched);
-            assert!(checked.coverage.partial);
-            assert!(found(&record, "aaaa", SearchScope::ResponseBody, false));
-
-            let mut records = RecordList::new(4);
-            let _evicted = records.push(record.clone());
-            let context = eframe::egui::Context::default();
-            let mut search = crate::ui::search::RequestSearch::new(&context);
-            search.search_now(("tail-word", SearchScope::All, MatchOptions::default()), &records, &context);
-            assert!(!search.shows(record.id()));
-            assert_eq!(search.partially_searched(), 1);
-            proxy.stop()?;
-            Ok::<_, Box<dyn std::error::Error>>(())
-        }).await??;
-        Ok(())
-    }
-
-    fn check_filters(record: &Exchange, expected: [bool; 4]) {
-        for (filter, expected) in RecordFilter::ALL.into_iter().zip(expected) {
-            assert_eq!(
-                record_matches(record, filter),
-                expected,
-                "{filter:?}: {:?}",
-                record.outcome()
-            );
-        }
-    }
-
-    /// Reads one request head so the reply cannot arrive before the proxy sends it.
-    async fn read_request_head(stream: &mut TcpStream) -> std::io::Result<()> {
-        let mut head = Vec::new();
-        let mut byte = [0; 1];
-        while !head.ends_with(b"\r\n\r\n") {
-            stream.read_exact(&mut byte).await?;
-            head.extend_from_slice(&byte);
-        }
-        Ok(())
-    }
-
-    async fn wait_settled(record: &Exchange) {
-        while record.outcome().is_in_flight() {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
     }
 }

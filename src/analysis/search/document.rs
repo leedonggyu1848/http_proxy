@@ -355,4 +355,168 @@ mod tests {
             BodyText::Undecodable
         ));
     }
+
+    fn exchange_found(
+        record: &Exchange,
+        query: &str,
+        scope: SearchScope,
+        case_sensitive: bool,
+    ) -> bool {
+        let options = crate::analysis::search::MatchOptions {
+            case_sensitive,
+            regex: false,
+        };
+        Matcher::new(query, options)
+            .is_ok_and(|matcher| check(record, &matcher, scope, &mut BodyCache::default()).matched)
+    }
+
+    #[test]
+    fn searches_metadata_and_outcomes_across_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
+        use http::{HeaderName, HeaderValue, Method, StatusCode};
+
+        let pending = crate::ExchangeBuilder::http(Method::GET, "http://api.example.test/MiXeD")?
+            .header(
+                HeaderName::from_static("x-request"),
+                HeaderValue::from_static("RequestVALUE"),
+            )
+            .request_body(Vec::new(), BodyLifecycle::Complete)
+            .in_flight()?;
+        assert!(!is_settled(&pending));
+        for query in ["pending", "get", "/mixed", "x-request", "requestvalue"] {
+            assert!(
+                exchange_found(&pending, query, SearchScope::All, false),
+                "{query}"
+            );
+        }
+
+        let response = crate::ExchangeBuilder::http(Method::GET, "http://api.example.test/MiXeD")?
+            .header(
+                HeaderName::from_static("x-request"),
+                HeaderValue::from_static("RequestVALUE"),
+            )
+            .respond(crate::ResponseFixture::new(StatusCode::CREATED).header(
+                HeaderName::from_static("x-response"),
+                HeaderValue::from_static("ResponseVALUE"),
+            ))?;
+        assert!(is_settled(&response));
+        for query in ["201", "x-response", "responsevalue"] {
+            assert!(
+                exchange_found(&response, query, SearchScope::All, false),
+                "{query}"
+            );
+        }
+        assert!(!exchange_found(
+            &response,
+            "absent",
+            SearchScope::All,
+            false
+        ));
+
+        let tunnel = crate::ExchangeBuilder::connect("api.example.test:443").tunnel(
+            0,
+            0,
+            crate::TunnelState::Open,
+        )?;
+        assert!(exchange_found(&tunnel, "tunnel", SearchScope::All, false));
+
+        let failed = crate::ExchangeBuilder::http(Method::GET, "http://api.example.test/")?
+            .fail(crate::FailureStage::Connect, "connection refused")?;
+        assert!(exchange_found(&failed, "connect", SearchScope::All, false));
+        Ok(())
+    }
+
+    #[test]
+    fn searches_bodies_by_scope_case_and_redaction() -> Result<(), Box<dyn std::error::Error>> {
+        use http::header::{AUTHORIZATION, CONTENT_ENCODING, CONTENT_TYPE};
+        use http::{HeaderValue, Method, StatusCode};
+
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(br#"{"error":"Quota Exceeded"}"#)?;
+        let gzip = encoder.finish()?;
+
+        let record = crate::ExchangeBuilder::http(Method::POST, "http://api.example.test/submit")?
+            .header(
+                AUTHORIZATION,
+                HeaderValue::from_static("Bearer SECRET-TOKEN"),
+            )
+            .header(
+                CONTENT_TYPE,
+                HeaderValue::from_static("application/x-www-form-urlencoded"),
+            )
+            .request_body("orderId=REQ-123", BodyLifecycle::Complete)
+            .respond(
+                crate::ResponseFixture::new(StatusCode::TOO_MANY_REQUESTS)
+                    .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+                    .header(CONTENT_ENCODING, HeaderValue::from_static("gzip"))
+                    .body(gzip, BodyLifecycle::Complete),
+            )?;
+
+        let cases = [
+            ("quota exceeded", SearchScope::All, false, true),
+            ("quota exceeded", SearchScope::ResponseBody, false, true),
+            ("quota exceeded", SearchScope::RequestBody, false, false),
+            ("quota exceeded", SearchScope::Url, false, false),
+            ("quota exceeded", SearchScope::Headers, false, false),
+            ("quota exceeded", SearchScope::All, true, false),
+            ("Quota Exceeded", SearchScope::All, true, true),
+            ("REQ-123", SearchScope::RequestBody, true, true),
+            ("REQ-123", SearchScope::ResponseBody, false, false),
+            ("/submit", SearchScope::Url, false, true),
+            ("/submit", SearchScope::Headers, false, false),
+            // Redacted header values are not searchable.
+            ("authorization", SearchScope::Headers, false, true),
+            ("secret-token", SearchScope::All, false, false),
+        ];
+        for (query, scope, case_sensitive, expected) in cases {
+            assert_eq!(
+                exchange_found(&record, query, scope, case_sensitive),
+                expected,
+                "query={query:?} scope={scope:?} case_sensitive={case_sensitive}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reports_truncated_preview_coverage_and_prunes_cache()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use http::header::CONTENT_TYPE;
+        use http::{HeaderValue, Method, StatusCode};
+
+        let body = format!("{}tail-word", "a".repeat(crate::BODY_PREVIEW_BYTES + 100));
+        let first = crate::ExchangeBuilder::http(Method::GET, "http://api.example.test/large")?
+            .respond(
+                crate::ResponseFixture::new(StatusCode::OK)
+                    .header(CONTENT_TYPE, HeaderValue::from_static("text/plain"))
+                    .body(body, BodyLifecycle::Complete),
+            )?;
+        let second = crate::ExchangeBuilder::http(Method::GET, "http://api.example.test/small")?
+            .respond(
+                crate::ResponseFixture::new(StatusCode::OK)
+                    .header(CONTENT_TYPE, HeaderValue::from_static("text/plain"))
+                    .body("small body", BodyLifecycle::Complete),
+            )?;
+
+        let mut cache = BodyCache::default();
+        let matcher = Matcher::new(
+            "tail-word",
+            crate::analysis::search::MatchOptions::default(),
+        )?;
+        let checked = check(&first, &matcher, SearchScope::ResponseBody, &mut cache);
+        assert!(!checked.matched);
+        assert!(checked.coverage.partial);
+        assert!(exchange_found(
+            &first,
+            "aaaa",
+            SearchScope::ResponseBody,
+            false
+        ));
+
+        let _ = check(&second, &matcher, SearchScope::ResponseBody, &mut cache);
+        assert_eq!(cache.len(), 2);
+        cache.forget_before(second.id());
+        assert_eq!(cache.len(), 1);
+        assert!(!cache.is_empty());
+        Ok(())
+    }
 }
