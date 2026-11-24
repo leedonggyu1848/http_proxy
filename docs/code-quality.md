@@ -17,10 +17,12 @@
 
 ```bash
 cargo fmt --all --check
+python3 scripts/check-boundaries.py
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 cargo deny check
+cargo build --release
 ```
 
 `cargo fmt`가 파일을 바꾸면 포맷 검사에 실패한다. Clippy 경고와 rustdoc 경고도 빌드 실패로 처리한다.
@@ -40,7 +42,6 @@ cargo deny check
 - 잠금을 잡은 채 실행하는 `await`
 - 정수의 의미 없는 캐스팅과 잘림 가능성이 있는 캐스팅
 - 와일드카드 import
-- 문서에 없는 `unsafe` 블록
 
 테스트도 같은 lint 정책을 따른다. 실패가 테스트 오류 자체인 경우에만 `expect`를 제한적으로 허용할 수 있다. 허용할 때는 가장 작은 표현식에 `#[allow]`를 붙이고 이유를 적는다.
 
@@ -117,7 +118,7 @@ poison 처리는 잠금이 보호하는 불변식에 따라 다음 두 방식 �
 - 알려진 보안 취약점
 - 허용하지 않은 라이선스
 - 알 수 없는 Git 의존성
-- 같은 크레이트의 불필요한 중복 버전
+- 같은 크레이트의 중복 버전. 현재 정책은 경고를 표시한다.
 
 기본 기능은 필요한 경우에만 사용한다. 사용하지 않는 기능을 끄면 빌드 시간과 공격 가능한 코드가 줄어든다.
 

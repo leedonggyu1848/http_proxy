@@ -27,8 +27,7 @@ curl --proxy http://127.0.0.1:8080 http://example.com/
 환경 변수로 명령줄 프로그램에 프록시를 지정할 수도 있다.
 
 ```bash
-HTTP_PROXY=http://127.0.0.1:8080 your-command
-HTTPS_PROXY=http://127.0.0.1:8080 your-command
+http_proxy=http://127.0.0.1:8080 https_proxy=http://127.0.0.1:8080 curl http://example.com/
 ```
 
 프로그램이 `NO_PROXY`를 설정하면 로컬 주소나 지정된 호스트가 프록시를 우회할 수 있다.
@@ -46,7 +45,7 @@ HTTPS_PROXY=http://127.0.0.1:8080 your-command
 - 프록시 설정을 무시하거나 직접 연결하는 프로그램의 통신
 - `NO_PROXY`나 프록시 우회 목록에 포함된 호스트. 이 목록에는 흔히 `localhost`가 들어 있다.
 - UDP를 사용하는 HTTP/3(QUIC). 브라우저는 첫 방문 뒤 HTTP/3으로 전환할 수 있다.
-- VPN 터널이나 다른 프록시로 보낸 통신
+- 이 프록시를 거치지 않고 VPN이나 다른 프록시로 직접 보낸 통신
 
 **Open Browser**로 연 검사 브라우저는 QUIC을 끈다. 직접 실행하는 Chrome에는 [HTTPS 복호화와 검사 브라우저](https.md#직접-실행한-chrome에서-http3-막기)의 예처럼 `--disable-quic`을 추가한다.
 

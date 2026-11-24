@@ -1,56 +1,22 @@
 # HTTPS 복호화 구현 설계
 
-## 문제
+복호화는 `CONNECT` 내부의 클라이언트 TLS와 업스트림 TLS를 각각 처리한다. 두 TLS 연결 사이에서 평문 HTTP와 같은 스트리밍 캡처 경로를 사용하며, 내부 요청의 목적지는 `CONNECT`가 지정한 호스트와 포트로 고정한다.
 
-현재 프록시는 CONNECT 트래픽을 읽지 않고 전달한다. HTTPS 복호화는 기본 터널 동작을 바꾸지 않으면서 양쪽 TLS를 종료해야 한다. 기존 스트리밍 캡처를 유지하고 실제 서버 인증서를 검증해야 한다. CONNECT 대상은 연결이 끝날 때까지 바뀌면 안 된다.
+## 모드와 CA 신뢰 설정
 
-## 사용자 흐름
+기본 모드는 TCP 터널이다. 사용자는 프록시를 멈춘 뒤 **Decrypt HTTPS**를 켜고 다시 시작한다. 프록시의 복호화 모드는 시작할 때 정해진다.
 
-앱은 터널 모드로 시작한다. 사용자는 프록시를 중지하고 HTTPS 복호화를 활성화한 다음 다시 시작한다. 앱은 이 설치에서만 사용하는 CA를 생성하거나 불러온다. UI는 공개 인증서 경로와 SHA-256 지문을 표시한다. 사용자는 공개 인증서만 클라이언트 신뢰 저장소에 등록한다.
+`http_inspector_core::interception::ProxyConfig::with_https_inspection`에 `http_inspector_core::https::HttpsInspection`을 전달하면 복호화 모드를 사용한다. `HttpsInspection`은 CA 디렉터리와 선택적 업스트림 루트 인증서 경로를 받는다. `ProxyHandle::ca_info`로 공개 인증서 경로와 SHA-256 지문을 읽는다.
 
-앱은 브라우저나 운영체제의 신뢰 저장소를 수정하지 않는다. 실행 중인 프록시의 모드는 시작할 때 고정한다.
-
-## 공개 타입
-
-```rust
-pub struct HttpsInspection {
-	ca_directory: PathBuf,
-	additional_upstream_root: Option<PathBuf>,
-}
-
-impl HttpsInspection {
-	pub fn new(ca_directory: PathBuf) -> Self;
-	pub fn with_additional_upstream_root(self, path: PathBuf) -> Self;
-}
-
-pub struct ProxyConfig {
-	// 기존 필드
-	https_inspection: Option<HttpsInspection>,
-}
-
-impl ProxyConfig {
-	pub fn with_https_inspection(self, config: HttpsInspection) -> Self;
-}
-
-pub struct CaInfo {
-	certificate_path: PathBuf,
-	fingerprint_sha256: String,
-}
-
-impl ProxyHandle {
-	pub fn ca_info(&self) -> Option<&CaInfo>;
-}
-```
-
-기본 설정에는 `HttpsInspection`이 없으며 기존 CONNECT 터널을 유지한다. TLS 라이브러리 타입은 공개 API에 노출하지 않는다.
+현재 사용자의 CA 신뢰 상태 조회, 등록과 제거는 `https::CaTrustStore`가 담당한다. Chrome과 Chromium은 Linux의 공용 NSS 저장소 또는 macOS의 로그인 키체인을 사용한다. Firefox 검사 창은 임시 프로필에 앱의 공개 인증서를 등록한다. 검사 브라우저 실행과 임시 프로필 관리는 `launcher`가 담당한다. [HTTPS 복호화와 검사 브라우저](guide/https.md)
 
 ## CA 소유권
 
 비공개 TLS 모듈이 CA 저장, 인증서 발급, 업스트림 루트 인증서와 rustls 설정을 소유한다. 복호화 모드는 권한이 `0700`인 디렉터리를 만든다. 모듈은 인증서와 개인키를 권한이 `0600`인 단일 원본 파일에 저장한다. 가져오기용 공개 인증서는 별도 경로에 저장한다.
 
-모듈은 CA를 생성하거나 읽기 전에 프로세스 잠금을 얻는다. 임시 파일을 완전히 기록하고 디스크에 반영한 다음 원본 파일 이름으로 바꾼다. 기존 개인키 파일은 일반 파일이어야 하며 안전한 권한을 가져야 한다. 파일이 없거나 손상되었거나 인증서와 키가 맞지 않으면 시작을 중단한다. 이미 신뢰한 CA를 자동으로 교체하지 않는다.
+모듈은 CA를 생성하거나 읽기 전에 프로세스 잠금을 얻는다. 임시 파일을 완전히 기록하고 디스크에 반영한 다음 원본 파일 이름으로 바꾼다. 기존 개인키 파일은 일반 파일이어야 하며 안전한 권한을 가져야 한다. 공개 인증서와 원본 파일이 모두 없으면 새 CA를 생성한다. 둘 중 하나만 있거나, 파일이 손상되었거나, 인증서와 키가 일치하지 않으면 시작을 중단한다. 이미 신뢰한 CA를 자동으로 교체하지 않는다.
 
-루트 인증서는 ECDSA P-256 키, 제한된 CA 기본 제약과 인증서 서명 용도를 사용한다. 각 CONNECT는 DNS 이름 또는 IP 주소가 SAN에 들어간 단기 leaf 인증서를 발급받는다. 첫 구현은 leaf 인증서를 공유 캐시에 저장하지 않는다.
+루트 인증서는 ECDSA P-256 키, 제한된 CA 기본 제약과 인증서 서명 용도를 사용한다. 각 CONNECT 연결에 DNS 이름 또는 IP 주소가 SAN에 들어간 단기 leaf 인증서를 새로 발급한다.
 
 ## CONNECT 처리
 
@@ -71,19 +37,19 @@ CONNECT 준비 실패는 상태 200 전에 HTTP 오류로 반환한다. 업그�
 
 ## 실행 범위
 
-TLS handshake와 연결 작업은 프록시 런타임에서 실행한다. handshake에는 timeout을 적용한다. 프록시를 중지하면 현재 동작과 같이 런타임이 활성 연결 작업을 종료한다. 본문 관찰기가 중간에 제거되면 미리보기 상태는 중단으로 바뀐다.
+TLS 핸드셰이크와 연결 작업은 프록시 런타임에서 실행한다. 핸드셰이크에는 제한 시간을 적용한다. 프록시를 중지하면 런타임이 활성 연결 작업을 종료한다. 본문을 보내는 쪽에서 스트림 오류가 발생하면 `Interrupted`, 받는 쪽에서 읽기를 중단하면 `Cancelled`로 기록한다.
 
-첫 구현은 HTTP/1.1만 지원한다. HTTP/2를 광고하지 않는다. 인증서 검증을 끄지 않으며 인증서 고정이나 클라이언트 인증서를 우회하지 않는다. 앱은 신뢰 저장소를 수정하지 않는다.
+복호화된 연결은 HTTP/1.1을 사용한다. 업스트림은 시스템 루트와 선택적으로 지정한 추가 루트로 검증한다. 인증서 고정이나 클라이언트 인증서가 요구되는 연결은 복호화에 실패할 수 있다.
 
 ## 설계 선택
 
-하나의 비공개 TLS 모듈이 보안 정책을 소유한다. 한 번 시작한 프록시는 변경되지 않는 모드를 사용한다. 평문 HTTP와 복호화된 HTTPS는 같은 캡처 경로를 사용한다. CONNECT마다 leaf 인증서를 발급해 첫 버전에서 공유 캐시 상태를 제거한다.
+`https` 모듈은 CA 파일, 인증서 발급, TLS 설정과 운영체제별 신뢰 등록을 관리한다. `interception` 모듈은 연결 수명과 HTTP 전달을 관리한다. 연결마다 leaf 인증서를 발급하므로 여러 연결에서 공유하는 leaf 인증서 캐시가 필요 없다.
 
-실행 중 모드를 바꾸는 설계는 UI와 네트워크 작업이 같은 잠금을 사용해야 해서 제외했다. 이 설계는 터널만 사용하는 사용자에게도 CA 파일을 만들었다. 별도 HTTPS 전달 경로는 헤더 제거, 본문 캡처와 오류 처리를 중복하므로 제외했다.
+실행 중 모드를 바꾸는 설계는 UI와 네트워크 작업이 같은 잠금을 사용해야 해서 제외했다. 모드를 시작할 때 정하면 터널 모드에서 TLS 상태를 초기화할 필요가 없다. 별도 HTTPS 전달 경로는 헤더 제거, 본문 캡처와 오류 처리를 중복하므로 제외했다.
 
 ## 검증 계약
 
-테스트는 다음 동작을 증명해야 한다.
+프록시 통합 테스트와 CA 단위 테스트가 다루는 검증 계약은 다음과 같다.
 
 - 기본 CONNECT가 임의 바이트를 계속 전달한다.
 - 생성된 CA를 신뢰한 클라이언트가 프록시를 통해 HTTPS를 전송한다.
@@ -95,8 +61,4 @@ TLS handshake와 연결 작업은 프록시 런타임에서 실행한다. handsh
 - 클라이언트 TLS 실패 시 평문 HTTP 응답을 추가로 보내지 않고 연결을 닫는다.
 - TLS handshake 중 프록시를 중지해도 종료가 멈추지 않는다.
 
-## 구현 조정
-
-비공개 함수 이름과 스트림 타입은 구현 과정에서 바꿀 수 있다. 공개 설정, CA 저장 규칙, 목적지 고정, 인증서 검증 또는 실패 동작을 바꾸면 같은 커밋에서 이 문서를 갱신한다.
-
-구현은 위 공개 계약을 그대로 따른다. PEM 파싱에는 별도 파서 대신 `rustls-pki-types`의 `PemObject`를 사용한다. 별도 파서가 RustSec 유지보수 중단 권고에 포함되어 `cargo deny` 검사를 통과하지 못했기 때문이다.
+검증 명령과 macOS 실환경 신뢰 등록 테스트는 [개발 문서](development.md#검증)를 참고한다.
