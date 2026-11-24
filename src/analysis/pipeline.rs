@@ -26,8 +26,13 @@ use crate::analysis::endpoint_schema::EndpointSchemas;
 use crate::analysis::url_map::{NodeId, UrlMap};
 use crate::{BodySource, Exchange};
 
-/// Most in-flight records watched for [`CaptureEvent::RecordSettled`]. Records
-/// added beyond this while it is full receive no settled event.
+/// Most in-flight records watched for [`CaptureEvent::RecordSettled`].
+///
+/// A record that is still in flight when it is added while this many are
+/// already watched never receives a settled event; it is counted in
+/// [`AnalysisPipeline::unwatched_records`] instead. Records that already
+/// finished when added are never affected. This is the same rule the URL map
+/// applies to its live tracking (`MAX_PENDING_EXCHANGES`, also 4,096).
 pub const MAX_WATCHED_RECORDS: usize = 4_096;
 
 /// Callback shared by background analyzers to ask the UI to repaint after a
@@ -45,8 +50,15 @@ pub enum CaptureEvent<'a> {
         /// its target could not be placed.
         node: Option<NodeId>,
     },
-    /// A record whose response and bodies stopped changing, delivered once
-    /// after its [`CaptureEvent::RecordAdded`].
+    /// A record whose response and bodies stopped changing, delivered at most
+    /// once after its [`CaptureEvent::RecordAdded`].
+    ///
+    /// A record that finished before it was added gets this event right
+    /// after `RecordAdded`. A record still in flight gets it only if the
+    /// pipeline could watch it: when [`MAX_WATCHED_RECORDS`] in-flight records
+    /// are already watched, it gets none and is counted in
+    /// [`AnalysisPipeline::unwatched_records`]. Records of a session cleared
+    /// before they finish get none either.
     RecordSettled {
         /// The settled record.
         exchange: &'a Exchange,
@@ -60,6 +72,12 @@ pub enum CaptureEvent<'a> {
 /// Analysis that consumes capture events and keeps its own results.
 ///
 /// Implementations are read back with [`AnalysisPipeline::analyzer`].
+///
+/// Every record is delivered as [`CaptureEvent::RecordAdded`], but not every
+/// record is delivered as [`CaptureEvent::RecordSettled`] (see its docs and
+/// [`MAX_WATCHED_RECORDS`]). An analyzer that needs every record should start
+/// from `RecordAdded`, and one that counts settled records can report
+/// [`AnalysisPipeline::unwatched_records`] as possibly missing.
 pub trait Analyzer: Any {
     /// Applies one capture event.
     fn handle(&mut self, event: &CaptureEvent<'_>);
@@ -101,6 +119,7 @@ pub struct AnalysisPipeline {
     endpoints: EndpointAnalysis,
     analyzers: Vec<Box<dyn Analyzer>>,
     watched: Vec<WatchedRecord>,
+    unwatched: u64,
     wake: Wake,
 }
 
@@ -111,6 +130,7 @@ impl fmt::Debug for AnalysisPipeline {
             .field("endpoints", &self.endpoints)
             .field("analyzers", &self.analyzers.len())
             .field("watched", &self.watched.len())
+            .field("unwatched", &self.unwatched)
             .finish_non_exhaustive()
     }
 }
@@ -149,6 +169,7 @@ impl AnalysisPipeline {
             endpoints,
             analyzers: Vec::new(),
             watched: Vec::new(),
+            unwatched: 0,
             wake,
         }
     }
@@ -168,7 +189,9 @@ impl AnalysisPipeline {
 
     /// Delivers a newly captured record: the URL map places it first, then
     /// every analyzer receives it with that placement. A record that already
-    /// finished is also delivered as settled right away.
+    /// finished is also delivered as settled right away. A record still in
+    /// flight is watched for settlement unless [`MAX_WATCHED_RECORDS`] records
+    /// are already watched, in which case it is counted as unwatched.
     pub fn record_added(&mut self, exchange: &Exchange) {
         let node = self.url_map.observe_exchange(exchange);
         self.dispatch(&CaptureEvent::RecordAdded { exchange, node });
@@ -179,19 +202,25 @@ impl AnalysisPipeline {
                 exchange: exchange.clone(),
                 node,
             });
+        } else {
+            self.unwatched = self.unwatched.saturating_add(1);
         }
     }
 
     /// Drops every aggregate in the URL map and every analyzer, as on `Clear`.
     pub fn session_cleared(&mut self) {
         self.watched.clear();
+        self.unwatched = 0;
         self.url_map.clear();
         self.dispatch(&CaptureEvent::SessionCleared);
     }
 
     /// Applies live progress without waiting: updates the URL map with
     /// streamed responses, delivers records that settled since the last call,
-    /// and collects background results. Returns `true` when anything changed.
+    /// and collects background results. Returns `true` when the URL map
+    /// changed, any settled event was delivered, or any analyzer reported
+    /// changed results; a delivered event does not mean an analyzer's results
+    /// changed.
     pub fn update(&mut self) -> bool {
         let mut changed = self.url_map.sync_live();
         let watched = std::mem::take(&mut self.watched);
@@ -211,6 +240,14 @@ impl AnalysisPipeline {
             changed |= analyzer.poll();
         }
         changed
+    }
+
+    /// In-flight records added since the last clear that were not watched
+    /// because [`MAX_WATCHED_RECORDS`] were already watched, so they never
+    /// receive [`CaptureEvent::RecordSettled`].
+    #[must_use]
+    pub const fn unwatched_records(&self) -> u64 {
+        self.unwatched
     }
 
     /// Returns the URL map built by the placement stage.
@@ -366,6 +403,44 @@ mod tests {
         assert_eq!(settled(&pipeline), Some(vec![id]));
         assert!(!pipeline.update());
         assert_eq!(settled(&pipeline), Some(vec![id]));
+    }
+
+    #[test]
+    fn records_beyond_the_watch_limit_get_no_settled_event() -> Result<(), Box<dyn Error>> {
+        let mut pipeline = AnalysisPipeline::disabled();
+        pipeline.register(Box::new(CountingAnalyzer::default()));
+        let watched: Vec<ExchangeWriter> = (0..MAX_WATCHED_RECORDS)
+            .map(|_| in_flight_writer())
+            .collect();
+        for writer in &watched {
+            pipeline.record_added(writer.exchange());
+        }
+        assert_eq!(pipeline.unwatched_records(), 0);
+
+        let overflow = in_flight_writer();
+        pipeline.record_added(overflow.exchange());
+        assert_eq!(pipeline.unwatched_records(), 1);
+
+        let finished = finished_exchange("/done")?;
+        pipeline.record_added(&finished);
+        let settled = |pipeline: &AnalysisPipeline| {
+            pipeline
+                .analyzer::<CountingAnalyzer>()
+                .map(|counter| counter.settled.clone())
+        };
+        assert_eq!(settled(&pipeline), Some(vec![finished.id()]));
+
+        assert!(overflow.settle(Outcome::Cancelled));
+        let _changed = pipeline.update();
+        assert_eq!(settled(&pipeline), Some(vec![finished.id()]));
+        let counter = pipeline
+            .analyzer::<CountingAnalyzer>()
+            .ok_or("analyzer not registered")?;
+        assert_eq!(counter.added.len(), MAX_WATCHED_RECORDS + 2);
+
+        pipeline.session_cleared();
+        assert_eq!(pipeline.unwatched_records(), 0);
+        Ok(())
     }
 
     #[test]
