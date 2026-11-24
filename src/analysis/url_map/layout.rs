@@ -85,7 +85,6 @@ impl ForceLayout {
         }
     }
 
-    /// Returns positioned graph nodes.
     #[must_use]
     pub fn nodes(&self) -> &[GraphNode] {
         &self.nodes

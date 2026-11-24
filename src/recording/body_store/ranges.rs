@@ -56,7 +56,6 @@ impl ContentRange {
         })
     }
 
-    /// Returns the number of bytes in the range.
     #[must_use]
     pub const fn byte_len(&self) -> u64 {
         // `parse` rejects an end of `u64::MAX`, so this cannot overflow.
@@ -126,7 +125,6 @@ impl RangePlan {
         self.total
     }
 
-    /// Returns the bytes the parts cover together.
     #[must_use]
     pub fn covered_bytes(&self) -> u64 {
         self.pieces.iter().map(|piece| piece.length).sum()

@@ -24,7 +24,7 @@ const MAX_INLINE_REQUESTS: usize = 100;
 /// Caches which retained [`Exchange`]s in [`RecordList`] fall in a
 /// [`RequestScope`] so steady UI frames never re-parse up to 2,000 request URLs.
 #[derive(Default)]
-pub(in crate::ui) struct RecordMatchCache {
+pub(crate) struct RecordMatchCache {
     key: Option<RequestScope>,
     revision: Option<u64>,
     has_previews: bool,
@@ -34,7 +34,7 @@ pub(in crate::ui) struct RecordMatchCache {
 }
 
 impl RecordMatchCache {
-    pub(in crate::ui) fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.key = None;
         self.revision = None;
         self.has_previews = false;
@@ -43,7 +43,7 @@ impl RecordMatchCache {
         self.newest_previews.clear();
     }
 
-    pub(in crate::ui) fn sync(
+    pub(crate) fn sync(
         &mut self,
         key: &RequestScope,
         records: &RecordList<Exchange>,
@@ -77,19 +77,15 @@ impl RecordMatchCache {
         }
     }
 
-    pub(in crate::ui) const fn matched_count(&self) -> usize {
+    pub(crate) const fn matched_count(&self) -> usize {
         self.matched_count
     }
 
-    pub(in crate::ui) fn is_fresh_for(
-        &self,
-        key: &RequestScope,
-        records: &RecordList<Exchange>,
-    ) -> bool {
+    pub(super) fn is_fresh_for(&self, key: &RequestScope, records: &RecordList<Exchange>) -> bool {
         self.key.as_ref() == Some(key) && self.revision == Some(records.revision())
     }
 
-    pub(in crate::ui) fn fresh_ids(
+    pub(crate) fn fresh_ids(
         &self,
         key: &RequestScope,
         records: &RecordList<Exchange>,
@@ -98,7 +94,7 @@ impl RecordMatchCache {
     }
 
     #[cfg(test)]
-    pub(in crate::ui) fn contains(&self, id: RecordId) -> bool {
+    pub(super) fn contains(&self, id: RecordId) -> bool {
         self.matched_ids.contains(&id)
     }
 }

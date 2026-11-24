@@ -14,18 +14,18 @@ use std::collections::HashMap;
 /// instructions keep their `<![CDATA[` and `<?` delimiters, and comments are
 /// also italic.
 #[derive(Clone, Copy, Debug)]
-pub(in crate::ui) struct SyntaxPalette {
-    pub(in crate::ui) key: Color32,
-    pub(in crate::ui) string: Color32,
-    pub(in crate::ui) number: Color32,
-    pub(in crate::ui) literal: Color32,
-    pub(in crate::ui) punctuation: Color32,
-    pub(in crate::ui) tag: Color32,
-    pub(in crate::ui) comment: Color32,
+pub(super) struct SyntaxPalette {
+    pub(super) key: Color32,
+    pub(super) string: Color32,
+    pub(super) number: Color32,
+    pub(super) literal: Color32,
+    pub(super) punctuation: Color32,
+    pub(super) tag: Color32,
+    pub(super) comment: Color32,
 }
 
 impl SyntaxPalette {
-    pub(in crate::ui) const fn for_theme(theme: Theme) -> Self {
+    pub(super) const fn for_theme(theme: Theme) -> Self {
         match theme {
             Theme::Light => Self {
                 key: Color32::from_rgb(120, 30, 125),
@@ -101,7 +101,7 @@ impl<'a> PrefixWidths<'a> {
 /// Builds the highlighted layout once; callers cache it per selection.
 /// Visual-only continuation indents on `styled` become section `leading_space`
 /// so [`LayoutJob::text`] stays free of display padding.
-pub(in crate::ui) fn layout_job(
+pub(super) fn layout_job(
     ctx: &egui::Context,
     styled: &Styled,
     palette: &SyntaxPalette,
@@ -157,7 +157,7 @@ pub(in crate::ui) fn layout_job(
 /// Builds one layout per line of `styled`, without the line ends, so a
 /// view can lay out and draw only the visible lines while preserving visual
 /// continuation indentation.
-pub(in crate::ui) fn line_jobs(
+pub(super) fn line_jobs(
     ctx: &egui::Context,
     styled: &Styled,
     palette: &SyntaxPalette,

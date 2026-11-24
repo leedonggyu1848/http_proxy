@@ -144,7 +144,6 @@ impl RelationshipGraph {
         &self.domains
     }
 
-    /// Returns all domain-level edges.
     #[must_use]
     pub const fn domain_edges(&self) -> &BTreeMap<DomainEdgeKey, DomainEdgeStats> {
         &self.domain_edges

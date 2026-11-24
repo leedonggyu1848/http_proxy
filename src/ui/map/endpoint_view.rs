@@ -24,7 +24,7 @@ const FEW_SAMPLES: u64 = 3;
 /// Per-method endpoint aggregates merged for the selected node, rebuilt only
 /// when the node, its folded raw nodes, or the aggregates change.
 #[derive(Default)]
-pub(in crate::ui) struct EndpointCache {
+pub(super) struct EndpointCache {
     key: Option<ViewNodeKey>,
     raw_node_ids: Vec<NodeId>,
     version: Option<u64>,
@@ -32,7 +32,7 @@ pub(in crate::ui) struct EndpointCache {
 }
 
 impl EndpointCache {
-    pub(in crate::ui) fn clear(&mut self) {
+    pub(super) fn clear(&mut self) {
         *self = Self::default();
     }
 

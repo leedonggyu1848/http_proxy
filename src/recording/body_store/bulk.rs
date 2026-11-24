@@ -41,7 +41,6 @@ pub struct BulkProgress {
 }
 
 impl BulkProgress {
-    /// Returns how many bodies the save covers.
     #[must_use]
     pub const fn total(&self) -> usize {
         self.total
@@ -53,7 +52,6 @@ impl BulkProgress {
         self.done.load(Ordering::Acquire)
     }
 
-    /// Returns the bytes written so far.
     #[must_use]
     pub fn bytes(&self) -> u64 {
         self.bytes.load(Ordering::Acquire)
@@ -95,7 +93,6 @@ impl BulkSummary {
         self.incomplete
     }
 
-    /// Returns how many bodies could not be written.
     #[must_use]
     pub const fn failed(&self) -> usize {
         self.failed
@@ -116,7 +113,6 @@ pub struct BulkSave {
 }
 
 impl BulkSave {
-    /// Returns the live progress.
     #[must_use]
     pub fn progress(&self) -> &BulkProgress {
         &self.progress

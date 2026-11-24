@@ -2,7 +2,7 @@
 //! [`http_proxy::analysis::search`].
 
 mod controller;
-pub(in crate::ui) mod highlight;
+pub(super) mod highlight;
 
-pub(in crate::ui) use controller::RequestSearch;
-pub(in crate::ui) use http_proxy::analysis::search::Query;
+pub(crate) use controller::RequestSearch;
+pub(super) use http_proxy::analysis::search::Query;

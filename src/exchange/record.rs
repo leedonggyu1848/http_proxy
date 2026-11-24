@@ -72,7 +72,6 @@ impl CapturedRequest {
         }
     }
 
-    /// Returns the HTTP method.
     #[must_use]
     pub const fn method(&self) -> &Method {
         &self.method
@@ -149,7 +148,6 @@ impl CapturedResponse {
         }
     }
 
-    /// Returns the status code.
     #[must_use]
     pub const fn status(&self) -> StatusCode {
         self.status
@@ -465,13 +463,11 @@ impl Exchange {
         self.inner.started_at
     }
 
-    /// Returns the client's request.
     #[must_use]
     pub fn request(&self) -> &CapturedRequest {
         &self.inner.request
     }
 
-    /// Returns the current outcome.
     #[must_use]
     pub fn outcome(&self) -> &Outcome {
         self.inner

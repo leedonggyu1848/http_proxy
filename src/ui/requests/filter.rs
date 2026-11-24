@@ -15,7 +15,7 @@ use crate::ui::style::theme::Palette;
 
 impl InspectorApp {
     /// Filter, list options, and Clear, shown right above the request list.
-    pub(in crate::ui) fn filters(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn filters(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             self.requests.search.controls(ui);
             egui::ComboBox::from_id_salt("record-filter")
@@ -100,7 +100,7 @@ impl InspectorApp {
         counted.max(u64::try_from(retained).unwrap_or(u64::MAX))
     }
 
-    pub(in crate::ui) fn request_table(&mut self, ui: &mut egui::Ui, shortcuts_allowed: bool) {
+    pub(crate) fn request_table(&mut self, ui: &mut egui::Ui, shortcuts_allowed: bool) {
         let requests = &mut self.requests;
         requests.update_filters(ui.ctx());
         let rows = visible_records(
@@ -151,7 +151,7 @@ impl InspectorApp {
 }
 
 /// Records that match the outcome filter, optional Map node prefix, and search, in arrival order.
-pub(in crate::ui) fn visible_records<'a>(
+pub(crate) fn visible_records<'a>(
     records: &'a RecordList<Exchange>,
     filter: RecordFilter,
     search: &RequestSearch,

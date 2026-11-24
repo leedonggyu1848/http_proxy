@@ -76,7 +76,6 @@ impl<T> RecordList<T> {
         self.evicted
     }
 
-    /// Returns the number of currently retained records.
     #[must_use]
     pub fn len(&self) -> usize {
         self.records.len()

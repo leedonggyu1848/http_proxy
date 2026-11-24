@@ -256,7 +256,6 @@ impl AnalysisPipeline {
         &self.url_map
     }
 
-    /// Returns the merged endpoint schema aggregates.
     #[must_use]
     pub const fn endpoint_schemas(&self) -> &EndpointSchemas {
         self.endpoints.schemas()

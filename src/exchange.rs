@@ -441,13 +441,11 @@ impl BodySnapshot {
         self.observed_bytes
     }
 
-    /// Returns the stream lifecycle.
     #[must_use]
     pub const fn lifecycle(&self) -> BodyLifecycle {
         self.lifecycle
     }
 
-    /// Returns how much preview data was retained.
     #[must_use]
     pub const fn retention(&self) -> BodyRetention {
         self.retention

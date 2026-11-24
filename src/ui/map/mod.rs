@@ -5,7 +5,7 @@ mod endpoint_view;
 mod graph_pane;
 mod tree_pane;
 
-pub(in crate::ui) use detail_pane::RecordMatchCache;
+pub(crate) use detail_pane::RecordMatchCache;
 
 use std::collections::{HashMap, HashSet};
 
@@ -21,7 +21,7 @@ use http_proxy::exchange::{Exchange, RecordId};
 
 /// Active sub-view inside the Map tab.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(in crate::ui) enum MapSubView {
+pub(super) enum MapSubView {
     /// Host -> path segment tree with inline metrics and right detail pane.
     #[default]
     Tree,
@@ -31,7 +31,7 @@ pub(in crate::ui) enum MapSubView {
 
 /// File export formats supported from the Map panel.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::ui) enum MapExportFormat {
+pub(super) enum MapExportFormat {
     /// Indented plain-text tree.
     TreeText,
     /// Structured JSON (nodes, aggregates, query names, domain & URL edges).
@@ -43,14 +43,14 @@ pub(in crate::ui) enum MapExportFormat {
 }
 
 impl MapExportFormat {
-    pub(in crate::ui) const fn file_prefix(self) -> &'static str {
+    pub(super) const fn file_prefix(self) -> &'static str {
         match self {
             Self::TreeText | Self::TreeJson => "http-inspector-url-map",
             Self::GraphMermaid | Self::GraphDot => "http-inspector-url-graph",
         }
     }
 
-    pub(in crate::ui) const fn extension(self) -> &'static str {
+    pub(super) const fn extension(self) -> &'static str {
         match self {
             Self::TreeText => "txt",
             Self::TreeJson => "json",
@@ -62,7 +62,7 @@ impl MapExportFormat {
 
 /// Actions emitted by [`MapPanel`] for [`crate::ui::InspectorApp`] to handle.
 #[derive(Clone, Debug)]
-pub(in crate::ui) enum MapAction {
+pub(super) enum MapAction {
     /// Filter the Requests view to a node's subtree or one endpoint and switch to it.
     ShowInRequests(RequestScope),
     /// Select a specific retained exchange and switch to the Requests view.
@@ -75,10 +75,10 @@ pub(in crate::ui) enum MapAction {
 
 /// Edge visibility flags for the relationship graph.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::ui) struct EdgeVisibility {
-    pub(in crate::ui) referer: bool,
-    pub(in crate::ui) origin: bool,
-    pub(in crate::ui) redirect: bool,
+pub(super) struct EdgeVisibility {
+    pub(super) referer: bool,
+    pub(super) origin: bool,
+    pub(super) redirect: bool,
 }
 
 impl Default for EdgeVisibility {
@@ -92,7 +92,7 @@ impl Default for EdgeVisibility {
 }
 
 impl EdgeVisibility {
-    pub(in crate::ui) const fn allows(self, kind: EdgeKind) -> bool {
+    pub(super) const fn allows(self, kind: EdgeKind) -> bool {
         match kind {
             EdgeKind::Referer => self.referer,
             EdgeKind::Origin => self.origin,
@@ -102,12 +102,12 @@ impl EdgeVisibility {
 }
 
 /// UI state and cached view projection for the URL Map tab.
-pub(in crate::ui) struct MapPanel {
-    pub(in crate::ui) sub_view: MapSubView,
-    pub(in crate::ui) filter: TreeFilter,
-    pub(in crate::ui) sort: TreeSortField,
-    pub(in crate::ui) direction: SortDirection,
-    pub(in crate::ui) selected: Option<ViewNodeKey>,
+pub(super) struct MapPanel {
+    pub(super) sub_view: MapSubView,
+    pub(super) filter: TreeFilter,
+    pub(super) sort: TreeSortField,
+    pub(super) direction: SortDirection,
+    pub(super) selected: Option<ViewNodeKey>,
     expanded_overrides: HashMap<ViewNodeKey, bool>,
     cached_roots: Vec<ViewNode>,
     cached_rows: Vec<VisibleRow>,
@@ -132,7 +132,7 @@ impl Default for MapPanel {
 }
 
 impl MapPanel {
-    pub(in crate::ui) fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             sub_view: MapSubView::Tree,
             filter: TreeFilter::default(),
@@ -158,7 +158,7 @@ impl MapPanel {
     }
 
     /// Resets transient selection, caches, and graph state after `Clear`.
-    pub(in crate::ui) fn clear(&mut self) {
+    pub(super) fn clear(&mut self) {
         self.selected = None;
         self.expanded_overrides.clear();
         self.cached_roots.clear();
@@ -173,17 +173,17 @@ impl MapPanel {
     }
 
     /// Returns the currently configured top-N domain limit for graph exports.
-    pub(in crate::ui) const fn max_graph_domains(&self) -> usize {
+    pub(super) const fn max_graph_domains(&self) -> usize {
         self.layout.max_domains()
     }
 
     /// Reports whether ID folding is currently active.
-    pub(in crate::ui) const fn fold_ids(&self) -> bool {
+    pub(super) const fn fold_ids(&self) -> bool {
         self.filter.fold_ids
     }
 
     /// Rebuilds the cached projected tree and flattened rows only when inputs changed.
-    pub(in crate::ui) fn ensure_projection(&mut self, map: &UrlMap) {
+    pub(super) fn ensure_projection(&mut self, map: &UrlMap) {
         let needs_rebuild = self.cached_version != map.version()
             || self.cached_filter != self.filter
             || self.cached_sort != self.sort
@@ -208,7 +208,7 @@ impl MapPanel {
     }
 
     /// Renders the controls bar above the Map main area.
-    pub(in crate::ui) fn controls(
+    pub(super) fn controls(
         &mut self,
         ui: &mut egui::Ui,
         map: &UrlMap,
@@ -238,7 +238,7 @@ impl MapPanel {
     }
 
     /// Renders the left tree pane (used when `sub_view == MapSubView::Tree`).
-    pub(in crate::ui) fn show_tree_pane(
+    pub(super) fn show_tree_pane(
         &mut self,
         ui: &mut egui::Ui,
         map: &UrlMap,
@@ -249,7 +249,7 @@ impl MapPanel {
     }
 
     /// Renders the right detail pane for the selected tree node.
-    pub(in crate::ui) fn show_detail_pane(
+    pub(super) fn show_detail_pane(
         &mut self,
         ui: &mut egui::Ui,
         map: &UrlMap,
@@ -275,7 +275,7 @@ impl MapPanel {
     }
 
     /// Renders the interactive domain relationship graph.
-    pub(in crate::ui) fn show_graph_pane(&mut self, ui: &mut egui::Ui, map: &UrlMap) {
+    pub(super) fn show_graph_pane(&mut self, ui: &mut egui::Ui, map: &UrlMap) {
         if let Some(host) = graph_pane::show(
             ui,
             map.graph(),
@@ -291,7 +291,7 @@ impl MapPanel {
     ///
     /// If `host` exists in `map` but is hidden by the active tree filters, clears
     /// the blocking filters so the host is visible, expanded, and selected.
-    pub(in crate::ui) fn jump_to_host(&mut self, map: &UrlMap, host: &str) {
+    pub(super) fn jump_to_host(&mut self, map: &UrlMap, host: &str) {
         self.sub_view = MapSubView::Tree;
         if !self.filter.host_query.is_empty()
             && !host
@@ -331,7 +331,7 @@ impl MapPanel {
         }
     }
 
-    pub(in crate::ui) fn set_expanded(&mut self, key: ViewNodeKey, expanded: bool) {
+    pub(super) fn set_expanded(&mut self, key: ViewNodeKey, expanded: bool) {
         let _ = self.expanded_overrides.insert(key, expanded);
         self.rows_dirty = true;
     }

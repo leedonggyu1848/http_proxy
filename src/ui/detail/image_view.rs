@@ -73,7 +73,7 @@ fn mismatch_text(declared: ImageFormat, format: ImageFormat) -> Option<String> {
 }
 
 /// Formats `bytes` as offset, hexadecimal and ASCII columns, 16 bytes per line.
-pub(in crate::ui) fn hex_dump(bytes: &[u8]) -> String {
+pub(super) fn hex_dump(bytes: &[u8]) -> String {
     let mut text = String::new();
     for (line, chunk) in bytes.chunks(16).enumerate() {
         let _ = write!(text, "{:08x} ", line * 16);
@@ -135,13 +135,13 @@ struct Loaded {
 /// Image, source, or hexadecimal view of the selected image response body,
 /// with the last decoded texture kept so it is not decoded again every frame.
 #[derive(Default)]
-pub(in crate::ui) struct ImagePanel {
+pub(crate) struct ImagePanel {
     cached: Option<(BodyKey, Loaded)>,
     view: Option<(RecordId, View)>,
 }
 
 impl ImagePanel {
-    pub(in crate::ui) fn show(
+    pub(super) fn show(
         &mut self,
         ui: &mut egui::Ui,
         record: RecordId,

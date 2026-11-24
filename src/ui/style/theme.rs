@@ -1,21 +1,21 @@
 //! Theme selection, accessible status colors, and settings at the filesystem boundary.
 use eframe::egui::{self, Color32};
-pub(in crate::ui) use egui::Theme;
+pub(crate) use egui::Theme;
 
-pub(in crate::ui) struct Palette {
-    pub(in crate::ui) success: Color32,
-    pub(in crate::ui) error: Color32,
-    pub(in crate::ui) warning: Color32,
-    pub(in crate::ui) info: Color32,
-    pub(in crate::ui) muted: Color32,
+pub(crate) struct Palette {
+    pub(crate) success: Color32,
+    pub(crate) error: Color32,
+    pub(crate) warning: Color32,
+    pub(crate) info: Color32,
+    pub(crate) muted: Color32,
 }
 
 impl Palette {
-    pub(in crate::ui) fn of(ui: &egui::Ui) -> Self {
+    pub(crate) fn of(ui: &egui::Ui) -> Self {
         Self::for_theme(ui.ctx().theme())
     }
 
-    pub(in crate::ui) const fn for_theme(theme: Theme) -> Self {
+    pub(crate) const fn for_theme(theme: Theme) -> Self {
         match theme {
             Theme::Light => Self {
                 success: Color32::from_rgb(0, 90, 40),
@@ -68,7 +68,7 @@ fn visuals(theme: Theme) -> egui::Visuals {
     visuals
 }
 
-pub(in crate::ui) struct ThemeSettings {
+pub(crate) struct ThemeSettings {
     preference: egui::ThemePreference,
     path: Option<std::path::PathBuf>,
     error: Option<String>,
@@ -91,7 +91,7 @@ const fn serialize(preference: egui::ThemePreference) -> &'static str {
 }
 
 impl ThemeSettings {
-    pub(in crate::ui) fn new(context: &egui::Context) -> Self {
+    pub(crate) fn new(context: &egui::Context) -> Self {
         let path = http_proxy::settings::paths::settings_directory(|name| std::env::var_os(name))
             .map(|directory| directory.join("theme"));
         let preference = path
@@ -112,7 +112,7 @@ impl ThemeSettings {
     }
 
     /// Shows the theme choice inside the settings menu.
-    pub(in crate::ui) fn menu(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn menu(&mut self, ui: &mut egui::Ui) {
         let previous = self.preference;
         ui.label("Theme");
         for (value, label) in [
@@ -139,7 +139,7 @@ impl ThemeSettings {
     }
 
     /// Shows a theme save error in the status bar.
-    pub(in crate::ui) fn status(&self, ui: &mut egui::Ui) {
+    pub(crate) fn status(&self, ui: &mut egui::Ui) {
         if let Some(error) = &self.error {
             ui.colored_label(Palette::of(ui).error, error);
         }
@@ -165,7 +165,7 @@ impl ThemeSettings {
 /// Asserts WCAG AA contrast (4.5:1) of `foreground` on every background a
 /// text widget of `theme` can have.
 #[cfg(test)]
-pub(in crate::ui) fn assert_readable(theme: Theme, foreground: Color32) {
+pub(crate) fn assert_readable(theme: Theme, foreground: Color32) {
     fn luminance(color: Color32) -> f64 {
         let linear = |channel: u8| {
             let value = f64::from(channel) / 255.0;

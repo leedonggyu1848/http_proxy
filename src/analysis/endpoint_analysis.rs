@@ -71,7 +71,6 @@ impl EndpointAnalysis {
         self.schemas.clear();
     }
 
-    /// Returns the merged endpoint schema aggregates.
     #[must_use]
     pub const fn schemas(&self) -> &EndpointSchemas {
         &self.schemas

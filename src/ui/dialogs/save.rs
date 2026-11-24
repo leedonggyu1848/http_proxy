@@ -16,19 +16,19 @@ type SaveCompletion = io::Result<PathBuf>;
 
 /// A `Save` menu item that opens a dialog owned by the app.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::ui) enum SaveMenuAction {
+pub(crate) enum SaveMenuAction {
     ExportHar,
     SaveBodies,
 }
 
-pub(in crate::ui) struct SaveControls {
+pub(crate) struct SaveControls {
     directory: String,
     pending: Option<BackgroundTask<PathBuf>>,
     status: Option<SaveCompletion>,
 }
 
 impl SaveControls {
-    pub(in crate::ui) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             directory: std::env::current_dir()
                 .map_or_else(|_| String::new(), |path| path.display().to_string()),
@@ -39,7 +39,7 @@ impl SaveControls {
 
     /// Shows the `Save` menu in the toolbar and reports a chosen item that
     /// opens a dialog.
-    pub(in crate::ui) fn menu(
+    pub(crate) fn menu(
         &mut self,
         ui: &mut egui::Ui,
         log: Option<&FullLog>,
@@ -58,18 +58,18 @@ impl SaveControls {
     }
 
     /// Reports whether a save is still running.
-    pub(in crate::ui) const fn is_busy(&self) -> bool {
+    pub(crate) const fn is_busy(&self) -> bool {
         self.pending.is_some()
     }
 
     /// Suggests a new file in the save directory, without checking it.
-    pub(in crate::ui) fn suggested_path(&self, extension: &str) -> String {
+    pub(crate) fn suggested_path(&self, extension: &str) -> String {
         self.destination(extension)
             .map_or_else(|_| String::new(), |path| path.display().to_string())
     }
 
     /// Writes `records` as HAR to `path` on a worker thread.
-    pub(in crate::ui) fn export_har(
+    pub(crate) fn export_har(
         &mut self,
         context: &egui::Context,
         records: Vec<Exchange>,
@@ -86,7 +86,7 @@ impl SaveControls {
 
     /// Writes `content` to a new, non-clobbering file inside the configured
     /// `Save directory` on a worker thread.
-    pub(in crate::ui) fn save_text_file(
+    pub(crate) fn save_text_file(
         &mut self,
         context: &egui::Context,
         prefix: &str,
@@ -161,7 +161,7 @@ impl SaveControls {
     }
 
     /// Shows the result of the last save in the status bar.
-    pub(in crate::ui) fn status(&self, ui: &mut egui::Ui) {
+    pub(crate) fn status(&self, ui: &mut egui::Ui) {
         match &self.status {
             Some(Ok(path)) => {
                 ui.label(format!("Saved: {}", path.display()));
@@ -190,7 +190,7 @@ impl SaveControls {
     }
 
     /// Returns the chosen save directory when it exists.
-    pub(in crate::ui) fn directory(&self) -> io::Result<PathBuf> {
+    pub(crate) fn directory(&self) -> io::Result<PathBuf> {
         let directory = Path::new(&self.directory);
         if !directory.is_dir() {
             return Err(io::Error::new(

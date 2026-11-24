@@ -3,11 +3,11 @@
 use eframe::egui;
 
 /// One-line scope at the top of the capture help.
-pub(in crate::ui) const SCOPE_SUMMARY: &str = "Capture scope: only HTTP traffic that a client sends through this proxy. \
+pub(super) const SCOPE_SUMMARY: &str = "Capture scope: only HTTP traffic that a client sends through this proxy. \
      Other traffic on this computer is not recorded.";
 
 /// Explains what a CONNECT tunnel row does and does not contain.
-pub(in crate::ui) const TUNNEL_NOTE: &str = "CONNECT tunnel forwarded without decryption, as HTTPS uses by default. \
+pub(crate) const TUNNEL_NOTE: &str = "CONNECT tunnel forwarded without decryption, as HTTPS uses by default. \
      Only the host, port, byte counts, and duration are recorded. \
      URL paths, headers, and bodies inside the tunnel are not recorded. \
      Enable Decrypt HTTPS to inspect requests in new connections.";
@@ -35,7 +35,7 @@ fn disable_quic_example(address: std::net::SocketAddr) -> String {
 }
 
 /// Shows the `?` button whose popup explains the capture scope.
-pub(in crate::ui) fn button(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>) {
+pub(crate) fn button(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>) {
     ui.menu_button("?", |ui| {
         let viewport = ui.ctx().content_rect();
         let max_width = (viewport.width() - 32.0).clamp(240.0, 520.0);

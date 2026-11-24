@@ -11,14 +11,14 @@ use crate::ui::detail::search::highlight::{self, MatchColors};
 /// One match: the line it is on (0 for text shown without line numbers)
 /// and its byte range in that line or text.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::ui) struct Hit {
-    pub(in crate::ui) line: usize,
-    pub(in crate::ui) range: Range<usize>,
+pub(super) struct Hit {
+    pub(super) line: usize,
+    pub(super) range: Range<usize>,
 }
 
 /// Matches of the active query in the text a body view shows.
 #[derive(Debug)]
-pub(in crate::ui) struct BodyMatches {
+pub(super) struct BodyMatches {
     hits: Vec<Hit>,
     current: usize,
     /// The view should scroll the current match into sight.
@@ -30,7 +30,7 @@ impl BodyMatches {
     /// Finds matches in `lines` when the text is shown line by line, or in
     /// `job` otherwise. Matches across line ends are not marked in a line
     /// view.
-    pub(in crate::ui) fn find(
+    pub(super) fn find(
         matcher: &Matcher,
         job: &LayoutJob,
         lines: Option<&[LayoutJob]>,
@@ -55,12 +55,12 @@ impl BodyMatches {
     }
 
     #[cfg(test)]
-    pub(in crate::ui) const fn len(&self) -> usize {
+    pub(super) const fn len(&self) -> usize {
         self.hits.len()
     }
 
     /// Returns `job` and `lines` with every match marked.
-    pub(in crate::ui) fn mark(
+    pub(super) fn mark(
         &self,
         job: &LayoutJob,
         lines: Option<&[LayoutJob]>,
@@ -104,7 +104,7 @@ impl BodyMatches {
 
     /// The current match, once, after it changed, so the view can scroll
     /// to it.
-    pub(in crate::ui) fn take_scroll(&mut self) -> Option<Hit> {
+    pub(super) fn take_scroll(&mut self) -> Option<Hit> {
         if !std::mem::take(&mut self.scroll) {
             return None;
         }
@@ -113,7 +113,7 @@ impl BodyMatches {
 
     /// Shows the position among matches with Previous and Next buttons.
     /// Returns `true` when the current match changed.
-    pub(in crate::ui) fn controls(&mut self, ui: &mut egui::Ui) -> bool {
+    pub(super) fn controls(&mut self, ui: &mut egui::Ui) -> bool {
         let count = self.hits.len();
         if count == 0 {
             ui.weak("No search matches in the shown text.");
@@ -146,7 +146,7 @@ impl BodyMatches {
     }
 
     #[cfg(test)]
-    pub(in crate::ui) fn step(&mut self) {
+    pub(super) fn step(&mut self) {
         self.current = (self.current + 1) % self.hits.len().max(1);
         self.scroll = true;
     }

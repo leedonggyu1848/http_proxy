@@ -7,7 +7,7 @@ use http_proxy::interop::har::HarOptions;
 
 /// Which records an export contains.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(in crate::ui) enum HarScope {
+pub(crate) enum HarScope {
     /// Every record kept in the request list.
     #[default]
     All,
@@ -17,17 +17,17 @@ pub(in crate::ui) enum HarScope {
 
 /// An export the user confirmed.
 #[derive(Debug, Eq, PartialEq)]
-pub(in crate::ui) struct HarExport {
-    pub(in crate::ui) scope: HarScope,
-    pub(in crate::ui) options: HarOptions,
-    pub(in crate::ui) path: PathBuf,
+pub(crate) struct HarExport {
+    pub(crate) scope: HarScope,
+    pub(crate) options: HarOptions,
+    pub(crate) path: PathBuf,
 }
 
 /// Numbers of records each scope would export.
 #[derive(Clone, Copy, Debug)]
-pub(in crate::ui) struct ScopeCounts {
-    pub(in crate::ui) all: usize,
-    pub(in crate::ui) filtered: usize,
+pub(crate) struct ScopeCounts {
+    pub(crate) all: usize,
+    pub(crate) filtered: usize,
 }
 
 impl ScopeCounts {
@@ -41,7 +41,7 @@ impl ScopeCounts {
 
 /// Window state. Options reset to the safe default each time it opens.
 #[derive(Default)]
-pub(in crate::ui) struct HarDialog {
+pub(crate) struct HarDialog {
     open: bool,
     path: String,
     scope: HarScope,
@@ -50,7 +50,7 @@ pub(in crate::ui) struct HarDialog {
 
 impl HarDialog {
     /// Opens the window with `path` as the suggested file and default options.
-    pub(in crate::ui) fn open(&mut self, path: String) {
+    pub(crate) fn open(&mut self, path: String) {
         *self = Self {
             open: true,
             path,
@@ -58,12 +58,12 @@ impl HarDialog {
         };
     }
 
-    pub(in crate::ui) const fn is_open(&self) -> bool {
+    pub(crate) const fn is_open(&self) -> bool {
         self.open
     }
 
     /// Shows the window while it is open and returns the confirmed export.
-    pub(in crate::ui) fn show(
+    pub(crate) fn show(
         &mut self,
         context: &egui::Context,
         counts: ScopeCounts,

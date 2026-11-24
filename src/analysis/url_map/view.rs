@@ -1,5 +1,6 @@
-//! View projection of [`UrlMap`] supporting ID folding (shared with #69),
-//! filtering, sorting, and virtualized row flattening.
+//! View projection of [`UrlMap`] supporting ID folding, filtering, sorting,
+//! and virtualized row flattening. The URL map and endpoint details use the
+//! same ID classification so their folded paths agree.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -15,8 +16,9 @@ use crate::analysis::url::{
 };
 use crate::exchange::Exchange;
 
-/// Stable identity of a rendered tree node, preserved across live updates and
-/// shared with `Show in Requests` filtering and endpoint details (#69).
+/// Stable identity of a rendered tree node, preserved across live updates.
+/// The origin and path pattern identify the same node in the request filter
+/// and endpoint details.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ViewNodeKey {
     /// Origin root of this node.
@@ -405,7 +407,7 @@ pub struct ViewNode {
     pub subtree: NodeStats,
     /// Newest creation time among raw nodes merged into this view node.
     pub created_at: Instant,
-    /// Underlying raw [`NodeId`]s merged into this view node (reused by #69 endpoint schema merging).
+    /// Raw [`NodeId`]s used to merge endpoint schemas for this view node.
     pub raw_node_ids: Vec<NodeId>,
     /// Sorted, filtered child nodes.
     pub children: Vec<Self>,

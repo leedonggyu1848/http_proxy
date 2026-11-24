@@ -17,7 +17,7 @@ use http_proxy::interop::map_export::{
     export_graph_dot, export_graph_mermaid, export_tree_json, export_tree_text,
 };
 
-pub(in crate::ui) const MAX_RECORDS: usize = 2_000;
+pub(super) const MAX_RECORDS: usize = 2_000;
 /// Repaint interval while pending requests or streaming bodies change on screen.
 const LIVE_REPAINT: Duration = Duration::from_millis(250);
 /// Repaint interval otherwise, to notice an engine that stopped on its own.
@@ -61,13 +61,13 @@ fn init_tracing() {
         .is_err();
 }
 
-pub(in crate::ui) struct InspectorApp {
-    pub(in crate::ui) session: SessionState,
-    pub(in crate::ui) requests: RequestsState,
-    pub(in crate::ui) detail: DetailState,
-    pub(in crate::ui) map: MapState,
-    pub(in crate::ui) dialogs: Dialogs,
-    pub(in crate::ui) layout: LayoutState,
+pub(super) struct InspectorApp {
+    pub(super) session: SessionState,
+    pub(super) requests: RequestsState,
+    pub(super) detail: DetailState,
+    pub(super) map: MapState,
+    pub(super) dialogs: Dialogs,
+    pub(super) layout: LayoutState,
     context: egui::Context,
 }
 
@@ -92,7 +92,7 @@ impl InspectorApp {
         app
     }
 
-    pub(in crate::ui) fn stop_proxy(&mut self) {
+    pub(super) fn stop_proxy(&mut self) {
         self.dialogs.close_proxy_controls();
         if let Some(proxy) = self.take_proxy()
             && let Err(error) = proxy.stop()
@@ -136,7 +136,7 @@ impl InspectorApp {
         }
     }
 
-    pub(in crate::ui) fn clear_session(&mut self) {
+    pub(super) fn clear_session(&mut self) {
         self.requests.clear(self.session.engine_dropped());
         self.map.clear();
     }
@@ -154,7 +154,7 @@ impl eframe::App for InspectorApp {
 
 impl InspectorApp {
     /// Renders one frame of the inspector inside `ui`.
-    pub(in crate::ui) fn render_ui(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn render_ui(&mut self, ui: &mut egui::Ui) {
         self.receive_records();
         let _changed = self.map.analysis.update();
         self.release_failed_proxy();
@@ -496,7 +496,7 @@ fn main_height(viewport: f32, above: f32, below: f32) -> f32 {
     (viewport - above - below).floor().max(MIN_MAIN_HEIGHT)
 }
 
-pub(in crate::ui) fn request_shortcuts_allowed(ctx: &egui::Context) -> bool {
+pub(super) fn request_shortcuts_allowed(ctx: &egui::Context) -> bool {
     let focused = ctx.memory(egui::Memory::focused);
     !egui::Popup::is_any_open(ctx)
         && focused.is_none_or(|id| egui::TextEdit::load_state(ctx, id).is_none())

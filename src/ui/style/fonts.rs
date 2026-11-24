@@ -33,7 +33,7 @@ const SYSTEM_CJK_CANDIDATES: [&str; 6] = [
     "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
 ];
 
-pub(in crate::ui) fn configure_fonts(context: &egui::Context) {
+pub(crate) fn configure_fonts(context: &egui::Context) {
     let candidates = SYSTEM_CJK_CANDIDATES.map(Path::new);
     context.set_fonts(font_definitions(&candidates));
 }

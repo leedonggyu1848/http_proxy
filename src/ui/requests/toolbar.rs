@@ -11,15 +11,15 @@ use std::io;
 use std::path::PathBuf;
 
 /// Port typed in the toolbar and where its current value came from.
-pub(in crate::ui) struct PortChoice {
-    pub(in crate::ui) text: String,
-    pub(in crate::ui) origin: settings::port::PortOrigin,
-    pub(in crate::ui) settings_directory: Option<PathBuf>,
-    pub(in crate::ui) launch_warning: Option<String>,
+pub(crate) struct PortChoice {
+    pub(crate) text: String,
+    pub(crate) origin: settings::port::PortOrigin,
+    pub(crate) settings_directory: Option<PathBuf>,
+    pub(crate) launch_warning: Option<String>,
 }
 
 impl PortChoice {
-    pub(in crate::ui) fn from_launch() -> Self {
+    pub(crate) fn from_launch() -> Self {
         let settings_directory = settings::paths::settings_directory(|name| std::env::var_os(name));
         let saved = settings_directory
             .as_deref()
@@ -38,7 +38,7 @@ impl PortChoice {
     }
 
     /// Remembers a port the user typed once the proxy started on it.
-    pub(in crate::ui) fn remember(
+    pub(crate) fn remember(
         &self,
         port: settings::port::ProxyPort,
     ) -> Result<(), settings::port::PortSaveError> {
@@ -53,10 +53,7 @@ impl PortChoice {
 }
 
 /// Explains a failed start in terms of what the user can change.
-pub(in crate::ui) fn start_error_text(
-    error: &StartError,
-    port: settings::port::ProxyPort,
-) -> String {
+pub(crate) fn start_error_text(error: &StartError, port: settings::port::ProxyPort) -> String {
     match error {
         StartError::Bind(bind) if bind.kind() == io::ErrorKind::AddrInUse => format!(
             "Port {port} is already in use by another program. Enter another port, or 0 to pick a free one, then press Start."
@@ -73,7 +70,7 @@ const AUTHORIZATION_WARNING: &str =
 
 /// Whether the one-time authorization warning for HTTPS inspection shows.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(in crate::ui) enum AuthorizationNotice {
+pub(crate) enum AuthorizationNotice {
     #[default]
     NotShown,
     Showing,
@@ -92,7 +89,7 @@ impl AuthorizationNotice {
 
 impl InspectorApp {
     /// One toolbar row with the controls used while watching requests.
-    pub(in crate::ui) fn toolbar(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             self.proxy_controls(ui);
             ui.separator();
@@ -184,7 +181,7 @@ impl InspectorApp {
     }
 
     /// Errors and warnings that need attention, shown right below the toolbar.
-    pub(in crate::ui) fn notices(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn notices(&mut self, ui: &mut egui::Ui) {
         let palette = Palette::of(ui);
         if let Some(warning) = self.session.port.launch_warning.as_ref() {
             ui.colored_label(palette.warning, warning);
@@ -210,7 +207,7 @@ impl InspectorApp {
     }
 
     /// Counters and full-session log state below the request list.
-    pub(in crate::ui) fn status_bar(&self, ui: &mut egui::Ui) {
+    pub(crate) fn status_bar(&self, ui: &mut egui::Ui) {
         let palette = Palette::of(ui);
         ui.horizontal_wrapped(|ui| {
             ui.label(format!("{} requests", self.requests.records.len()));
@@ -271,16 +268,16 @@ impl InspectorApp {
 
 /// Text placed on the clipboard for one of the toolbar copy actions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::ui) enum CopyTarget {
+pub(super) enum CopyTarget {
     Address,
     Curl,
     Environment,
 }
 
 impl CopyTarget {
-    pub(in crate::ui) const ALL: [Self; 3] = [Self::Address, Self::Curl, Self::Environment];
+    pub(super) const ALL: [Self; 3] = [Self::Address, Self::Curl, Self::Environment];
 
-    pub(in crate::ui) const fn label(self) -> &'static str {
+    pub(super) const fn label(self) -> &'static str {
         match self {
             Self::Address => "Proxy URL",
             Self::Curl => "curl example",
@@ -288,7 +285,7 @@ impl CopyTarget {
         }
     }
 
-    pub(in crate::ui) fn text(self, address: std::net::SocketAddr) -> String {
+    pub(super) fn text(self, address: std::net::SocketAddr) -> String {
         let url = format!("http://{address}");
         match self {
             Self::Address => url,

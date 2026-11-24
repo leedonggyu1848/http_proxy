@@ -12,7 +12,7 @@ use http_proxy::interop::curl::{
 use crate::ui::style::theme::Palette;
 
 /// Label shared by the request-list menu and the details panel.
-pub(in crate::ui) const COPY_LABEL: &str = "Copy as cURL";
+pub(super) const COPY_LABEL: &str = "Copy as cURL";
 /// How long a plain success notice stays before it hides itself.
 const SUCCESS_NOTICE: Duration = Duration::from_secs(4);
 
@@ -37,14 +37,14 @@ enum NoticeKind {
 
 /// Copy option and the most recent result.
 #[derive(Default)]
-pub(in crate::ui) struct CurlCopy {
+pub(crate) struct CurlCopy {
     redacted: RedactedHeaders,
     notice: Option<Notice>,
 }
 
 impl CurlCopy {
     /// Shows the copy button for `record` and the redacted-header option.
-    pub(in crate::ui) fn controls(&mut self, ui: &mut egui::Ui, record: &Exchange) {
+    pub(crate) fn controls(&mut self, ui: &mut egui::Ui, record: &Exchange) {
         if copy_button(ui, record).clicked() {
             self.copy(ui.ctx(), record);
         }
@@ -67,7 +67,7 @@ impl CurlCopy {
     }
 
     /// Copies `record` as a `curl` command, or explains why it was not copied.
-    pub(in crate::ui) fn copy(&mut self, context: &egui::Context, record: &Exchange) {
+    pub(crate) fn copy(&mut self, context: &egui::Context, record: &Exchange) {
         let (text, kind) = match curl_command(record, self.redacted) {
             Ok(command) => {
                 context.copy_text(command.text().to_owned());
@@ -89,7 +89,7 @@ impl CurlCopy {
     }
 
     /// Shows the latest result in the notice area.
-    pub(in crate::ui) fn notice(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn notice(&mut self, ui: &mut egui::Ui) {
         let Some(notice) = self.notice.as_ref() else {
             return;
         };
@@ -119,7 +119,7 @@ impl CurlCopy {
 
 /// Shows the copy button, disabled with the reason for records that have
 /// no request to copy. Other problems are reported when it is pressed.
-pub(in crate::ui) fn copy_button(ui: &mut egui::Ui, record: &Exchange) -> egui::Response {
+pub(crate) fn copy_button(ui: &mut egui::Ui, record: &Exchange) -> egui::Response {
     let unavailable = curl_unavailable_reason(record);
     let response = ui.add_enabled(unavailable.is_none(), egui::Button::new(COPY_LABEL));
     match unavailable {

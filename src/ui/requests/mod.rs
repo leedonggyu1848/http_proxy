@@ -1,4 +1,4 @@
-pub(in crate::ui) mod filter;
-pub(in crate::ui) mod outcome_view;
-pub(in crate::ui) mod request_table;
-pub(in crate::ui) mod toolbar;
+pub(super) mod filter;
+pub(super) mod outcome_view;
+pub(super) mod request_table;
+pub(super) mod toolbar;

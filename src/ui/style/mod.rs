@@ -1,2 +1,2 @@
-pub(in crate::ui) mod fonts;
-pub(in crate::ui) mod theme;
+pub(super) mod fonts;
+pub(super) mod theme;
