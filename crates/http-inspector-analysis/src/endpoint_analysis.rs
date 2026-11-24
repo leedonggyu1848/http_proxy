@@ -3,9 +3,9 @@
 
 use std::sync::Arc;
 
-use crate::analysis::endpoint_schema::{EndpointKey, EndpointSchemas, SchemaAnalyzer};
-use crate::analysis::url_map::NodeId;
-use crate::exchange::{BodySource, CaptureSource, Exchange};
+use crate::endpoint_schema::{EndpointKey, EndpointSchemas, SchemaAnalyzer};
+use crate::url_map::NodeId;
+use http_inspector_exchange::{BodySource, CaptureSource, Exchange};
 
 /// Coordinates background endpoint schema analysis and retains merged
 /// per-endpoint aggregates.
@@ -88,9 +88,9 @@ mod tests {
     use http::{HeaderValue, Method, StatusCode};
 
     use super::*;
-    use crate::analysis::url_map::UrlMap;
-    use crate::exchange::{BodyLifecycle, BodySide, MemoryBodySource, TunnelState};
-    use crate::interception::{ExchangeBuilder, ResponseFixture};
+    use crate::url_map::UrlMap;
+    use http_inspector_exchange::{BodyLifecycle, BodySide, MemoryBodySource, TunnelState};
+    use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
 
     #[test]
     fn analyzes_exchanges_with_body_source_and_wake_callback() -> Result<(), Box<dyn Error>> {

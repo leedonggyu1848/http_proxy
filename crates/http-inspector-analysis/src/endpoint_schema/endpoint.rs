@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 
 use super::body::{BodyAnalysis, BodySchema};
 use super::value::{TypeCounts, ValueShape, bump};
-use crate::analysis::url::IdKind;
-use crate::exchange::AuthScheme;
+use crate::url::IdKind;
+use http_inspector_exchange::AuthScheme;
 
 /// Most query parameter names kept per endpoint.
 pub const MAX_QUERY_PARAMS: usize = 64;
@@ -350,9 +350,9 @@ impl EndpointSchema {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::endpoint_schema::body::BodyParse;
-    use crate::analysis::endpoint_schema::value::ValueKind;
-    use crate::exchange::ReadBodyOutcome;
+    use crate::endpoint_schema::body::BodyParse;
+    use crate::endpoint_schema::value::ValueKind;
+    use http_inspector_exchange::ReadBodyOutcome;
 
     fn observation(status: u16, response: &str) -> EndpointObservation {
         EndpointObservation {

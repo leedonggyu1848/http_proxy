@@ -8,7 +8,7 @@ use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, copy_bidirectional};
 
 use super::capture::{ERROR_BYTES, bounded_text};
-use crate::exchange::{FailureStage, TunnelWriter};
+use http_inspector_exchange::{FailureStage, TunnelWriter};
 
 /// Waits for the client upgrade, then relays bytes until both sides finish.
 ///
@@ -104,7 +104,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, duplex};
 
     use super::*;
-    use crate::exchange::TunnelState;
+    use http_inspector_exchange::TunnelState;
 
     #[tokio::test]
     async fn records_an_upgrade_failure() {

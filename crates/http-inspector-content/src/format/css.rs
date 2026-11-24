@@ -266,7 +266,7 @@ fn kind(token: &Token<'_>, value: bool, declaration: bool) -> TokenKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::format::NoticeLevel;
+    use crate::format::NoticeLevel;
 
     #[test]
     fn nested_rules_and_declarations_have_indented_lines() {

@@ -13,11 +13,10 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use http::uri::Authority;
-use http::{HeaderMap, HeaderName, HeaderValue, Method, Response, StatusCode, Uri, Version};
-use hyper::ext::ReasonPhrase;
+use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, Version};
 
-use super::capture::{
-    BODY_PREVIEW_BYTES, ERROR_BYTES, bounded_text, captured_request, captured_response,
+use crate::capture::{
+    BODY_PREVIEW_BYTES, ERROR_BYTES, bounded_text, captured_request, captured_response_head,
     response_body_preview,
 };
 use crate::exchange::{
@@ -241,8 +240,9 @@ fn check_authority(target: &str) -> Result<(), FixtureError> {
 /// path could not have recorded.
 ///
 /// ```
-/// use http_proxy::exchange::{BodyLifecycle, FailureStage};
-/// use http_proxy::interception::{ExchangeBuilder, FixtureError, ResponseFixture};
+/// use http_inspector_exchange::{
+///     BodyLifecycle, ExchangeBuilder, FailureStage, FixtureError, ResponseFixture,
+/// };
 ///
 /// # fn main() -> Result<(), FixtureError> {
 /// let exchange = ExchangeBuilder::http(http::Method::GET, "http://example.test/")?
@@ -371,11 +371,24 @@ impl ExchangeBuilder {
     /// response it cannot receive (see [`ResponseFixture`]).
     pub fn respond(self, response: ResponseFixture) -> Result<Exchange, FixtureError> {
         response.check(&self.head.method)?;
+        let ResponseFixture {
+            status,
+            version,
+            reason,
+            headers,
+            body: body_bytes,
+            end,
+        } = response;
         let writer = self.forward()?;
-        let (head, bytes, end) = response.into_parts();
-        let body = response_body_preview(head.headers());
-        writer.settle(Outcome::Response(captured_response(&head, body.preview())));
-        body.observe(&bytes);
+        let body = response_body_preview(&headers);
+        writer.settle(Outcome::Response(captured_response_head(
+            status,
+            version,
+            reason.map(str::as_bytes),
+            &headers,
+            body.preview(),
+        )));
+        body.observe(&body_bytes);
         end_body(&body, end);
         Ok(writer.exchange().clone())
     }
@@ -607,7 +620,7 @@ impl ConnectExchangeBuilder {
 pub struct ResponseFixture {
     status: StatusCode,
     version: Version,
-    reason: Option<ReasonPhrase>,
+    reason: Option<&'static str>,
     headers: HeaderMap,
     body: Vec<u8>,
     end: BodyLifecycle,
@@ -634,8 +647,8 @@ impl ResponseFixture {
     }
 
     /// Sets a reason phrase other than the canonical one.
-    pub fn reason(mut self, reason: &'static str) -> Self {
-        self.reason = Some(ReasonPhrase::from_static(reason.as_bytes()));
+    pub const fn reason(mut self, reason: &'static str) -> Self {
+        self.reason = Some(reason);
         self
     }
 
@@ -673,19 +686,6 @@ impl ResponseFixture {
             });
         }
         Ok(())
-    }
-
-    /// Splits the fixture into the response head as the upstream connection
-    /// delivers it and the body bytes with how their stream ends.
-    fn into_parts(self) -> (Response<()>, Vec<u8>, BodyLifecycle) {
-        let mut head = Response::new(());
-        *head.status_mut() = self.status;
-        *head.version_mut() = self.version;
-        *head.headers_mut() = self.headers;
-        if let Some(reason) = self.reason {
-            let _previous = head.extensions_mut().insert(reason);
-        }
-        (head, self.body, self.end)
     }
 }
 

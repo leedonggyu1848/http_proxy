@@ -1,12 +1,12 @@
 //! Request filtering controls above the list, backed by
-//! [`http_proxy::analysis::filter`].
+//! [`http_inspector_analysis::filter`].
 
 use eframe::egui;
-use http_proxy::analysis::filter::{
+use http_inspector_analysis::filter::{
     self as analysis_filter, RecordFilter, RecordList, ScopeFilter,
 };
-use http_proxy::analysis::url_map::RequestScope;
-use http_proxy::exchange::Exchange;
+use http_inspector_analysis::url_map::RequestScope;
+use http_inspector_exchange::Exchange;
 
 use crate::ui::InspectorApp;
 use crate::ui::detail::search::RequestSearch;
@@ -116,7 +116,7 @@ impl InspectorApp {
                 self.session
                     .proxy
                     .as_ref()
-                    .map(http_proxy::interception::ProxyHandle::local_addr),
+                    .map(http_inspector_core::interception::ProxyHandle::local_addr),
             );
             ui.centered_and_justified(|ui| {
                 ui.add(egui::Label::new(egui::RichText::new(message).weak()).wrap());
@@ -138,7 +138,7 @@ impl InspectorApp {
             self.session.body_saving.request(
                 &record,
                 side,
-                http_proxy::recording::SaveFormat::Decoded,
+                http_inspector_core::recording::SaveFormat::Decoded,
                 directory,
             );
         }
@@ -183,9 +183,9 @@ mod tests {
 
     use http::header::{CONTENT_ENCODING, CONTENT_TYPE};
     use http::{HeaderValue, Method, StatusCode};
-    use http_proxy::analysis::search::{MatchOptions, SearchScope};
-    use http_proxy::exchange::BodyLifecycle;
-    use http_proxy::interception::{ExchangeBuilder, ResponseFixture};
+    use http_inspector_analysis::search::{MatchOptions, SearchScope};
+    use http_inspector_exchange::BodyLifecycle;
+    use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
 
     use super::*;
 
@@ -240,7 +240,7 @@ mod tests {
     {
         let body = format!(
             "{}tail-word",
-            "a".repeat(http_proxy::interception::BODY_PREVIEW_BYTES + 100)
+            "a".repeat(http_inspector_core::interception::BODY_PREVIEW_BYTES + 100)
         );
         let record = ExchangeBuilder::http(Method::GET, "http://api.example.test/large")?.respond(
             ResponseFixture::new(StatusCode::OK)

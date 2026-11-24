@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use eframe::egui::{self, Color32, ColorImage};
-use http_proxy::exchange::Exchange;
-use http_proxy::interop::har::{self, HarOptions};
-use http_proxy::recording::FullLog;
+use http_inspector_core::recording::FullLog;
+use http_inspector_exchange::Exchange;
+use http_inspector_interop::har::{self, HarOptions};
 
 use super::background_task::{BackgroundTask, TaskPoll};
 

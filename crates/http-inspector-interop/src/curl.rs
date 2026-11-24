@@ -9,8 +9,12 @@ use std::fmt::Write as _;
 
 use http::{HeaderMap, HeaderName, HeaderValue, Method, Uri};
 
-use crate::exchange::{BodyLifecycle, BodyRetention, CaptureSource, CapturedRequest, Exchange};
-use crate::http_semantics::{is_sensitive_request_header, remove_hop_by_hop_headers};
+use http_inspector_exchange::http_semantics::{
+    is_sensitive_request_header, remove_hop_by_hop_headers,
+};
+use http_inspector_exchange::{
+    BodyLifecycle, BodyRetention, CaptureSource, CapturedRequest, Exchange,
+};
 
 /// Value written for a redacted header when placeholders are requested.
 pub const CURL_REDACTED_PLACEHOLDER: &str = "<REDACTED>";
@@ -429,7 +433,7 @@ fn printf_format(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::exchange::{
+    use http_inspector_exchange::{
         BodyPreviewWriter, CapturedHeader, ExchangeWriter, HeaderPreview, RecordId, SessionId,
     };
 

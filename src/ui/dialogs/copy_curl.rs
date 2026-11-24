@@ -3,8 +3,8 @@
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use http_proxy::exchange::Exchange;
-use http_proxy::interop::curl::{
+use http_inspector_exchange::Exchange;
+use http_inspector_interop::curl::{
     CURL_REDACTED_PLACEHOLDER, CurlCommand, CurlUnavailable, RedactedHeaders, curl_command,
     curl_unavailable_reason,
 };

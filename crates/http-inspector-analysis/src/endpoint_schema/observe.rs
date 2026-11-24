@@ -7,9 +7,9 @@
 use super::body::{BodyAnalysis, BodyParse, ExclusionReason};
 use super::endpoint::{BodyObservation, EndpointObservation, ResponseObservation};
 use super::value::ValueShape;
-use crate::analysis::url::{classify_id_segment, parse_exchange_target, visit_query_values};
-use crate::content::detect as content_detect;
-use crate::exchange::{
+use crate::url::{classify_id_segment, parse_exchange_target, visit_query_values};
+use http_inspector_content::detect as content_detect;
+use http_inspector_exchange::{
     BodyLifecycle, BodyPreview, BodySide, BodySource, Exchange, HeaderPreview, MediaType, Outcome,
     ReadBodyOutcome,
 };
@@ -219,10 +219,10 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::analysis::endpoint_schema::FieldShape;
-    use crate::content::format::BodyFormat;
-    use crate::exchange::{MemoryBodySource, ReadBodyOutcome};
-    use crate::interception::{ExchangeBuilder, ResponseFixture};
+    use crate::endpoint_schema::FieldShape;
+    use http_inspector_content::format::BodyFormat;
+    use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
+    use http_inspector_exchange::{MemoryBodySource, ReadBodyOutcome};
 
     type TestResult = Result<(), Box<dyn Error>>;
 

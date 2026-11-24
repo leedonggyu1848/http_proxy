@@ -1,16 +1,20 @@
-[package]
-name = "http-proxy"
+[workspace]
+resolver = "3"
+members = [".", "crates/*"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.100"
-description = "A Linux and macOS desktop HTTP network inspector"
 license = "MIT"
 repository = "https://github.com/leedonggyu1848/http_proxt"
 publish = false
 
-[dependencies]
+[workspace.dependencies]
+aho-corasick = "1.1"
 brotli-decompressor = "6"
 bytes = "1"
+criterion = { version = "0.8.2", default-features = false }
 cssparser = "0.38.0"
 eframe = { version = "0.37", default-features = false, features = [
 	"accesskit",
@@ -25,6 +29,11 @@ gif = { version = "0.14", default-features = false, features = ["std"] }
 http = "1"
 http-body = "1"
 http-body-util = "0.1"
+http-inspector-analysis = { path = "crates/http-inspector-analysis" }
+http-inspector-content = { path = "crates/http-inspector-content" }
+http-inspector-core = { path = "crates/http-inspector-core" }
+http-inspector-exchange = { path = "crates/http-inspector-exchange" }
+http-inspector-interop = { path = "crates/http-inspector-interop" }
 hyper = { version = "1", features = ["client", "http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 image = { version = "0.25", default-features = false, features = ["bmp", "ico"] }
@@ -46,8 +55,8 @@ rustls-native-certs = "0.8"
 serde_json = "1"
 sha2 = "0.10"
 skrifa = { version = "0.44", default-features = false, features = ["std"] }
-thiserror = "2"
 tempfile = "3"
+thiserror = "2"
 time = "0.3"
 tokio = { version = "1", features = [
 	"io-util",
@@ -67,33 +76,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 zstd = { version = "0.13", default-features = false }
 
-[features]
-# Exchange fixtures for tests (`ExchangeBuilder`). Release builds leave it off;
-# tests turn it on through the dev-dependency on this package below.
-test-support = []
-
-[dev-dependencies]
-aho-corasick = "1.1"
-criterion = { version = "0.8.2", default-features = false }
-http-proxy = { path = ".", features = ["test-support"] }
-
-[[bench]]
-name = "search"
-harness = false
-
-[[bench]]
-name = "url_map"
-harness = false
-
-[target.'cfg(target_os = "linux")'.dependencies]
-eframe = { version = "0.37", default-features = false, features = ["x11"] }
-
-[lints.rust]
+[workspace.lints.rust]
 unsafe_code = "forbid"
 unreachable_pub = "deny"
 unused_must_use = "deny"
 
-[lints.clippy]
+[workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
 nursery = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
@@ -117,6 +105,64 @@ too_many_lines = "deny"
 unimplemented = "deny"
 unwrap_used = "deny"
 wildcard_imports = "deny"
+
+[package]
+name = "http-proxy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "A Linux and macOS desktop HTTP network inspector"
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+eframe.workspace = true
+egui_extras.workspace = true
+http.workspace = true
+http-inspector-analysis.workspace = true
+http-inspector-content.workspace = true
+http-inspector-core.workspace = true
+http-inspector-exchange.workspace = true
+http-inspector-interop.workspace = true
+png.workspace = true
+serde_json.workspace = true
+skrifa.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+aho-corasick.workspace = true
+bytes.workspace = true
+criterion.workspace = true
+flate2.workspace = true
+http-body.workspace = true
+http-body-util.workspace = true
+http-inspector-exchange = { workspace = true, features = ["test-support"] }
+hyper.workspace = true
+hyper-util.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+sha2.workspace = true
+time.workspace = true
+tokio-rustls.workspace = true
+
+[[bench]]
+name = "search"
+harness = false
+
+[[bench]]
+name = "url_map"
+harness = false
+
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { workspace = true, features = ["x11"] }
+
+[lints]
+workspace = true
 
 [profile.release]
 codegen-units = 1

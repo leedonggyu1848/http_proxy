@@ -11,8 +11,8 @@ use super::forward::forward_http;
 use super::inspect::forward_https;
 use super::upstream::{connect_deadline, resolve_within};
 use super::{EngineState, ProxyHandle, failed_response, infallible_to_hyper};
-use crate::exchange::{CaptureSource, FailureStage, RecordId};
 use crate::https::Destination;
+use http_inspector_exchange::{CaptureSource, FailureStage, RecordId};
 
 /// Running replay; cancelling aborts the forwarding task.
 pub struct ReplayTask(tokio::task::JoinHandle<()>);

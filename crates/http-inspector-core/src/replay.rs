@@ -27,11 +27,11 @@ mod tests {
     use http::Method;
 
     use super::*;
-    use crate::exchange::{
+    use crate::interception::ProxyConfig;
+    use http_inspector_exchange::{
         BodyPreviewWriter, CaptureSource, CapturedRequest, ExchangeWriter, HeaderPreview, RecordId,
         SessionId,
     };
-    use crate::interception::ProxyConfig;
 
     fn sample_draft(url: &str) -> Result<ReplayDraft, ReplayError> {
         let writer = ExchangeWriter::start(

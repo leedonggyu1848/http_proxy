@@ -2,16 +2,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use eframe::egui;
-use http_proxy::analysis::filter::{RecordFilter, RecordList};
-use http_proxy::analysis::pipeline::AnalysisPipeline;
-use http_proxy::analysis::url_map::RequestScope;
-use http_proxy::content::format::ViewMode;
-use http_proxy::exchange::{BodySource, Exchange, RecordId};
-use http_proxy::https::HttpsInspection;
-use http_proxy::interception::{ProxyConfig, ProxyHandle};
-use http_proxy::recording::{FullLog, PreviewBodies};
-use http_proxy::replay::ReplayError;
-use http_proxy::settings;
+use http_inspector_analysis::filter::{RecordFilter, RecordList};
+use http_inspector_analysis::pipeline::AnalysisPipeline;
+use http_inspector_analysis::url_map::RequestScope;
+use http_inspector_content::format::ViewMode;
+use http_inspector_core::https::HttpsInspection;
+use http_inspector_core::interception::{ProxyConfig, ProxyHandle};
+use http_inspector_core::recording::{FullLog, PreviewBodies};
+use http_inspector_core::replay::ReplayError;
+use http_inspector_core::settings;
+use http_inspector_exchange::{BodySource, Exchange, RecordId};
 
 use crate::ui::detail::detail_tabs::DetailTab;
 use crate::ui::detail::{
@@ -312,7 +312,7 @@ mod tests {
     use std::error::Error;
 
     use http::Method;
-    use http_proxy::interception::ExchangeBuilder;
+    use http_inspector_exchange::ExchangeBuilder;
 
     use super::*;
 

@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use super::value::{TypeCounts, ValueKind, ValueShape};
-use crate::analysis::url::classify_id_segment;
+use crate::url::classify_id_segment;
 
 /// Deepest object/array nesting level that is described; deeper values are
 /// counted by type only.

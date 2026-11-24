@@ -21,10 +21,10 @@ use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
 
-use crate::analysis::endpoint_analysis::EndpointAnalysis;
-use crate::analysis::endpoint_schema::EndpointSchemas;
-use crate::analysis::url_map::{NodeId, UrlMap};
-use crate::exchange::{BodySource, Exchange};
+use crate::endpoint_analysis::EndpointAnalysis;
+use crate::endpoint_schema::EndpointSchemas;
+use crate::url_map::{NodeId, UrlMap};
+use http_inspector_exchange::{BodySource, Exchange};
 
 /// Most in-flight records watched for [`CaptureEvent::RecordSettled`].
 ///
@@ -290,11 +290,11 @@ mod tests {
     use http::{HeaderValue, Method, StatusCode};
 
     use super::*;
-    use crate::exchange::{
+    use http_inspector_exchange::{
         BodyLifecycle, BodySide, CaptureSource, CapturedRequest, ExchangeWriter, HeaderPreview,
         MemoryBodySource, Outcome, RecordId, SessionId,
     };
-    use crate::interception::{ExchangeBuilder, ResponseFixture};
+    use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
 
     /// Test analyzer that counts records per event and is registered without
     /// touching the UI.
@@ -363,13 +363,11 @@ mod tests {
             .ok_or("analyzer not registered")?;
         let placed = pipeline
             .url_map()
-            .matching_node_ids(&crate::analysis::url_map::ViewNodeKey {
-                origin: crate::analysis::url::OriginKey::new("http", "api.example.test", None),
+            .matching_node_ids(&crate::url_map::ViewNodeKey {
+                origin: crate::url::OriginKey::new("http", "api.example.test", None),
                 path: ["users", "42"]
                     .into_iter()
-                    .map(|segment| {
-                        crate::analysis::url::PathSegmentPattern::Literal(segment.to_owned())
-                    })
+                    .map(|segment| crate::url::PathSegmentPattern::Literal(segment.to_owned()))
                     .collect(),
             });
         assert_eq!(placed.len(), 1);

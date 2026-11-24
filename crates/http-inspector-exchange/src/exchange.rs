@@ -9,15 +9,7 @@ mod image_format;
 mod media_type;
 #[cfg(feature = "test-support")]
 mod memory_body_source;
-#[expect(
-    clippy::redundant_pub_crate,
-    reason = "crate-wide items of a private module; `pub` would trip `unreachable_pub`"
-)]
 mod record;
-#[expect(
-    clippy::redundant_pub_crate,
-    reason = "crate-wide items of a private module; `pub` would trip `unreachable_pub`"
-)]
 mod tunnel;
 mod wakers;
 
@@ -36,12 +28,11 @@ pub use image_format::ImageFormat;
 pub use media_type::MediaType;
 #[cfg(feature = "test-support")]
 pub use memory_body_source::MemoryBodySource;
-pub(crate) use record::ExchangeWriter;
 pub use record::{
-    CaptureSource, CapturedRequest, CapturedResponse, Exchange, Outcome, SessionId, Timing,
+    CaptureSource, CapturedRequest, CapturedResponse, Exchange, ExchangeWriter, Outcome, SessionId,
+    Timing,
 };
-pub(crate) use tunnel::TunnelWriter;
-pub use tunnel::{TunnelPreview, TunnelSnapshot, TunnelState};
+pub use tunnel::{TunnelPreview, TunnelSnapshot, TunnelState, TunnelWriter};
 
 static NEXT_RECORD_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -50,13 +41,16 @@ static NEXT_RECORD_ID: AtomicU64 = AtomicU64::new(1);
 pub struct RecordId(u64);
 
 impl RecordId {
-    #[cfg(test)]
-    pub(crate) const fn new(value: u64) -> Self {
+    /// Creates a record identity with a specific numeric value for tests.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
         Self(value)
     }
 
     /// Allocates an identity no other exchange in this process has.
-    pub(crate) fn next() -> Self {
+    #[must_use]
+    pub fn next() -> Self {
         Self(NEXT_RECORD_ID.fetch_add(1, Ordering::Relaxed))
     }
 
@@ -75,7 +69,9 @@ pub struct CapturedHeader {
 }
 
 impl CapturedHeader {
-    pub(crate) const fn new(name: String, value: String) -> Self {
+    /// Creates a captured header entry.
+    #[must_use]
+    pub const fn new(name: String, value: String) -> Self {
         Self { name, value }
     }
 
@@ -100,7 +96,9 @@ pub struct HeaderPreview {
 }
 
 impl HeaderPreview {
-    pub(crate) const fn new(entries: Vec<CapturedHeader>, omitted: bool) -> Self {
+    /// Creates a bounded header preview.
+    #[must_use]
+    pub const fn new(entries: Vec<CapturedHeader>, omitted: bool) -> Self {
         Self { entries, omitted }
     }
 
@@ -183,12 +181,14 @@ impl std::fmt::Display for AuthScheme {
 /// prefix. Each retained byte is reserved before it is copied and returned
 /// when the preview is dropped.
 #[derive(Debug)]
-pub(crate) struct RetentionBudget {
+pub struct RetentionBudget {
     available: AtomicUsize,
 }
 
 impl RetentionBudget {
-    pub(crate) const fn new(bytes: usize) -> Self {
+    /// Creates a shared retention budget of `bytes`.
+    #[must_use]
+    pub const fn new(bytes: usize) -> Self {
         Self {
             available: AtomicUsize::new(bytes),
         }
@@ -246,7 +246,7 @@ const INITIAL_PREVIEW_CAPACITY: usize = 8 * 1024;
 /// that observes bytes and ends the stream.
 ///
 /// ```compile_fail,E0599
-/// fn observe(preview: &http_proxy::exchange::BodyPreview) {
+/// fn observe(preview: &http_inspector_exchange::BodyPreview) {
 ///     preview.observe(b"bytes");
 /// }
 /// ```
@@ -260,19 +260,22 @@ pub struct BodyPreview {
 /// Readers only ever receive [`BodyPreview`] handles, so observing bytes or
 /// ending the stream requires owning this writer.
 #[derive(Debug)]
-pub(crate) struct BodyPreviewWriter {
+pub struct BodyPreviewWriter {
     preview: BodyPreview,
 }
 
 impl BodyPreviewWriter {
-    pub(crate) fn new(limit: usize) -> Self {
+    /// Creates a preview that retains up to `limit` bytes without a shared budget.
+    #[must_use]
+    pub fn new(limit: usize) -> Self {
         Self::with_budget(limit, None)
     }
 
     /// Creates a preview that retains up to `limit` bytes, each reserved from
     /// `budget` when one is given. Bytes the budget cannot cover are not
     /// retained and the preview becomes [`BodyRetention::Truncated`].
-    pub(crate) fn with_budget(limit: usize, budget: Option<&'static RetentionBudget>) -> Self {
+    #[must_use]
+    pub fn with_budget(limit: usize, budget: Option<&'static RetentionBudget>) -> Self {
         Self {
             preview: BodyPreview {
                 inner: Arc::new(BodyPreviewInner {
@@ -289,11 +292,13 @@ impl BodyPreviewWriter {
     }
 
     /// Returns a read handle that follows this writer.
-    pub(crate) fn preview(&self) -> BodyPreview {
+    #[must_use]
+    pub fn preview(&self) -> BodyPreview {
         self.preview.clone()
     }
 
-    pub(crate) fn observe(&self, data: &[u8]) {
+    /// Records observed body bytes into the bounded preview.
+    pub fn observe(&self, data: &[u8]) {
         if data.is_empty() {
             return;
         }
@@ -338,15 +343,18 @@ impl BodyPreviewWriter {
         }
     }
 
-    pub(crate) fn complete(&self) {
+    /// Marks the body stream cleanly complete.
+    pub fn complete(&self) {
         self.end(BodyLifecycle::Complete);
     }
 
-    pub(crate) fn interrupt(&self) {
+    /// Marks the body stream interrupted by a sender error.
+    pub fn interrupt(&self) {
         self.end(BodyLifecycle::Interrupted);
     }
 
-    pub(crate) fn cancel(&self) {
+    /// Marks the body stream cancelled before completion.
+    pub fn cancel(&self) {
         self.end(BodyLifecycle::Cancelled);
     }
 

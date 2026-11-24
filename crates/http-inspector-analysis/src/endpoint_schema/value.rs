@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use crate::analysis::url::{IdKind, classify_id_segment};
+use crate::url::{IdKind, classify_id_segment};
 
 /// JSON-compatible type observed for one value.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

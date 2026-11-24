@@ -8,8 +8,8 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use http_proxy::exchange::{BodyLifecycle, BodyPreview, BodySnapshot, Exchange, Outcome};
-use http_proxy::interception::ProxyHandle;
+use http_inspector_core::interception::ProxyHandle;
+use http_inspector_exchange::{BodyLifecycle, BodyPreview, BodySnapshot, Exchange, Outcome};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;

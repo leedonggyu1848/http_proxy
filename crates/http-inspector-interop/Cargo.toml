@@ -1,0 +1,25 @@
+[package]
+name = "http-inspector-interop"
+description = "HAR 1.2, cURL, and URL map export conversions for HTTP Inspector"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+http.workspace = true
+http-inspector-analysis.workspace = true
+http-inspector-content.workspace = true
+http-inspector-exchange.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+flate2.workspace = true
+http-inspector-exchange = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

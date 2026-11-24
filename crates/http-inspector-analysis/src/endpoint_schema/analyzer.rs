@@ -17,7 +17,7 @@ use std::time::Duration;
 use super::endpoint::EndpointObservation;
 use super::observe::observe_exchange;
 use super::store::{EndpointKey, EndpointSchemas};
-use crate::exchange::{BodySource, Exchange};
+use http_inspector_exchange::{BodySource, Exchange};
 
 /// Exchanges that may wait in the queue to the analysis thread.
 const JOB_CAPACITY: usize = 4_096;

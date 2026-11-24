@@ -3,7 +3,7 @@
 use http::{HeaderName, HeaderValue};
 
 /// Value the capture keeps in place of a sensitive header's original value.
-pub(crate) const REDACTED_VALUE: &str = "[REDACTED]";
+pub const REDACTED_VALUE: &str = "[REDACTED]";
 
 /// Credential fields a client sends. Each is also a [sensitive header](is_sensitive_header).
 const SENSITIVE_REQUEST_HEADERS: [&str; 3] = ["authorization", "proxy-authorization", "cookie"];
@@ -12,7 +12,8 @@ const SENSITIVE_RESPONSE_HEADERS: [&str; 1] = ["set-cookie"];
 
 /// Reports whether `name`, in any case, names a field whose value the capture
 /// replaces with [`REDACTED_VALUE`].
-pub(crate) fn is_sensitive_header(name: &str) -> bool {
+#[must_use]
+pub fn is_sensitive_header(name: &str) -> bool {
     is_sensitive_request_header(name)
         || SENSITIVE_RESPONSE_HEADERS
             .iter()
@@ -21,7 +22,8 @@ pub(crate) fn is_sensitive_header(name: &str) -> bool {
 
 /// Reports whether `name`, in any case, names a credential field a client
 /// sends, such as `Authorization` or `Cookie`.
-pub(crate) fn is_sensitive_request_header(name: &str) -> bool {
+#[must_use]
+pub fn is_sensitive_request_header(name: &str) -> bool {
     SENSITIVE_REQUEST_HEADERS
         .iter()
         .any(|sensitive| name.eq_ignore_ascii_case(sensitive))
@@ -29,7 +31,8 @@ pub(crate) fn is_sensitive_request_header(name: &str) -> bool {
 
 /// Returns the bytes to retain for one header field: [`REDACTED_VALUE`] for
 /// a sensitive field, otherwise the original value.
-pub(crate) fn redacted_value<'a>(name: &HeaderName, value: &'a HeaderValue) -> &'a [u8] {
+#[must_use]
+pub fn redacted_value<'a>(name: &HeaderName, value: &'a HeaderValue) -> &'a [u8] {
     if is_sensitive_header(name.as_str()) {
         REDACTED_VALUE.as_bytes()
     } else {

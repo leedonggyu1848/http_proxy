@@ -22,7 +22,9 @@ static IN_FLIGHT: Outcome = Outcome::InFlight;
 pub struct SessionId(u64);
 
 impl SessionId {
-    pub(crate) fn next() -> Self {
+    /// Allocates an identity no other proxy session in this process has.
+    #[must_use]
+    pub fn next() -> Self {
         Self(NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed))
     }
 
@@ -56,7 +58,9 @@ pub struct CapturedRequest {
 }
 
 impl CapturedRequest {
-    pub(crate) fn new(
+    /// Creates a captured request from bounded headers and extracted auth schemes.
+    #[must_use]
+    pub fn new(
         method: Method,
         target: String,
         headers: HeaderPreview,
@@ -131,7 +135,9 @@ pub struct CapturedResponse {
 }
 
 impl CapturedResponse {
-    pub(crate) fn new(
+    /// Creates a captured response from bounded headers and its streamed body preview.
+    #[must_use]
+    pub fn new(
         status: StatusCode,
         version: Version,
         reason: String,
@@ -343,14 +349,14 @@ struct ExchangeInner {
 /// that receives an `Exchange` can observe it but never change it:
 ///
 /// ```
-/// fn has_settled(exchange: &http_proxy::exchange::Exchange) -> bool {
+/// fn has_settled(exchange: &http_inspector_exchange::Exchange) -> bool {
 ///     !exchange.outcome().is_in_flight()
 /// }
 /// ```
 ///
 /// ```compile_fail,E0599
-/// fn cancel(exchange: &http_proxy::exchange::Exchange) {
-///     exchange.settle(http_proxy::exchange::Outcome::Cancelled);
+/// fn cancel(exchange: &http_inspector_exchange::Exchange) {
+///     exchange.settle(http_inspector_exchange::Outcome::Cancelled);
 /// }
 /// ```
 #[derive(Clone, Debug)]
@@ -364,13 +370,14 @@ pub struct Exchange {
 /// `Clone` nor obtainable from an [`Exchange`], so whoever starts a capture
 /// decides who may change it.
 #[derive(Debug)]
-pub(crate) struct ExchangeWriter {
+pub struct ExchangeWriter {
     exchange: Exchange,
 }
 
 impl ExchangeWriter {
     /// Starts an in-flight exchange for a request that just arrived.
-    pub(crate) fn start(
+    #[must_use]
+    pub fn start(
         id: RecordId,
         session: SessionId,
         source: CaptureSource,
@@ -396,29 +403,36 @@ impl ExchangeWriter {
     }
 
     /// Returns the read handle that this writer updates.
-    pub(crate) const fn exchange(&self) -> &Exchange {
+    #[must_use]
+    pub const fn exchange(&self) -> &Exchange {
         &self.exchange
     }
 
-    pub(crate) fn set_replay_of(&self, original: RecordId) {
+    /// Links this exchange to the original record it replayed.
+    pub fn set_replay_of(&self, original: RecordId) {
         let _already_set = self.exchange.inner.replay_of.set(original).is_err();
     }
 
     /// Attaches the request-body preview as the request is handed to the
     /// upstream connection, which starts the `send` phase.
-    pub(crate) fn attach_request_body(&self, body: BodyPreview) {
+    pub fn attach_request_body(&self, body: BodyPreview) {
         let inner = &self.exchange.inner;
         let _already_started = inner.send_started.set(Instant::now()).is_err();
         let _already_attached = inner.request.body.set(body).is_err();
     }
 
-    pub(crate) fn record_connect(&self, duration: Duration) {
+    /// Records how long the upstream connection took to establish.
+    pub fn record_connect(&self, duration: Duration) {
         let _already_recorded = self.exchange.inner.connect.set(duration).is_err();
     }
 
     /// Moves the exchange out of [`Outcome::InFlight`]. Returns `false` and
     /// keeps the first outcome when the exchange had already settled.
-    pub(crate) fn settle(&self, outcome: Outcome) -> bool {
+    #[expect(
+        clippy::must_use_candidate,
+        reason = "most callers settle once and do not branch on whether an earlier outcome won"
+    )]
+    pub fn settle(&self, outcome: Outcome) -> bool {
         let inner = &self.exchange.inner;
         let settlement = Settlement {
             outcome,

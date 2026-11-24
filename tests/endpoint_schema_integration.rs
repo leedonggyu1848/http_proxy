@@ -5,16 +5,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use http::Method;
-use http_proxy::analysis::endpoint_schema::{
+use http_inspector_analysis::endpoint_schema::{
     EndpointKey, EndpointSchema, EndpointSchemas, ExclusionReason, FieldShape, ParamStats,
     ResponseKey, SchemaAnalyzer, ValueKind,
 };
-use http_proxy::analysis::url_map::{
+use http_inspector_analysis::url_map::{
     RequestScope, SortDirection, TreeFilter, TreeSortField, UrlMap, ViewNode, build_view_roots,
 };
-use http_proxy::exchange::{AuthScheme, Exchange};
-use http_proxy::interception::{ProxyConfig, ProxyHandle};
-use http_proxy::recording::BodyStore;
+use http_inspector_core::interception::{ProxyConfig, ProxyHandle};
+use http_inspector_core::recording::BodyStore;
+use http_inspector_exchange::{AuthScheme, Exchange};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;

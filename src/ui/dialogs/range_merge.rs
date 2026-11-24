@@ -5,9 +5,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use eframe::egui;
-use http_proxy::exchange::{BodySide, ByteSize, Exchange};
-use http_proxy::recording::body_store::response_range;
-use http_proxy::recording::{RangePlan, SaveBody, SaveFormat};
+use http_inspector_core::recording::body_store::response_range;
+use http_inspector_core::recording::{RangePlan, SaveBody, SaveFormat};
+use http_inspector_exchange::{BodySide, ByteSize, Exchange};
 
 use crate::ui::InspectorApp;
 use crate::ui::dialogs::body_saving::PRIVACY_NOTICE;

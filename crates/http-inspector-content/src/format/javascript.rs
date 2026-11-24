@@ -274,7 +274,7 @@ fn source_map_url(tokens: &[Token<'_>]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::format::NoticeLevel;
+    use crate::format::NoticeLevel;
 
     fn pieces(styled: &Styled, kind: TokenKind) -> Vec<&str> {
         styled

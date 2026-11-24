@@ -10,10 +10,10 @@ use crate::ui::map::{MapAction, MapExportFormat, MapSubView};
 use crate::ui::style::fonts;
 
 use eframe::egui;
-use http_proxy::analysis::pipeline::AnalysisPipeline;
-use http_proxy::exchange::Exchange;
-use http_proxy::interception::{EngineState, ProxyHandle};
-use http_proxy::interop::map_export::{
+use http_inspector_analysis::pipeline::AnalysisPipeline;
+use http_inspector_core::interception::{EngineState, ProxyHandle};
+use http_inspector_exchange::Exchange;
+use http_inspector_interop::map_export::{
     export_graph_dot, export_graph_mermaid, export_tree_json, export_tree_text,
 };
 
@@ -42,7 +42,7 @@ pub fn main() -> eframe::Result {
         ..eframe::NativeOptions::default()
     };
     eframe::run_native(
-        http_proxy::APP_NAME,
+        http_inspector_exchange::APP_NAME,
         options,
         Box::new(|context| {
             fonts::configure_fonts(&context.egui_ctx);
@@ -513,12 +513,12 @@ mod layout_tests {
     use crate::ui::dialogs::{body_saving::BodySaving, har_dialog, replay_panel};
     use crate::ui::requests::toolbar::PortChoice;
     use eframe::egui;
-    use http_proxy::analysis::url_map::UrlMap;
-    use http_proxy::content::format as body_format;
-    use http_proxy::exchange::Exchange;
-    use http_proxy::interception::{ProxyConfig, ProxyHandle};
-    use http_proxy::recording::PreviewBodies;
-    use http_proxy::settings;
+    use http_inspector_analysis::url_map::UrlMap;
+    use http_inspector_content::format as body_format;
+    use http_inspector_core::interception::{ProxyConfig, ProxyHandle};
+    use http_inspector_core::recording::PreviewBodies;
+    use http_inspector_core::settings;
+    use http_inspector_exchange::Exchange;
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -556,10 +556,10 @@ mod layout_tests {
     fn clear_drops_capture_state_and_keeps_view_preferences()
     -> Result<(), Box<dyn std::error::Error>> {
         use http::Method;
-        use http_proxy::analysis::filter::RecordFilter;
-        use http_proxy::analysis::url::OriginKey;
-        use http_proxy::analysis::url_map::{RequestScope, ViewNodeKey};
-        use http_proxy::interception::ExchangeBuilder;
+        use http_inspector_analysis::filter::RecordFilter;
+        use http_inspector_analysis::url::OriginKey;
+        use http_inspector_analysis::url_map::{RequestScope, ViewNodeKey};
+        use http_inspector_exchange::ExchangeBuilder;
 
         let mut app = test_app(egui::Context::default());
         let record = ExchangeBuilder::http(Method::GET, "http://fixture.test/api")?.in_flight()?;
@@ -1334,18 +1334,20 @@ mod layout_tests {
         ];
         let base_time = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
         for (url, referer, origin_hdr, redirect) in synthetic_urls {
-            let target = http_proxy::analysis::url::parse_url(url).ok_or("valid synthetic url")?;
-            let _ = map.observe(http_proxy::analysis::url_map::ObservedInput {
+            let target =
+                http_inspector_analysis::url::parse_url(url).ok_or("valid synthetic url")?;
+            let _ = map.observe(http_inspector_analysis::url_map::ObservedInput {
                 target,
                 method: http::Method::GET,
-                status: http_proxy::analysis::url_map::StatusBucket::S2xx,
+                status: http_inspector_analysis::url_map::StatusBucket::S2xx,
                 content_type: Some("application/json".to_owned()),
                 bytes: 512,
                 duration: Some(Duration::from_millis(18)),
                 started_at: base_time,
-                referer: referer.and_then(http_proxy::analysis::url::parse_url),
-                origin_header: origin_hdr.and_then(http_proxy::analysis::url::parse_origin_header),
-                redirect_location: redirect.and_then(http_proxy::analysis::url::parse_url),
+                referer: referer.and_then(http_inspector_analysis::url::parse_url),
+                origin_header: origin_hdr
+                    .and_then(http_inspector_analysis::url::parse_origin_header),
+                redirect_location: redirect.and_then(http_inspector_analysis::url::parse_url),
             });
         }
         Ok(())
@@ -1422,12 +1424,12 @@ mod layout_tests {
             .ok_or("missing origin")?;
         app.layout.main_view = MainView::Map;
         app.map.panel.sub_view = super::MapSubView::Tree;
-        app.map.panel.selected = Some(http_proxy::analysis::url_map::ViewNodeKey {
+        app.map.panel.selected = Some(http_inspector_analysis::url_map::ViewNodeKey {
             origin,
             path: ["api", "v2", "users"]
                 .into_iter()
                 .map(|segment| {
-                    http_proxy::analysis::url::PathSegmentPattern::Literal(segment.to_owned())
+                    http_inspector_analysis::url::PathSegmentPattern::Literal(segment.to_owned())
                 })
                 .collect(),
         });
@@ -1477,7 +1479,7 @@ mod layout_tests {
             .next()
             .cloned()
             .ok_or("missing origin")?;
-        app.map.panel.selected = Some(http_proxy::analysis::url_map::ViewNodeKey {
+        app.map.panel.selected = Some(http_inspector_analysis::url_map::ViewNodeKey {
             origin: first_origin,
             path: Vec::new(),
         });
@@ -1514,19 +1516,19 @@ mod layout_tests {
             .find(|origin| origin.host() == "127.0.0.1")
             .cloned()
             .ok_or("missing local origin")?;
-        let users_key = http_proxy::analysis::url_map::ViewNodeKey {
+        let users_key = http_inspector_analysis::url_map::ViewNodeKey {
             origin: local_origin,
             path: vec![
-                http_proxy::analysis::url::PathSegmentPattern::Literal("api".to_owned()),
-                http_proxy::analysis::url::PathSegmentPattern::Literal("v2".to_owned()),
-                http_proxy::analysis::url::PathSegmentPattern::Literal("users".to_owned()),
+                http_inspector_analysis::url::PathSegmentPattern::Literal("api".to_owned()),
+                http_inspector_analysis::url::PathSegmentPattern::Literal("v2".to_owned()),
+                http_inspector_analysis::url::PathSegmentPattern::Literal("users".to_owned()),
             ],
         };
         app.handle_map_action(
             &app.context.clone(),
-            super::MapAction::ShowInRequests(http_proxy::analysis::url_map::RequestScope::subtree(
-                users_key,
-            )),
+            super::MapAction::ShowInRequests(
+                http_inspector_analysis::url_map::RequestScope::subtree(users_key),
+            ),
         );
         assert_eq!(app.layout.main_view, MainView::Requests);
         assert_eq!(app.requests.filtered_records().len(), 2);
@@ -1549,8 +1551,8 @@ mod layout_tests {
     }
 
     fn seed_scale_workload(map: &mut UrlMap, count: usize) -> Duration {
-        use http_proxy::analysis::url::{parse_origin_header, parse_url};
-        use http_proxy::analysis::url_map::{ObservedInput, StatusBucket};
+        use http_inspector_analysis::url::{parse_origin_header, parse_url};
+        use http_inspector_analysis::url_map::{ObservedInput, StatusBucket};
         use std::time::{Instant, SystemTime};
 
         let hosts = [
@@ -1621,7 +1623,7 @@ mod layout_tests {
 
     async fn capture_bulk_exchanges(
         count: usize,
-    ) -> Result<(Vec<Exchange>, http_proxy::analysis::url::OriginKey), Box<dyn std::error::Error>>
+    ) -> Result<(Vec<Exchange>, http_inspector_analysis::url::OriginKey), Box<dyn std::error::Error>>
     {
         let upstream = TcpListener::bind("127.0.0.1:0").await?;
         let address = upstream.local_addr()?;
@@ -1678,7 +1680,7 @@ mod layout_tests {
         let _ = server_task.await;
         proxy.stop()?;
         let origin =
-            http_proxy::analysis::url::OriginKey::new("http", "127.0.0.1", Some(address.port()));
+            http_inspector_analysis::url::OriginKey::new("http", "127.0.0.1", Some(address.port()));
         Ok((captured, origin))
     }
 
@@ -1699,7 +1701,7 @@ mod layout_tests {
         let node_count = app.map.analysis.url_map().node_count();
         let retained_count = app.requests.records.len();
 
-        let selected_key = http_proxy::analysis::url_map::ViewNodeKey {
+        let selected_key = http_inspector_analysis::url_map::ViewNodeKey {
             origin: local_origin,
             path: Vec::new(),
         };
@@ -1716,9 +1718,9 @@ mod layout_tests {
 
         app.handle_map_action(
             &app.context.clone(),
-            super::MapAction::ShowInRequests(http_proxy::analysis::url_map::RequestScope::subtree(
-                selected_key,
-            )),
+            super::MapAction::ShowInRequests(
+                http_inspector_analysis::url_map::RequestScope::subtree(selected_key),
+            ),
         );
         let req_cold = measure_frames(&mut app, &mut time, 1);
         let req_frames = measure_frames(&mut app, &mut time, 60);

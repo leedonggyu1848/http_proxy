@@ -15,7 +15,7 @@ use tempfile::NamedTempFile;
 
 use super::file_name::{numbered, url_directories};
 use super::{BodyStore, SaveBody, SaveFormat, SavedBody};
-use crate::exchange::BodySide;
+use http_inspector_exchange::BodySide;
 
 const MANIFEST: &str = "manifest.json";
 /// Numbered names tried for one folder before giving up.
@@ -277,7 +277,7 @@ fn manifest_entry(body: &SaveBody, saved: &io::Result<SavedBody>, root: &Path) -
         "method": body.method,
         "url": body.target,
         "status": body.status,
-        "content_type": body.media_type.as_ref().map(crate::exchange::MediaType::essence),
+        "content_type": body.media_type.as_ref().map(http_inspector_exchange::MediaType::essence),
         "format": format_name(body.format),
     });
     let details = match saved {
@@ -311,7 +311,7 @@ fn manifest(layout: BodyLayout, summary: &BulkSummary, entries: &[Value]) -> Val
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs());
     json!({
-        "generator": crate::APP_NAME,
+        "generator": http_inspector_exchange::APP_NAME,
         "created_unix": created,
         "layout": match layout {
             BodyLayout::Flat => "flat",
@@ -338,8 +338,8 @@ fn write_manifest(root: &Path, manifest: &Value) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::exchange::{BodyLifecycle, RecordId};
     use crate::recording::body_store::BodyRecorder;
+    use http_inspector_exchange::{BodyLifecycle, RecordId};
 
     fn body(record: u64, target: &str, directory: &Path) -> SaveBody {
         SaveBody {

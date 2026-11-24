@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use eframe::egui::text::{ByteIndex, LayoutJob, LayoutSection, TextFormat};
 use eframe::egui::{Color32, FontId};
-use http_proxy::analysis::search::Matcher;
+use http_inspector_analysis::search::Matcher;
 
 use crate::ui::style::theme::Theme;
 
@@ -108,7 +108,7 @@ pub(crate) fn plain(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use http_proxy::analysis::search::MatchOptions;
+    use http_inspector_analysis::search::MatchOptions;
 
     fn sections(job: &LayoutJob) -> Vec<(&str, bool)> {
         job.sections

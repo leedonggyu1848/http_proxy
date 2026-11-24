@@ -25,8 +25,8 @@ use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::exchange::{CaptureSource, Exchange, HeaderPreview, Outcome, TunnelState};
-use crate::http_semantics::is_sensitive_header;
+use http_inspector_exchange::http_semantics::is_sensitive_header;
+use http_inspector_exchange::{CaptureSource, Exchange, HeaderPreview, Outcome, TunnelState};
 use serde_json::{Map, Value, json};
 
 use self::timings::{Phases, iso8601, millis};
@@ -53,7 +53,7 @@ pub fn document(records: &[Exchange], options: HarOptions, now: SystemTime) -> V
         "log": {
             "version": "1.2",
             "creator": {
-                "name": crate::APP_NAME,
+                "name": http_inspector_exchange::APP_NAME,
                 "version": env!("CARGO_PKG_VERSION"),
             },
             "pages": [],
@@ -104,7 +104,7 @@ fn log_comment(options: HarOptions) -> String {
     };
     format!(
         "Exported by {}. {bodies} {headers} Cookie values are never exported.",
-        crate::APP_NAME
+        http_inspector_exchange::APP_NAME
     )
 }
 

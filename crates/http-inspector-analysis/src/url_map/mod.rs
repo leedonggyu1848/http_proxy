@@ -3,7 +3,7 @@
 //! This module owns incremental tree aggregation, domain and URL relationship
 //! edges, node statistics, force-directed graph layout, and view projection.
 //! Shared canonical URL normalization, dynamic ID classification/folding, and
-//! Public Suffix List site classification live in [`crate::analysis::url`].
+//! Public Suffix List site classification live in [`crate::url`].
 //!
 //! Privacy invariant: query parameter values are stripped at URL parse time and
 //! never retained in the tree, relationship edges, or exported files.

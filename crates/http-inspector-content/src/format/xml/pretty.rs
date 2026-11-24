@@ -2,8 +2,8 @@
 //! written.
 
 use super::{Document, Element, NodeKind, XmlFormatError};
-use crate::content::format::tag::{Dialect, Spacing, push_tag};
-use crate::content::format::{
+use crate::format::tag::{Dialect, Spacing, push_tag};
+use crate::format::{
     Formatted, Notice, Styled, TokenKind, comment_align, split_trailing_blank_line,
     starts_with_blank_line,
 };
@@ -12,7 +12,7 @@ use crate::content::format::{
 /// text, entity references, or `CDATA`, and elements under
 /// `xml:space="preserve"`, keep their content exactly as written. Warns
 /// when the document was not read to its end.
-pub(in crate::content::format) fn pretty(text: &str) -> Result<Formatted, XmlFormatError> {
+pub(in crate::format) fn pretty(text: &str) -> Result<Formatted, XmlFormatError> {
     let document = Document::parse(text)?;
     let mut printer = Printer {
         document: &document,

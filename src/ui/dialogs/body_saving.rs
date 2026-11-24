@@ -5,11 +5,11 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use eframe::egui;
-use http_proxy::exchange::{BodySide, ByteSize, Exchange};
-use http_proxy::recording::{
+use http_inspector_core::recording::{
     BODY_STORE_LIMIT_BYTES, BODY_STORE_MIN_FREE_BYTES, BodyStore, SaveBody, SaveFormat, SavedBody,
     StoredBody,
 };
+use http_inspector_exchange::{BodySide, ByteSize, Exchange};
 
 use crate::ui::dialogs::save::SaveControls;
 use crate::ui::style::theme::Palette;
@@ -58,19 +58,18 @@ impl BodySaving {
     /// Opens this session's body store with the saved limit.
     pub(crate) fn open() -> Self {
         let settings_path =
-            http_proxy::settings::paths::settings_directory(|name| std::env::var_os(name))
+            http_inspector_core::settings::paths::settings_directory(|name| std::env::var_os(name))
                 .map(|directory| directory.join(SETTINGS_FILE));
         let limit_mib = settings_path
             .as_ref()
             .and_then(|path| std::fs::read_to_string(path).ok())
             .and_then(|text| parse_limit(&text))
             .unwrap_or(BODY_STORE_LIMIT_BYTES / MIB);
-        let opened =
-            http_proxy::settings::paths::body_store_directory(|name| std::env::var_os(name))
-                .ok_or_else(|| io::Error::other("no cache directory; check HOME"))
-                .and_then(|root| {
-                    BodyStore::with_limits(&root, limit_mib * MIB, BODY_STORE_MIN_FREE_BYTES)
-                });
+        let opened = http_inspector_core::settings::paths::body_store_directory(|name| {
+            std::env::var_os(name)
+        })
+        .ok_or_else(|| io::Error::other("no cache directory; check HOME"))
+        .and_then(|root| BodyStore::with_limits(&root, limit_mib * MIB, BODY_STORE_MIN_FREE_BYTES));
         let (store, init_error) = match opened {
             Ok(store) => (Some(store), None),
             Err(error) => (None, Some(format!("Saving bodies is unavailable: {error}"))),
@@ -488,8 +487,8 @@ mod tests {
     /// Captures one rejected request through a real proxy.
     async fn sample_exchange() -> io::Result<Exchange> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let mut proxy = http_proxy::interception::ProxyHandle::start(
-            http_proxy::interception::ProxyConfig::loopback(0),
+        let mut proxy = http_inspector_core::interception::ProxyHandle::start(
+            http_inspector_core::interception::ProxyConfig::loopback(0),
         )
         .map_err(io::Error::other)?;
         let mut client = tokio::net::TcpStream::connect(proxy.local_addr()).await?;

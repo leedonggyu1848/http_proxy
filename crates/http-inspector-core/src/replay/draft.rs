@@ -9,8 +9,10 @@ use http::header::HOST;
 use http::{HeaderMap, Method, Request, Uri};
 use http_body_util::Full;
 
-use crate::exchange::{BodyLifecycle, BodyPreview, CaptureSource, Exchange};
-use crate::http_semantics::{REDACTED_VALUE, is_sensitive_header, remove_hop_by_hop_headers};
+use http_inspector_exchange::http_semantics::{
+    REDACTED_VALUE, is_sensitive_header, remove_hop_by_hop_headers,
+};
+use http_inspector_exchange::{BodyLifecycle, BodyPreview, CaptureSource, Exchange};
 
 /// Largest replacement body file the editor loads into memory.
 pub const REPLAY_BODY_FILE_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
@@ -306,7 +308,7 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use super::*;
-    use crate::exchange::{
+    use http_inspector_exchange::{
         BodyPreviewWriter, CapturedHeader, CapturedRequest, ExchangeWriter, HeaderPreview,
         RecordId, SessionId,
     };

@@ -230,9 +230,9 @@ mod tests {
 
     use super::{BodyText, PREVIEW_BYTES, decode, decode_complete};
 
-    const EXPECTED: &[u8] = include_bytes!("../../tests/fixtures/body-preview.json");
-    const BROTLI: &[u8] = include_bytes!("../../tests/fixtures/body-preview.json.br");
-    const GZIP: &[u8] = include_bytes!("../../tests/fixtures/body-preview.json.gz");
+    const EXPECTED: &[u8] = include_bytes!("../../../tests/fixtures/body-preview.json");
+    const BROTLI: &[u8] = include_bytes!("../../../tests/fixtures/body-preview.json.br");
+    const GZIP: &[u8] = include_bytes!("../../../tests/fixtures/body-preview.json.gz");
 
     fn ready(result: BodyText) -> Result<(String, Option<String>), String> {
         match result {
@@ -260,11 +260,11 @@ mod tests {
             ("gzip", GZIP),
             (
                 "deflate",
-                include_bytes!("../../tests/fixtures/body-preview.json.deflate").as_slice(),
+                include_bytes!("../../../tests/fixtures/body-preview.json.deflate").as_slice(),
             ),
             (
                 "zstd",
-                include_bytes!("../../tests/fixtures/body-preview.json.zst").as_slice(),
+                include_bytes!("../../../tests/fixtures/body-preview.json.zst").as_slice(),
             ),
         ] {
             let (text, notice) = ready(decode(compressed, &[encoding], true))?;
@@ -309,7 +309,9 @@ mod tests {
         let mut inner = 0x184D_2A50_u32.to_le_bytes().to_vec();
         inner.extend_from_slice(&1_000_000_u32.to_le_bytes());
         inner.resize(inner.len() + 1_000_000, 0);
-        inner.extend_from_slice(include_bytes!("../../tests/fixtures/body-preview.json.zst"));
+        inner.extend_from_slice(include_bytes!(
+            "../../../tests/fixtures/body-preview.json.zst"
+        ));
         let compressed = gzip(&inner)?;
         let result = decode(&compressed, &["zstd, gzip"], true);
         assert!(matches!(result, BodyText::Unavailable(_)), "{result:?}");

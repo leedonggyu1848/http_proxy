@@ -3,9 +3,9 @@
 
 use super::pretty::push_leaf;
 use super::{Document, Element, NodeKind, XmlFormatError};
-use crate::content::format::tag::{Dialect, Spacing, push_tag};
-use crate::content::format::tree::{CopyLabels, TreeModel, TreeNode, elide};
-use crate::content::format::{Styled, TokenKind};
+use crate::format::tag::{Dialect, Spacing, push_tag};
+use crate::format::tree::{CopyLabels, TreeModel, TreeNode, elide};
+use crate::format::{Styled, TokenKind};
 
 const COPY: CopyLabels = CopyLabels {
     path: "Copy XPath",
@@ -14,7 +14,7 @@ const COPY: CopyLabels = CopyLabels {
 
 /// Builds the rows of `text` as far as it could be read. Whitespace-only
 /// text is left out; fails when `text` has no element.
-pub(in crate::content::format) fn build(text: &str) -> Result<TreeModel, XmlFormatError> {
+pub(in crate::format) fn build(text: &str) -> Result<TreeModel, XmlFormatError> {
     let document = Document::parse(text)?;
     let mut builder = Builder {
         document: &document,
@@ -202,7 +202,7 @@ fn row_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::format::tree::ROW_TEXT;
+    use crate::format::tree::ROW_TEXT;
 
     fn rows(tree: &TreeModel, parent: Option<usize>) -> Vec<(String, Option<String>, usize)> {
         tree.children(parent)

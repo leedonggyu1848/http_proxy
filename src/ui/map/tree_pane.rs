@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, Key, RichText, Stroke};
-use http_proxy::analysis::url_map::{NodeStats, RowKind, UrlMap, ViewNodeKey, VisibleRow};
+use http_inspector_analysis::url_map::{NodeStats, RowKind, UrlMap, ViewNodeKey, VisibleRow};
 
 use super::MapPanel;
 use crate::ui::detail::tree_view;
@@ -445,7 +445,7 @@ fn handle_keyboard(panel: &mut MapPanel, ui: &egui::Ui) {
 mod tests {
     use super::*;
     use http::Method;
-    use http_proxy::analysis::url_map::StatusBucket;
+    use http_inspector_analysis::url_map::StatusBucket;
     use std::time::SystemTime;
 
     #[test]

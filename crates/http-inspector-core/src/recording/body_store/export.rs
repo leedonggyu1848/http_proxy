@@ -11,7 +11,7 @@ use tempfile::NamedTempFile;
 
 use super::file_name::numbered;
 use super::index::Segment;
-use crate::exchange::ReadBodyOutcome;
+use http_inspector_exchange::ReadBodyOutcome;
 
 /// Most `Content-Encoding` layers decoded for one body.
 const MAX_ENCODINGS: usize = 4;
@@ -575,8 +575,8 @@ mod tests {
 
     #[test]
     fn decodes_brotli_and_zstd() -> io::Result<()> {
-        const EXPECTED: &[u8] = include_bytes!("../../../tests/fixtures/body-preview.json");
-        const BROTLI: &[u8] = include_bytes!("../../../tests/fixtures/body-preview.json.br");
+        const EXPECTED: &[u8] = include_bytes!("../../../../../tests/fixtures/body-preview.json");
+        const BROTLI: &[u8] = include_bytes!("../../../../../tests/fixtures/body-preview.json.br");
         let directory = tempfile::tempdir()?;
         let (_file, data) = data_file(BROTLI)?;
         let segments = vec![Segment {

@@ -1,18 +1,18 @@
 //! Prepares captured text for display and checks which body changes need a rebuild.
 
-use http_proxy::analysis::search::Query;
-use http_proxy::content::decode::{self, BodyText};
-use http_proxy::content::detect;
-use http_proxy::content::format::{
+use http_inspector_analysis::search::Query;
+use http_inspector_content::decode::{self, BodyText};
+use http_inspector_content::detect;
+use http_inspector_content::format::{
     self as body_format, BodyFormat, FormatError, Notice, Styled, ViewMode,
     tree::{self, TreeModel},
 };
-use http_proxy::exchange::{BodyLifecycle, BodyRetention, BodySide, MediaType};
+use http_inspector_exchange::{BodyLifecycle, BodyRetention, BodySide, MediaType};
 use std::sync::Arc;
 
 /// A captured body preview to show.
 pub(super) struct BodySource<'a> {
-    /// [`http_proxy::exchange::RecordId::value`] of the exchange the body belongs to.
+    /// [`http_inspector_exchange::RecordId::value`] of the exchange the body belongs to.
     pub(super) record: u64,
     pub(super) side: BodySide,
     pub(super) bytes: &'a [u8],
@@ -63,7 +63,7 @@ impl Capture {
             Self::Whole => return None,
             Self::Truncated => format!(
                 "Only part of the body was captured (at most {} KiB is kept); the view ends where the capture ends.",
-                http_proxy::interception::BODY_PREVIEW_BYTES / 1024
+                http_inspector_core::interception::BODY_PREVIEW_BYTES / 1024
             ),
             Self::Streaming => {
                 "The body is still being received; the view shows what has arrived so far."
@@ -279,7 +279,7 @@ pub(super) mod fixtures {
 mod tests {
     use super::fixtures::{media, partial_capture, source};
     use super::*;
-    use http_proxy::content::format::NoticeLevel;
+    use http_inspector_content::format::NoticeLevel;
 
     fn notices(update: Option<BodyUpdate>) -> Vec<Notice> {
         match update.map(|update| update.content) {
@@ -292,8 +292,8 @@ mod tests {
 
     #[test]
     fn rebuilds_for_view_inputs_and_resets_selection_on_record_or_mode_change()
-    -> Result<(), http_proxy::analysis::search::MatcherError> {
-        use http_proxy::analysis::search::{MatchOptions, Matcher, SearchScope};
+    -> Result<(), http_inspector_analysis::search::MatcherError> {
+        use http_inspector_analysis::search::{MatchOptions, Matcher, SearchScope};
 
         let mut cache = BodyCache::default();
         let body = source(1, b"abc");

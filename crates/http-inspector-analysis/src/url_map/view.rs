@@ -10,11 +10,11 @@ use http::Method;
 
 use super::stats::NodeStats;
 use super::tree::{NodeId, UrlMap};
-use crate::analysis::url::{
+use crate::url::{
     ID_FOLD_THRESHOLD, NormalizedUrl, OriginKey, PathSegmentPattern, classify_id_segment,
     parse_exchange_target, percent_decode_display,
 };
-use crate::exchange::Exchange;
+use http_inspector_exchange::Exchange;
 
 /// Stable identity of a rendered tree node, preserved across live updates.
 /// The origin and path pattern identify the same node in the request filter
@@ -821,7 +821,7 @@ mod tests {
     use super::super::stats::StatusBucket;
     use super::super::tree::ObservedInput;
     use super::*;
-    use crate::analysis::url::{IdKind, parse_url};
+    use crate::url::{IdKind, parse_url};
 
     fn obs(url: &str, status: StatusBucket, ct: &str, bytes: u64) -> ObservedInput {
         let Some(target) = parse_url(url) else {

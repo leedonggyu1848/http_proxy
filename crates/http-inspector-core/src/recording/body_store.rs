@@ -110,8 +110,8 @@ use self::index::{BodyKey, Index};
 use self::location::SessionDirectory;
 use self::writer::Command;
 use super::lock_recovering;
-use crate::exchange::BodySide;
-use crate::exchange::{
+use http_inspector_exchange::BodySide;
+use http_inspector_exchange::{
     BodyLifecycle, BodyRetention, BodySource, Exchange, MediaType, Outcome, ReadBodyOutcome,
     RecordId,
 };
@@ -882,7 +882,8 @@ mod tests {
     #[test]
     fn preview_bodies_read_only_previews_that_kept_every_byte()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::interception::{BODY_PREVIEW_BYTES, ExchangeBuilder, ResponseFixture};
+        use http_inspector_exchange::capture::BODY_PREVIEW_BYTES;
+        use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
 
         let respond = |body: Vec<u8>| {
             ExchangeBuilder::http(http::Method::GET, "http://example.test/")?.respond(

@@ -9,11 +9,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
 
-use crate::analysis::url_map::{
+use http_inspector_analysis::url_map::{
     EdgeKind, ForceLayout, NodeStats, SortDirection, TreeFilter, TreeSortField, UrlMap, ViewNode,
     build_view_roots,
 };
-use crate::exchange::ByteSize;
+use http_inspector_exchange::ByteSize;
 
 /// Formats the URL map tree as indented plain text.
 #[must_use]
@@ -301,8 +301,8 @@ mod tests {
     use http::Method;
 
     use super::*;
-    use crate::analysis::url::{parse_origin_header, parse_url};
-    use crate::analysis::url_map::{ObservedInput, StatusBucket};
+    use http_inspector_analysis::url::{parse_origin_header, parse_url};
+    use http_inspector_analysis::url_map::{ObservedInput, StatusBucket};
 
     #[test]
     fn exports_contain_structure_and_never_leak_query_values() {

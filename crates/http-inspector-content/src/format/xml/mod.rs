@@ -6,7 +6,7 @@
 //! external entities and entity-expansion bombs are shown as written.
 
 mod pretty;
-pub(in crate::content::format) mod tree;
+pub(in crate::format) mod tree;
 
 pub(super) use pretty::pretty;
 

@@ -1,5 +1,5 @@
 //! Integration test verifying real proxy captures search identically to
-//! [`http_proxy::interception::ExchangeBuilder`] fixtures.
+//! [`http_inspector_exchange::ExchangeBuilder`] fixtures.
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -9,11 +9,12 @@ use http::header::{
     SET_COOKIE,
 };
 use http::{HeaderName, HeaderValue, Method, StatusCode};
-use http_proxy::analysis::search::{
+use http_inspector_analysis::search::{
     BodyCache, Coverage, MatchOptions, Matcher, SearchScope, check,
 };
-use http_proxy::exchange::{BodyLifecycle, Exchange, Outcome, TunnelState};
-use http_proxy::interception::{ExchangeBuilder, ProxyConfig, ProxyHandle, ResponseFixture};
+use http_inspector_core::interception::{ProxyConfig, ProxyHandle};
+use http_inspector_exchange::{BodyLifecycle, Exchange, Outcome, TunnelState};
+use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;

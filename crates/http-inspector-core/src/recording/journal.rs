@@ -12,10 +12,10 @@ use http::{HeaderMap, Method};
 use tempfile::NamedTempFile;
 
 use super::lock_recovering;
-use crate::exchange::{
+use http_inspector_exchange::http_semantics::redacted_value;
+use http_inspector_exchange::{
     BodyLifecycle, BodySide, ByteSize, FailureStage, Outcome, RecordId, TunnelSnapshot,
 };
-use crate::http_semantics::redacted_value;
 
 fn full_headers(headers: &HeaderMap) -> String {
     headers
@@ -506,12 +506,12 @@ mod tests {
 
     #[test]
     fn response_settled_format() -> io::Result<()> {
-        let response = crate::exchange::CapturedResponse::new(
+        let response = http_inspector_exchange::CapturedResponse::new(
             http::StatusCode::OK,
             http::Version::HTTP_11,
             "OK".to_owned(),
-            crate::exchange::HeaderPreview::default(),
-            crate::exchange::BodyPreviewWriter::new(0).preview(),
+            http_inspector_exchange::HeaderPreview::default(),
+            http_inspector_exchange::BodyPreviewWriter::new(0).preview(),
         );
         assert_output(
             |log| log.settled(4, &Outcome::Response(response), Duration::from_millis(2)),
@@ -521,7 +521,7 @@ mod tests {
 
     #[test]
     fn tunnel_ended_format() -> io::Result<()> {
-        let tunnel = crate::exchange::TunnelWriter::new();
+        let tunnel = http_inspector_exchange::TunnelWriter::new();
         tunnel.add_client_to_upstream(12);
         tunnel.add_upstream_to_client(34);
         tunnel.close();

@@ -1,6 +1,6 @@
 //! Shared URL canonicalization, dynamic ID segment classification/folding, and
-//! Public Suffix List site classification reused by [`crate::analysis::url_map`]
-//! and [`crate::analysis::endpoint_schema`].
+//! Public Suffix List site classification reused by [`crate::url_map`]
+//! and [`crate::endpoint_schema`].
 //!
 //! Privacy invariant: query parameter values are stripped at URL parse time and
 //! never retained in [`NormalizedUrl`].

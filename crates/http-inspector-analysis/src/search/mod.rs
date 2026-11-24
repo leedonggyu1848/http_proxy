@@ -14,7 +14,7 @@ pub use document::{
 pub use text_search::{MatchOptions, Matcher, MatcherError};
 pub use worker::{Query, Report, SearchWorker};
 
-use crate::exchange::BodySide;
+use http_inspector_exchange::BodySide;
 
 /// Which parts of a request the search text is looked for in.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]

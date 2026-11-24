@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use http::Method;
 
 use super::endpoint::{EndpointObservation, EndpointSchema};
-use crate::analysis::url_map::NodeId;
+use crate::url_map::NodeId;
 
 /// Most endpoints (node and method pairs) aggregated in one session.
 pub const MAX_ENDPOINTS: usize = 20_000;

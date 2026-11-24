@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use super::SearchScope;
 use super::text_search::Matcher;
-use crate::content::decode as body_view;
-use crate::exchange::{
+use http_inspector_content::decode as body_view;
+use http_inspector_exchange::{
     BodyLifecycle, BodyPreview, BodyRetention, BodySide, Exchange, HeaderPreview, MediaType,
     Outcome, RecordId,
 };
@@ -303,8 +303,7 @@ mod tests {
     }
 
     fn found(body: &BodyText, query: &str) -> bool {
-        let Ok(matcher) = Matcher::new(query, crate::analysis::search::MatchOptions::default())
-        else {
+        let Ok(matcher) = Matcher::new(query, crate::search::MatchOptions::default()) else {
             return false;
         };
         matches!(body, BodyText::Searchable { bytes, .. } if matcher.is_match(bytes))
@@ -325,7 +324,7 @@ mod tests {
 
     #[test]
     fn long_or_incomplete_bodies_are_marked_partial() {
-        let long = vec![b'a'; crate::interception::BODY_PREVIEW_BYTES + 10];
+        let long = vec![b'a'; http_inspector_exchange::capture::BODY_PREVIEW_BYTES + 10];
         assert!(matches!(
             searchable(&long, &[], None, false),
             BodyText::Searchable { partial: true, .. }
@@ -362,7 +361,7 @@ mod tests {
         scope: SearchScope,
         case_sensitive: bool,
     ) -> bool {
-        let options = crate::analysis::search::MatchOptions {
+        let options = crate::search::MatchOptions {
             case_sensitive,
             regex: false,
         };
@@ -374,8 +373,8 @@ mod tests {
     fn searches_metadata_and_outcomes_across_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
         use http::{HeaderName, HeaderValue, Method, StatusCode};
 
-        use crate::exchange::{FailureStage, TunnelState};
-        use crate::interception::{ExchangeBuilder, ResponseFixture};
+        use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
+        use http_inspector_exchange::{FailureStage, TunnelState};
 
         let pending = ExchangeBuilder::http(Method::GET, "http://api.example.test/MiXeD")?
             .header(
@@ -430,7 +429,7 @@ mod tests {
         use http::header::{AUTHORIZATION, CONTENT_ENCODING, CONTENT_TYPE};
         use http::{HeaderValue, Method, StatusCode};
 
-        use crate::interception::{ExchangeBuilder, ResponseFixture};
+        use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
 
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         encoder.write_all(br#"{"error":"Quota Exceeded"}"#)?;
@@ -485,7 +484,8 @@ mod tests {
         use http::header::CONTENT_TYPE;
         use http::{HeaderValue, Method, StatusCode};
 
-        use crate::interception::{BODY_PREVIEW_BYTES, ExchangeBuilder, ResponseFixture};
+        use http_inspector_exchange::capture::BODY_PREVIEW_BYTES;
+        use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
 
         let body = format!("{}tail-word", "a".repeat(BODY_PREVIEW_BYTES + 100));
         let first = ExchangeBuilder::http(Method::GET, "http://api.example.test/large")?.respond(
@@ -500,10 +500,7 @@ mod tests {
         )?;
 
         let mut cache = BodyCache::default();
-        let matcher = Matcher::new(
-            "tail-word",
-            crate::analysis::search::MatchOptions::default(),
-        )?;
+        let matcher = Matcher::new("tail-word", crate::search::MatchOptions::default())?;
         let checked = check(&first, &matcher, SearchScope::ResponseBody, &mut cache);
         assert!(!checked.matched);
         assert!(checked.coverage.partial);

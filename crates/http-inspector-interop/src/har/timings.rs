@@ -2,7 +2,7 @@
 
 use std::time::{Duration, SystemTime};
 
-use crate::exchange::{Exchange, Outcome};
+use http_inspector_exchange::{Exchange, Outcome};
 use serde_json::{Value, json};
 
 /// Phases of one entry that add up to its total time. `None` is written as

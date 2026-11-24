@@ -7,8 +7,10 @@
 
 use serde_json::{Map, Value, json};
 
-use crate::content::decode as body_view;
-use crate::exchange::{BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, HeaderPreview};
+use http_inspector_content::decode as body_view;
+use http_inspector_exchange::{
+    BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, HeaderPreview,
+};
 
 /// Most decoded bytes one compressed body may expand to in the export.
 const DECODED_LIMIT: usize = 16 * 1024 * 1024;

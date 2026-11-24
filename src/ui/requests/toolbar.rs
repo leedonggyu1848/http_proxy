@@ -3,10 +3,10 @@
 use crate::ui::style::theme::Palette;
 use crate::ui::{InspectorApp, MAX_RECORDS};
 use eframe::egui::{self, RichText};
-use http_proxy::exchange::ByteSize;
-use http_proxy::interception::{ProxyHandle, StartError};
-use http_proxy::recording::FullLog;
-use http_proxy::settings;
+use http_inspector_core::interception::{ProxyHandle, StartError};
+use http_inspector_core::recording::FullLog;
+use http_inspector_core::settings;
+use http_inspector_exchange::ByteSize;
 use std::io;
 use std::path::PathBuf;
 
@@ -310,7 +310,7 @@ fn copy_menu(ui: &mut egui::Ui, address: std::net::SocketAddr) {
 #[cfg(test)]
 mod port_choice_tests {
     use super::{PortChoice, start_error_text};
-    use http_proxy::settings::port::{PortOrigin, PortSaveError, ProxyPort};
+    use http_inspector_core::settings::port::{PortOrigin, PortSaveError, ProxyPort};
     use std::io;
 
     #[test]
@@ -339,8 +339,8 @@ mod port_choice_tests {
     fn explains_an_occupied_port() -> io::Result<()> {
         let occupied = std::net::TcpListener::bind("127.0.0.1:0")?;
         let port = ProxyPort::from(occupied.local_addr()?.port());
-        let Err(error) = http_proxy::interception::ProxyHandle::start(
-            http_proxy::interception::ProxyConfig::loopback(port.value()),
+        let Err(error) = http_inspector_core::interception::ProxyHandle::start(
+            http_inspector_core::interception::ProxyConfig::loopback(port.value()),
         ) else {
             return Err(io::Error::other("binding an occupied port succeeded"));
         };

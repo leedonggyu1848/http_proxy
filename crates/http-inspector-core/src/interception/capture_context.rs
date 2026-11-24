@@ -1,13 +1,13 @@
 use super::capture::{BodyLog, BodySinks};
 use super::capture::{ERROR_BYTES, bounded_text, captured_request};
 use super::handle::Engine;
-use crate::exchange::BodySide;
-use crate::exchange::{
-    CaptureSource, Exchange, ExchangeWriter, FailureStage, Outcome, RecordId, TunnelSnapshot,
-};
 use crate::recording::body_store::{BodyRecorder, BodyStore};
 use crate::recording::journal::FullLog;
 use http::{HeaderMap, Method};
+use http_inspector_exchange::BodySide;
+use http_inspector_exchange::{
+    CaptureSource, Exchange, ExchangeWriter, FailureStage, Outcome, RecordId, TunnelSnapshot,
+};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc;

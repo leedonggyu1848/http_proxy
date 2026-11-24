@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::num::NonZeroU64;
 
-use crate::exchange::ImageFormat;
+use http_inspector_exchange::ImageFormat;
 use resvg::{tiny_skia, usvg};
 use usvg::roxmltree;
 
@@ -518,7 +518,7 @@ mod tests {
     use std::io::ErrorKind;
     use std::net::TcpListener;
 
-    use crate::exchange::ImageFormat;
+    use http_inspector_exchange::ImageFormat;
 
     use super::{ImageError, PreviewImage, decode};
 
@@ -616,19 +616,19 @@ mod tests {
     fn decodes_jpeg_color_models_and_progressive() -> Result<(), Box<dyn Error>> {
         for (bytes, expected) in [
             (
-                include_bytes!("../../tests/fixtures/jpeg/rgb.jpg").as_slice(),
+                include_bytes!("../../../tests/fixtures/jpeg/rgb.jpg").as_slice(),
                 RED,
             ),
             (
-                include_bytes!("../../tests/fixtures/jpeg/progressive.jpg").as_slice(),
+                include_bytes!("../../../tests/fixtures/jpeg/progressive.jpg").as_slice(),
                 RED,
             ),
             (
-                include_bytes!("../../tests/fixtures/jpeg/gray.jpg").as_slice(),
+                include_bytes!("../../../tests/fixtures/jpeg/gray.jpg").as_slice(),
                 [120, 120, 120, 255],
             ),
             (
-                include_bytes!("../../tests/fixtures/jpeg/cmyk.jpg").as_slice(),
+                include_bytes!("../../../tests/fixtures/jpeg/cmyk.jpg").as_slice(),
                 [255, 0, 0, 255],
             ),
         ] {
@@ -639,7 +639,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_and_oversized_jpeg() {
-        let original = include_bytes!("../../tests/fixtures/jpeg/rgb.jpg");
+        let original = include_bytes!("../../../tests/fixtures/jpeg/rgb.jpg");
         assert_invalid(ImageFormat::Jpeg, b"broken JPEG");
         let (truncated, _) = original.split_at(original.len() / 2);
         assert!(decode(ImageFormat::Jpeg, truncated).is_err());
@@ -661,7 +661,7 @@ mod tests {
 
     #[test]
     fn decodes_first_gif_frame_and_counts_frames() -> Result<(), Box<dyn Error>> {
-        let bytes = include_bytes!("../../tests/fixtures/images/animated.gif");
+        let bytes = include_bytes!("../../../tests/fixtures/images/animated.gif");
         let image = decode(ImageFormat::Gif, bytes)?;
         assert_solid(&image, (16, 12), FIXTURE_RED, 0);
         assert_eq!(image.notes, ["2 frames, first frame shown"]);
@@ -670,7 +670,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_and_oversized_gif() {
-        let original = include_bytes!("../../tests/fixtures/images/animated.gif");
+        let original = include_bytes!("../../../tests/fixtures/images/animated.gif");
         assert_invalid(ImageFormat::Gif, b"GIF89a broken");
         let (truncated, _) = original.split_at(40);
         assert_invalid(ImageFormat::Gif, truncated);
@@ -692,18 +692,18 @@ mod tests {
     fn decodes_lossy_lossless_and_animated_webp() -> Result<(), Box<dyn Error>> {
         let lossy = decode(
             ImageFormat::WebP,
-            include_bytes!("../../tests/fixtures/images/lossy.webp"),
+            include_bytes!("../../../tests/fixtures/images/lossy.webp"),
         )?;
         assert_solid(&lossy, (16, 12), FIXTURE_RED, 8);
         let lossless = decode(
             ImageFormat::WebP,
-            include_bytes!("../../tests/fixtures/images/lossless.webp"),
+            include_bytes!("../../../tests/fixtures/images/lossless.webp"),
         )?;
         assert_solid(&lossless, (16, 12), FIXTURE_RED, 0);
         assert_eq!(lossless.notes, Vec::<String>::new());
         let animated = decode(
             ImageFormat::WebP,
-            include_bytes!("../../tests/fixtures/images/animated.webp"),
+            include_bytes!("../../../tests/fixtures/images/animated.webp"),
         )?;
         assert_solid(&animated, (16, 12), FIXTURE_RED, 0);
         assert_eq!(animated.notes, ["2 frames, first frame shown"]);
@@ -712,9 +712,9 @@ mod tests {
 
     #[test]
     fn rejects_invalid_and_oversized_webp() {
-        let original = include_bytes!("../../tests/fixtures/images/animated.webp");
+        let original = include_bytes!("../../../tests/fixtures/images/animated.webp");
         assert_invalid(ImageFormat::WebP, b"RIFF\x04\x00\x00\x00WEBP");
-        let lossless = include_bytes!("../../tests/fixtures/images/lossless.webp");
+        let lossless = include_bytes!("../../../tests/fixtures/images/lossless.webp");
         let (truncated, _) = lossless.split_at(lossless.len() - 6);
         assert!(decode(ImageFormat::WebP, truncated).is_err());
         // The VP8X chunk stores canvas width − 1 and height − 1 in 24 bits each.
@@ -737,7 +737,7 @@ mod tests {
 
     #[test]
     fn decodes_bmp_and_rejects_invalid_or_oversized() -> Result<(), Box<dyn Error>> {
-        let original = include_bytes!("../../tests/fixtures/images/rgb24.bmp");
+        let original = include_bytes!("../../../tests/fixtures/images/rgb24.bmp");
         assert_solid(
             &decode(ImageFormat::Bmp, original)?,
             (16, 12),

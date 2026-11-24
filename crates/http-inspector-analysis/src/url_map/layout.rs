@@ -378,7 +378,7 @@ fn initial_circle_position(index: usize, count: usize) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::url::OriginKey;
+    use crate::url::OriginKey;
 
     #[test]
     fn caps_top_n_domains_and_settles_deterministically() {

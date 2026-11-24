@@ -221,7 +221,7 @@ fn child_path(parent: &str, key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::format::tree::ROW_TEXT;
+    use crate::format::tree::ROW_TEXT;
     fn summary(node: &TreeNode) -> &str {
         node.label
             .text()

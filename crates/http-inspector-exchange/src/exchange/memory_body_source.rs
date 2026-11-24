@@ -16,8 +16,9 @@ use super::{BodySide, BodySource, Exchange, ReadBodyOutcome, RecordId};
 /// as [`ReadBodyOutcome::NotFound`].
 ///
 /// ```
-/// use http_proxy::exchange::{BodySide, BodySource, MemoryBodySource, ReadBodyOutcome};
-/// use http_proxy::interception::{ExchangeBuilder, FixtureError};
+/// use http_inspector_exchange::{
+///     BodySide, BodySource, ExchangeBuilder, FixtureError, MemoryBodySource, ReadBodyOutcome,
+/// };
 ///
 /// # fn main() -> Result<(), FixtureError> {
 /// let exchange = ExchangeBuilder::http(http::Method::POST, "http://example.test/")?.cancel()?;

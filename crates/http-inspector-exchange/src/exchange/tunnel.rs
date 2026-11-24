@@ -26,7 +26,7 @@ struct TunnelEnd {
 /// counts bytes and ends the tunnel.
 ///
 /// ```compile_fail,E0599
-/// fn close(tunnel: &http_proxy::exchange::TunnelPreview) {
+/// fn close(tunnel: &http_inspector_exchange::TunnelPreview) {
 ///     tunnel.close();
 /// }
 /// ```
@@ -37,12 +37,14 @@ pub struct TunnelPreview {
 
 /// Write side of one [`TunnelPreview`], owned by the relay.
 #[derive(Debug)]
-pub(crate) struct TunnelWriter {
+pub struct TunnelWriter {
     preview: TunnelPreview,
 }
 
 impl TunnelWriter {
-    pub(crate) fn new() -> Self {
+    /// Creates a new open tunnel writer.
+    #[must_use]
+    pub fn new() -> Self {
         Self {
             preview: TunnelPreview {
                 inner: Arc::new(TunnelInner {
@@ -56,28 +58,33 @@ impl TunnelWriter {
     }
 
     /// Returns a read handle that follows this writer.
-    pub(crate) fn preview(&self) -> TunnelPreview {
+    #[must_use]
+    pub fn preview(&self) -> TunnelPreview {
         self.preview.clone()
     }
 
-    pub(crate) fn add_client_to_upstream(&self, bytes: usize) {
+    /// Adds relayed client-to-upstream byte count.
+    pub fn add_client_to_upstream(&self, bytes: usize) {
         add(&self.preview.inner.client_to_upstream, bytes);
     }
 
-    pub(crate) fn add_upstream_to_client(&self, bytes: usize) {
+    /// Adds relayed upstream-to-client byte count.
+    pub fn add_upstream_to_client(&self, bytes: usize) {
         add(&self.preview.inner.upstream_to_client, bytes);
     }
 
-    pub(crate) fn close(&self) {
+    /// Marks the tunnel cleanly closed.
+    pub fn close(&self) {
         self.finish(TunnelState::Closed);
     }
 
-    pub(crate) fn fail(&self, stage: FailureStage, message: String) {
+    /// Marks the tunnel failed at `stage`.
+    pub fn fail(&self, stage: FailureStage, message: String) {
         self.finish(TunnelState::Failed { stage, message });
     }
 
     /// Ends a tunnel that the proxy stopped relaying before either side finished.
-    pub(crate) fn abandon(&self) {
+    pub fn abandon(&self) {
         self.finish(TunnelState::Incomplete);
     }
 
@@ -89,6 +96,12 @@ impl TunnelWriter {
                 state,
             });
         }
+    }
+}
+
+impl Default for TunnelWriter {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

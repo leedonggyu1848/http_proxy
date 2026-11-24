@@ -3,12 +3,12 @@
 use std::fmt::Write as _;
 
 use eframe::egui::{self, TextureHandle, TextureOptions};
-use http_proxy::exchange::{BodyLifecycle, BodyRetention, BodySnapshot, ImageFormat, RecordId};
-use http_proxy::interception::{IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES};
+use http_inspector_core::interception::{IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES};
+use http_inspector_exchange::{BodyLifecycle, BodyRetention, BodySnapshot, ImageFormat, RecordId};
 
 use crate::ui::style::theme::Palette;
-use http_proxy::content::decode as body_view;
-use http_proxy::content::image::{self as image_decode, PreviewImage};
+use http_inspector_content::decode as body_view;
+use http_inspector_content::image::{self as image_decode, PreviewImage};
 
 /// Raw bytes shown in the hexadecimal view.
 const HEX_BYTES: usize = 8 * 1024;
@@ -444,7 +444,7 @@ mod tests {
     use std::error::Error;
     use std::io::Write;
 
-    use http_proxy::exchange::ImageFormat;
+    use http_inspector_exchange::ImageFormat;
 
     use super::{ImageFile, hex_dump, mismatch_text};
 
