@@ -9,6 +9,18 @@ HTTP Inspector에 처음 기여하는 개발자를 위한 가이드다. 로컬 H
 3. [UI와 분석](ui-and-analysis.md)에서 같은 요청이 목록, 검색 결과, URL 맵에 반영되는 흐름을 살펴본다.
 4. [테스트 선택](testing.md)에서 수정하려는 동작을 다루는 테스트를 찾는다.
 
+## 핵심 파일 해설
+
+각 문서는 함수의 호출 순서, 상태를 소유하는 코드, 동작을 확인할 테스트를 함께 짚는다.
+
+| 파일 | 확인할 동작 |
+| --- | --- |
+| [`interception/handle.rs`](source/proxy-handle.md) | 프록시 시작, 연결 슬롯, 요청 분기와 중지 |
+| [`interception/forward.rs`](source/http-forwarding.md) | 요청 변환, 응답 헤더 도착과 본문 스트리밍 |
+| [`exchange/record.rs`](source/exchange-record.md) | 공유 읽기 핸들, 결과 확정, 진행 상태와 시간 계산 |
+| [`ui/app/mod.rs`](source/app-ui.md) | 프레임에서의 레코드 수신, 다시 그리기와 화면 상태 |
+| [`http-inspector-analysis/src/pipeline.rs`](source/analysis-pipeline.md) | URL 맵 배치, 분석 이벤트와 워커 결과 반영 |
+
 ## 코드의 책임
 
 | 위치 | 맡는 일 |
