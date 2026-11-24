@@ -1,5 +1,5 @@
-//! Path segment ID classification and folding policy shared with endpoint
-//! schema inference (#69).
+//! Path segment ID classification and folding policy used by the URL map
+//! and endpoint schema inference.
 
 use std::fmt;
 
@@ -9,8 +9,8 @@ pub const ID_FOLD_THRESHOLD: usize = 2;
 
 /// Observed value shape for a folded dynamic path segment.
 ///
-/// Shared with endpoint detail inference (#69) so folded path parameters report
-/// the concrete formats observed without retaining raw values.
+/// Endpoint schemas use this classification to report the observed formats
+/// of path parameters without retaining raw values.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum IdKind {
     /// Unsigned ASCII integer (e.g. `42`, `109283`).
@@ -84,7 +84,6 @@ impl PathSegmentPattern {
         }
     }
 
-    /// Returns the display string for this pattern segment.
     #[must_use]
     pub fn display_text(&self) -> String {
         match self {

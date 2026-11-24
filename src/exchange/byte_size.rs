@@ -24,7 +24,6 @@ impl ByteSize {
         Self(bytes)
     }
 
-    /// Returns the underlying byte count.
     #[must_use]
     pub const fn bytes(self) -> u64 {
         self.0

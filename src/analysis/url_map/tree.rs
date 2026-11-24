@@ -161,13 +161,11 @@ impl UrlMap {
         self.node_limit_reached
     }
 
-    /// Returns the configured node cap.
     #[must_use]
     pub const fn max_nodes(&self) -> usize {
         self.max_nodes
     }
 
-    /// Returns a node by its [`NodeId`].
     #[must_use]
     pub fn node(&self, id: NodeId) -> Option<&MapNode> {
         self.nodes.get(id.0)

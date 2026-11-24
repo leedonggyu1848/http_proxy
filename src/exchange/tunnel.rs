@@ -172,7 +172,6 @@ impl TunnelSnapshot {
         self.duration
     }
 
-    /// Returns the lifecycle state.
     #[must_use]
     pub const fn state(&self) -> &TunnelState {
         &self.state

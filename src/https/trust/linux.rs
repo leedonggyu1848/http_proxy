@@ -300,8 +300,8 @@ mod lock_tests {
             .open(path)
     }
 
-    /// Regression for #101: children spawned by other threads inherit the released lock
-    /// until they exec, which made an immediate relock fail with `EWOULDBLOCK`.
+    /// A child spawned by another thread can keep the lock alive between
+    /// fork and exec, causing an immediate relock to fail with `EWOULDBLOCK`.
     #[tokio::test]
     async fn relocks_while_other_threads_spawn_children() -> Result<(), Box<dyn Error>> {
         let directory = tempfile::tempdir()?;

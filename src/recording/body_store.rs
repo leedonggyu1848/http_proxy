@@ -275,7 +275,6 @@ impl BodyStore {
         self.owner.directory.path()
     }
 
-    /// Returns the session limit in bytes.
     #[must_use]
     pub fn limit_bytes(&self) -> u64 {
         self.shared.limit_bytes.load(Ordering::Acquire)
@@ -310,7 +309,6 @@ impl BodyStore {
         self.shared.disk_low.load(Ordering::Acquire)
     }
 
-    /// Returns the minimum free disk space in bytes.
     #[must_use]
     pub fn min_free_bytes(&self) -> u64 {
         self.shared.min_free_bytes
@@ -671,13 +669,11 @@ pub struct SavedBody {
 }
 
 impl SavedBody {
-    /// Returns where the file was written.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    /// Returns the bytes written to the file.
     #[must_use]
     pub const fn bytes(&self) -> u64 {
         self.bytes
