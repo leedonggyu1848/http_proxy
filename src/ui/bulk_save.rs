@@ -4,11 +4,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use eframe::egui;
-use http_proxy::exchange::{BodySide, Exchange};
+use http_proxy::exchange::{BodySide, ByteSize, Exchange};
 use http_proxy::recording::{BodyLayout, BodyStore, BulkSave, BulkSummary, SaveBody, SaveFormat};
 
 use crate::ui::InspectorApp;
-use crate::ui::body_saving::{PRIVACY_NOTICE, format_size};
+use crate::ui::body_saving::PRIVACY_NOTICE;
 use crate::ui::theme::Palette;
 
 /// Which requests a bulk save covers.
@@ -143,7 +143,10 @@ impl BulkControls {
                     .desired_width(120.0)
                     .text(format!("{}/{}", progress.done(), progress.total())),
             );
-            ui.label(format!("Saving bodies · {}", format_size(progress.bytes())));
+            ui.label(format!(
+                "Saving bodies · {}",
+                ByteSize::new(progress.bytes())
+            ));
             if progress.is_cancelled() {
                 ui.weak("Cancelling…");
             } else if ui.small_button("Cancel").clicked() {

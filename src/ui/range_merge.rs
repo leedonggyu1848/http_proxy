@@ -6,12 +6,12 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
 use eframe::egui;
-use http_proxy::exchange::{BodySide, Exchange};
+use http_proxy::exchange::{BodySide, ByteSize, Exchange};
 use http_proxy::recording::body_store::response_range;
 use http_proxy::recording::{RangePlan, SaveBody, SaveFormat};
 
 use crate::ui::InspectorApp;
-use crate::ui::body_saving::{PRIVACY_NOTICE, format_size};
+use crate::ui::body_saving::PRIVACY_NOTICE;
 use crate::ui::theme::Palette;
 
 /// Gaps listed in the dialog before the rest are counted.
@@ -59,9 +59,10 @@ fn range_text(start: u64, end: u64, total: Option<u64>) -> String {
 }
 
 fn plan_text(plan: &RangePlan) -> String {
-    let total = plan
-        .total()
-        .map_or_else(|| "unknown length".to_owned(), format_size);
+    let total = plan.total().map_or_else(
+        || "unknown length".to_owned(),
+        |bytes| ByteSize::new(bytes).to_string(),
+    );
     let validator = plan.validator().map_or_else(
         || "no ETag or Last-Modified".to_owned(),
         |value| format!("validator {value}"),
@@ -69,8 +70,8 @@ fn plan_text(plan: &RangePlan) -> String {
     format!(
         "{} responses cover {} of {total} · {validator}. The file will be {}.",
         plan.parts(),
-        format_size(plan.covered_bytes()),
-        format_size(plan.file_bytes())
+        ByteSize::new(plan.covered_bytes()),
+        ByteSize::new(plan.file_bytes())
     )
 }
 
@@ -79,7 +80,7 @@ fn gap_lines(plan: &RangePlan) -> Vec<String> {
         .gaps_with_lengths()
         .take(SHOWN_GAPS)
         .map(|(first, last, length)| {
-            format!("Missing bytes {first}-{last} ({})", format_size(length))
+            format!("Missing bytes {first}-{last} ({})", ByteSize::new(length))
         })
         .collect();
     if plan.gaps().len() > SHOWN_GAPS {

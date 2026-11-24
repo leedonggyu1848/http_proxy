@@ -13,6 +13,7 @@ use crate::analysis::url_map::{
     EdgeKind, ForceLayout, NodeStats, SortDirection, TreeFilter, TreeSortField, UrlMap, ViewNode,
     build_view_roots,
 };
+use crate::exchange::ByteSize;
 
 /// Formats the URL map tree as indented plain text.
 #[must_use]
@@ -44,7 +45,7 @@ fn write_text_node(node: &ViewNode, out: &mut String) {
             out,
             " [{} req, {summary}, {methods}, {}]",
             stats.request_count,
-            format_bytes(stats.total_bytes),
+            ByteSize::new(stats.total_bytes),
         );
     }
     if stats.is_third_party() {
@@ -92,21 +93,6 @@ fn format_status_summary(stats: &NodeStats) -> String {
         "none".to_owned()
     } else {
         parts.join(" ")
-    }
-}
-
-/// Formats bytes into a compact human-readable label.
-#[must_use]
-#[allow(clippy::cast_precision_loss, reason = "human-readable size display")]
-pub fn format_bytes(bytes: u64) -> String {
-    const KIB: f64 = 1024.0;
-    const MIB: f64 = 1024.0 * 1024.0;
-    if bytes < 1024 {
-        format!("{bytes} B")
-    } else if (bytes as f64) < MIB {
-        format!("{:.1} KiB", bytes as f64 / KIB)
-    } else {
-        format!("{:.1} MiB", bytes as f64 / MIB)
     }
 }
 
@@ -391,6 +377,9 @@ mod tests {
         assert!(text.contains("?session"));
         assert!(text.contains("?token"));
         assert!(text.contains("[3rd-party]"));
+        assert!(text.contains("1.4 KiB]"), "text was:\n{text}");
+        assert!(text.contains("400 B]"), "text was:\n{text}");
+        assert!(text.contains("800 B]"), "text was:\n{text}");
         assert!(json_str.contains("\"format\":\"http-inspector-url-map\""));
         assert!(mermaid.starts_with("flowchart LR\n"));
         assert!(mermaid.contains("Referer"));

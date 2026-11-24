@@ -12,8 +12,7 @@ use http_proxy::analysis::endpoint_schema::EndpointSchema;
 use http_proxy::analysis::filter::RecordList;
 use http_proxy::analysis::url::{parse_exchange_target, percent_decode_display};
 use http_proxy::analysis::url_map::{NodeStats, RequestScope, ViewNode};
-use http_proxy::exchange::{Exchange, RecordId};
-use http_proxy::interop::map_export::format_bytes;
+use http_proxy::exchange::{ByteSize, Exchange, RecordId};
 
 use super::{MapAction, endpoint_view};
 use crate::ui::outcome_view::outcome_text;
@@ -286,7 +285,7 @@ fn render_stats_section(ui: &mut egui::Ui, node: &ViewNode, retained: usize, evi
             ui.end_row();
 
             ui.weak("Transferred");
-            ui.label(format_bytes(stats.total_bytes));
+            ui.label(ByteSize::new(stats.total_bytes).to_string());
             ui.end_row();
 
             ui.weak("Response time");

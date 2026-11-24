@@ -3,6 +3,7 @@
 use crate::ui::theme::Palette;
 use crate::ui::{InspectorApp, MAX_RECORDS};
 use eframe::egui::{self, RichText};
+use http_proxy::exchange::ByteSize;
 use http_proxy::interception::{ProxyHandle, StartError};
 use http_proxy::recording::FullLog;
 use http_proxy::settings;
@@ -246,7 +247,7 @@ impl InspectorApp {
                     palette.warning,
                     format!(
                         "The full-session log reached its {} body limit. Later body bytes are omitted; headers and results are still logged.",
-                        log.formatted_body_limit()
+                        ByteSize::new(log.body_limit()).exact()
                     ),
                 );
             }

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use eframe::egui::{self, Key, RichText};
 use egui_extras::{Column, TableBuilder};
-use http_proxy::exchange::{Exchange, Outcome, RecordId};
+use http_proxy::exchange::{ByteSize, Exchange, Outcome, RecordId};
 
 use crate::ui::copy_curl;
 use crate::ui::outcome_view::{outcome_summary, outcome_text, status_rank};
@@ -530,7 +530,7 @@ fn show_cells(
                 RichText::new(
                     record
                         .received_bytes()
-                        .map_or_else(|| "—".to_owned(), format_bytes),
+                        .map_or_else(|| "—".to_owned(), |bytes| ByteSize::new(bytes).to_string()),
                 )
                 .monospace(),
             )
@@ -574,23 +574,6 @@ fn duration_text(record: &Exchange) -> String {
         || format!("{:.0} ms…", millis(record.elapsed())),
         |total| format!("{:.1} ms", millis(total)),
     )
-}
-
-fn format_bytes(bytes: u64) -> String {
-    const KIB: u64 = 1024;
-    const MIB: u64 = KIB * 1024;
-    let scaled = |unit: u64| {
-        let whole = bytes / unit;
-        let tenths = (bytes % unit) * 10 / unit;
-        format!("{whole}.{tenths}")
-    };
-    if bytes < KIB {
-        format!("{bytes} B")
-    } else if bytes < MIB {
-        format!("{} KiB", scaled(KIB))
-    } else {
-        format!("{} MiB", scaled(MIB))
-    }
 }
 
 #[cfg(test)]
@@ -727,14 +710,6 @@ mod tests {
         assert_eq!(ascending.arrow(Field::Size), " ▲");
         assert_eq!(descending.arrow(Field::Size), " ▼");
         assert_eq!(descending.arrow(Field::Method), "");
-    }
-
-    #[test]
-    fn formats_sizes_with_binary_units() {
-        assert_eq!(format_bytes(0), "0 B");
-        assert_eq!(format_bytes(1023), "1023 B");
-        assert_eq!(format_bytes(1536), "1.5 KiB");
-        assert_eq!(format_bytes(4 * 1024 * 1024), "4.0 MiB");
     }
 
     #[test]

@@ -6,7 +6,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
 use eframe::egui;
-use http_proxy::exchange::{BodySide, Exchange};
+use http_proxy::exchange::{BodySide, ByteSize, Exchange};
 use http_proxy::recording::{
     BODY_STORE_LIMIT_BYTES, BODY_STORE_MIN_FREE_BYTES, BodyStore, SaveBody, SaveFormat, SavedBody,
     StoredBody,
@@ -319,7 +319,7 @@ impl BodySaving {
         if let Some(store) = self.store.as_ref() {
             ui.weak(format!(
                 "{} used · stored in {}",
-                format_size(store.used_bytes()),
+                ByteSize::new(store.used_bytes()),
                 store.directory().display()
             ));
         }
@@ -369,7 +369,7 @@ impl BodySaving {
                 ui.label(format!(
                     "Saved body{suffix}: {} ({})",
                     saved.path().display(),
-                    format_size(saved.bytes())
+                    ByteSize::new(saved.bytes())
                 ));
             }
             Some(Err(error)) => {
@@ -391,13 +391,13 @@ impl BodySaving {
         if store.limit_reached() {
             warnings.push(format!(
                 "The body store reached its {} limit. Later bodies are not stored; raise the limit in Settings.",
-                format_size(store.limit_bytes())
+                ByteSize::new(store.limit_bytes())
             ));
         }
         if store.low_disk_space() {
             warnings.push(format!(
                 "Free disk space is below {}. Bodies are not stored until space is freed.",
-                format_size(store.min_free_bytes())
+                ByteSize::new(store.min_free_bytes())
             ));
         }
         warnings
@@ -426,27 +426,11 @@ const fn format_text(format: SaveFormat) -> (&'static str, &'static str) {
 }
 
 fn stored_text(stored: &StoredBody) -> String {
-    let size = format_size(stored.stored_bytes());
+    let size = ByteSize::new(stored.stored_bytes());
     stored.incomplete_reason().map_or_else(
         || format!("{size} stored · complete"),
         |reason| format!("{size} stored · incomplete: {reason}"),
     )
-}
-
-pub(in crate::ui) fn format_size(bytes: u64) -> String {
-    const GIB: u64 = 1024 * MIB;
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "Sizes are shown with one decimal place"
-    )]
-    let value = |unit: u64| bytes as f64 / unit as f64;
-    if bytes >= GIB {
-        format!("{:.1} GiB", value(GIB))
-    } else if bytes >= MIB {
-        format!("{:.1} MiB", value(MIB))
-    } else {
-        format!("{bytes} bytes")
-    }
 }
 
 #[cfg(test)]
@@ -513,12 +497,5 @@ mod tests {
             .ok_or_else(|| io::Error::other("no capture"))?;
         proxy.stop().map_err(io::Error::other)?;
         Ok(exchange)
-    }
-
-    #[test]
-    fn formats_sizes() {
-        assert_eq!(format_size(512), "512 bytes");
-        assert_eq!(format_size(3 * MIB / 2), "1.5 MiB");
-        assert_eq!(format_size(BODY_STORE_LIMIT_BYTES), "2.0 GiB");
     }
 }
