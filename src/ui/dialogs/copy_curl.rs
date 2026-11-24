@@ -9,7 +9,7 @@ use http_proxy::interop::curl::{
     curl_unavailable_reason,
 };
 
-use crate::ui::theme::Palette;
+use crate::ui::style::theme::Palette;
 
 /// Label shared by the request-list menu and the details panel.
 pub(in crate::ui) const COPY_LABEL: &str = "Copy as cURL";

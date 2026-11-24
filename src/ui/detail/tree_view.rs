@@ -2,8 +2,8 @@
 //! view are drawn, the open state survives theme and font changes, and
 //! every row can be searched and its path or value copied.
 
-use crate::ui::highlight::{self, SyntaxPalette};
-use crate::ui::theme::Theme;
+use crate::ui::detail::highlight::{self, SyntaxPalette};
+use crate::ui::style::theme::Theme;
 use eframe::egui::{self, FontId, text::LayoutJob};
 use http_proxy::content::format::tree::TreeModel;
 use std::sync::Arc;

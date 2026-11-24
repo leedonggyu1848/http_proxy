@@ -16,7 +16,7 @@ use http_proxy::analysis::url::{PathSegmentPattern, percent_decode_display};
 use http_proxy::analysis::url_map::{NodeId, RequestScope, ViewNode, ViewNodeKey};
 
 use super::MapAction;
-use crate::ui::theme::Palette;
+use crate::ui::style::theme::Palette;
 
 /// Below this many described bodies the structure is flagged as tentative.
 const FEW_SAMPLES: u64 = 3;

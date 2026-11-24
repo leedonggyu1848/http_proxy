@@ -11,8 +11,8 @@ use http_proxy::recording::body_store::response_range;
 use http_proxy::recording::{RangePlan, SaveBody, SaveFormat};
 
 use crate::ui::InspectorApp;
-use crate::ui::body_saving::PRIVACY_NOTICE;
-use crate::ui::theme::Palette;
+use crate::ui::dialogs::body_saving::PRIVACY_NOTICE;
+use crate::ui::style::theme::Palette;
 
 /// Gaps listed in the dialog before the rest are counted.
 const SHOWN_GAPS: usize = 8;

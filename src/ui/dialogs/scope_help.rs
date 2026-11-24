@@ -54,7 +54,7 @@ pub(in crate::ui) fn button(ui: &mut egui::Ui, address: Option<std::net::SocketA
                 ui.strong("Not recorded");
                 for line in NOT_RECORDED {
                     ui.colored_label(
-                        crate::ui::theme::Palette::of(ui).warning,
+                        crate::ui::style::theme::Palette::of(ui).warning,
                         format!("• {line}"),
                     );
                 }

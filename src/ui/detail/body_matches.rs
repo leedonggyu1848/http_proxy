@@ -6,7 +6,7 @@ use std::ops::Range;
 use eframe::egui::{self, text::LayoutJob};
 use http_proxy::analysis::search::Matcher;
 
-use crate::ui::search::highlight::{self, MatchColors};
+use crate::ui::detail::search::highlight::{self, MatchColors};
 
 /// One match: the line it is on (0 for text shown without line numbers)
 /// and its byte range in that line or text.
@@ -162,7 +162,7 @@ fn hits_in(line: usize, matcher: &Matcher, text: &str) -> Vec<Hit> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::theme::Theme;
+    use crate::ui::style::theme::Theme;
     use eframe::egui::text::TextFormat;
     use http_proxy::analysis::search::MatchOptions;
 

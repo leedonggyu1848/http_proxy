@@ -1,6 +1,6 @@
 //! Toolbar controls, launch port choice, and clipboard actions.
 
-use crate::ui::theme::Palette;
+use crate::ui::style::theme::Palette;
 use crate::ui::{InspectorApp, MAX_RECORDS};
 use eframe::egui::{self, RichText};
 use http_proxy::exchange::ByteSize;
@@ -108,10 +108,12 @@ impl InspectorApp {
                 self.ca_panel.refresh();
             }
             match self.save.menu(ui, self.full_log.as_ref()) {
-                Some(crate::ui::save::SaveMenuAction::ExportHar) => {
+                Some(crate::ui::dialogs::save::SaveMenuAction::ExportHar) => {
                     self.har_dialog.open(self.save.suggested_path("har"));
                 }
-                Some(crate::ui::save::SaveMenuAction::SaveBodies) => self.body_saving.open_bulk(),
+                Some(crate::ui::dialogs::save::SaveMenuAction::SaveBodies) => {
+                    self.body_saving.open_bulk();
+                }
                 None => {}
             }
             ui.menu_button("Settings", |ui| {
@@ -119,7 +121,10 @@ impl InspectorApp {
                 ui.separator();
                 self.body_saving.settings_menu(ui);
             });
-            crate::ui::scope_help::button(ui, self.proxy.as_ref().map(ProxyHandle::local_addr));
+            crate::ui::dialogs::scope_help::button(
+                ui,
+                self.proxy.as_ref().map(ProxyHandle::local_addr),
+            );
         });
     }
 

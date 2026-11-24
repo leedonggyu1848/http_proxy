@@ -9,10 +9,10 @@ use http_proxy::analysis::url_map::RequestScope;
 use http_proxy::exchange::Exchange;
 
 use crate::ui::InspectorApp;
-use crate::ui::map_panel::RecordMatchCache;
-use crate::ui::replay_panel;
-use crate::ui::search::RequestSearch;
-use crate::ui::theme::Palette;
+use crate::ui::detail::search::RequestSearch;
+use crate::ui::dialogs::replay_panel;
+use crate::ui::map::RecordMatchCache;
+use crate::ui::style::theme::Palette;
 
 impl InspectorApp {
     /// Filter, list options, and Clear, shown right above the request list.

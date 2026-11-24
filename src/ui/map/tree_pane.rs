@@ -7,8 +7,8 @@ use eframe::egui::{self, Color32, Key, RichText, Stroke};
 use http_proxy::analysis::url_map::{NodeStats, RowKind, UrlMap, ViewNodeKey, VisibleRow};
 
 use super::MapPanel;
-use crate::ui::theme::Palette;
-use crate::ui::tree_view;
+use crate::ui::detail::tree_view;
+use crate::ui::style::theme::Palette;
 
 const ROW_HEIGHT: f32 = 22.0;
 const STATUS_BAR_WIDTH: f32 = 44.0;

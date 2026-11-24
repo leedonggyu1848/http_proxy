@@ -6,7 +6,7 @@ use eframe::egui::text::{ByteIndex, LayoutJob, LayoutSection, TextFormat};
 use eframe::egui::{Color32, FontId};
 use http_proxy::analysis::search::Matcher;
 
-use crate::ui::theme::Theme;
+use crate::ui::style::theme::Theme;
 
 /// Background of every match, and of the match the user moved to.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

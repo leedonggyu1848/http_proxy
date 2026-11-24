@@ -8,7 +8,7 @@ use http_proxy::analysis::url_map::{
 use http_proxy::exchange::ByteSize;
 
 use super::EdgeVisibility;
-use crate::ui::theme::Palette;
+use crate::ui::style::theme::Palette;
 
 const CANVAS_PADDING: f32 = 56.0;
 const MIN_NODE_RADIUS: f32 = 12.0;

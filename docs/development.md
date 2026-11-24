@@ -13,7 +13,7 @@ Linux 시스템 패키지와 macOS의 선택 도구(Homebrew NSS)는 [README의 
 글꼴 등록을 확인하려면 다음처럼 실행한다. 어떤 폰트를 등록했는지 로그로 확인할 수 있다.
 
 ```bash
-RUST_LOG=http_proxy::ui::fonts=debug cargo run
+RUST_LOG=http_proxy::ui::style::fonts=debug cargo run
 ```
 
 ## 검증
@@ -91,7 +91,7 @@ Actions의 [파일 권한 제한](https://github.com/actions/upload-artifact/tre
 | `recording` | `src/recording.rs`, `src/recording/` | 전체 세션 로그(`FullLog`)와 본문 저장소(`BodyStore`, `BodySource` 구현) |
 | `interception` | `src/interception.rs`, `src/interception/` | 로컬 프록시 리스너, 업스트림 전달, `CONNECT` 터널, 캡처, `test-support` 픽스처 빌더 |
 | `replay` | `src/replay.rs`, `src/replay/` | 재전송 초안 검증과 실행 요청 |
-| `ui` (바이너리) | `src/main.rs`, `src/ui/` | eframe/egui 데스크톱 화면 |
+| `ui` (바이너리) | `src/main.rs`, `src/ui/` (`app`, `requests`, `detail`, `map`, `dialogs`, `style`) | eframe/egui 데스크톱 화면 |
 
 아래 그림은 허용하는 모듈 의존 방향을 보여 준다. 화살표 반대 방향 참조는 허용하지 않는다.
 

@@ -1,12 +1,12 @@
 //! Decoded, formatted, and highlighted body text for the detail panel,
 //! rebuilt only when the shown body or the way it is shown changes.
 
-use crate::ui::body_matches::{BodyMatches, Hit};
-use crate::ui::highlight;
-use crate::ui::search::Query;
-use crate::ui::search::highlight::MatchColors;
-use crate::ui::theme::{Palette, Theme};
-use crate::ui::tree_view::TreeView;
+use crate::ui::detail::body_matches::{BodyMatches, Hit};
+use crate::ui::detail::highlight;
+use crate::ui::detail::search::Query;
+use crate::ui::detail::search::highlight::MatchColors;
+use crate::ui::detail::tree_view::TreeView;
+use crate::ui::style::theme::{Palette, Theme};
 use eframe::egui::{self, Galley, text::LayoutJob};
 use http_proxy::content::decode::{self as body_view, BodyText};
 use http_proxy::content::detect;
@@ -285,7 +285,7 @@ fn build(
     }
     let formatted = body_format::format(format, key.mode, &text);
     notices.extend(formatted.notices);
-    let palette = crate::ui::highlight::SyntaxPalette::for_theme(key.theme);
+    let palette = highlight::SyntaxPalette::for_theme(key.theme);
     let job = highlight::layout_job(ctx, &formatted.styled, &palette, text_color, &key.font);
     let lines = format
         .spec()

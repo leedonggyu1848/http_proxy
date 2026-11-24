@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::time::Duration;
 
-use crate::ui::theme::Palette;
+use crate::ui::style::theme::Palette;
 
 use eframe::egui::{self, Color32, RichText};
 use http_proxy::https::{CaInfo, CaTrustError, CaTrustStatus, CaTrustStore, HttpsSetupError};
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn badge_colors_follow_severity() {
-        let palette = Palette::for_theme(crate::ui::theme::Theme::Dark);
+        let palette = Palette::for_theme(crate::ui::style::theme::Theme::Dark);
         assert_eq!(
             Badge::Status(CaTrustStatus::Trusted).color(&palette),
             palette.success

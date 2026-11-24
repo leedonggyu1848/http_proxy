@@ -8,8 +8,8 @@ use http_proxy::exchange::{BodySide, ByteSize, Exchange};
 use http_proxy::recording::{BodyLayout, BodyStore, BulkSave, BulkSummary, SaveBody, SaveFormat};
 
 use crate::ui::InspectorApp;
-use crate::ui::body_saving::PRIVACY_NOTICE;
-use crate::ui::theme::Palette;
+use crate::ui::dialogs::body_saving::PRIVACY_NOTICE;
+use crate::ui::style::theme::Palette;
 
 /// Which requests a bulk save covers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

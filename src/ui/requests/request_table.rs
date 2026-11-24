@@ -7,8 +7,8 @@ use eframe::egui::{self, Key, RichText};
 use egui_extras::{Column, TableBuilder};
 use http_proxy::exchange::{ByteSize, Exchange, Outcome, RecordId};
 
-use crate::ui::copy_curl;
-use crate::ui::outcome_view::{outcome_summary, outcome_text, status_rank};
+use crate::ui::dialogs::copy_curl;
+use crate::ui::requests::outcome_view::{outcome_summary, outcome_text, status_rank};
 
 const ROW_HEIGHT: f32 = 20.0;
 const HEADER_HEIGHT: f32 = 22.0;
@@ -513,10 +513,11 @@ fn show_cells(
         .on_hover_text(record.request().target());
     });
     row.col(|ui| {
-        let (text, color) = outcome_text(record.outcome(), &crate::ui::theme::Palette::of(ui));
+        let (text, color) =
+            outcome_text(record.outcome(), &crate::ui::style::theme::Palette::of(ui));
         let status = ui.add(egui::Label::new(RichText::new(text).color(color)).truncate());
         if matches!(record.outcome(), Outcome::Tunnel(_)) {
-            status.on_hover_text(super::scope_help::TUNNEL_NOTE);
+            status.on_hover_text(crate::ui::dialogs::scope_help::TUNNEL_NOTE);
         } else {
             status.on_hover_text(outcome_summary(record.outcome()));
         }
