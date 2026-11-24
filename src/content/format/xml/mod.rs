@@ -19,6 +19,25 @@ pub(super) const MAX_DEPTH: usize = 256;
 /// Most nodes read before the preview stops.
 pub(super) const MAX_NODES: usize = 10_000;
 
+/// Reason XML input could not be parsed or stopped before its end.
+#[derive(Debug, thiserror::Error)]
+pub enum XmlFormatError {
+    #[error("{source} at byte {offset}")]
+    Syntax {
+        #[source]
+        source: quick_xml::Error,
+        offset: usize,
+    },
+    #[error("more than {max_nodes} nodes")]
+    TooManyNodes { max_nodes: usize },
+    #[error("nested deeper than {max_depth} elements")]
+    TooDeep { max_depth: usize },
+    #[error("<{name}> is not closed")]
+    UnclosedElement { name: String },
+    #[error("no elements found")]
+    NoElements,
+}
+
 /// What a node of the document is.
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum NodeKind {
@@ -52,19 +71,19 @@ struct Node {
 }
 
 /// An XML preview read as far as it is well formed and within limits.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub(super) struct Document<'a> {
     text: &'a str,
     nodes: Vec<Node>,
     roots: Vec<usize>,
     /// Why reading stopped before the end of a well-formed document.
-    incomplete: Option<String>,
+    incomplete: Option<XmlFormatError>,
 }
 
 impl<'a> Document<'a> {
     /// Reads `text` until it ends, is malformed, or exceeds [`MAX_DEPTH`] or
     /// [`MAX_NODES`]. Fails only when no element was read at all.
-    pub(super) fn parse(text: &'a str) -> Result<Self, String> {
+    pub(super) fn parse(text: &'a str) -> Result<Self, XmlFormatError> {
         let mut parser = Parser {
             document: Document {
                 text,
@@ -83,9 +102,7 @@ impl<'a> Document<'a> {
         {
             Ok(document)
         } else {
-            Err(document
-                .incomplete
-                .unwrap_or_else(|| "no elements found".to_owned()))
+            Err(document.incomplete.unwrap_or(XmlFormatError::NoElements))
         }
     }
 
@@ -128,11 +145,11 @@ impl Parser<'_> {
                     return;
                 }
                 Ok(event) => event,
-                Err(error) => {
-                    self.stop(format!(
-                        "{error} at byte {}",
-                        offset(reader.error_position())
-                    ));
+                Err(source) => {
+                    self.stop(XmlFormatError::Syntax {
+                        source,
+                        offset: offset(reader.error_position()),
+                    });
                     return;
                 }
             };
@@ -144,7 +161,7 @@ impl Parser<'_> {
         }
     }
 
-    fn add(&mut self, event: &Event<'_>, range: Range<usize>) -> Result<(), String> {
+    fn add(&mut self, event: &Event<'_>, range: Range<usize>) -> Result<(), XmlFormatError> {
         if let Event::End(_) = event {
             if let Some(NodeKind::Element(element)) = self
                 .open
@@ -157,12 +174,16 @@ impl Parser<'_> {
             return Ok(());
         }
         if self.document.nodes.len() >= MAX_NODES {
-            return Err(format!("more than {MAX_NODES} nodes"));
+            return Err(XmlFormatError::TooManyNodes {
+                max_nodes: MAX_NODES,
+            });
         }
         let kind = match event {
             Event::Start(start) | Event::Empty(start) => {
                 if self.open.len() >= MAX_DEPTH {
-                    return Err(format!("nested deeper than {MAX_DEPTH} elements"));
+                    return Err(XmlFormatError::TooDeep {
+                        max_depth: MAX_DEPTH,
+                    });
                 }
                 let self_closing = matches!(event, Event::Empty(_));
                 NodeKind::Element(self.element(start, range.start, self_closing))
@@ -233,11 +254,13 @@ impl Parser<'_> {
                 _ => None,
             })
         {
-            self.stop(format!("<{name}> is not closed"));
+            self.stop(XmlFormatError::UnclosedElement {
+                name: name.to_owned(),
+            });
         }
     }
 
-    fn stop(&mut self, reason: String) {
+    fn stop(&mut self, reason: XmlFormatError) {
         self.document.incomplete = Some(reason);
     }
 }
@@ -262,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn node_ranges_cover_the_source() -> Result<(), String> {
+    fn node_ranges_cover_the_source() -> Result<(), XmlFormatError> {
         let text =
             "<?xml version=\"1.0\"?>\n<a x='1'><!-- c --><b>t &amp; u</b><![CDATA[<raw>]]><c/></a>";
         let document = Document::parse(text)?;
@@ -296,56 +319,89 @@ mod tests {
                 "element"
             ]
         );
-        assert_eq!(document.incomplete, None);
+        assert!(document.incomplete.is_none());
         Ok(())
     }
 
     #[test]
-    fn stops_at_truncated_or_malformed_input() -> Result<(), String> {
+    fn stops_at_truncated_or_malformed_input() -> Result<(), XmlFormatError> {
         let truncated = Document::parse("<rss><channel><title>Hi</title><item")?;
         assert!(truncated.incomplete.is_some());
         let unclosed = Document::parse("<rss><channel><title>Hi</title>")?;
+        assert!(matches!(
+            unclosed.incomplete,
+            Some(XmlFormatError::UnclosedElement { ref name }) if name == "channel"
+        ));
         assert_eq!(
-            unclosed.incomplete.as_deref(),
+            unclosed
+                .incomplete
+                .as_ref()
+                .map(ToString::to_string)
+                .as_deref(),
             Some("<channel> is not closed")
         );
         let mismatched = Document::parse("<a><b></a>")?;
+        assert!(matches!(
+            mismatched.incomplete,
+            Some(XmlFormatError::Syntax { .. })
+        ));
         assert!(
             mismatched
                 .incomplete
-                .as_deref()
+                .as_ref()
+                .map(ToString::to_string)
                 .is_some_and(|reason| reason.contains("byte"))
         );
-        assert!(Document::parse("plain text").is_err());
-        assert!(Document::parse("").is_err());
+        assert!(matches!(
+            Document::parse("plain text"),
+            Err(XmlFormatError::NoElements)
+        ));
+        assert!(matches!(
+            Document::parse(""),
+            Err(XmlFormatError::NoElements)
+        ));
         Ok(())
     }
 
     #[test]
-    fn limits_depth_and_node_count() -> Result<(), String> {
+    fn limits_depth_and_node_count() -> Result<(), XmlFormatError> {
         let deep = "<a>".repeat(MAX_DEPTH + 10);
         let document = Document::parse(&deep)?;
         assert_eq!(document.nodes.len(), MAX_DEPTH);
+        assert!(matches!(
+            document.incomplete,
+            Some(XmlFormatError::TooDeep {
+                max_depth: MAX_DEPTH
+            })
+        ));
         assert!(
             document
                 .incomplete
-                .as_deref()
+                .as_ref()
+                .map(ToString::to_string)
                 .is_some_and(|reason| reason.contains("nested deeper"))
         );
         let wide = format!("<r>{}</r>", "<i/>".repeat(MAX_NODES + 10));
         let document = Document::parse(&wide)?;
         assert_eq!(document.nodes.len(), MAX_NODES);
+        assert!(matches!(
+            document.incomplete,
+            Some(XmlFormatError::TooManyNodes {
+                max_nodes: MAX_NODES
+            })
+        ));
         assert!(
             document
                 .incomplete
-                .as_deref()
+                .as_ref()
+                .map(ToString::to_string)
                 .is_some_and(|reason| reason.contains("nodes"))
         );
         Ok(())
     }
 
     #[test]
-    fn never_resolves_dtd_or_external_entities() -> Result<(), String> {
+    fn never_resolves_dtd_or_external_entities() -> Result<(), XmlFormatError> {
         let text = concat!(
             "<!DOCTYPE r [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">",
             "<!ENTITY a \"aaaaaaaaaa\"><!ENTITY b \"&a;&a;&a;&a;&a;&a;&a;&a;\">]>",
@@ -363,12 +419,12 @@ mod tests {
             .map(|node| document.slice(&node.range))
             .collect::<Vec<_>>();
         assert_eq!(entities, ["&xxe;", "&b;"]);
-        assert_eq!(document.incomplete, None);
+        assert!(document.incomplete.is_none());
         Ok(())
     }
 
     #[test]
-    fn tracks_xml_space_preserve() -> Result<(), String> {
+    fn tracks_xml_space_preserve() -> Result<(), XmlFormatError> {
         let document =
             Document::parse("<a xml:space=\"preserve\"><b><c xml:space='default'/></b></a>")?;
         let preserve = document

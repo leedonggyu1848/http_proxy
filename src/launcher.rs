@@ -24,12 +24,39 @@ enum Kind {
     Chrome,
 }
 
+use crate::https::{CaTrustError, HttpsSetupError};
+
+/// Reason an inspection browser session failed to start or exited with an error.
+#[derive(Debug, thiserror::Error)]
+pub enum BrowserLaunchError {
+    #[error("Browser inspection requires a listening loopback proxy")]
+    InvalidProxyAddress,
+    #[error("Firefox Snap requires an absolute HOME")]
+    MissingSnapHome,
+    #[error("{browser} exited before opening a window ({status})")]
+    ExitedBeforeOpen {
+        browser: &'static str,
+        status: std::process::ExitStatus,
+    },
+    #[error("{browser} exited with {status}")]
+    ExitedWithStatus {
+        browser: &'static str,
+        status: std::process::ExitStatus,
+    },
+    #[error(transparent)]
+    CaSetup(#[from] HttpsSetupError),
+    #[error(transparent)]
+    CaTrust(#[from] CaTrustError),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
 /// Progress from the background browser launcher.
 pub enum BrowserEvent {
     /// A separate browser process is running.
     Opened,
     /// The browser exited or preparation failed.
-    Finished(Result<(), String>),
+    Finished(Result<(), BrowserLaunchError>),
 }
 
 /// Owns a browser worker and closes its browser on drop.

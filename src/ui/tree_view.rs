@@ -284,6 +284,7 @@ mod tests {
         tree::build(format, text)
             .ok_or("no tree")?
             .map(TreeView::new)
+            .map_err(|error| error.to_string())
     }
 
     fn paths(view: &TreeView, indexes: &[usize]) -> Vec<String> {

@@ -108,7 +108,7 @@ impl BrowserPanel {
                 BrowserEvent::Finished(result) => {
                     self.session = None;
                     self.opened = false;
-                    self.error = result.err();
+                    self.error = result.err().map(|error| error.to_string());
                 }
             }
         }

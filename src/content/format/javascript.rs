@@ -10,6 +10,7 @@
 mod lexer;
 
 use super::{Formatted, Notice, Styled, TokenKind, comment_align, starts_with_blank_line};
+pub use lexer::JavaScriptFormatError;
 use lexer::{Kind, Token};
 
 /// Words shown as keywords.
@@ -74,7 +75,7 @@ const SOURCE_MAP_URL_CHARS: usize = 120;
 /// Formats `text`, or fails when it cannot be tokenized without guessing.
 /// Notices say what the script leaves unfinished where the preview was cut
 /// and which source map it points to; the source map is never fetched.
-pub(super) fn pretty(text: &str) -> Result<Formatted, String> {
+pub(super) fn pretty(text: &str) -> Result<Formatted, JavaScriptFormatError> {
     let lexed = lexer::lex(text)?;
     let unfinished = lexed.unfinished.map(|unfinished| {
         Notice::warning(format!(
@@ -283,12 +284,12 @@ mod tests {
             .collect()
     }
 
-    fn formatted(text: &str) -> Result<String, String> {
+    fn formatted(text: &str) -> Result<String, JavaScriptFormatError> {
         Ok(pretty(text)?.styled.text().to_owned())
     }
 
     /// Removes whitespace outside tokens, which formatting may change.
-    fn significant(text: &str) -> Result<Vec<String>, String> {
+    fn significant(text: &str) -> Result<Vec<String>, JavaScriptFormatError> {
         Ok(lexer::lex(text)?
             .tokens
             .into_iter()
@@ -298,7 +299,7 @@ mod tests {
     }
 
     #[test]
-    fn indents_minified_script() -> Result<(), String> {
+    fn indents_minified_script() -> Result<(), JavaScriptFormatError> {
         assert_eq!(
             formatted(
                 "!function(e){var t={a:1,b:[1,2]};for(var n=0;n<3;n++){if(n)t.a++;else{e(n)}}try{e()}catch(r){}return t}(window);"
@@ -309,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_source_line_ends_and_spaces() -> Result<(), String> {
+    fn keeps_source_line_ends_and_spaces() -> Result<(), JavaScriptFormatError> {
         assert_eq!(
             formatted("function f() {\n\n\n  return\n  x\n}\na++\n/re/g.test(s)")?,
             "function f() {\n\n  return\n  x\n}\na++\n/re/g.test(s)"
@@ -319,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn never_changes_token_text() -> Result<(), String> {
+    fn never_changes_token_text() -> Result<(), JavaScriptFormatError> {
         let text = r#"var r=/[;{,]}/g,s="a;{b,}c",t=`x;${{k:"}"}.k},{y`;/* a;{,} */x=a/b/c;"#;
         let output = formatted(text)?;
         assert_eq!(significant(&output)?, significant(text)?);
@@ -330,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn formats_truncated_script_and_says_so() -> Result<(), String> {
+    fn formats_truncated_script_and_says_so() -> Result<(), JavaScriptFormatError> {
         let result = pretty("(function(){var a={b:\"unfinish")?;
         assert_eq!(
             result.styled.text(),
@@ -351,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn shows_the_source_map_url_without_fetching_it() -> Result<(), String> {
+    fn shows_the_source_map_url_without_fetching_it() -> Result<(), JavaScriptFormatError> {
         let result = pretty("a();\n//# sourceMappingURL=app.min.js.map")?;
         assert_eq!(
             result.notices,
@@ -370,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn classifies_tokens_for_highlighting() -> Result<(), String> {
+    fn classifies_tokens_for_highlighting() -> Result<(), JavaScriptFormatError> {
         let styled = pretty("const n=a.return+1.5;if(x)return /a/g.test(`t`)?'s':null// c")?.styled;
         assert_eq!(pieces(&styled, TokenKind::Key), ["const", "if", "return"]);
         assert_eq!(pieces(&styled, TokenKind::Number), ["1.5"]);
@@ -384,13 +385,22 @@ mod tests {
 
     #[test]
     fn falls_back_when_tokens_need_a_guess() {
-        assert!(pretty("a = 'line\nbreak'").is_err());
-        assert!(pretty("<html>}</html>").is_err());
+        assert!(matches!(
+            pretty("a = 'line\nbreak'"),
+            Err(JavaScriptFormatError::UnterminatedString { offset: 4 })
+        ));
+        assert!(matches!(
+            pretty("<html>}</html>"),
+            Err(JavaScriptFormatError::UnbalancedBracket {
+                bracket: "}",
+                offset: 6
+            })
+        ));
     }
 
     #[test]
     fn visually_indents_multiline_templates_and_block_comments_without_altering_text()
-    -> Result<(), String> {
+    -> Result<(), JavaScriptFormatError> {
         let js = "const data={nested:{msg:`line1\nline2\nline3`,next:1}};/* a\nb */";
         let out = pretty(js)?;
         let text = out.styled.text();

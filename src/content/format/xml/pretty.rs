@@ -1,7 +1,7 @@
 //! Indented, highlighted XML that keeps text, `CDATA`, and comments as
 //! written.
 
-use super::{Document, Element, NodeKind};
+use super::{Document, Element, NodeKind, XmlFormatError};
 use crate::content::format::tag::{Dialect, Spacing, push_tag};
 use crate::content::format::{
     Formatted, Notice, Styled, TokenKind, comment_align, split_trailing_blank_line,
@@ -12,7 +12,7 @@ use crate::content::format::{
 /// text, entity references, or `CDATA`, and elements under
 /// `xml:space="preserve"`, keep their content exactly as written. Warns
 /// when the document was not read to its end.
-pub(in crate::content::format) fn pretty(text: &str) -> Result<Formatted, String> {
+pub(in crate::content::format) fn pretty(text: &str) -> Result<Formatted, XmlFormatError> {
     let document = Document::parse(text)?;
     let mut printer = Printer {
         document: &document,
@@ -212,7 +212,7 @@ fn push_raw_tag(out: &mut Styled, tag: &str) {
 mod tests {
     use super::*;
 
-    fn text(input: &str) -> Result<String, String> {
+    fn text(input: &str) -> Result<String, XmlFormatError> {
         Ok(pretty(input)?.styled.text().to_owned())
     }
 
@@ -225,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn indents_one_line_rss() -> Result<(), String> {
+    fn indents_one_line_rss() -> Result<(), XmlFormatError> {
         let rss = concat!(
             "<?xml version=\"1.0\"?><rss version=\"2.0\"><channel><title>News</title>",
             "<!-- latest --><item><title>A &amp; B</title><guid isPermaLink=\"false\">1</guid>",
@@ -252,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_text_cdata_comments_and_preserved_space() -> Result<(), String> {
+    fn keeps_text_cdata_comments_and_preserved_space() -> Result<(), XmlFormatError> {
         let input = concat!(
             "<doc><p>  two  spaces <b>bold</b> tail </p>",
             "<code xml:space=\"preserve\">\n  <line> x </line>\n</code>",
@@ -273,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn classifies_xml_tokens() -> Result<(), String> {
+    fn classifies_xml_tokens() -> Result<(), XmlFormatError> {
         let soap = concat!(
             "<?xml version=\"1.0\"?><soap:Envelope xmlns:soap=\"urn:s\" a=\"x &lt; y\">",
             "<soap:Body><!--c--><m>&#65;<![CDATA[d]]></m></soap:Body></soap:Envelope>"
@@ -316,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_space_inside_tags_only() -> Result<(), String> {
+    fn normalizes_space_inside_tags_only() -> Result<(), XmlFormatError> {
         assert_eq!(
             text("<a\n   x = \"1  2\"\n   y='3'  >t</a  >")?,
             "<a x=\"1  2\" y='3'>t</a  >"
@@ -325,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn shows_truncated_and_malformed_xml_as_far_as_read() -> Result<(), String> {
+    fn shows_truncated_and_malformed_xml_as_far_as_read() -> Result<(), XmlFormatError> {
         let Formatted { styled, notices } = pretty("<feed><entry><id>1</id></entry><entry><id>2")?;
         assert_eq!(
             styled.text(),
@@ -342,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn leaves_entities_of_a_dtd_unexpanded() -> Result<(), String> {
+    fn leaves_entities_of_a_dtd_unexpanded() -> Result<(), XmlFormatError> {
         let input = "<!DOCTYPE r [<!ENTITY e SYSTEM \"file:///etc/passwd\">]><r>&e;</r>";
         let Formatted { styled, notices } = pretty(input)?;
         assert_eq!(notices, []);
@@ -356,7 +356,7 @@ mod tests {
 
     #[test]
     fn aligns_multiline_element_text_attributes_cdata_and_comments_without_padding_text()
-    -> Result<(), String> {
+    -> Result<(), XmlFormatError> {
         let xml = concat!(
             "<root><outer>",
             "<note>first\nsecond\nthird</note>",
@@ -406,8 +406,8 @@ mod tests {
     }
 
     #[test]
-    fn indents_multiline_element_starting_with_newline_and_aligns_closing_tag() -> Result<(), String>
-    {
+    fn indents_multiline_element_starting_with_newline_and_aligns_closing_tag()
+    -> Result<(), XmlFormatError> {
         let xml = "<root><outer><note>\nline1\nline2\nline3\n</note><next>ok</next></outer></root>";
         let styled = pretty(xml)?.styled;
         assert!(
@@ -431,7 +431,8 @@ mod tests {
     }
 
     #[test]
-    fn pads_short_trailing_indent_before_closing_tag_without_mutating_text() -> Result<(), String> {
+    fn pads_short_trailing_indent_before_closing_tag_without_mutating_text()
+    -> Result<(), Box<dyn std::error::Error>> {
         let short_tail =
             "<root><outer><note>first\nsecond\nthird\n  </note><next>ok</next></outer></root>";
         let styled = pretty(short_tail)?.styled;

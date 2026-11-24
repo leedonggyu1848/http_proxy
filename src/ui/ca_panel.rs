@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::ui::theme::Palette;
 
 use eframe::egui::{self, Color32, RichText};
-use http_proxy::https::{CaInfo, CaTrustStatus, CaTrustStore};
+use http_proxy::https::{CaInfo, CaTrustError, CaTrustStatus, CaTrustStore, HttpsSetupError};
 
 #[derive(Default)]
 pub(in crate::ui) struct CaPanel {
@@ -31,9 +31,21 @@ enum Action {
     Remove,
 }
 
+#[derive(Debug, thiserror::Error)]
+enum CaRegistrationError {
+    #[error(transparent)]
+    Setup(#[from] HttpsSetupError),
+    #[error(transparent)]
+    Trust(#[from] CaTrustError),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error("CA registration worker stopped")]
+    WorkerStopped,
+}
+
 enum Event {
     Prepared(CaInfo),
-    Finished(Action, Result<Registration, String>),
+    Finished(Action, Result<Registration, CaRegistrationError>),
 }
 
 /// Registration state shown as one colored word in the toolbar.
@@ -256,10 +268,9 @@ impl CaPanel {
             }
             Ok(Event::Finished(action, result)) => (action, result),
             Err(TryRecvError::Empty) => return false,
-            Err(TryRecvError::Disconnected) => (
-                Action::Check,
-                Err("CA registration worker stopped".to_owned()),
-            ),
+            Err(TryRecvError::Disconnected) => {
+                (Action::Check, Err(CaRegistrationError::WorkerStopped))
+            }
         };
         self.pending = None;
         self.pending_action = None;
@@ -273,7 +284,7 @@ impl CaPanel {
                     }
                 };
             }
-            Err(error) => self.error = Some(error),
+            Err(error) => self.error = Some(error.to_string()),
         }
         false
     }
@@ -283,25 +294,22 @@ fn registration(
     action: Action,
     directory: &Path,
     sender: &SyncSender<Event>,
-) -> Result<Registration, String> {
-    let info = CaInfo::load_or_create(directory).map_err(|error| error.to_string())?;
+) -> Result<Registration, CaRegistrationError> {
+    let info = CaInfo::load_or_create(directory)?;
     sender
         .send(Event::Prepared(info.clone()))
-        .map_err(|error| error.to_string())?;
-    let store = CaTrustStore::for_current_user().map_err(|error| error.to_string())?;
+        .map_err(|_| CaRegistrationError::WorkerStopped)?;
+    let store = CaTrustStore::for_current_user()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .build()
-        .map_err(|error| error.to_string())?;
-    let status = runtime
-        .block_on(async {
-            match action {
-                Action::Check => store.status(&info).await,
-                Action::Install => store.install(&info).await,
-                Action::Remove => store.remove(&info).await,
-            }
-        })
-        .map_err(|error| error.to_string())?;
+        .build()?;
+    let status = runtime.block_on(async {
+        match action {
+            Action::Check => store.status(&info).await,
+            Action::Install => store.install(&info).await,
+            Action::Remove => store.remove(&info).await,
+        }
+    })?;
     Ok(Registration {
         target: CaTrustStore::DESCRIPTION,
         location: store.location().to_owned(),

@@ -38,12 +38,19 @@ enum Node<'a> {
     Verbatim(&'a str),
 }
 
+/// Reason HTML/markup input could not be formatted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum MarkupFormatError {
+    #[error("no tags found")]
+    NoTagsFound,
+}
+
 /// Puts each tag, comment, and text run on its own line and indents element
 /// content. Short text stays inline between its opening and closing tags.
-pub(super) fn pretty(text: &str) -> Result<Styled, String> {
+pub(super) fn pretty(text: &str) -> Result<Styled, MarkupFormatError> {
     let nodes = lex(text);
     if nodes.iter().all(|node| matches!(node, Node::Text(_))) {
-        return Err("no tags found".to_owned());
+        return Err(MarkupFormatError::NoTagsFound);
     }
     let mut out = Styled::default();
     let mut depth = 0_usize;
@@ -280,7 +287,7 @@ mod tests {
     }
 
     #[test]
-    fn indents_minified_html() -> Result<(), String> {
+    fn indents_minified_html() -> Result<(), MarkupFormatError> {
         let styled = pretty(concat!(
             "<!DOCTYPE html><html lang=en><head><meta charset=\"utf-8\">",
             "<title>Test page</title><!-- note --></head><body>",
@@ -308,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_script_content_and_xml_declarations() -> Result<(), String> {
+    fn keeps_script_content_and_xml_declarations() -> Result<(), MarkupFormatError> {
         let styled =
             pretty("<?xml version=\"1.0\"?><feed><script>if (a<b) {}</script><e/></feed>")?;
         assert_eq!(
@@ -319,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_whitespace_of_pre_textarea_and_script_content() -> Result<(), String> {
+    fn keeps_whitespace_of_pre_textarea_and_script_content() -> Result<(), MarkupFormatError> {
         let pre = "\n  first\n\n    indented <b>bold</b>\n";
         let textarea = "  line 1\n\n  line 2 ";
         let script = "\n  if (a) {\n    b();\n  }\n";
@@ -341,14 +348,14 @@ mod tests {
     }
 
     #[test]
-    fn formats_truncated_and_unbalanced_markup() -> Result<(), String> {
+    fn formats_truncated_and_unbalanced_markup() -> Result<(), MarkupFormatError> {
         assert_eq!(pretty("<div><a href=\"/x")?.text(), "<div>\n  <a href=\"/x");
         assert_eq!(pretty("</p></p><!-- cut")?.text(), "</p>\n</p>\n<!-- cut");
         Ok(())
     }
 
     #[test]
-    fn keeps_stray_characters_in_tags_as_written() -> Result<(), String> {
+    fn keeps_stray_characters_in_tags_as_written() -> Result<(), MarkupFormatError> {
         let styled = pretty("<p =x a=\"1\"b=2 'c'>t</p>")?;
         assert_eq!(styled.text(), "<p =x a=\"1\"b=2 'c'>t</p>");
         assert_eq!(
@@ -365,12 +372,15 @@ mod tests {
 
     #[test]
     fn rejects_text_without_tags() {
-        assert!(pretty("plain text, 1 < 2").is_err());
+        assert_eq!(
+            pretty("plain text, 1 < 2"),
+            Err(MarkupFormatError::NoTagsFound)
+        );
     }
 
     #[test]
-    fn aligns_multiline_attributes_verbatim_and_comments_without_padding_text() -> Result<(), String>
-    {
+    fn aligns_multiline_attributes_verbatim_and_comments_without_padding_text()
+    -> Result<(), MarkupFormatError> {
         let html = concat!(
             "<div><a title=\"first\nsecond\nthird\">link</a>",
             "<textarea>t1\nt2\nt3</textarea>",
@@ -402,7 +412,8 @@ mod tests {
     }
 
     #[test]
-    fn pads_short_trailing_indent_before_closing_tag_without_mutating_text() -> Result<(), String> {
+    fn pads_short_trailing_indent_before_closing_tag_without_mutating_text()
+    -> Result<(), Box<dyn std::error::Error>> {
         let html =
             "<div><section><textarea>\nline1\nline2\n  </textarea><p>next</p></section></div>";
         let styled = pretty(html)?;

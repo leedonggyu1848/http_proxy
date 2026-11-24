@@ -2,7 +2,7 @@
 use eframe::egui;
 use http_proxy::exchange::{Exchange, RecordId};
 use http_proxy::interception::ProxyHandle;
-use http_proxy::replay::{ReplayDraft, ReplayField, ReplayTask};
+use http_proxy::replay::{ReplayDraft, ReplayError, ReplayField, ReplayTask};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -26,7 +26,7 @@ pub(in crate::ui) struct ReplayPanel {
 }
 
 impl ReplayPanel {
-    pub(in crate::ui) fn new(original: Exchange) -> Result<Self, String> {
+    pub(in crate::ui) fn new(original: Exchange) -> Result<Self, ReplayError> {
         let draft = ReplayDraft::new(original)?;
         Ok(Self {
             body: BodyView::new(&draft.body),
@@ -194,7 +194,7 @@ impl ReplayPanel {
                         self.body_source = Some(self.file.clone());
                         self.error = None;
                     }
-                    Err(error) => self.error = Some(error),
+                    Err(error) => self.error = Some(error.to_string()),
                 }
             }
         });
@@ -233,7 +233,7 @@ impl ReplayPanel {
                         self.error = None;
                         self.confirmed = false;
                     }
-                    Err(error) => self.error = Some(error),
+                    Err(error) => self.error = Some(error.to_string()),
                 }
             }
             if running
@@ -249,7 +249,7 @@ impl ReplayPanel {
                         self.body_source = None;
                         self.draft = draft;
                     }
-                    Err(error) => self.error = Some(error),
+                    Err(error) => self.error = Some(error.to_string()),
                 }
             }
             ui.checkbox(&mut self.compare, "Compare with original");
@@ -379,13 +379,19 @@ fn summary(record: &Exchange) -> String {
     text
 }
 
+/// Cached outcome of validating a JSON request body.
+enum JsonCheck {
+    Valid,
+    Invalid(String),
+}
+
 /// How a `name=value` list is split and rejoined.
 /// Views derived from the draft body, rebuilt only when the body changes.
 struct BodyView {
     /// Editable text, present for UTF-8 bodies small enough to lay out every frame.
     text: Option<String>,
     /// Cached JSON check; `None` until a JSON content type first asks for it.
-    json: Option<Result<(), String>>,
+    json: Option<JsonCheck>,
 }
 
 impl BodyView {
@@ -400,15 +406,16 @@ impl BodyView {
 
     /// The JSON syntax error for `body`, parsing only on the first request after a change.
     fn json_error(&mut self, body: &[u8]) -> Option<&str> {
-        self.json
-            .get_or_insert_with(|| {
-                serde_json::from_slice::<serde_json::Value>(body)
-                    .map(drop)
-                    .map_err(|error| error.to_string())
-            })
-            .as_ref()
-            .err()
-            .map(String::as_str)
+        let check = self.json.get_or_insert_with(|| {
+            match serde_json::from_slice::<serde_json::Value>(body) {
+                Ok(_) => JsonCheck::Valid,
+                Err(error) => JsonCheck::Invalid(error.to_string()),
+            }
+        });
+        match check {
+            JsonCheck::Valid => None,
+            JsonCheck::Invalid(message) => Some(message.as_str()),
+        }
     }
 }
 

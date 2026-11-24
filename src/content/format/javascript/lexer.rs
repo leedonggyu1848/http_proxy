@@ -92,9 +92,23 @@ enum End {
     Newline(usize),
 }
 
+/// Reason JavaScript input could not be tokenized without guessing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum JavaScriptFormatError {
+    #[error("unterminated regular expression at byte {offset}")]
+    UnterminatedRegex { offset: usize },
+    #[error("unterminated string at byte {offset}")]
+    UnterminatedString { offset: usize },
+    #[error("unbalanced {bracket:?} at byte {offset}")]
+    UnbalancedBracket {
+        bracket: &'static str,
+        offset: usize,
+    },
+}
+
 /// Splits `text` into tokens. Fails, with a byte offset, when the text
 /// cannot be read as JavaScript without guessing.
-pub(super) fn lex(text: &str) -> Result<Lexed<'_>, String> {
+pub(super) fn lex(text: &str) -> Result<Lexed<'_>, JavaScriptFormatError> {
     Lexer::default().run(text)
 }
 
@@ -159,7 +173,7 @@ struct Lexer {
 }
 
 impl Lexer {
-    fn run(mut self, text: &str) -> Result<Lexed<'_>, String> {
+    fn run(mut self, text: &str) -> Result<Lexed<'_>, JavaScriptFormatError> {
         let mut tokens = Vec::new();
         let mut unfinished = None;
         let mut rest = text;
@@ -197,7 +211,7 @@ impl Lexer {
         &self,
         rest: &str,
         offset: usize,
-    ) -> Result<(Kind, usize, Option<&'static str>), String> {
+    ) -> Result<(Kind, usize, Option<&'static str>), JavaScriptFormatError> {
         let mut chars = rest.chars();
         let first = chars.next().unwrap_or_default();
         let second = chars.next();
@@ -214,13 +228,15 @@ impl Lexer {
                 End::Closed(len) => (Kind::Regex, len, None),
                 End::Eof => (Kind::Regex, rest.len(), Some("regular expression")),
                 End::Newline(_) => {
-                    return Err(format!("unterminated regular expression at byte {offset}"));
+                    return Err(JavaScriptFormatError::UnterminatedRegex { offset });
                 }
             },
             ('"' | '\'', _) => match string_len(rest) {
                 End::Closed(len) => (Kind::String, len, None),
                 End::Eof => (Kind::String, rest.len(), Some("string")),
-                End::Newline(_) => return Err(format!("unterminated string at byte {offset}")),
+                End::Newline(_) => {
+                    return Err(JavaScriptFormatError::UnterminatedString { offset });
+                }
             },
             ('`', _) => match template_len(rest) {
                 End::Closed(len) => (Kind::Template, len, None),
@@ -237,7 +253,12 @@ impl Lexer {
     }
 
     /// Updates bracket and `/` state after a token.
-    fn advance(&mut self, kind: Kind, piece: &str, offset: usize) -> Result<(), String> {
+    fn advance(
+        &mut self,
+        kind: Kind,
+        piece: &str,
+        offset: usize,
+    ) -> Result<(), JavaScriptFormatError> {
         self.previous = match kind {
             Kind::Space | Kind::LineComment | Kind::BlockComment => return Ok(()),
             Kind::Word => self.previous.after_word(piece),
@@ -249,7 +270,7 @@ impl Lexer {
         Ok(())
     }
 
-    fn punct(&mut self, piece: &str, offset: usize) -> Result<Previous, String> {
+    fn punct(&mut self, piece: &str, offset: usize) -> Result<Previous, JavaScriptFormatError> {
         let previous = match piece {
             "(" | "[" | "{" => {
                 let regex_after_close = match piece {
@@ -268,14 +289,16 @@ impl Lexer {
                 }
             }
             ")" | "]" | "}" => {
-                let expected = match piece {
-                    ")" => '(',
-                    "]" => '[',
-                    _ => '{',
+                let (expected, bracket) = match piece {
+                    ")" => ('(', ")"),
+                    "]" => ('[', "]"),
+                    _ => ('{', "}"),
                 };
                 match self.opens.pop() {
                     Some(open) if open.bracket == expected => Previous::after_close(open),
-                    _ => return Err(format!("unbalanced {piece:?} at byte {offset}")),
+                    _ => {
+                        return Err(JavaScriptFormatError::UnbalancedBracket { bracket, offset });
+                    }
                 }
             }
             "++" | "--" => Previous::Value,
@@ -461,7 +484,7 @@ fn substitution_len(text: &str) -> Option<usize> {
 mod tests {
     use super::*;
 
-    fn tokens(text: &str) -> Result<Vec<(Kind, &str)>, String> {
+    fn tokens(text: &str) -> Result<Vec<(Kind, &str)>, JavaScriptFormatError> {
         Ok(lex(text)?
             .tokens
             .into_iter()
@@ -470,7 +493,7 @@ mod tests {
             .collect())
     }
 
-    fn kind_of(text: &str, piece: &str) -> Result<Vec<Kind>, String> {
+    fn kind_of(text: &str, piece: &str) -> Result<Vec<Kind>, JavaScriptFormatError> {
         Ok(tokens(text)?
             .into_iter()
             .filter(|(_, text)| *text == piece)
@@ -479,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn tokens_reassemble_the_original_text() -> Result<(), String> {
+    fn tokens_reassemble_the_original_text() -> Result<(), JavaScriptFormatError> {
         let text = "#!/usr/bin/env node\nconst a = `x${ {b:'}'}.b }y` /* c */ + 0x1F + 1e-3 + .5n; // end\n";
         let lexed = lex(text)?;
         let joined: String = lexed.tokens.iter().map(|token| token.text).collect();
@@ -508,7 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn tells_regular_expressions_from_division() -> Result<(), String> {
+    fn tells_regular_expressions_from_division() -> Result<(), JavaScriptFormatError> {
         assert_eq!(kind_of("a = b / c / d", "/")?, [Kind::Punct, Kind::Punct]);
         assert_eq!(kind_of("x = /[/]{}/g.test(s)", "/[/]{}/g")?, [Kind::Regex]);
         assert_eq!(kind_of("return /a;b/.source", "/a;b/")?, [Kind::Regex]);
@@ -528,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_strings_templates_and_comments_whole() -> Result<(), String> {
+    fn keeps_strings_templates_and_comments_whole() -> Result<(), JavaScriptFormatError> {
         assert_eq!(
             tokens(r#"s = "a\"b;{" + 'c,}'"#)?,
             [
@@ -550,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn reports_what_a_truncated_script_left_unfinished() -> Result<(), String> {
+    fn reports_what_a_truncated_script_left_unfinished() -> Result<(), JavaScriptFormatError> {
         for (text, unfinished) in [
             ("f(\"abc", "string"),
             ("x = `a ${b", "template literal"),
@@ -570,15 +593,50 @@ mod tests {
 
     #[test]
     fn rejects_text_that_needs_a_guess() {
+        let string_err = lex("a = 'broken\nline'");
         assert_eq!(
-            lex("a = 'broken\nline'"),
-            Err("unterminated string at byte 4".to_owned())
+            string_err,
+            Err(JavaScriptFormatError::UnterminatedString { offset: 4 })
         );
         assert_eq!(
-            lex("x = /a\n/"),
-            Err("unterminated regular expression at byte 4".to_owned())
+            string_err.err().map(|error| error.to_string()).as_deref(),
+            Some("unterminated string at byte 4")
         );
-        assert_eq!(lex("f(]"), Err("unbalanced \"]\" at byte 2".to_owned()));
-        assert_eq!(lex("}"), Err("unbalanced \"}\" at byte 0".to_owned()));
+
+        let regex_err = lex("x = /a\n/");
+        assert_eq!(
+            regex_err,
+            Err(JavaScriptFormatError::UnterminatedRegex { offset: 4 })
+        );
+        assert_eq!(
+            regex_err.err().map(|error| error.to_string()).as_deref(),
+            Some("unterminated regular expression at byte 4")
+        );
+
+        let bracket_err = lex("f(]");
+        assert_eq!(
+            bracket_err,
+            Err(JavaScriptFormatError::UnbalancedBracket {
+                bracket: "]",
+                offset: 2,
+            })
+        );
+        assert_eq!(
+            bracket_err.err().map(|error| error.to_string()).as_deref(),
+            Some("unbalanced \"]\" at byte 2")
+        );
+
+        let brace_err = lex("}");
+        assert_eq!(
+            brace_err,
+            Err(JavaScriptFormatError::UnbalancedBracket {
+                bracket: "}",
+                offset: 0,
+            })
+        );
+        assert_eq!(
+            brace_err.err().map(|error| error.to_string()).as_deref(),
+            Some("unbalanced \"}\" at byte 0")
+        );
     }
 }

@@ -29,10 +29,45 @@ impl<'a> Lexeme<'a> {
 
 const LITERALS: [&str; 3] = ["true", "false", "null"];
 
+/// Reason JSON input could not be formatted or parsed into a tree.
+#[derive(Debug, thiserror::Error)]
+pub enum JsonFormatError {
+    #[error("unexpected {found:?} at byte {offset}")]
+    UnexpectedChar { found: char, offset: usize },
+    #[error("unexpected word {word:?} at byte {offset}")]
+    UnexpectedWord { word: String, offset: usize },
+    #[error("JSON preview nesting exceeds 64 levels")]
+    PreviewNestingTooDeep,
+    #[error("unexpected data after JSON value")]
+    TrailingData,
+    #[error("invalid JSON offset")]
+    InvalidOffset,
+    #[error("unfinished JSON value")]
+    UnfinishedValue,
+    #[error("invalid JSON whitespace")]
+    InvalidWhitespace,
+    #[error("unexpected JSON token")]
+    UnexpectedToken,
+    #[error("tree limit exceeded ({max_depth} levels, {max_nodes} nodes)")]
+    TreeLimitExceeded { max_depth: usize, max_nodes: usize },
+    #[error(transparent)]
+    InvalidString(#[from] serde_json::Error),
+    #[error("invalid JSON value")]
+    InvalidValue,
+    #[error("invalid JSON span")]
+    InvalidSpan,
+    #[error("missing JSON node")]
+    MissingNode,
+    #[error("expected JSON key")]
+    ExpectedKey,
+    #[error("expected comma or closing bracket")]
+    ExpectedSeparatorOrClose,
+}
+
 /// Indents JSON two spaces per level. Unbalanced brackets and an unfinished
 /// last token are shown as they are; characters that cannot start a JSON
 /// token fail with their byte offset.
-pub(super) fn pretty(text: &str) -> Result<Styled, String> {
+pub(super) fn pretty(text: &str) -> Result<Styled, JsonFormatError> {
     let lexemes = lex(text)?;
     let mut out = Styled::default();
     let mut depth = 0_usize;
@@ -48,7 +83,7 @@ pub(super) fn pretty(text: &str) -> Result<Styled, String> {
                 } else {
                     depth += 1;
                     if depth > 64 {
-                        return Err("JSON preview nesting exceeds 64 levels".into());
+                        return Err(JsonFormatError::PreviewNestingTooDeep);
                     }
                     if next.is_some() {
                         out.newline(depth);
@@ -87,7 +122,7 @@ pub(super) fn pretty(text: &str) -> Result<Styled, String> {
     Ok(out)
 }
 
-pub(super) fn lex(text: &str) -> Result<Vec<Lexeme<'_>>, String> {
+pub(super) fn lex(text: &str) -> Result<Vec<Lexeme<'_>>, JsonFormatError> {
     let mut lexemes = Vec::new();
     let mut rest = text.trim_start();
     while let Some(first) = rest.chars().next() {
@@ -99,7 +134,12 @@ pub(super) fn lex(text: &str) -> Result<Vec<Lexeme<'_>>, String> {
                 c.is_ascii_digit() || matches!(c, '-' | '+' | '.' | 'e' | 'E')
             }),
             'a'..='z' => split_while(rest, |c| c.is_ascii_alphabetic()),
-            other => return Err(format!("unexpected {other:?} at byte {offset}")),
+            other => {
+                return Err(JsonFormatError::UnexpectedChar {
+                    found: other,
+                    offset,
+                });
+            }
         };
         let lexeme = match first {
             '{' | '[' => Lexeme::Open(piece),
@@ -108,7 +148,12 @@ pub(super) fn lex(text: &str) -> Result<Vec<Lexeme<'_>>, String> {
             ':' => Lexeme::Colon,
             '"' => Lexeme::String(piece),
             'a'..='z' if is_literal(piece, after.is_empty()) => Lexeme::Literal(piece),
-            'a'..='z' => return Err(format!("unexpected word {piece:?} at byte {offset}")),
+            'a'..='z' => {
+                return Err(JsonFormatError::UnexpectedWord {
+                    word: piece.to_owned(),
+                    offset,
+                });
+            }
             _ => Lexeme::Number(piece),
         };
         lexemes.push(lexeme);
@@ -153,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn indents_minified_json_and_classifies_tokens() -> Result<(), String> {
+    fn indents_minified_json_and_classifies_tokens() -> Result<(), JsonFormatError> {
         let styled =
             pretty(r#"{"name":"a\"b","n":-1.5e3,"ok":true,"none":null,"list":[1,{}],"empty":[]}"#)?;
         assert_eq!(
@@ -178,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn formats_truncated_json_as_far_as_it_goes() -> Result<(), String> {
+    fn formats_truncated_json_as_far_as_it_goes() -> Result<(), JsonFormatError> {
         let styled = pretty(r#"{"items":[{"id":1,"name":"unfinish"#)?;
         assert_eq!(
             styled.text(),
@@ -193,21 +238,39 @@ mod tests {
     #[test]
     fn bounds_indentation_for_deep_tree_fallback() {
         let text = "[".repeat(4096);
-        assert!(pretty(&text).is_err());
+        assert!(matches!(
+            pretty(&text),
+            Err(JsonFormatError::PreviewNestingTooDeep)
+        ));
     }
 
     #[test]
     fn rejects_text_that_is_not_json() {
+        let err = pretty("{\"a\": <b>}").err();
+        assert!(matches!(
+            err,
+            Some(JsonFormatError::UnexpectedChar {
+                found: '<',
+                offset: 6
+            })
+        ));
         assert_eq!(
-            pretty("{\"a\": <b>}"),
-            Err("unexpected '<' at byte 6".to_owned())
+            err.as_ref().map(ToString::to_string).as_deref(),
+            Some("unexpected '<' at byte 6")
         );
-        assert!(pretty("hello").is_err());
-        assert!(pretty("[tr, 1]").is_err());
+        assert!(matches!(
+            pretty("hello"),
+            Err(JsonFormatError::UnexpectedWord { ref word, offset: 0 }) if word == "hello"
+        ));
+        assert!(matches!(
+            pretty("[tr, 1]"),
+            Err(JsonFormatError::UnexpectedWord { ref word, offset: 1 }) if word == "tr"
+        ));
     }
 
     #[test]
-    fn aligns_multiline_json_strings_visually_without_changing_text() -> Result<(), String> {
+    fn aligns_multiline_json_strings_visually_without_changing_text() -> Result<(), JsonFormatError>
+    {
         let input = "{\"outer\":{\"note\":\"first\nsecond\nthird\",\"next\":1}}";
         let styled = pretty(input)?;
         assert_eq!(

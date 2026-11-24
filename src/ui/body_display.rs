@@ -11,7 +11,7 @@ use eframe::egui::{self, Galley, text::LayoutJob};
 use http_proxy::content::decode::{self as body_view, BodyText};
 use http_proxy::content::detect;
 use http_proxy::content::format::{
-    self as body_format, BodyFormat, Notice, NoticeLevel, ViewMode, tree,
+    self as body_format, BodyFormat, FormatError, Notice, NoticeLevel, ViewMode, tree,
 };
 use http_proxy::exchange::{BodyLifecycle, BodyRetention, MediaType};
 use std::sync::Arc;
@@ -148,7 +148,7 @@ struct TreeEntry {
     record: u64,
     retained: usize,
     capture: Capture,
-    tree: Result<TreeView, String>,
+    tree: Result<TreeView, FormatError>,
 }
 
 impl TreeCache {
@@ -159,7 +159,7 @@ impl TreeCache {
         source: &BodySource<'_>,
         format: BodyFormat,
         text: &str,
-    ) -> Option<Result<(), String>> {
+    ) -> Option<Result<&TreeView, &FormatError>> {
         let current = self.entry.as_ref().is_some_and(|entry| {
             (entry.record, entry.retained, entry.capture)
                 == (source.record, source.bytes.len(), source.capture)
@@ -178,7 +178,7 @@ impl TreeCache {
             });
         }
         let entry = self.entry.as_ref()?;
-        Some(entry.tree.as_ref().map(|_| ()).map_err(Clone::clone))
+        Some(entry.tree.as_ref())
     }
 
     fn view(&mut self) -> Option<&mut TreeView> {
@@ -266,8 +266,8 @@ fn build(
     let mut notices = capture_notices(decoding, source.capture);
     if key.mode == ViewMode::Tree {
         match trees.get(source, format, &text) {
-            Some(Ok(())) => {
-                let incomplete = trees.view().and_then(|view| view.incomplete());
+            Some(Ok(view)) => {
+                let incomplete = view.incomplete();
                 notices.extend(incomplete.map(Notice::warning));
                 if source.search.is_some() {
                     notices.push(Notice::info("Search matches are marked in Pretty and Raw."));
@@ -1104,7 +1104,8 @@ mod tests {
             BodyFormat::Xml,
             std::str::from_utf8(xml_bytes).map_err(|e| e.to_string())?,
         )
-        .ok_or("missing XML tree")??;
+        .ok_or("missing XML tree")?
+        .map_err(|e| e.to_string())?;
         assert!(
             xml_tree
                 .nodes()
@@ -1113,7 +1114,9 @@ mod tests {
         );
 
         let valid_json = r#"{"note":"line1\n  line2\nline3"}"#;
-        let json_tree = tree::build(BodyFormat::Json, valid_json).ok_or("missing JSON tree")??;
+        let json_tree = tree::build(BodyFormat::Json, valid_json)
+            .ok_or("missing JSON tree")?
+            .map_err(|e| e.to_string())?;
         assert!(
             json_tree
                 .nodes()

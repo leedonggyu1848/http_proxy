@@ -750,7 +750,7 @@ fn disable_unreproducible_header(
         .request(address)
         .err()
         .ok_or("non-UTF-8 header must block replay")?;
-    assert!(raw_error.contains("x-raw"), "{raw_error}");
+    assert!(raw_error.to_string().contains("x-raw"), "{raw_error}");
     for field in &mut draft.headers {
         if field.name.eq_ignore_ascii_case("x-raw") {
             field.enabled = false;
@@ -778,7 +778,7 @@ fn assert_body_file_loading(
         .load_body_file(&large_path)
         .err()
         .ok_or("oversized body file must be refused")?;
-    assert!(error.contains("limited"), "{error}");
+    assert!(error.to_string().contains("limited"), "{error}");
     assert_eq!(draft.body.as_ref(), br#"{"edited":true}"#);
 
     let url = std::mem::replace(&mut draft.url, "http://example.test/a b…".to_owned());
@@ -786,7 +786,7 @@ fn assert_body_file_loading(
         .request(address)
         .err()
         .ok_or("truncated URL must be refused")?;
-    assert!(error.contains("truncated"), "{error}");
+    assert!(error.to_string().contains("truncated"), "{error}");
     draft.url = url;
     Ok(())
 }

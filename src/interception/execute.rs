@@ -30,16 +30,25 @@ impl ReplayTask {
     }
 }
 
+/// Reason the running proxy cannot execute a replay request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub(crate) enum ReplayExecutionError {
+    #[error("Start the proxy before sending")]
+    ProxyNotRunning,
+    #[error("Enable HTTPS inspection before replaying HTTPS")]
+    HttpsInspectionDisabled,
+}
+
 /// Executes a validated replay request on the running proxy, recording a new exchange.
 pub(crate) fn execute_replay(
     proxy: &ProxyHandle,
     request: Request<Full<Bytes>>,
-) -> Result<ReplayTask, String> {
+) -> Result<ReplayTask, ReplayExecutionError> {
     if !matches!(proxy.state(), EngineState::Running) {
-        return Err("Start the proxy before sending".to_owned());
+        return Err(ReplayExecutionError::ProxyNotRunning);
     }
     if request.uri().scheme_str() == Some("https") && proxy.engine.inspector.is_none() {
-        return Err("Enable HTTPS inspection before replaying HTTPS".to_owned());
+        return Err(ReplayExecutionError::HttpsInspectionDisabled);
     }
     let engine = Arc::clone(&proxy.engine);
     Ok(ReplayTask(proxy.runtime.spawn(async move {

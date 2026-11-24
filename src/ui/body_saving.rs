@@ -29,6 +29,13 @@ struct Confirmation {
     show_privacy: bool,
 }
 
+/// Outcome of the most recent single-body save attempt.
+#[derive(Debug, Eq, PartialEq)]
+enum SaveStatus {
+    Saved(SavedBody),
+    Failed(String),
+}
+
 /// Body store ownership, its settings, and the state of body saves.
 pub(in crate::ui) struct BodySaving {
     store: Option<BodyStore>,
@@ -37,7 +44,7 @@ pub(in crate::ui) struct BodySaving {
     settings_path: Option<PathBuf>,
     settings_error: Option<String>,
     pending: Option<Receiver<io::Result<SavedBody>>>,
-    status: Option<Result<SavedBody, String>>,
+    status: Option<SaveStatus>,
     confirmation: Option<Confirmation>,
     privacy_acknowledged: bool,
     /// The `Save bodies…` dialog and a running bulk save.
@@ -213,7 +220,7 @@ impl BodySaving {
                     self.start(request);
                 }
             }
-            Err(error) => self.status = Some(Err(error)),
+            Err(error) => self.status = Some(SaveStatus::Failed(error)),
         }
     }
 
@@ -229,7 +236,7 @@ impl BodySaving {
         };
         match store.save(request) {
             Ok(receiver) => self.pending = Some(receiver),
-            Err(error) => self.status = Some(Err(error.to_string())),
+            Err(error) => self.status = Some(SaveStatus::Failed(error.to_string())),
         }
     }
 
@@ -281,15 +288,16 @@ impl BodySaving {
         let Some(receiver) = self.pending.as_ref() else {
             return;
         };
-        let result = match receiver.try_recv() {
-            Ok(result) => result.map_err(|error| error.to_string()),
+        let status = match receiver.try_recv() {
+            Ok(Ok(saved)) => SaveStatus::Saved(saved),
+            Ok(Err(error)) => SaveStatus::Failed(error.to_string()),
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => {
-                Err("The save worker stopped unexpectedly".to_owned())
+                SaveStatus::Failed("The save worker stopped unexpectedly".to_owned())
             }
         };
         self.pending = None;
-        self.status = Some(result);
+        self.status = Some(status);
     }
 
     /// The body store limit inside the Settings menu.
@@ -359,7 +367,7 @@ impl BodySaving {
         }
         self.bulk.status(ui);
         match &self.status {
-            Some(Ok(saved)) => {
+            Some(SaveStatus::Saved(saved)) => {
                 ui.separator();
                 let suffix = if saved.complete() {
                     ""
@@ -372,7 +380,7 @@ impl BodySaving {
                     format_size(saved.bytes())
                 ));
             }
-            Some(Err(error)) => {
+            Some(SaveStatus::Failed(error)) => {
                 ui.separator();
                 ui.colored_label(palette.error, format!("Body save failed: {error}"));
             }
@@ -472,7 +480,7 @@ mod tests {
             settings_path: None,
             settings_error: None,
             pending: Some(receiver),
-            status: Some(Err("earlier".to_owned())),
+            status: Some(SaveStatus::Failed("earlier".to_owned())),
             confirmation: None,
             privacy_acknowledged: true,
             bulk: crate::ui::bulk_save::BulkControls::default(),
@@ -490,7 +498,10 @@ mod tests {
             Ok(PathBuf::new()),
         );
         assert!(saving.pending.is_some(), "the running save is kept");
-        assert_eq!(saving.status, Some(Err("earlier".to_owned())));
+        assert_eq!(
+            saving.status,
+            Some(SaveStatus::Failed("earlier".to_owned()))
+        );
         Ok(())
     }
 

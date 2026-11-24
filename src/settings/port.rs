@@ -49,22 +49,22 @@ impl fmt::Display for ProxyPort {
 }
 
 /// Reason a port value was rejected.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, thiserror::Error)]
 pub enum PortError {
+    #[error("Enter a port number, or 0 to pick a free port.")]
     Empty,
+    #[error("\"{0}\" is not a port. Enter a number from 0 to 65535 (0 picks a free port).")]
     Invalid(String),
 }
 
-impl fmt::Display for PortError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty => formatter.write_str("Enter a port number, or 0 to pick a free port."),
-            Self::Invalid(text) => write!(
-                formatter,
-                "\"{text}\" is not a port. Enter a number from 0 to 65535 (0 picks a free port)."
-            ),
-        }
-    }
+#[derive(Debug, Eq, PartialEq, thiserror::Error)]
+enum PortArgumentError {
+    #[error("--port ignored: it needs a value.")]
+    MissingValue,
+    #[error("Unknown argument \"{0}\" ignored. Use --port <number>.")]
+    UnknownArgument(String),
+    #[error("--port ignored: {0}")]
+    InvalidPort(#[from] PortError),
 }
 
 /// Where the port of the current run came from.
@@ -96,8 +96,8 @@ pub fn launch_port(
     let mut warnings = Vec::new();
     let from_args = match port_argument(args) {
         Ok(port) => port,
-        Err(message) => {
-            warnings.push(message);
+        Err(error) => {
+            warnings.push(error.to_string());
             None
         }
     };
@@ -121,7 +121,9 @@ pub fn launch_port(
 }
 
 /// Reads `--port N` or `--port=N`, skipping the program name.
-fn port_argument(args: impl IntoIterator<Item = OsString>) -> Result<Option<ProxyPort>, String> {
+fn port_argument(
+    args: impl IntoIterator<Item = OsString>,
+) -> Result<Option<ProxyPort>, PortArgumentError> {
     let mut args = args
         .into_iter()
         .skip(1)
@@ -129,16 +131,13 @@ fn port_argument(args: impl IntoIterator<Item = OsString>) -> Result<Option<Prox
     let mut port = None;
     while let Some(arg) = args.next() {
         let value = if arg == "--port" {
-            args.next()
-                .ok_or_else(|| "--port ignored: it needs a value.".to_owned())?
+            args.next().ok_or(PortArgumentError::MissingValue)?
         } else if let Some(value) = arg.strip_prefix("--port=") {
             value.to_owned()
         } else {
-            return Err(format!(
-                "Unknown argument \"{arg}\" ignored. Use --port <number>."
-            ));
+            return Err(PortArgumentError::UnknownArgument(arg));
         };
-        port = Some(ProxyPort::parse(&value).map_err(|error| format!("--port ignored: {error}"))?);
+        port = Some(ProxyPort::parse(&value)?);
     }
     Ok(port)
 }

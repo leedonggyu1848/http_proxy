@@ -27,11 +27,7 @@ fn lex(mut text: &str) -> Vec<Piece<'_>> {
 /// whitespace immediately around rule/declaration boundaries is inserted.
 /// Never fails: unbalanced or invalid structure is formatted as far as it
 /// goes and reported in a notice.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "every pretty printer shares one signature"
-)]
-pub(super) fn pretty(text: &str) -> Result<Formatted, String> {
+pub(super) fn pretty(text: &str) -> Formatted {
     let pieces = lex(text);
     let mut out = Styled::default();
     let mut stack = Vec::new();
@@ -105,13 +101,13 @@ pub(super) fn pretty(text: &str) -> Result<Formatted, String> {
         }
     }
     invalid |= !stack.is_empty();
-    Ok(Formatted {
+    Formatted {
         styled: out,
         notices: invalid
             .then(|| Notice::warning("Incomplete or invalid CSS; showing the available prefix. CSS property values are not validated."))
             .into_iter()
             .collect(),
-    })
+    }
 }
 
 fn prepare_continuation_indent(
@@ -273,10 +269,10 @@ mod tests {
     use crate::content::format::NoticeLevel;
 
     #[test]
-    fn nested_rules_and_declarations_have_indented_lines() -> Result<(), String> {
+    fn nested_rules_and_declarations_have_indented_lines() {
         let out = pretty(
             "@media screen{a:hover{color:#fff;width:2px;display:block;&:focus{color: red}}}",
-        )?;
+        );
         assert!(
             out.styled
                 .text()
@@ -293,15 +289,14 @@ mod tests {
         ] {
             assert!(out.styled.pieces().any(|(_, k)| k == kind));
         }
-        Ok(())
     }
 
     #[test]
-    fn preserves_strings_urls_comments_and_escapes() -> Result<(), String> {
+    fn preserves_strings_urls_comments_and_escapes() {
         let text = r#"a{content:"a;{}\"b";background:url(data:image/svg+xml;a{b});x:url( "a;b" );}/*# sourceMappingURL=a.map */"#;
         let pieces = lex(text);
         assert_eq!(pieces.iter().map(|p| p.raw).collect::<String>(), text);
-        let out = pretty(text)?;
+        let out = pretty(text);
         for protected in [
             r#""a;{}\"b""#,
             "url(data:image/svg+xml;a{b})",
@@ -310,13 +305,12 @@ mod tests {
         ] {
             assert!(out.styled.text().contains(protected), "{protected}");
         }
-        Ok(())
     }
 
     #[test]
-    fn multiline_comments_and_escaped_identifiers_keep_their_spelling() -> Result<(), String> {
+    fn multiline_comments_and_escaped_identifiers_keep_their_spelling() {
         let text = "/* first\n second */a\\:b{content:\"한글\";color:rebeccapurple!important}";
-        let out = pretty(text)?;
+        let out = pretty(text);
         assert!(out.styled.text().contains("/* first\n second */"));
         assert!(out.styled.text().contains("a\\:b"));
         assert!(
@@ -325,19 +319,17 @@ mod tests {
                 .any(|(s, k)| s.contains("rebeccapurple") && k == TokenKind::Literal)
         );
         assert_eq!(out.notices, []);
-        Ok(())
     }
 
     #[test]
-    fn custom_property_blocks_keep_internal_whitespace() -> Result<(), String> {
-        let out = pretty("a{--theme:{a:b;c:d};color:var(--theme)}")?;
+    fn custom_property_blocks_keep_internal_whitespace() {
+        let out = pretty("a{--theme:{a:b;c:d};color:var(--theme)}");
         assert!(out.styled.text().contains("--theme:{a:b;c:d};"));
         assert_eq!(out.notices, []);
-        Ok(())
     }
 
     #[test]
-    fn partial_and_bad_input_keeps_available_text() -> Result<(), String> {
+    fn partial_and_bad_input_keeps_available_text() {
         for text in [
             "a{color:red",
             "a{content:\"abc",
@@ -345,21 +337,19 @@ mod tests {
             "a{color:red)}",
             "a{color red;}",
         ] {
-            let out = pretty(text)?;
+            let out = pretty(text);
             assert!(
                 matches!(out.notices.as_slice(), [notice] if notice.level == NoticeLevel::Warning),
                 "{text}"
             );
             assert_ne!(out.styled.text(), "");
         }
-        Ok(())
     }
 
     #[test]
-    fn visually_indents_multiline_values_strings_and_comments_without_altering_text()
-    -> Result<(), String> {
+    fn visually_indents_multiline_values_strings_and_comments_without_altering_text() {
         let css = "a{background:linear-gradient(\nred,\nblue\n);content:\"first\\\nsecond\\\nthird\";/* c1\nc2 */}";
-        let out = pretty(css)?;
+        let out = pretty(css);
         let text = out.styled.text();
         assert!(text.contains("linear-gradient(\nred,\nblue\n);"), "{text}");
         assert!(text.contains("\"first\\\nsecond\\\nthird\""), "{text}");
@@ -378,6 +368,5 @@ mod tests {
         assert_eq!(align_for("second\\"), Some("  content:\""));
         assert_eq!(align_for("third\""), Some("  content:\""));
         assert_eq!(align_for("c2 */"), Some("  /* "));
-        Ok(())
     }
 }
