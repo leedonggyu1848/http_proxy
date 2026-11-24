@@ -14,6 +14,7 @@ use crate::ui::style::theme::Palette;
 use eframe::egui;
 use http_inspector_content::detect;
 use http_inspector_content::format::{BodyFormat, ViewMode, form};
+use http_inspector_exchange::http_semantics::urlencoded;
 use http_inspector_exchange::{
     BodyLifecycle, BodyPreview, BodyRetention, BodySide, CapturedRequest, Exchange, HeaderPreview,
     MediaType, Outcome, RecordId, TunnelPreview,
@@ -212,10 +213,9 @@ fn wrapped_highlight(
 
 /// Lists decoded query parameters of the request target, if it has any.
 fn render_query(ui: &mut egui::Ui, target: &str) {
-    let Some((_, query)) = target.split_once('?') else {
+    let Some(query) = urlencoded::split_target(target).query else {
         return;
     };
-    let query = query.split_once('#').map_or(query, |(query, _)| query);
     let pairs = form::pairs(query);
     if pairs.is_empty() {
         return;

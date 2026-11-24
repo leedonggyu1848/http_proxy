@@ -101,7 +101,7 @@ impl FieldShape {
 
     /// Describes one flat set of named text values such as a form body.
     #[must_use]
-    pub fn from_text_fields<'a>(pairs: impl IntoIterator<Item = (String, &'a str)>) -> Self {
+    pub fn from_text_fields(pairs: impl IntoIterator<Item = (String, impl AsRef<str>)>) -> Self {
         let mut root = Self {
             seen: 1,
             ..Self::default()
@@ -116,7 +116,7 @@ impl FieldShape {
             }
             let field = present.entry(key).or_default();
             field.seen = 1;
-            field.types.record(ValueShape::of_text(value));
+            field.types.record(ValueShape::of_text(value.as_ref()));
         }
         root.fields = present;
         root

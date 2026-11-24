@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use http_inspector_exchange::http_semantics::is_sensitive_header;
+use http_inspector_exchange::http_semantics::urlencoded;
 use http_inspector_exchange::{CaptureSource, Exchange, HeaderPreview, Outcome, TunnelState};
 use serde_json::{Map, Value, json};
 
@@ -225,17 +226,9 @@ fn request_url(record: &Exchange) -> String {
 
 /// Splits the query of `url` into raw, still percent-encoded pairs.
 fn query_string(url: &str) -> Value {
-    let without_fragment = url.split_once('#').map_or(url, |(before, _)| before);
-    let Some((_, query)) = without_fragment.split_once('?') else {
-        return json!([]);
-    };
-    query
-        .split('&')
-        .filter(|pair| !pair.is_empty())
-        .map(|pair| {
-            let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
-            json!({ "name": name, "value": value })
-        })
+    let query = urlencoded::split_target(url).query.unwrap_or_default();
+    urlencoded::raw_pairs(query)
+        .map(|pair| json!({ "name": pair.name, "value": pair.value.unwrap_or_default() }))
         .collect()
 }
 
