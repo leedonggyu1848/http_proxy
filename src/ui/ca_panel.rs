@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::ui::theme::Palette;
 
 use eframe::egui::{self, Color32, RichText};
-use http_proxy::{CaInfo, CaTrustStatus, CaTrustStore};
+use http_proxy::https::{CaInfo, CaTrustStatus, CaTrustStore};
 
 #[derive(Default)]
 pub(in crate::ui) struct CaPanel {

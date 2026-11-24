@@ -13,18 +13,18 @@ use http_proxy::content::detect;
 use http_proxy::content::format::{
     self as body_format, BodyFormat, Notice, NoticeLevel, ViewMode, tree,
 };
-use http_proxy::{BodyLifecycle, BodyRetention, MediaType};
+use http_proxy::exchange::{BodyLifecycle, BodyRetention, MediaType};
 use std::sync::Arc;
 
 /// Height of the numbered line view before it scrolls.
 const LINE_VIEW_HEIGHT: f32 = 480.0;
 
 /// Which body of an exchange is shown; both can be on screen at once.
-pub(in crate::ui) use http_proxy::BodySide;
+pub(in crate::ui) use http_proxy::exchange::BodySide;
 
 /// A captured body preview to show.
 pub(in crate::ui) struct BodySource<'a> {
-    /// [`http_proxy::RecordId::value`] of the exchange the body belongs to.
+    /// [`http_proxy::exchange::RecordId::value`] of the exchange the body belongs to.
     pub(in crate::ui) record: u64,
     pub(in crate::ui) side: BodySide,
     pub(in crate::ui) bytes: &'a [u8],
@@ -75,7 +75,7 @@ impl Capture {
             Self::Whole => return None,
             Self::Truncated => format!(
                 "Only part of the body was captured (at most {} KiB is kept); the view ends where the capture ends.",
-                http_proxy::BODY_PREVIEW_BYTES / 1024
+                http_proxy::interception::BODY_PREVIEW_BYTES / 1024
             ),
             Self::Streaming => {
                 "The body is still being received; the view shows what has arrived so far."

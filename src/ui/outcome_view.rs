@@ -1,7 +1,7 @@
 //! Shared outcome presentation for the request list, details, and search.
 
 use eframe::egui::Color32;
-use http_proxy::{Outcome, TunnelPreview, TunnelState};
+use http_proxy::exchange::{Outcome, TunnelPreview, TunnelState};
 
 use crate::ui::theme::Palette;
 
@@ -121,7 +121,7 @@ pub(in crate::ui) fn elapsed_millis(duration: std::time::Duration) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use http_proxy::FailureStage;
+    use http_proxy::exchange::FailureStage;
 
     #[test]
     fn names_every_status_class() {

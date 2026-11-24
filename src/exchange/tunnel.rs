@@ -26,7 +26,7 @@ struct TunnelEnd {
 /// counts bytes and ends the tunnel.
 ///
 /// ```compile_fail,E0599
-/// fn close(tunnel: &http_proxy::TunnelPreview) {
+/// fn close(tunnel: &http_proxy::exchange::TunnelPreview) {
 ///     tunnel.close();
 /// }
 /// ```

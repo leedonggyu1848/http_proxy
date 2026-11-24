@@ -17,7 +17,7 @@ use http_proxy::analysis::url_map::{
     SortDirection, StatusFilter, TreeFilter, TreeSortField, UrlMap, ViewNode, ViewNodeKey,
     VisibleRow, build_view_roots, find_view_node, flatten_visible,
 };
-use http_proxy::{Exchange, RecordId};
+use http_proxy::exchange::{Exchange, RecordId};
 
 /// Active sub-view inside the Map tab.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

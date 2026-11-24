@@ -5,8 +5,8 @@ use std::time::{Duration, SystemTime};
 
 use http::{Method, StatusCode};
 
-use crate::Outcome;
 use crate::analysis::url::IdKind;
+use crate::exchange::Outcome;
 
 /// Maximum distinct Content-Type essences retained per node to bound memory.
 const MAX_CONTENT_TYPES_PER_NODE: usize = 16;

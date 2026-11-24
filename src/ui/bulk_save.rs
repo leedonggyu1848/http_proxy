@@ -4,9 +4,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use eframe::egui;
-use http_proxy::{
-    BodyLayout, BodySide, BodyStore, BulkSave, BulkSummary, Exchange, SaveBody, SaveFormat,
-};
+use http_proxy::exchange::{BodySide, Exchange};
+use http_proxy::recording::{BodyLayout, BodyStore, BulkSave, BulkSummary, SaveBody, SaveFormat};
 
 use crate::ui::InspectorApp;
 use crate::ui::body_saving::{PRIVACY_NOTICE, format_size};

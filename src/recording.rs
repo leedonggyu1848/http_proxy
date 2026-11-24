@@ -1,7 +1,16 @@
+//! Session traffic recording: full-session journal logs and disk-backed body storage.
+
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 pub mod body_store;
 pub mod journal;
+
+pub use body_store::{
+    BODY_STORE_LIMIT_BYTES, BODY_STORE_MIN_FREE_BYTES, BodyLayout, BodyStore, BulkProgress,
+    BulkSave, BulkSummary, ContentRange, PreviewBodies, RangePlan, SaveBody, SaveFormat, SavedBody,
+    StoreGap, StoredBody,
+};
+pub use journal::{FullLog, SESSION_BODY_LIMIT_BYTES};
 
 /// Acquires `mutex`, recovering the inner value if a previous holder panicked.
 ///

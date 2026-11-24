@@ -886,7 +886,7 @@ mod tests {
     #[test]
     fn preview_bodies_read_only_previews_that_kept_every_byte()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::{BODY_PREVIEW_BYTES, ExchangeBuilder, ResponseFixture};
+        use crate::interception::{BODY_PREVIEW_BYTES, ExchangeBuilder, ResponseFixture};
 
         let respond = |body: Vec<u8>| {
             ExchangeBuilder::http(http::Method::GET, "http://example.test/")?.respond(

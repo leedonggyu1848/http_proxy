@@ -8,7 +8,7 @@ use std::collections::HashSet;
 pub use records::RecordList;
 
 use crate::analysis::url_map::RequestScope;
-use crate::{Exchange, Outcome, RecordId};
+use crate::exchange::{Exchange, Outcome, RecordId};
 
 /// Outcome category filter for the request list.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -93,7 +93,8 @@ mod tests {
     use super::*;
     use crate::analysis::url::{OriginKey, PathSegmentPattern};
     use crate::analysis::url_map::ViewNodeKey;
-    use crate::{BodyLifecycle, ExchangeBuilder, FailureStage, ResponseFixture, TunnelState};
+    use crate::exchange::{BodyLifecycle, FailureStage, TunnelState};
+    use crate::interception::{ExchangeBuilder, ResponseFixture};
 
     type TestResult = Result<(), Box<dyn Error>>;
 

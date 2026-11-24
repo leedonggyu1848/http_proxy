@@ -12,7 +12,9 @@ use http_proxy::analysis::endpoint_schema::{
 use http_proxy::analysis::url_map::{
     RequestScope, SortDirection, TreeFilter, TreeSortField, UrlMap, ViewNode, build_view_roots,
 };
-use http_proxy::{AuthScheme, BodyStore, Exchange, ProxyConfig, ProxyHandle};
+use http_proxy::exchange::{AuthScheme, Exchange};
+use http_proxy::interception::{ProxyConfig, ProxyHandle};
+use http_proxy::recording::BodyStore;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;

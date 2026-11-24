@@ -12,8 +12,8 @@ use http_proxy::analysis::endpoint_schema::EndpointSchema;
 use http_proxy::analysis::filter::RecordList;
 use http_proxy::analysis::url::{parse_exchange_target, percent_decode_display};
 use http_proxy::analysis::url_map::{NodeStats, RequestScope, ViewNode};
+use http_proxy::exchange::{Exchange, RecordId};
 use http_proxy::interop::map_export::format_bytes;
-use http_proxy::{Exchange, RecordId};
 
 use super::{MapAction, endpoint_view};
 use crate::ui::outcome_view::outcome_text;
@@ -476,7 +476,7 @@ mod tests {
     use http_proxy::analysis::filter::RecordFilter;
     use http_proxy::analysis::url::{OriginKey, PathSegmentPattern};
     use http_proxy::analysis::url_map::ViewNodeKey;
-    use http_proxy::{ProxyConfig, ProxyHandle};
+    use http_proxy::interception::{ProxyConfig, ProxyHandle};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::{TcpListener, TcpStream};
     use tokio::time::timeout;

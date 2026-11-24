@@ -2,10 +2,13 @@ use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
 
-use http_proxy::{
-    BodyLifecycle, BodyRetention, HeaderPreview, HttpsInspection, Outcome, ProxyConfig,
-    ProxyHandle, TunnelPreview, TunnelSnapshot, TunnelState,
+use http_proxy::exchange::{
+    BodyLifecycle, BodyRetention, CapturedHeader, FailureStage, HeaderPreview, Outcome,
+    TunnelPreview, TunnelSnapshot, TunnelState,
 };
+use http_proxy::https::HttpsInspection;
+use http_proxy::interception::{EngineState, ProxyConfig, ProxyHandle};
+use http_proxy::replay::{REPLAY_BODY_FILE_LIMIT_BYTES, ReplayDraft, ReplayField};
 use rcgen::{
     BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa,
     Issuer, KeyPair, KeyUsagePurpose,
@@ -41,7 +44,7 @@ async fn forwards_http_request_and_records_response() -> Result<(), TestError> {
     });
 
     let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0))?;
-    assert_eq!(proxy.state(), http_proxy::EngineState::Running);
+    assert_eq!(proxy.state(), EngineState::Running);
     let mut client = TcpStream::connect(proxy.local_addr()).await?;
     let request = format!(
         "GET http://{upstream_addr}/hello?name=rust HTTP/1.1\r\nHost: {upstream_addr}\r\nConnection: close\r\n\r\n"
@@ -68,7 +71,7 @@ async fn forwards_http_request_and_records_response() -> Result<(), TestError> {
     ));
 
     timeout(TEST_TIMEOUT, upstream_task).await???;
-    assert_eq!(proxy.state(), http_proxy::EngineState::Running);
+    assert_eq!(proxy.state(), EngineState::Running);
     proxy.stop()?;
     Ok(())
 }
@@ -141,7 +144,7 @@ async fn rejects_requests_that_target_the_proxy_itself() -> Result<(), TestError
         assert!(matches!(
             settled_within(&record, TEST_TIMEOUT).await?,
             Outcome::Failed {
-                stage: http_proxy::FailureStage::Request,
+                stage: FailureStage::Request,
                 ..
             }
         ));
@@ -183,7 +186,7 @@ async fn records_a_timeout_when_upstream_never_responds() -> Result<(), TestErro
     assert!(matches!(
         settled_within(&record, TEST_TIMEOUT).await?,
         Outcome::Failed {
-            stage: http_proxy::FailureStage::ResponseTimeout,
+            stage: FailureStage::ResponseTimeout,
             ..
         }
     ));
@@ -308,7 +311,7 @@ async fn records_a_tunnel_reset_by_upstream() -> Result<(), TestError> {
         matches!(
             snapshot.state(),
             TunnelState::Failed {
-                stage: http_proxy::FailureStage::Tunnel,
+                stage: FailureStage::Tunnel,
                 ..
             }
         ),
@@ -517,7 +520,7 @@ async fn rejects_an_untrusted_upstream_certificate() -> Result<(), TestError> {
     assert!(matches!(
         settled_within(&exchange, TEST_TIMEOUT).await?,
         Outcome::Failed {
-            stage: http_proxy::FailureStage::UpstreamTls,
+            stage: FailureStage::UpstreamTls,
             ..
         }
     ));
@@ -556,7 +559,7 @@ async fn rejects_a_host_that_differs_from_connect() -> Result<(), TestError> {
     assert!(matches!(
         settled_within(&rejected, TEST_TIMEOUT).await?,
         Outcome::Failed {
-            stage: http_proxy::FailureStage::Request,
+            stage: FailureStage::Request,
             ..
         }
     ));
@@ -632,7 +635,7 @@ fn header_value<'a>(headers: &'a HeaderPreview, name: &str) -> Option<&'a str> {
         .entries()
         .iter()
         .find(|header| header.name() == name)
-        .map(http_proxy::CapturedHeader::value)
+        .map(CapturedHeader::value)
 }
 
 #[tokio::test]
@@ -651,7 +654,7 @@ async fn replays_edited_headers_and_cookie_with_link_and_redaction() -> Result<(
     });
 
     let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0).with_max_connections(1))?;
-    assert_eq!(proxy.state(), http_proxy::EngineState::Running);
+    assert_eq!(proxy.state(), EngineState::Running);
     let mut client = TcpStream::connect(proxy.local_addr()).await?;
     let mut request = format!(
         "GET http://{upstream_addr}/hello?name=rust HTTP/1.1\r\nHost: {upstream_addr}\r\nX-File-Name: 한글.txt\r\nX-Raw: "
@@ -680,9 +683,9 @@ async fn replays_edited_headers_and_cookie_with_link_and_redaction() -> Result<(
     ));
 
     timeout(TEST_TIMEOUT, upstream_task).await???;
-    assert_eq!(proxy.state(), http_proxy::EngineState::Running);
+    assert_eq!(proxy.state(), EngineState::Running);
 
-    let mut draft = http_proxy::ReplayDraft::new(record.clone())?;
+    let mut draft = ReplayDraft::new(record.clone())?;
     disable_unreproducible_header(&mut draft, proxy.local_addr())?;
     add_edited_headers(&mut draft);
     let replay_server = TcpListener::bind("127.0.0.1:0").await?;
@@ -722,13 +725,13 @@ async fn replays_edited_headers_and_cookie_with_link_and_redaction() -> Result<(
     Ok(())
 }
 
-fn add_edited_headers(draft: &mut http_proxy::ReplayDraft) {
-    draft.headers.push(http_proxy::ReplayField {
+fn add_edited_headers(draft: &mut ReplayDraft) {
+    draft.headers.push(ReplayField {
         enabled: true,
         name: "x-edited".to_owned(),
         value: "changed".to_owned(),
     });
-    draft.headers.push(http_proxy::ReplayField {
+    draft.headers.push(ReplayField {
         enabled: true,
         name: "cookie".to_owned(),
         value: "session=changed".to_owned(),
@@ -737,7 +740,7 @@ fn add_edited_headers(draft: &mut http_proxy::ReplayDraft) {
 
 /// UTF-8 values survive as captured; lossy non-UTF-8 values block sending until disabled.
 fn disable_unreproducible_header(
-    draft: &mut http_proxy::ReplayDraft,
+    draft: &mut ReplayDraft,
     address: std::net::SocketAddr,
 ) -> Result<(), TestError> {
     assert!(draft.headers.iter().any(|field| {
@@ -758,7 +761,7 @@ fn disable_unreproducible_header(
 
 /// Complete files replace the body up to the limit; larger files and truncated URLs are explained.
 fn assert_body_file_loading(
-    draft: &mut http_proxy::ReplayDraft,
+    draft: &mut ReplayDraft,
     address: std::net::SocketAddr,
 ) -> Result<(), TestError> {
     let directory = tempfile::tempdir()?;
@@ -770,7 +773,7 @@ fn assert_body_file_loading(
     assert!(!draft.body_missing);
 
     let large_path = directory.path().join("large.bin");
-    std::fs::File::create(&large_path)?.set_len(http_proxy::REPLAY_BODY_FILE_LIMIT_BYTES + 1)?;
+    std::fs::File::create(&large_path)?.set_len(REPLAY_BODY_FILE_LIMIT_BYTES + 1)?;
     let error = draft
         .load_body_file(&large_path)
         .err()
@@ -788,8 +791,8 @@ fn assert_body_file_loading(
     Ok(())
 }
 
-fn assert_replay_validation(draft: &mut http_proxy::ReplayDraft, address: std::net::SocketAddr) {
-    draft.headers.push(http_proxy::ReplayField {
+fn assert_replay_validation(draft: &mut ReplayDraft, address: std::net::SocketAddr) {
+    draft.headers.push(ReplayField {
         enabled: true,
         name: "bad name".to_owned(),
         value: "x".to_owned(),
@@ -810,7 +813,7 @@ fn assert_replay_validation(draft: &mut http_proxy::ReplayDraft, address: std::n
     draft.body_missing = true;
     assert!(draft.request(address).is_err());
     draft.body_missing = false;
-    draft.headers.push(http_proxy::ReplayField {
+    draft.headers.push(ReplayField {
         enabled: true,
         name: "authorization".to_owned(),
         value: String::new(),

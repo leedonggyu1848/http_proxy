@@ -2,6 +2,10 @@
 //! issuance, and client trust store registration.
 
 mod ca;
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-wide items of a private module; `pub` would trip `unreachable_pub`"
+)]
 mod issuer;
 mod trust;
 

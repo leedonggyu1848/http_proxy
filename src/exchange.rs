@@ -8,7 +8,15 @@ mod image_format;
 mod media_type;
 #[cfg(feature = "test-support")]
 mod memory_body_source;
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-wide items of a private module; `pub` would trip `unreachable_pub`"
+)]
 mod record;
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-wide items of a private module; `pub` would trip `unreachable_pub`"
+)]
 mod tunnel;
 mod wakers;
 
@@ -236,7 +244,7 @@ const INITIAL_PREVIEW_CAPACITY: usize = 8 * 1024;
 /// that observes bytes and ends the stream.
 ///
 /// ```compile_fail,E0599
-/// fn observe(preview: &http_proxy::BodyPreview) {
+/// fn observe(preview: &http_proxy::exchange::BodyPreview) {
 ///     preview.observe(b"bytes");
 /// }
 /// ```

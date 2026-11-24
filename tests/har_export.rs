@@ -1,5 +1,5 @@
 //! Integration test verifying real proxy captures export HAR 1.2 documents and
-//! URL maps identically to [`http_proxy::ExchangeBuilder`] fixtures.
+//! URL maps identically to [`http_proxy::interception::ExchangeBuilder`] fixtures.
 #![expect(
     clippy::indexing_slicing,
     reason = "Reading a serde_json::Value by key yields Null instead of panicking."
@@ -14,12 +14,10 @@ use http::header::{
 };
 use http::{HeaderName, HeaderValue, Method, StatusCode};
 use http_proxy::analysis::url_map::UrlMap;
+use http_proxy::exchange::{BodyLifecycle, Exchange, Outcome, TunnelState};
+use http_proxy::interception::{ExchangeBuilder, ProxyConfig, ProxyHandle, ResponseFixture};
 use http_proxy::interop::har::{HarOptions, document};
 use http_proxy::interop::map_export::{export_graph_mermaid, export_tree_json};
-use http_proxy::{
-    BodyLifecycle, Exchange, ExchangeBuilder, Outcome, ProxyConfig, ProxyHandle, ResponseFixture,
-    TunnelState,
-};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};

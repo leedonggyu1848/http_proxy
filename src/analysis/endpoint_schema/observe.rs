@@ -9,7 +9,7 @@ use super::endpoint::{BodyObservation, EndpointObservation, ResponseObservation}
 use super::value::ValueShape;
 use crate::analysis::url::{classify_id_segment, parse_exchange_target, visit_query_values};
 use crate::content::detect as content_detect;
-use crate::{
+use crate::exchange::{
     BodyLifecycle, BodyPreview, BodySide, BodySource, Exchange, HeaderPreview, MediaType, Outcome,
     ReadBodyOutcome,
 };
@@ -221,7 +221,8 @@ mod tests {
     use super::*;
     use crate::analysis::endpoint_schema::FieldShape;
     use crate::content::format::BodyFormat;
-    use crate::{ExchangeBuilder, MemoryBodySource, ReadBodyOutcome, ResponseFixture};
+    use crate::exchange::{MemoryBodySource, ReadBodyOutcome};
+    use crate::interception::{ExchangeBuilder, ResponseFixture};
 
     type TestResult = Result<(), Box<dyn Error>>;
 

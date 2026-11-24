@@ -8,7 +8,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use super::SearchScope;
 use super::document::{self, BodyCache, Checked};
 use super::text_search::Matcher;
-use crate::{Exchange, RecordId};
+use crate::exchange::{Exchange, RecordId};
 
 /// Exchanges checked before results are sent, so progress shows while a
 /// long search runs.

@@ -11,7 +11,7 @@ use crate::ui::{image_view, outcome_view, replay_panel, scope_help};
 use eframe::egui;
 use http_proxy::content::detect;
 use http_proxy::content::format::{BodyFormat, ViewMode, form};
-use http_proxy::{
+use http_proxy::exchange::{
     BodyLifecycle, BodyPreview, BodyRetention, CapturedRequest, Exchange, HeaderPreview, MediaType,
     Outcome, RecordId, TunnelPreview,
 };
@@ -43,7 +43,7 @@ impl InspectorApp {
             ui.colored_label(color, status);
             if ui
                 .add_enabled(
-                    record.source() != http_proxy::CaptureSource::Connect,
+                    record.source() != http_proxy::exchange::CaptureSource::Connect,
                     egui::Button::new("Edit and Resend"),
                 )
                 .clicked()
@@ -344,7 +344,8 @@ fn render_body(
     }
     let encodings = headers.get("content-encoding").collect::<Vec<_>>();
     if let Some(image) = image
-        && let Some(format) = media_type.and_then(http_proxy::ImageFormat::from_media_type)
+        && let Some(format) =
+            media_type.and_then(http_proxy::exchange::ImageFormat::from_media_type)
     {
         image.show(ui, panel.record, &snapshot, &encodings, format);
         return;

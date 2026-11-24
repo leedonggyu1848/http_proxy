@@ -15,10 +15,10 @@ use http::{Request, Response};
 use http_body::{Body, Frame, SizeHint};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
-use http_proxy::{
-    BodyLifecycle, BodyRetention, FailureStage, HeaderPreview, Outcome, ProxyConfig, ProxyHandle,
-    TunnelState,
+use http_proxy::exchange::{
+    BodyLifecycle, BodyRetention, FailureStage, HeaderPreview, Outcome, TunnelState,
 };
+use http_proxy::interception::{ProxyConfig, ProxyHandle};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
@@ -61,7 +61,7 @@ async fn https_inspection_uses_the_configured_connect_timeout() -> Result<(), Te
     let directory = tempfile::tempdir()?;
     let _queued_connections = fill_accept_queue(upstream.local_addr()?).await?;
     let limit = Duration::from_millis(50);
-    let inspection = http_proxy::HttpsInspection::new(directory.path().join("ca"));
+    let inspection = http_proxy::https::HttpsInspection::new(directory.path().join("ca"));
     let mut proxy = ProxyHandle::start(
         ProxyConfig::loopback(0)
             .with_connect_timeout(limit)
@@ -582,6 +582,6 @@ fn captured_values<'a>(headers: &'a HeaderPreview, name: &str) -> Vec<&'a str> {
         .entries()
         .iter()
         .filter(|header| header.name() == name)
-        .map(http_proxy::CapturedHeader::value)
+        .map(http_proxy::exchange::CapturedHeader::value)
         .collect()
 }

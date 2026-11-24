@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use eframe::egui::{self, Key, RichText};
 use egui_extras::{Column, TableBuilder};
-use http_proxy::{Exchange, Outcome, RecordId};
+use http_proxy::exchange::{Exchange, Outcome, RecordId};
 
 use crate::ui::copy_curl;
 use crate::ui::outcome_view::{outcome_summary, outcome_text, status_rank};
@@ -164,7 +164,7 @@ pub(in crate::ui) struct RequestTable {
     /// Record whose "Copy as cURL" menu item was chosen this frame.
     pub(in crate::ui) copy_curl: Option<Exchange>,
     /// A body save chosen from a row's context menu.
-    pub(in crate::ui) save_body: Option<(Exchange, http_proxy::BodySide)>,
+    pub(in crate::ui) save_body: Option<(Exchange, http_proxy::exchange::BodySide)>,
     /// Whether a body save is running, which disables the save menu items.
     pub(in crate::ui) saving_body: bool,
     sort: Sort,
@@ -407,7 +407,7 @@ impl RequestTable {
         response.context_menu(|ui| {
             if ui
                 .add_enabled(
-                    record.source() != http_proxy::CaptureSource::Connect,
+                    record.source() != http_proxy::exchange::CaptureSource::Connect,
                     egui::Button::new("Edit and Resend"),
                 )
                 .clicked()
@@ -434,17 +434,17 @@ fn save_body_items(
     ui: &mut egui::Ui,
     record: &Exchange,
     idle: bool,
-) -> Option<http_proxy::BodySide> {
-    let has_response = matches!(record.outcome(), http_proxy::Outcome::Response(_));
+) -> Option<http_proxy::exchange::BodySide> {
+    let has_response = matches!(record.outcome(), http_proxy::exchange::Outcome::Response(_));
     let mut chosen = None;
     for (side, label, enabled) in [
         (
-            http_proxy::BodySide::Response,
+            http_proxy::exchange::BodySide::Response,
             "Save response body",
             has_response,
         ),
         (
-            http_proxy::BodySide::Request,
+            http_proxy::exchange::BodySide::Request,
             "Save request body",
             record.request().body().is_some(),
         ),
@@ -621,7 +621,9 @@ mod tests {
 
         let upstream = TcpListener::bind("127.0.0.1:0").await?;
         let upstream_addr = upstream.local_addr()?;
-        let mut proxy = http_proxy::ProxyHandle::start(http_proxy::ProxyConfig::loopback(0))?;
+        let mut proxy = http_proxy::interception::ProxyHandle::start(
+            http_proxy::interception::ProxyConfig::loopback(0),
+        )?;
         let mut records = Vec::new();
         for path in ["visible-z", "hidden", "visible-a", "visible-m"] {
             let mut client = TcpStream::connect(proxy.local_addr()).await?;
