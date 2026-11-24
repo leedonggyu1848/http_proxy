@@ -1,5 +1,5 @@
 use crate::ui::detail::detail_tabs::DetailTab;
-use crate::ui::detail::{body_display, image_view, search};
+use crate::ui::detail::{body_render, image_view, search};
 use crate::ui::dialogs::{
     body_saving, browser_panel, ca_panel, copy_curl, har_dialog, replay_panel, save,
 };
@@ -108,7 +108,7 @@ pub(in crate::ui) struct InspectorApp {
     pub(in crate::ui) table: request_table::RequestTable,
     pub(in crate::ui) detail_tab: DetailTab,
     pub(in crate::ui) body_mode: body_format::ViewMode,
-    pub(in crate::ui) body_cache: body_display::BodyViewCache,
+    pub(in crate::ui) body_cache: body_render::BodyViewCache,
     pub(in crate::ui) image: image_view::ImagePanel,
     /// Height of the status bar in the previous frame, reserved below the
     /// main area so that it fits in the window without scrolling.
@@ -165,7 +165,7 @@ impl InspectorApp {
             table: request_table::RequestTable::new(),
             detail_tab: DetailTab::Headers,
             body_mode: body_format::ViewMode::default(),
-            body_cache: body_display::BodyViewCache::default(),
+            body_cache: body_render::BodyViewCache::default(),
             image: image_view::ImagePanel::default(),
             status_bar_height: 0.0,
             detail_share: DEFAULT_DETAIL_SHARE,
@@ -650,10 +650,9 @@ mod layout_tests {
     use super::{
         AnalysisPipeline, DEFAULT_DETAIL_SHARE, DEFAULT_WINDOW, DetailTab, InspectorApp,
         MAX_RECORDS, MIN_DETAIL_WIDTH, MIN_MAIN_HEIGHT, MIN_TABLE_WIDTH, MIN_WINDOW, MainView,
-        PortChoice, PreviewBodies, RecordFilter, RecordList, body_display, body_format,
-        body_saving, browser_panel, ca_panel, copy_curl, fonts, har_dialog, image_view,
-        main_height, map_panel, replay_panel, request_table, save, search, split_detail_width,
-        theme, toolbar,
+        PortChoice, PreviewBodies, RecordFilter, RecordList, body_format, body_render, body_saving,
+        browser_panel, ca_panel, copy_curl, fonts, har_dialog, image_view, main_height, map_panel,
+        replay_panel, request_table, save, search, split_detail_width, theme, toolbar,
     };
     use eframe::egui;
     use http_proxy::analysis::url_map::UrlMap;
@@ -702,7 +701,7 @@ mod layout_tests {
             table: request_table::RequestTable::new(),
             detail_tab: DetailTab::Headers,
             body_mode: body_format::ViewMode::Pretty,
-            body_cache: body_display::BodyViewCache::default(),
+            body_cache: body_render::BodyViewCache::default(),
             image: image_view::ImagePanel::default(),
             status_bar_height: 0.0,
             detail_share: DEFAULT_DETAIL_SHARE,
