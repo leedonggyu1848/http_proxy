@@ -3,7 +3,7 @@
 use eframe::egui::Color32;
 use http_proxy::exchange::{Outcome, TunnelPreview, TunnelState};
 
-use crate::ui::theme::Palette;
+use crate::ui::style::theme::Palette;
 
 /// Orders responses by status code, then every other outcome after them.
 pub(in crate::ui) const fn status_rank(outcome: &Outcome) -> (u8, u16) {
@@ -147,8 +147,8 @@ mod tests {
             message: "certificate rejected".to_owned(),
         };
         for theme in [
-            crate::ui::theme::Theme::Light,
-            crate::ui::theme::Theme::Dark,
+            crate::ui::style::theme::Theme::Light,
+            crate::ui::style::theme::Theme::Dark,
         ] {
             let palette = Palette::for_theme(theme);
             assert_eq!(

@@ -6,7 +6,7 @@ use eframe::egui::{self, TextureHandle, TextureOptions};
 use http_proxy::exchange::{BodyLifecycle, BodyRetention, BodySnapshot, ImageFormat, RecordId};
 use http_proxy::interception::{IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES};
 
-use crate::ui::theme::Palette;
+use crate::ui::style::theme::Palette;
 use http_proxy::content::decode as body_view;
 use http_proxy::content::image::{self as image_decode, PreviewImage};
 
@@ -450,7 +450,7 @@ mod tests {
 
     #[test]
     fn removes_content_encoding_and_prefers_the_signature() -> Result<(), Box<dyn Error>> {
-        let gif = include_bytes!("../../tests/fixtures/images/animated.gif");
+        let gif = include_bytes!("../../../tests/fixtures/images/animated.gif");
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         encoder.write_all(gif)?;
         let file = ImageFile::decode_body(&encoder.finish()?, &["gzip"], ImageFormat::Png)?;

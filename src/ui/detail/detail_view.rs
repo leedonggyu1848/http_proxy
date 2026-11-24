@@ -1,13 +1,15 @@
 //! Selected request details and body previews.
 
 use crate::ui::InspectorApp;
-use crate::ui::body_display::{BodySide, BodySource, BodyViewCache, Capture};
-use crate::ui::detail_tabs::{self, DetailTab};
-use crate::ui::highlight::SyntaxPalette;
-use crate::ui::search::Query;
-use crate::ui::search::highlight::{self, MatchColors};
-use crate::ui::theme::Palette;
-use crate::ui::{image_view, outcome_view, replay_panel, scope_help};
+use crate::ui::detail::body_display::{BodySide, BodySource, BodyViewCache, Capture};
+use crate::ui::detail::detail_tabs::{self, DetailTab};
+use crate::ui::detail::highlight::SyntaxPalette;
+use crate::ui::detail::image_view;
+use crate::ui::detail::search::Query;
+use crate::ui::detail::search::highlight::{self, MatchColors};
+use crate::ui::dialogs::{replay_panel, scope_help};
+use crate::ui::requests::outcome_view;
+use crate::ui::style::theme::Palette;
 use eframe::egui;
 use http_proxy::content::detect;
 use http_proxy::content::format::{BodyFormat, ViewMode, form};

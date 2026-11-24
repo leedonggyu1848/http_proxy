@@ -1,7 +1,7 @@
 //! Theme colors for [`TokenKind`]s and conversion of [`Styled`] text into an
 //! egui [`LayoutJob`].
 
-use crate::ui::theme::Theme;
+use crate::ui::style::theme::Theme;
 use eframe::egui::{self, Color32, FontId, TextFormat, text::LayoutJob};
 use http_proxy::content::format::{LineIndent, Styled, TokenKind};
 use std::collections::HashMap;
@@ -221,7 +221,7 @@ fn indent_at<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::theme;
+    use crate::ui::style::theme;
 
     #[test]
     fn syntax_colors_meet_aa_on_all_widget_backgrounds() {

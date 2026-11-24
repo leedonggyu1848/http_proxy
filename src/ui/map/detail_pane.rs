@@ -15,8 +15,8 @@ use http_proxy::analysis::url_map::{NodeStats, RequestScope, ViewNode};
 use http_proxy::exchange::{ByteSize, Exchange, RecordId};
 
 use super::{MapAction, endpoint_view};
-use crate::ui::outcome_view::outcome_text;
-use crate::ui::theme::Palette;
+use crate::ui::requests::outcome_view::outcome_text;
+use crate::ui::style::theme::Palette;
 
 /// Maximum matching retained requests listed directly inside the node detail pane.
 const MAX_INLINE_REQUESTS: usize = 100;
@@ -481,8 +481,8 @@ mod tests {
     use tokio::time::timeout;
 
     use super::*;
-    use crate::ui::filter::visible_records;
-    use crate::ui::search::RequestSearch;
+    use crate::ui::detail::search::RequestSearch;
+    use crate::ui::requests::filter::visible_records;
 
     async fn capture_paths(
         paths: &[&str],

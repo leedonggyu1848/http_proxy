@@ -11,7 +11,7 @@ use http_proxy::analysis::search::document::{self, BodyCache, Checked};
 use http_proxy::analysis::search::{MatchOptions, Matcher, Query, SearchScope, SearchWorker};
 use http_proxy::exchange::{Exchange, RecordId};
 
-use crate::ui::theme::Palette;
+use crate::ui::style::theme::Palette;
 
 /// Wait after the last keystroke before a search starts, so typing a word
 /// does not start a search for every letter.

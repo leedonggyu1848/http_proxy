@@ -1,32 +1,12 @@
-mod body_display;
-mod body_matches;
-mod body_saving;
-mod browser_panel;
-mod bulk_save;
-mod ca_panel;
-mod copy_curl;
-mod detail_tabs;
-mod detail_view;
-mod filter;
-mod fonts;
-mod har_dialog;
-mod highlight;
-mod image_view;
-mod map_panel;
-mod outcome_view;
-mod range_merge;
-mod replay_panel;
-mod request_table;
-mod save;
-mod scope_help;
-mod search;
-mod theme;
-mod toolbar;
-mod tree_view;
-
-use self::detail_tabs::DetailTab;
-use self::map_panel::{MapAction, MapExportFormat, MapSubView};
-use self::toolbar::PortChoice;
+use crate::ui::detail::detail_tabs::DetailTab;
+use crate::ui::detail::{body_display, image_view, search};
+use crate::ui::dialogs::{
+    body_saving, browser_panel, ca_panel, copy_curl, har_dialog, replay_panel, save,
+};
+use crate::ui::map::{self as map_panel, MapAction, MapExportFormat, MapSubView};
+use crate::ui::requests::toolbar::PortChoice;
+use crate::ui::requests::{filter, request_table, toolbar};
+use crate::ui::style::{fonts, theme};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -46,7 +26,7 @@ use http_proxy::interop::map_export::{
 use http_proxy::recording::{FullLog, PreviewBodies};
 use http_proxy::settings;
 
-const MAX_RECORDS: usize = 2_000;
+pub(in crate::ui) const MAX_RECORDS: usize = 2_000;
 /// Repaint interval while pending requests or streaming bodies change on screen.
 const LIVE_REPAINT: Duration = Duration::from_millis(250);
 /// Repaint interval otherwise, to notice an engine that stopped on its own.
@@ -98,46 +78,46 @@ pub(in crate::ui) enum MainView {
     Map,
 }
 
-struct InspectorApp {
-    theme: theme::ThemeSettings,
-    main_view: MainView,
-    replay: Option<replay_panel::ReplayPanel>,
-    curl: copy_curl::CurlCopy,
-    proxy: Option<ProxyHandle>,
-    records: RecordList<Exchange>,
+pub(in crate::ui) struct InspectorApp {
+    pub(in crate::ui) theme: theme::ThemeSettings,
+    pub(in crate::ui) main_view: MainView,
+    pub(in crate::ui) replay: Option<replay_panel::ReplayPanel>,
+    pub(in crate::ui) curl: copy_curl::CurlCopy,
+    pub(in crate::ui) proxy: Option<ProxyHandle>,
+    pub(in crate::ui) records: RecordList<Exchange>,
     /// Capture analysis: URL map, endpoint schemas and any other analyzer.
-    analysis: AnalysisPipeline,
-    map_panel: map_panel::MapPanel,
-    map_path_filter: Option<RequestScope>,
-    map_filter_cache: map_panel::RecordMatchCache,
-    selected: Option<RecordId>,
-    search: search::RequestSearch,
-    record_filter: RecordFilter,
-    https_inspection: bool,
-    authorization_notice: toolbar::AuthorizationNotice,
-    ca_directory: Option<PathBuf>,
-    ca_panel: ca_panel::CaPanel,
-    browsers: browser_panel::BrowserPanel,
-    error: Option<String>,
-    full_log: Option<FullLog>,
-    log_init_error: Option<String>,
-    save: save::SaveControls,
-    har_dialog: har_dialog::HarDialog,
-    body_saving: body_saving::BodySaving,
-    port: PortChoice,
-    table: request_table::RequestTable,
-    detail_tab: DetailTab,
-    body_mode: body_format::ViewMode,
-    body_cache: body_display::BodyViewCache,
-    image: image_view::ImagePanel,
+    pub(in crate::ui) analysis: AnalysisPipeline,
+    pub(in crate::ui) map_panel: map_panel::MapPanel,
+    pub(in crate::ui) map_path_filter: Option<RequestScope>,
+    pub(in crate::ui) map_filter_cache: map_panel::RecordMatchCache,
+    pub(in crate::ui) selected: Option<RecordId>,
+    pub(in crate::ui) search: search::RequestSearch,
+    pub(in crate::ui) record_filter: RecordFilter,
+    pub(in crate::ui) https_inspection: bool,
+    pub(in crate::ui) authorization_notice: toolbar::AuthorizationNotice,
+    pub(in crate::ui) ca_directory: Option<PathBuf>,
+    pub(in crate::ui) ca_panel: ca_panel::CaPanel,
+    pub(in crate::ui) browsers: browser_panel::BrowserPanel,
+    pub(in crate::ui) error: Option<String>,
+    pub(in crate::ui) full_log: Option<FullLog>,
+    pub(in crate::ui) log_init_error: Option<String>,
+    pub(in crate::ui) save: save::SaveControls,
+    pub(in crate::ui) har_dialog: har_dialog::HarDialog,
+    pub(in crate::ui) body_saving: body_saving::BodySaving,
+    pub(in crate::ui) port: PortChoice,
+    pub(in crate::ui) table: request_table::RequestTable,
+    pub(in crate::ui) detail_tab: DetailTab,
+    pub(in crate::ui) body_mode: body_format::ViewMode,
+    pub(in crate::ui) body_cache: body_display::BodyViewCache,
+    pub(in crate::ui) image: image_view::ImagePanel,
     /// Height of the status bar in the previous frame, reserved below the
     /// main area so that it fits in the window without scrolling.
-    status_bar_height: f32,
+    pub(in crate::ui) status_bar_height: f32,
     /// Fraction of the main area given to the details pane before clamping.
     /// Updated only when the user drags the divider, so shrinking the window
     /// and widening it again restores the split instead of staying narrow.
-    detail_share: f32,
-    context: egui::Context,
+    pub(in crate::ui) detail_share: f32,
+    pub(in crate::ui) context: egui::Context,
 }
 
 impl InspectorApp {
@@ -196,7 +176,7 @@ impl InspectorApp {
         app
     }
 
-    fn start_proxy(&mut self) {
+    pub(in crate::ui) fn start_proxy(&mut self) {
         let port = match settings::port::ProxyPort::parse(&self.port.text) {
             Ok(port) => port,
             Err(error) => {
@@ -239,7 +219,7 @@ impl InspectorApp {
         }
     }
 
-    fn stop_proxy(&mut self) {
+    pub(in crate::ui) fn stop_proxy(&mut self) {
         self.browsers.close();
         self.ca_panel.refresh();
         if let Some(proxy) = self.take_proxy()
@@ -273,7 +253,7 @@ impl InspectorApp {
         Some(proxy)
     }
 
-    fn engine_dropped(&self) -> u64 {
+    pub(in crate::ui) fn engine_dropped(&self) -> u64 {
         self.proxy.as_ref().map_or(0, ProxyHandle::dropped_records)
     }
 
@@ -468,7 +448,7 @@ impl InspectorApp {
             .export_har(context, records, export.options, export.path);
     }
 
-    fn filtered_records(&self) -> Vec<&Exchange> {
+    pub(in crate::ui) fn filtered_records(&self) -> Vec<&Exchange> {
         filter::visible_records(
             &self.records,
             self.record_filter,
@@ -659,7 +639,7 @@ fn main_height(viewport: f32, above: f32, below: f32) -> f32 {
     (viewport - above - below).floor().max(MIN_MAIN_HEIGHT)
 }
 
-fn request_shortcuts_allowed(ctx: &egui::Context) -> bool {
+pub(in crate::ui) fn request_shortcuts_allowed(ctx: &egui::Context) -> bool {
     let focused = ctx.memory(egui::Memory::focused);
     !egui::Popup::is_any_open(ctx)
         && focused.is_none_or(|id| egui::TextEdit::load_state(ctx, id).is_none())

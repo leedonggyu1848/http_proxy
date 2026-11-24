@@ -12,8 +12,8 @@ use http_proxy::recording::{
     StoredBody,
 };
 
-use crate::ui::save::SaveControls;
-use crate::ui::theme::Palette;
+use crate::ui::dialogs::save::SaveControls;
+use crate::ui::style::theme::Palette;
 
 const MIB: u64 = 1024 * 1024;
 const SETTINGS_FILE: &str = "body-store";
@@ -48,9 +48,9 @@ pub(in crate::ui) struct BodySaving {
     confirmation: Option<Confirmation>,
     privacy_acknowledged: bool,
     /// The `Save bodies…` dialog and a running bulk save.
-    pub(in crate::ui) bulk: crate::ui::bulk_save::BulkControls,
+    pub(in crate::ui) bulk: crate::ui::dialogs::bulk_save::BulkControls,
     /// The `Merge ranges…` dialog.
-    pub(in crate::ui) merge: crate::ui::range_merge::MergeControls,
+    pub(in crate::ui) merge: crate::ui::dialogs::range_merge::MergeControls,
 }
 
 impl BodySaving {
@@ -84,8 +84,8 @@ impl BodySaving {
             status: None,
             confirmation: None,
             privacy_acknowledged: false,
-            bulk: crate::ui::bulk_save::BulkControls::default(),
-            merge: crate::ui::range_merge::MergeControls::default(),
+            bulk: crate::ui::dialogs::bulk_save::BulkControls::default(),
+            merge: crate::ui::dialogs::range_merge::MergeControls::default(),
         }
     }
 
@@ -101,8 +101,8 @@ impl BodySaving {
             status: None,
             confirmation: None,
             privacy_acknowledged: false,
-            bulk: crate::ui::bulk_save::BulkControls::default(),
-            merge: crate::ui::range_merge::MergeControls::default(),
+            bulk: crate::ui::dialogs::bulk_save::BulkControls::default(),
+            merge: crate::ui::dialogs::range_merge::MergeControls::default(),
         }
     }
 
@@ -467,8 +467,8 @@ mod tests {
             status: Some(SaveStatus::Failed("earlier".to_owned())),
             confirmation: None,
             privacy_acknowledged: true,
-            bulk: crate::ui::bulk_save::BulkControls::default(),
-            merge: crate::ui::range_merge::MergeControls::default(),
+            bulk: crate::ui::dialogs::bulk_save::BulkControls::default(),
+            merge: crate::ui::dialogs::range_merge::MergeControls::default(),
         };
         assert!(saving.is_busy());
         let runtime = tokio::runtime::Builder::new_current_thread()

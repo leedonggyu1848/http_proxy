@@ -149,7 +149,7 @@ impl ReplayPanel {
                     ui.label("Valid JSON");
                 }
                 Some(error) => {
-                    ui.colored_label(crate::ui::theme::Palette::of(ui).warning, error);
+                    ui.colored_label(crate::ui::style::theme::Palette::of(ui).warning, error);
                 }
             }
         }
@@ -199,7 +199,7 @@ impl ReplayPanel {
             }
         });
         if self.draft.body_missing {
-            ui.colored_label(crate::ui::theme::Palette::of(ui).warning, "Capture is incomplete. Load the full body; omitted headers require another complete capture.");
+            ui.colored_label(crate::ui::style::theme::Palette::of(ui).warning, "Capture is incomplete. Load the full body; omitted headers require another complete capture.");
         }
     }
     fn send_ui(&mut self, ui: &mut egui::Ui, proxy: Option<&ProxyHandle>) {
@@ -255,7 +255,7 @@ impl ReplayPanel {
             ui.checkbox(&mut self.compare, "Compare with original");
         });
         if let Some(error) = &self.error {
-            ui.colored_label(crate::ui::theme::Palette::of(ui).error, error);
+            ui.colored_label(crate::ui::style::theme::Palette::of(ui).error, error);
         }
     }
     fn comparison_ui(&self, ui: &mut egui::Ui, latest: Option<&Exchange>) {
@@ -279,7 +279,7 @@ impl ReplayPanel {
                             let changed = original_text.lines().nth(index) != Some(line);
                             column.colored_label(
                                 if changed {
-                                    crate::ui::theme::Palette::of(column).warning
+                                    crate::ui::style::theme::Palette::of(column).warning
                                 } else {
                                     column.visuals().text_color()
                                 },
