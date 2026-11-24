@@ -1,7 +1,7 @@
 //! Selected request details and body previews.
 
 use crate::ui::InspectorApp;
-use crate::ui::detail::body_display::{BodySide, BodySource, BodyViewCache, Capture};
+use crate::ui::detail::body_render::{BodySide, BodySource, BodyViewCache, Capture};
 use crate::ui::detail::detail_tabs::{self, DetailTab};
 use crate::ui::detail::highlight::SyntaxPalette;
 use crate::ui::detail::image_view;
