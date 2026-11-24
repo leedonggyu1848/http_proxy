@@ -118,9 +118,10 @@ graph TD
 
 ### 경계 검사
 
-크레이트 간 의존 방향(예: `content`·`analysis`·`interop`가 `core`나 `eframe`에 의존하지 않음)은 Cargo 워크스페이스 의존 그래프가 컴파일 타임에 강제한다. `scripts/check-boundaries.py`는 Cargo가 직접 막지 않는 아래 규칙을 로컬과 CI(`quality` 작업)에서 추가로 검사한다.
+`scripts/check-boundaries.py`는 Cargo의 비순환 의존 그래프만으로는 막히지 않는 크레이트 간 의존 방향·전이 유입·내부 모듈 경계·쓰기 핸들 소유권을 로컬과 CI(`quality` 작업)에서 함께 검사한다.
 
-- **매니페스트 의존 불변식**: `http-inspector-exchange`·`http-inspector-content`·`http-inspector-analysis`·`http-inspector-interop`의 normal `[dependencies]`에 `tokio`·`hyper`·`hyper-util`·`eframe`·`egui`·`egui_extras`를 두지 않고, `http-inspector-core`의 normal `[dependencies]`에 `eframe`·`egui`·`egui_extras`를 두지 않는다.
+- **워크스페이스 크레이트 의존 방향 (`ALLOWED_WORKSPACE_DEPS`)**: 각 도메인 크레이트의 `[dependencies]`(`target.*.dependencies`와 `build-dependencies` 포함)에 허용 목록 밖의 워크스페이스 크레이트가 들어오는 것을 차단한다(`http-inspector-exchange`: 없음, `http-inspector-content`: `exchange`, `http-inspector-analysis`: `exchange`·`content`, `http-inspector-interop`: `exchange`·`content`·`analysis`, `http-inspector-core`: `exchange`). 이를 통해 역방향 의존과 `http-inspector-core`를 통한 런타임 전이 유입을 함께 막는다.
+- **런타임·UI 격리와 `dev-dependencies` 검사**: `http-inspector-exchange`·`http-inspector-content`·`http-inspector-analysis`·`http-inspector-interop`는 normal 의존성과 `[dev-dependencies]`(`target.*.dev-dependencies` 포함) 모두에서 `tokio`·`hyper`·`hyper-util`·`eframe`·`egui`·`egui_extras` 및 `http-inspector-core` 의존을 금지한다(`http-inspector-exchange`가 `test-support` 활성화를 위해 자기 자신을 `dev-dependencies`에 두는 경우 등 자기 자신 및 허용된 하위 워크스페이스 크레이트만 허용). `http-inspector-core`는 normal 의존성과 `dev-dependencies` 모두에서 `eframe`·`egui`·`egui_extras` 의존을 금지한다. `dep = { package = "..." }` 형태(직접 선언 및 `[workspace.dependencies]` 상속 포함)의 별칭도 실제 패키지 이름으로 해석해 검사한다.
 - **크레이트 내부 모듈 방향** (`crate::`, `self::`, `super::` 상대 경로 정규화 및 크레이트 루트 별칭 금지):
   - `http-inspector-exchange`: `exchange`와 `http_semantics`는 서로 참조하지 않으며, `capture`는 `exchange`·`http_semantics`만, `exchange_builder`는 `exchange`·`capture`만 참조한다.
   - `http-inspector-core`: `settings`·`recording`은 다른 내부 모듈을 참조하지 않고, `https -> settings`, `launcher -> https, settings`, `interception -> https, recording`, `replay -> interception`만 허용한다.

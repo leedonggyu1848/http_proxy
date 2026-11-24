@@ -1,18 +1,25 @@
-"""Check intra-crate module boundaries, crate dependency invariants, and write-handle ownership.
+"""Check workspace crate dependency direction, intra-crate module boundaries, and write-handle ownership.
 
-Cross-crate domain dependencies (e.g., preventing `content`, `analysis`, and
-`interop` from depending on `core` or UI crates) are enforced at compile time
-by Cargo workspace manifests. This script enforces the remaining invariants
-that Cargo alone does not check:
-1. Pure domain crates (`http-inspector-exchange`, `http-inspector-content`,
-   `http-inspector-analysis`, `http-inspector-interop`) must not declare normal
-   dependencies on `tokio`, `hyper`, `hyper-util`, `eframe`, `egui`, or
-   `egui_extras`; `http-inspector-core` must not depend on UI crates.
-2. Multi-module crates (`http-inspector-exchange`, `http-inspector-core`) keep
+This script enforces the architectural invariants that Cargo's acyclic graph
+alone does not guarantee:
+1. Workspace crate dependency direction (`ALLOWED_WORKSPACE_DEPS`): each domain
+   crate's `[dependencies]` (including `target.*.dependencies` and
+   `build-dependencies`) may only depend on explicitly allowed workspace crates,
+   blocking reverse dependencies and transitive pulls of `http-inspector-core`.
+2. Runtime and UI isolation: pure domain crates (`http-inspector-exchange`,
+   `http-inspector-content`, `http-inspector-analysis`, `http-inspector-interop`)
+   must not depend on `tokio`, `hyper`, `hyper-util`, `eframe`, `egui`, or
+   `egui_extras` in normal dependencies or `dev-dependencies` (nor on
+   `http-inspector-core` in `dev-dependencies`, allowing only self
+   `dev-dependencies` such as `http-inspector-exchange` enabling `test-support`);
+   `http-inspector-core` must not depend on UI crates. Dependency aliases via
+   `package = "..."` (direct or workspace-inherited) are resolved to the real
+   package name.
+3. Multi-module crates (`http-inspector-exchange`, `http-inspector-core`) keep
    their internal module dependency direction (`crate::`, `<crate>::`, `self::`,
    `super::` normalized against the file's module path, including inline `mod`
    blocks, and crate-root aliases rejected).
-3. `Exchange` write handles (`ExchangeWriter`, `BodyPreviewWriter`,
+4. `Exchange` write handles (`ExchangeWriter`, `BodyPreviewWriter`,
    `TunnelWriter`) may be used in production code only inside
    `http-inspector-exchange` and `http-inspector-core`'s `interception` and
    `replay` modules.
@@ -28,11 +35,43 @@ import tomllib
 UI_CRATES: frozenset[str] = frozenset({"eframe", "egui", "egui_extras"})
 RUNTIME_CRATES: frozenset[str] = frozenset({"tokio", "hyper", "hyper-util"})
 
+ALLOWED_WORKSPACE_DEPS: dict[str, frozenset[str]] = {
+    "http-inspector-exchange": frozenset(),
+    "http-inspector-content": frozenset({"http-inspector-exchange"}),
+    "http-inspector-analysis": frozenset(
+        {"http-inspector-exchange", "http-inspector-content"}
+    ),
+    "http-inspector-interop": frozenset(
+        {
+            "http-inspector-exchange",
+            "http-inspector-content",
+            "http-inspector-analysis",
+        }
+    ),
+    "http-inspector-core": frozenset({"http-inspector-exchange"}),
+}
+
 FORBIDDEN_NORMAL_DEPS: dict[str, frozenset[str]] = {
     "http-inspector-exchange": UI_CRATES | RUNTIME_CRATES,
     "http-inspector-content": UI_CRATES | RUNTIME_CRATES,
     "http-inspector-analysis": UI_CRATES | RUNTIME_CRATES,
     "http-inspector-interop": UI_CRATES | RUNTIME_CRATES,
+    "http-inspector-core": UI_CRATES,
+}
+
+FORBIDDEN_DEV_DEPS: dict[str, frozenset[str]] = {
+    "http-inspector-exchange": (
+        UI_CRATES | RUNTIME_CRATES | frozenset({"http-inspector-core"})
+    ),
+    "http-inspector-content": (
+        UI_CRATES | RUNTIME_CRATES | frozenset({"http-inspector-core"})
+    ),
+    "http-inspector-analysis": (
+        UI_CRATES | RUNTIME_CRATES | frozenset({"http-inspector-core"})
+    ),
+    "http-inspector-interop": (
+        UI_CRATES | RUNTIME_CRATES | frozenset({"http-inspector-core"})
+    ),
     "http-inspector-core": UI_CRATES,
 }
 
@@ -600,14 +639,91 @@ def top_level_module(src_dir: Path, path: Path) -> str | None:
     return first.removesuffix(".rs")
 
 
+def _resolve_package_name(
+    dep_key: str, spec: object, workspace_deps: dict[str, object]
+) -> str:
+    """Resolve the real Cargo package name behind a dependency key and table spec."""
+    if isinstance(spec, dict):
+        pkg = spec.get("package")
+        if spec.get("workspace") is True:
+            ws_key = pkg if isinstance(pkg, str) else dep_key
+            ws_spec = workspace_deps.get(ws_key)
+            if isinstance(ws_spec, dict) and isinstance(ws_spec.get("package"), str):
+                return ws_spec["package"]
+            return ws_key
+        if isinstance(pkg, str):
+            return pkg
+    return dep_key
+
+
+def _collect_section_deps(
+    manifest: dict[str, object],
+    section: str,
+    workspace_deps: dict[str, object],
+) -> list[tuple[str, str]]:
+    """Collect sorted unique `(dep_key, resolved_package)` pairs from `[section]` and `target.*.section`."""
+    found: set[tuple[str, str]] = set()
+    direct = manifest.get(section)
+    if isinstance(direct, dict):
+        for dep_key, spec in direct.items():
+            found.add((dep_key, _resolve_package_name(dep_key, spec, workspace_deps)))
+    targets = manifest.get("target")
+    if isinstance(targets, dict):
+        for target_cfg in targets.values():
+            if not isinstance(target_cfg, dict):
+                continue
+            target_deps = target_cfg.get(section)
+            if isinstance(target_deps, dict):
+                for dep_key, spec in target_deps.items():
+                    found.add(
+                        (dep_key, _resolve_package_name(dep_key, spec, workspace_deps))
+                    )
+    return sorted(found, key=lambda item: (item[1], item[0]))
+
+
+def _format_dep(dep_key: str, resolved: str) -> str:
+    if dep_key == resolved:
+        return f"`{resolved}`"
+    return f"`{resolved}` (via alias `{dep_key}`)"
+
+
 def check_manifest_deps(root: Path) -> list[Violation]:
-    """Verify normal `[dependencies]` of domain crates exclude forbidden runtime/UI crates."""
+    """Verify workspace dependency direction and runtime/UI isolation in crate manifests."""
     violations: list[Violation] = []
+    workspace_deps: dict[str, object] = {}
+    workspace_crates: set[str] = set(ALLOWED_WORKSPACE_DEPS.keys())
+
+    root_manifest_path = root / "Cargo.toml"
+    if root_manifest_path.exists():
+        root_manifest = tomllib.loads(root_manifest_path.read_text())
+        ws_table = root_manifest.get("workspace", {})
+        if isinstance(ws_table, dict):
+            ws_deps = ws_table.get("dependencies", {})
+            if isinstance(ws_deps, dict):
+                workspace_deps = ws_deps
+        root_pkg = root_manifest.get("package", {})
+        if isinstance(root_pkg, dict) and isinstance(root_pkg.get("name"), str):
+            workspace_crates.add(root_pkg["name"])
+
     crates_dir = root / "crates"
+    manifests: list[tuple[Path, dict[str, object], str]] = []
     for manifest_path in sorted(crates_dir.glob("*/Cargo.toml")):
         manifest = tomllib.loads(manifest_path.read_text())
-        pkg_name = manifest.get("package", {}).get("name", manifest_path.parent.name)
-        if pkg_name not in FORBIDDEN_NORMAL_DEPS:
+        pkg_table = manifest.get("package", {})
+        pkg_name = (
+            pkg_table.get("name", manifest_path.parent.name)
+            if isinstance(pkg_table, dict)
+            else manifest_path.parent.name
+        )
+        workspace_crates.add(pkg_name)
+        manifests.append((manifest_path, manifest, pkg_name))
+
+    for manifest_path, manifest, pkg_name in manifests:
+        if (
+            pkg_name not in ALLOWED_WORKSPACE_DEPS
+            or pkg_name not in FORBIDDEN_NORMAL_DEPS
+            or pkg_name not in FORBIDDEN_DEV_DEPS
+        ):
             violations.append(
                 Violation(
                     manifest_path,
@@ -616,19 +732,65 @@ def check_manifest_deps(root: Path) -> list[Violation]:
                 )
             )
             continue
-        forbidden = FORBIDDEN_NORMAL_DEPS[pkg_name]
-        normal_deps: set[str] = set(manifest.get("dependencies", {}).keys())
-        for target_cfg in manifest.get("target", {}).values():
-            if isinstance(target_cfg, dict):
-                normal_deps.update(target_cfg.get("dependencies", {}).keys())
-        for dep in sorted(normal_deps & forbidden):
-            violations.append(
-                Violation(
-                    manifest_path,
-                    1,
-                    f"crate `{pkg_name}` must not have a normal dependency on `{dep}`",
+
+        allowed_ws = ALLOWED_WORKSPACE_DEPS[pkg_name]
+        forbidden_normal = FORBIDDEN_NORMAL_DEPS[pkg_name]
+        allowed_ws_list = ", ".join(sorted(allowed_ws)) if allowed_ws else "none"
+
+        for section in ("dependencies", "build-dependencies"):
+            for dep_key, resolved in _collect_section_deps(
+                manifest, section, workspace_deps
+            ):
+                if resolved in workspace_crates:
+                    if resolved not in allowed_ws:
+                        violations.append(
+                            Violation(
+                                manifest_path,
+                                1,
+                                f"crate `{pkg_name}` must not depend on workspace crate "
+                                f"{_format_dep(dep_key, resolved)} in `{section}` "
+                                f"(allowed workspace deps: {allowed_ws_list})",
+                            )
+                        )
+                elif resolved in forbidden_normal:
+                    violations.append(
+                        Violation(
+                            manifest_path,
+                            1,
+                            f"crate `{pkg_name}` must not have a `{section}` dependency on "
+                            f"{_format_dep(dep_key, resolved)}",
+                        )
+                    )
+
+        forbidden_dev = FORBIDDEN_DEV_DEPS[pkg_name]
+        allowed_dev_ws = (allowed_ws | {pkg_name}) - forbidden_dev
+        allowed_dev_ws_list = (
+            ", ".join(sorted(allowed_dev_ws)) if allowed_dev_ws else "none"
+        )
+        for dep_key, resolved in _collect_section_deps(
+            manifest, "dev-dependencies", workspace_deps
+        ):
+            if resolved in workspace_crates:
+                if resolved not in allowed_dev_ws:
+                    violations.append(
+                        Violation(
+                            manifest_path,
+                            1,
+                            f"crate `{pkg_name}` must not depend on workspace crate "
+                            f"{_format_dep(dep_key, resolved)} in `dev-dependencies` "
+                            f"(allowed workspace dev-deps: {allowed_dev_ws_list})",
+                        )
+                    )
+            elif resolved in forbidden_dev:
+                violations.append(
+                    Violation(
+                        manifest_path,
+                        1,
+                        f"crate `{pkg_name}` must not have a `dev-dependencies` dependency on "
+                        f"{_format_dep(dep_key, resolved)}",
+                    )
                 )
-            )
+
     return violations
 
 
