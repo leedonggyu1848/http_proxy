@@ -10,7 +10,7 @@ use std::sync::Arc;
 use super::SearchScope;
 use super::text_search::Matcher;
 use crate::content::decode as body_view;
-use crate::{
+use crate::exchange::{
     BodyLifecycle, BodyPreview, BodyRetention, BodySide, Exchange, HeaderPreview, MediaType,
     Outcome, RecordId,
 };
@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn long_or_incomplete_bodies_are_marked_partial() {
-        let long = vec![b'a'; crate::BODY_PREVIEW_BYTES + 10];
+        let long = vec![b'a'; crate::interception::BODY_PREVIEW_BYTES + 10];
         assert!(matches!(
             searchable(&long, &[], None, false),
             BodyText::Searchable { partial: true, .. }
@@ -374,7 +374,10 @@ mod tests {
     fn searches_metadata_and_outcomes_across_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
         use http::{HeaderName, HeaderValue, Method, StatusCode};
 
-        let pending = crate::ExchangeBuilder::http(Method::GET, "http://api.example.test/MiXeD")?
+        use crate::exchange::{FailureStage, TunnelState};
+        use crate::interception::{ExchangeBuilder, ResponseFixture};
+
+        let pending = ExchangeBuilder::http(Method::GET, "http://api.example.test/MiXeD")?
             .header(
                 HeaderName::from_static("x-request"),
                 HeaderValue::from_static("RequestVALUE"),
@@ -389,12 +392,12 @@ mod tests {
             );
         }
 
-        let response = crate::ExchangeBuilder::http(Method::GET, "http://api.example.test/MiXeD")?
+        let response = ExchangeBuilder::http(Method::GET, "http://api.example.test/MiXeD")?
             .header(
                 HeaderName::from_static("x-request"),
                 HeaderValue::from_static("RequestVALUE"),
             )
-            .respond(crate::ResponseFixture::new(StatusCode::CREATED).header(
+            .respond(ResponseFixture::new(StatusCode::CREATED).header(
                 HeaderName::from_static("x-response"),
                 HeaderValue::from_static("ResponseVALUE"),
             ))?;
@@ -412,15 +415,12 @@ mod tests {
             false
         ));
 
-        let tunnel = crate::ExchangeBuilder::connect("api.example.test:443").tunnel(
-            0,
-            0,
-            crate::TunnelState::Open,
-        )?;
+        let tunnel =
+            ExchangeBuilder::connect("api.example.test:443").tunnel(0, 0, TunnelState::Open)?;
         assert!(exchange_found(&tunnel, "tunnel", SearchScope::All, false));
 
-        let failed = crate::ExchangeBuilder::http(Method::GET, "http://api.example.test/")?
-            .fail(crate::FailureStage::Connect, "connection refused")?;
+        let failed = ExchangeBuilder::http(Method::GET, "http://api.example.test/")?
+            .fail(FailureStage::Connect, "connection refused")?;
         assert!(exchange_found(&failed, "connect", SearchScope::All, false));
         Ok(())
     }
@@ -430,11 +430,13 @@ mod tests {
         use http::header::{AUTHORIZATION, CONTENT_ENCODING, CONTENT_TYPE};
         use http::{HeaderValue, Method, StatusCode};
 
+        use crate::interception::{ExchangeBuilder, ResponseFixture};
+
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         encoder.write_all(br#"{"error":"Quota Exceeded"}"#)?;
         let gzip = encoder.finish()?;
 
-        let record = crate::ExchangeBuilder::http(Method::POST, "http://api.example.test/submit")?
+        let record = ExchangeBuilder::http(Method::POST, "http://api.example.test/submit")?
             .header(
                 AUTHORIZATION,
                 HeaderValue::from_static("Bearer SECRET-TOKEN"),
@@ -445,7 +447,7 @@ mod tests {
             )
             .request_body("orderId=REQ-123", BodyLifecycle::Complete)
             .respond(
-                crate::ResponseFixture::new(StatusCode::TOO_MANY_REQUESTS)
+                ResponseFixture::new(StatusCode::TOO_MANY_REQUESTS)
                     .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
                     .header(CONTENT_ENCODING, HeaderValue::from_static("gzip"))
                     .body(gzip, BodyLifecycle::Complete),
@@ -483,19 +485,19 @@ mod tests {
         use http::header::CONTENT_TYPE;
         use http::{HeaderValue, Method, StatusCode};
 
-        let body = format!("{}tail-word", "a".repeat(crate::BODY_PREVIEW_BYTES + 100));
-        let first = crate::ExchangeBuilder::http(Method::GET, "http://api.example.test/large")?
-            .respond(
-                crate::ResponseFixture::new(StatusCode::OK)
-                    .header(CONTENT_TYPE, HeaderValue::from_static("text/plain"))
-                    .body(body, BodyLifecycle::Complete),
-            )?;
-        let second = crate::ExchangeBuilder::http(Method::GET, "http://api.example.test/small")?
-            .respond(
-                crate::ResponseFixture::new(StatusCode::OK)
-                    .header(CONTENT_TYPE, HeaderValue::from_static("text/plain"))
-                    .body("small body", BodyLifecycle::Complete),
-            )?;
+        use crate::interception::{BODY_PREVIEW_BYTES, ExchangeBuilder, ResponseFixture};
+
+        let body = format!("{}tail-word", "a".repeat(BODY_PREVIEW_BYTES + 100));
+        let first = ExchangeBuilder::http(Method::GET, "http://api.example.test/large")?.respond(
+            ResponseFixture::new(StatusCode::OK)
+                .header(CONTENT_TYPE, HeaderValue::from_static("text/plain"))
+                .body(body, BodyLifecycle::Complete),
+        )?;
+        let second = ExchangeBuilder::http(Method::GET, "http://api.example.test/small")?.respond(
+            ResponseFixture::new(StatusCode::OK)
+                .header(CONTENT_TYPE, HeaderValue::from_static("text/plain"))
+                .body("small body", BodyLifecycle::Complete),
+        )?;
 
         let mut cache = BodyCache::default();
         let matcher = Matcher::new(

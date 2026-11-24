@@ -2,7 +2,8 @@ use std::fmt::Write as _;
 use std::io;
 use std::path::Path;
 
-use http_proxy::{FullLog, ProxyConfig, ProxyHandle};
+use http_proxy::interception::{ProxyConfig, ProxyHandle};
+use http_proxy::recording::FullLog;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;

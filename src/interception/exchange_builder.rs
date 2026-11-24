@@ -241,9 +241,10 @@ fn check_authority(target: &str) -> Result<(), FixtureError> {
 /// path could not have recorded.
 ///
 /// ```
-/// use http_proxy::{BodyLifecycle, ExchangeBuilder, FailureStage, ResponseFixture};
+/// use http_proxy::exchange::{BodyLifecycle, FailureStage};
+/// use http_proxy::interception::{ExchangeBuilder, FixtureError, ResponseFixture};
 ///
-/// # fn main() -> Result<(), http_proxy::FixtureError> {
+/// # fn main() -> Result<(), FixtureError> {
 /// let exchange = ExchangeBuilder::http(http::Method::GET, "http://example.test/")?
 ///     .respond(ResponseFixture::new(http::StatusCode::OK).body("hello", BodyLifecycle::Complete))?;
 /// assert!(!exchange.is_live());

@@ -9,11 +9,11 @@ use http::Method;
 
 use super::stats::NodeStats;
 use super::tree::{NodeId, UrlMap};
-use crate::Exchange;
 use crate::analysis::url::{
     ID_FOLD_THRESHOLD, NormalizedUrl, OriginKey, PathSegmentPattern, classify_id_segment,
     parse_exchange_target, percent_decode_display,
 };
+use crate::exchange::Exchange;
 
 /// Stable identity of a rendered tree node, preserved across live updates and
 /// shared with `Show in Requests` filtering and endpoint details (#69).

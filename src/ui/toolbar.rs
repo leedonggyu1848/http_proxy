@@ -3,8 +3,9 @@
 use crate::ui::theme::Palette;
 use crate::ui::{InspectorApp, MAX_RECORDS};
 use eframe::egui::{self, RichText};
+use http_proxy::interception::{ProxyHandle, StartError};
+use http_proxy::recording::FullLog;
 use http_proxy::settings;
-use http_proxy::{FullLog, ProxyHandle, StartError};
 use std::io;
 use std::path::PathBuf;
 
@@ -329,9 +330,9 @@ mod port_choice_tests {
     fn explains_an_occupied_port() -> io::Result<()> {
         let occupied = std::net::TcpListener::bind("127.0.0.1:0")?;
         let port = ProxyPort::from(occupied.local_addr()?.port());
-        let Err(error) =
-            http_proxy::ProxyHandle::start(http_proxy::ProxyConfig::loopback(port.value()))
-        else {
+        let Err(error) = http_proxy::interception::ProxyHandle::start(
+            http_proxy::interception::ProxyConfig::loopback(port.value()),
+        ) else {
             return Err(io::Error::other("binding an occupied port succeeded"));
         };
         let text = start_error_text(&error, port);

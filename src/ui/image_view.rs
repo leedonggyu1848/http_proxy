@@ -3,10 +3,8 @@
 use std::fmt::Write as _;
 
 use eframe::egui::{self, TextureHandle, TextureOptions};
-use http_proxy::{
-    BodyLifecycle, BodyRetention, BodySnapshot, IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES,
-    ImageFormat, RecordId,
-};
+use http_proxy::exchange::{BodyLifecycle, BodyRetention, BodySnapshot, ImageFormat, RecordId};
+use http_proxy::interception::{IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES};
 
 use crate::ui::theme::Palette;
 use http_proxy::content::decode as body_view;
@@ -421,7 +419,7 @@ mod tests {
     use std::error::Error;
     use std::io::Write;
 
-    use http_proxy::ImageFormat;
+    use http_proxy::exchange::ImageFormat;
 
     use super::{ImageFile, hex_dump, mismatch_text};
 

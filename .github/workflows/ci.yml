@@ -82,6 +82,8 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
       - name: Check formatting
         run: cargo fmt --all --check
+      - name: Check module boundaries
+        run: python3 scripts/check-boundaries.py
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Run tests

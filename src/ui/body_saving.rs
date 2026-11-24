@@ -6,9 +6,10 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
 use eframe::egui;
-use http_proxy::{
-    BODY_STORE_LIMIT_BYTES, BODY_STORE_MIN_FREE_BYTES, BodySide, BodyStore, Exchange, SaveBody,
-    SaveFormat, SavedBody, StoredBody,
+use http_proxy::exchange::{BodySide, Exchange};
+use http_proxy::recording::{
+    BODY_STORE_LIMIT_BYTES, BODY_STORE_MIN_FREE_BYTES, BodyStore, SaveBody, SaveFormat, SavedBody,
+    StoredBody,
 };
 
 use crate::ui::save::SaveControls;
@@ -496,8 +497,10 @@ mod tests {
     /// Captures one rejected request through a real proxy.
     async fn sample_exchange() -> io::Result<Exchange> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let mut proxy = http_proxy::ProxyHandle::start(http_proxy::ProxyConfig::loopback(0))
-            .map_err(io::Error::other)?;
+        let mut proxy = http_proxy::interception::ProxyHandle::start(
+            http_proxy::interception::ProxyConfig::loopback(0),
+        )
+        .map_err(io::Error::other)?;
         let mut client = tokio::net::TcpStream::connect(proxy.local_addr()).await?;
         client
             .write_all(b"GET ftp://example.invalid/ HTTP/1.1\r\nHost: example.invalid\r\nConnection: close\r\n\r\n")

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::analysis::endpoint_schema::{EndpointKey, EndpointSchemas, SchemaAnalyzer};
 use crate::analysis::url_map::NodeId;
-use crate::{BodySource, CaptureSource, Exchange};
+use crate::exchange::{BodySource, CaptureSource, Exchange};
 
 /// Coordinates background endpoint schema analysis and retains merged
 /// per-endpoint aggregates.
@@ -90,7 +90,8 @@ mod tests {
 
     use super::*;
     use crate::analysis::url_map::UrlMap;
-    use crate::{BodyLifecycle, BodySide, ExchangeBuilder, MemoryBodySource, ResponseFixture};
+    use crate::exchange::{BodyLifecycle, BodySide, MemoryBodySource, TunnelState};
+    use crate::interception::{ExchangeBuilder, ResponseFixture};
 
     #[test]
     fn analyzes_exchanges_with_body_source_and_wake_callback() -> Result<(), Box<dyn Error>> {
@@ -105,11 +106,8 @@ mod tests {
                 .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
                 .body(r#"{"id":42}"#, BodyLifecycle::Complete),
         )?;
-        let tunnel = ExchangeBuilder::connect("api.example.test:443").tunnel(
-            4,
-            5,
-            crate::TunnelState::Closed,
-        )?;
+        let tunnel =
+            ExchangeBuilder::connect("api.example.test:443").tunnel(4, 5, TunnelState::Closed)?;
 
         let mut map = UrlMap::new();
         let node = map

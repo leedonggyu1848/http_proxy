@@ -7,7 +7,7 @@
 //! Privacy invariant: query parameter values, header values, cookies,
 //! credentials, and body field values are never retained in URL map or
 //! endpoint schema aggregates. Analysis reads structured bodies only through
-//! the [`BodySource`](crate::BodySource) port and does not depend on storage,
+//! the [`BodySource`](crate::exchange::BodySource) port and does not depend on storage,
 //! interception, HTTPS setup, or UI rendering.
 
 pub mod endpoint_analysis;

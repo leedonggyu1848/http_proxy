@@ -12,7 +12,7 @@ use crate::analysis::url::{
     NormalizedUrl, OriginKey, PathSegmentPattern, classify_id_segment, is_third_party,
     parse_exchange_target, parse_origin_header, parse_url, resolve_location,
 };
-use crate::{Exchange, Outcome};
+use crate::exchange::{Exchange, Outcome};
 
 /// Default upper bound on total tree nodes kept in memory.
 ///

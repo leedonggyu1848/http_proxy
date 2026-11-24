@@ -96,7 +96,8 @@ fn parse_part(part: &[u8]) -> Option<PartObservation> {
                 }
             }
         } else if field.trim().eq_ignore_ascii_case("content-type") {
-            content_type = crate::MediaType::parse(value).map(|media| media.essence().to_owned());
+            content_type =
+                crate::exchange::MediaType::parse(value).map(|media| media.essence().to_owned());
         }
     }
     Some(PartObservation {

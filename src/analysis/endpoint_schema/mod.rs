@@ -11,7 +11,7 @@
 //! header values, cookies, credentials and body field values are classified
 //! where they are read ([`observe_exchange`]) and never kept.
 //!
-//! Bodies are read through the [`BodySource`](crate::BodySource) port, so
+//! Bodies are read through the [`BodySource`](crate::exchange::BodySource) port, so
 //! analysis does not depend on how or where bodies are stored, and parsed
 //! on a background thread ([`SchemaAnalyzer`]),
 //! bounded by [`MAX_ANALYZED_BODY_BYTES`], [`MAX_SHAPE_DEPTH`] and

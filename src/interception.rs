@@ -13,6 +13,10 @@ mod capture_context;
 mod config;
 #[cfg(feature = "test-support")]
 mod exchange_builder;
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-wide items of a private module; `pub` would trip `unreachable_pub`"
+)]
 mod execute;
 mod forward;
 mod handle;

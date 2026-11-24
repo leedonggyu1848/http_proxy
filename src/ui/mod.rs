@@ -37,14 +37,14 @@ use http_proxy::analysis::filter::{RecordFilter, RecordList};
 use http_proxy::analysis::pipeline::AnalysisPipeline;
 use http_proxy::analysis::url_map::RequestScope;
 use http_proxy::content::format as body_format;
+use http_proxy::exchange::{BodySource, Exchange, RecordId};
+use http_proxy::https::HttpsInspection;
+use http_proxy::interception::{EngineState, ProxyConfig, ProxyHandle};
 use http_proxy::interop::map_export::{
     export_graph_dot, export_graph_mermaid, export_tree_json, export_tree_text,
 };
+use http_proxy::recording::{FullLog, PreviewBodies};
 use http_proxy::settings;
-use http_proxy::{
-    BodySource, EngineState, Exchange, FullLog, HttpsInspection, PreviewBodies, ProxyConfig,
-    ProxyHandle, RecordId,
-};
 
 const MAX_RECORDS: usize = 2_000;
 /// Repaint interval while pending requests or streaming bodies change on screen.
@@ -677,8 +677,9 @@ mod layout_tests {
     };
     use eframe::egui;
     use http_proxy::analysis::url_map::UrlMap;
+    use http_proxy::exchange::Exchange;
+    use http_proxy::interception::{ProxyConfig, ProxyHandle};
     use http_proxy::settings;
-    use http_proxy::{Exchange, ProxyConfig, ProxyHandle};
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};

@@ -24,7 +24,7 @@ use std::sync::Arc;
 use crate::analysis::endpoint_analysis::EndpointAnalysis;
 use crate::analysis::endpoint_schema::EndpointSchemas;
 use crate::analysis::url_map::{NodeId, UrlMap};
-use crate::{BodySource, Exchange};
+use crate::exchange::{BodySource, Exchange};
 
 /// Most in-flight records watched for [`CaptureEvent::RecordSettled`].
 ///
@@ -292,9 +292,10 @@ mod tests {
 
     use super::*;
     use crate::exchange::{
-        CaptureSource, CapturedRequest, ExchangeWriter, HeaderPreview, Outcome, RecordId, SessionId,
+        BodyLifecycle, BodySide, CaptureSource, CapturedRequest, ExchangeWriter, HeaderPreview,
+        MemoryBodySource, Outcome, RecordId, SessionId,
     };
-    use crate::{BodyLifecycle, BodySide, ExchangeBuilder, MemoryBodySource, ResponseFixture};
+    use crate::interception::{ExchangeBuilder, ResponseFixture};
 
     /// Test analyzer that counts records per event and is registered without
     /// touching the UI.

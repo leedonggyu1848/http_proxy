@@ -345,14 +345,14 @@ struct ExchangeInner {
 /// that receives an `Exchange` can observe it but never change it:
 ///
 /// ```
-/// fn has_settled(exchange: &http_proxy::Exchange) -> bool {
+/// fn has_settled(exchange: &http_proxy::exchange::Exchange) -> bool {
 ///     !exchange.outcome().is_in_flight()
 /// }
 /// ```
 ///
 /// ```compile_fail,E0599
-/// fn cancel(exchange: &http_proxy::Exchange) {
-///     exchange.settle(http_proxy::Outcome::Cancelled);
+/// fn cancel(exchange: &http_proxy::exchange::Exchange) {
+///     exchange.settle(http_proxy::exchange::Outcome::Cancelled);
 /// }
 /// ```
 #[derive(Clone, Debug)]

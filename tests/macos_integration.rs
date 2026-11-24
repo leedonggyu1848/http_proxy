@@ -2,9 +2,9 @@
 
 use std::time::{Duration, Instant};
 
-use http_proxy::{
-    Browser, BrowserEvent, CaInfo, CaTrustStatus, CaTrustStore, ProxyConfig, ProxyHandle,
-};
+use http_proxy::https::{CaInfo, CaTrustStatus, CaTrustStore};
+use http_proxy::interception::{ProxyConfig, ProxyHandle};
+use http_proxy::launcher::{Browser, BrowserEvent};
 
 pub mod common;
 

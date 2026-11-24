@@ -1,5 +1,6 @@
-//! Unit tests for HAR 1.2 export, built with [`crate::ExchangeBuilder`] without
-//! starting a proxy or opening network sockets.
+//! Unit tests for HAR 1.2 export, built with
+//! [`ExchangeBuilder`](crate::interception::ExchangeBuilder) without starting a
+//! proxy or opening network sockets.
 #![expect(
     clippy::indexing_slicing,
     reason = "Reading a serde_json::Value by key yields Null instead of panicking."
@@ -18,7 +19,7 @@ use serde_json::Value;
 
 use super::{HarOptions, document, write};
 use crate::exchange::{BodyLifecycle, Exchange, FailureStage, TunnelState};
-use crate::{BODY_PREVIEW_BYTES, ExchangeBuilder, ResponseFixture};
+use crate::interception::{BODY_PREVIEW_BYTES, ExchangeBuilder, ResponseFixture};
 
 type TestResult = Result<(), Box<dyn Error>>;
 

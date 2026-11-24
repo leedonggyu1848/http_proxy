@@ -11,7 +11,7 @@ use super::value::bump;
 use crate::analysis::url::percent_decode_display;
 use crate::content::detect::{self as content_detect, Basis, Detection};
 use crate::content::format::BodyFormat;
-use crate::{MediaType, ReadBodyOutcome};
+use crate::exchange::{MediaType, ReadBodyOutcome};
 
 /// How a body is parsed for its structure, following the format
 /// [`content_detect`] decided.

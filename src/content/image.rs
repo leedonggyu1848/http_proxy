@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::num::NonZeroU64;
 
-use crate::ImageFormat;
+use crate::exchange::ImageFormat;
 use resvg::{tiny_skia, usvg};
 use usvg::roxmltree;
 
@@ -518,7 +518,7 @@ mod tests {
     use std::io::ErrorKind;
     use std::net::TcpListener;
 
-    use crate::ImageFormat;
+    use crate::exchange::ImageFormat;
 
     use super::{ImageError, PreviewImage, decode};
 

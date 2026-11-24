@@ -6,8 +6,9 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
 use eframe::egui;
+use http_proxy::exchange::{BodySide, Exchange};
 use http_proxy::recording::body_store::response_range;
-use http_proxy::{BodySide, Exchange, RangePlan, SaveBody, SaveFormat};
+use http_proxy::recording::{RangePlan, SaveBody, SaveFormat};
 
 use crate::ui::InspectorApp;
 use crate::ui::body_saving::{PRIVACY_NOTICE, format_size};

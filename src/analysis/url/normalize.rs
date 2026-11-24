@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use crate::CaptureSource;
+use crate::exchange::CaptureSource;
 
 /// Maximum length of a single normalized path segment stored in the map.
 const MAX_SEGMENT_BYTES: usize = 256;

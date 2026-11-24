@@ -2,11 +2,11 @@
 //! [`http_proxy::analysis::filter`].
 
 use eframe::egui;
-use http_proxy::Exchange;
 use http_proxy::analysis::filter::{
     self as analysis_filter, RecordFilter, RecordList, ScopeFilter,
 };
 use http_proxy::analysis::url_map::RequestScope;
+use http_proxy::exchange::Exchange;
 
 use crate::ui::InspectorApp;
 use crate::ui::map_panel::RecordMatchCache;
@@ -110,7 +110,9 @@ impl InspectorApp {
         if rows.is_empty() {
             let message = empty_list_text(
                 self.records.len(),
-                self.proxy.as_ref().map(http_proxy::ProxyHandle::local_addr),
+                self.proxy
+                    .as_ref()
+                    .map(http_proxy::interception::ProxyHandle::local_addr),
             );
             ui.centered_and_justified(|ui| {
                 ui.add(egui::Label::new(egui::RichText::new(message).weak()).wrap());
@@ -126,8 +128,12 @@ impl InspectorApp {
         }
         if let Some((record, side)) = self.table.save_body.take() {
             let directory = self.save.directory();
-            self.body_saving
-                .request(&record, side, http_proxy::SaveFormat::Decoded, directory);
+            self.body_saving.request(
+                &record,
+                side,
+                http_proxy::recording::SaveFormat::Decoded,
+                directory,
+            );
         }
         if let Some(original) = self.table.replay.take() {
             match replay_panel::ReplayPanel::new(original) {
@@ -172,7 +178,8 @@ mod tests {
     use http::header::{CONTENT_ENCODING, CONTENT_TYPE};
     use http::{HeaderValue, Method, StatusCode};
     use http_proxy::analysis::search::{MatchOptions, SearchScope};
-    use http_proxy::{BodyLifecycle, ExchangeBuilder, ResponseFixture};
+    use http_proxy::exchange::BodyLifecycle;
+    use http_proxy::interception::{ExchangeBuilder, ResponseFixture};
 
     use super::*;
 
@@ -227,7 +234,7 @@ mod tests {
     {
         let body = format!(
             "{}tail-word",
-            "a".repeat(http_proxy::BODY_PREVIEW_BYTES + 100)
+            "a".repeat(http_proxy::interception::BODY_PREVIEW_BYTES + 100)
         );
         let record = ExchangeBuilder::http(Method::GET, "http://api.example.test/large")?.respond(
             ResponseFixture::new(StatusCode::OK)

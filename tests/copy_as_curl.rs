@@ -4,9 +4,9 @@ use std::net::SocketAddr;
 use std::process::Command;
 use std::time::Duration;
 
-use http_proxy::{
-    BodyLifecycle, Exchange, ProxyConfig, ProxyHandle, RedactedHeaders, curl_command,
-};
+use http_proxy::exchange::{BodyLifecycle, Exchange};
+use http_proxy::interception::{ProxyConfig, ProxyHandle};
+use http_proxy::interop::curl::{RedactedHeaders, curl_command};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -134,7 +134,7 @@ async fn wait_for_request_body(exchange: &Exchange) -> Result<(), TestError> {
             if let Some(snapshot) = exchange
                 .request()
                 .body()
-                .and_then(http_proxy::BodyPreview::snapshot)
+                .and_then(http_proxy::exchange::BodyPreview::snapshot)
                 && snapshot.lifecycle() != BodyLifecycle::Streaming
             {
                 return;

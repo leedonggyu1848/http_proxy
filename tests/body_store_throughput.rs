@@ -7,7 +7,9 @@
 
 use std::time::{Duration, Instant};
 
-use http_proxy::{BodySide, BodyStore, ProxyConfig, ProxyHandle};
+use http_proxy::exchange::BodySide;
+use http_proxy::interception::{ProxyConfig, ProxyHandle};
+use http_proxy::recording::BodyStore;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 

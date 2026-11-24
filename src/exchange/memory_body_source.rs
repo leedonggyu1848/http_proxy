@@ -1,9 +1,8 @@
 //! A [`BodySource`] that answers from bodies kept in memory, for tests.
 //!
 //! Compiled only with the `test-support` feature, which release builds leave
-//! off. It lets analysis be tested with exchanges from
-//! [`ExchangeBuilder`](crate::ExchangeBuilder) and without a proxy or a disk
-//! store.
+//! off. It lets analysis be tested with exchanges from `ExchangeBuilder` and
+//! without a proxy or a disk store.
 
 use std::collections::HashMap;
 
@@ -17,9 +16,10 @@ use super::{BodySide, BodySource, Exchange, ReadBodyOutcome, RecordId};
 /// as [`ReadBodyOutcome::NotFound`].
 ///
 /// ```
-/// use http_proxy::{BodySide, BodySource, ExchangeBuilder, MemoryBodySource, ReadBodyOutcome};
+/// use http_proxy::exchange::{BodySide, BodySource, MemoryBodySource, ReadBodyOutcome};
+/// use http_proxy::interception::{ExchangeBuilder, FixtureError};
 ///
-/// # fn main() -> Result<(), http_proxy::FixtureError> {
+/// # fn main() -> Result<(), FixtureError> {
 /// let exchange = ExchangeBuilder::http(http::Method::POST, "http://example.test/")?.cancel()?;
 /// let bodies = MemoryBodySource::new().with_body(exchange.id(), BodySide::Request, "hello");
 /// assert_eq!(

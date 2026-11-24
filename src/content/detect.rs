@@ -13,7 +13,7 @@
 //! so the view can say why it could not be read.
 
 use super::format::BodyFormat;
-use crate::MediaType;
+use crate::exchange::MediaType;
 
 /// Most leading bytes read to sniff a body.
 pub const SNIFF_BYTES: usize = 512;
