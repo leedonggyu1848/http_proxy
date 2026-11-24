@@ -84,11 +84,12 @@ impl InspectorApp {
     /// fewer than the `retained` ones still listed.
     fn map_scope_total(&self, scope: &RequestScope, retained: usize) -> u64 {
         let counted = scope.method.as_ref().map_or_else(
-            || self.url_map.matching_request_count(&scope.key),
+            || self.analysis.url_map().matching_request_count(&scope.key),
             |method| {
-                self.endpoints
-                    .schemas()
-                    .request_count(&self.url_map.matching_node_ids(&scope.key), method)
+                self.analysis.endpoint_schemas().request_count(
+                    &self.analysis.url_map().matching_node_ids(&scope.key),
+                    method,
+                )
             },
         );
         counted.max(u64::try_from(retained).unwrap_or(u64::MAX))

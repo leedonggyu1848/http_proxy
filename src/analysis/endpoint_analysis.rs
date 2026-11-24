@@ -55,11 +55,12 @@ impl EndpointAnalysis {
         }
     }
 
-    /// Merges finished observations without waiting.
-    pub fn update(&mut self) {
-        if let Some(analyzer) = self.analyzer.as_mut() {
-            let _changed = analyzer.drain_into(&mut self.schemas);
-        }
+    /// Merges finished observations without waiting. Returns `true` when
+    /// any aggregate changed.
+    pub fn update(&mut self) -> bool {
+        self.analyzer
+            .as_mut()
+            .is_some_and(|analyzer| analyzer.drain_into(&mut self.schemas))
     }
 
     /// Drops every aggregate and pending exchange, as on `Clear`.
@@ -137,7 +138,7 @@ mod tests {
                 .checked_duration_since(Instant::now())
                 .ok_or("timed out waiting for endpoint schema wake")?;
             wake_rx.recv_timeout(remaining)?;
-            analysis.update();
+            let _changed = analysis.update();
         }
 
         assert!(analysis.schemas().version() >= 1);

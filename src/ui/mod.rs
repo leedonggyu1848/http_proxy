@@ -33,9 +33,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use eframe::egui;
-use http_proxy::analysis::endpoint_analysis::EndpointAnalysis;
 use http_proxy::analysis::filter::{RecordFilter, RecordList};
-use http_proxy::analysis::url_map::{RequestScope, UrlMap};
+use http_proxy::analysis::pipeline::AnalysisPipeline;
+use http_proxy::analysis::url_map::RequestScope;
 use http_proxy::content::format as body_format;
 use http_proxy::interop::map_export::{
     export_graph_dot, export_graph_mermaid, export_tree_json, export_tree_text,
@@ -105,11 +105,11 @@ struct InspectorApp {
     curl: copy_curl::CurlCopy,
     proxy: Option<ProxyHandle>,
     records: RecordList<Exchange>,
-    url_map: UrlMap,
+    /// Capture analysis: URL map, endpoint schemas and any other analyzer.
+    analysis: AnalysisPipeline,
     map_panel: map_panel::MapPanel,
     map_path_filter: Option<RequestScope>,
     map_filter_cache: map_panel::RecordMatchCache,
-    endpoints: EndpointAnalysis,
     selected: Option<RecordId>,
     search: search::RequestSearch,
     record_filter: RecordFilter,
@@ -156,18 +156,17 @@ impl InspectorApp {
             None => Arc::new(PreviewBodies),
         };
         let wake_context = context.clone();
-        let endpoints = EndpointAnalysis::start(bodies, move || wake_context.request_repaint());
+        let analysis = AnalysisPipeline::start(bodies, move || wake_context.request_repaint());
         let mut app = Self {
             main_view: MainView::Requests,
             replay: None,
             curl: copy_curl::CurlCopy::default(),
             proxy: None,
             records: RecordList::new(MAX_RECORDS),
-            url_map: UrlMap::new(),
+            analysis,
             map_panel: map_panel::MapPanel::new(),
             map_path_filter: None,
             map_filter_cache: map_panel::RecordMatchCache::default(),
-            endpoints,
             selected: None,
             search: search::RequestSearch::new(&context),
             record_filter: RecordFilter::All,
@@ -283,9 +282,7 @@ impl InspectorApp {
             return;
         };
         while let Some(record) = proxy.try_receive() {
-            if let Some(node) = self.url_map.observe_exchange(&record) {
-                self.endpoints.submit(node, &record);
-            }
+            self.analysis.record_added(&record);
             if let Some(removed) = self.records.push(record)
                 && self.selected == Some(removed.id())
             {
@@ -297,8 +294,7 @@ impl InspectorApp {
     pub(in crate::ui) fn clear_session(&mut self) {
         self.records.clear(self.engine_dropped());
         self.selected = None;
-        self.url_map.clear();
-        self.endpoints.clear();
+        self.analysis.session_cleared();
         self.map_panel.clear();
         self.map_path_filter = None;
         self.map_filter_cache.clear();
@@ -324,8 +320,7 @@ impl InspectorApp {
     /// Renders one frame of the inspector inside `ui`.
     pub(in crate::ui) fn render_ui(&mut self, ui: &mut egui::Ui) {
         self.receive_records();
-        let _ = self.url_map.sync_live();
-        self.endpoints.update();
+        let _changed = self.analysis.update();
         self.release_failed_proxy();
         self.body_saving.update(ui.ctx());
         if let Some(panel) = self.replay.as_mut() {
@@ -361,10 +356,11 @@ impl InspectorApp {
                         self.main_area(ui, height, shortcuts_allowed);
                     }
                     MainView::Map => {
-                        if let Some(action) =
-                            self.map_panel
-                                .controls(ui, &self.url_map, self.save.is_busy())
-                        {
+                        if let Some(action) = self.map_panel.controls(
+                            ui,
+                            self.analysis.url_map(),
+                            self.save.is_busy(),
+                        ) {
                             pending_map_action = Some(action);
                         }
                         let used = ui.cursor().top() - top + ui.spacing().item_spacing.y;
@@ -400,8 +396,8 @@ impl InspectorApp {
             ui.selectable_value(&mut self.main_view, MainView::Requests, req_label);
             let map_label = format!(
                 "Map ({} hosts · {} nodes)",
-                self.url_map.origins().len(),
-                self.url_map.node_count()
+                self.analysis.url_map().origins().len(),
+                self.analysis.url_map().node_count()
             );
             ui.selectable_value(&mut self.main_view, MainView::Map, map_label);
         });
@@ -424,19 +420,21 @@ impl InspectorApp {
             MapAction::Export(format) => {
                 let content = match format {
                     MapExportFormat::TreeText => {
-                        export_tree_text(&self.url_map, self.map_panel.fold_ids())
+                        export_tree_text(self.analysis.url_map(), self.map_panel.fold_ids())
                     }
                     MapExportFormat::TreeJson => serde_json::to_string_pretty(&export_tree_json(
-                        &self.url_map,
+                        self.analysis.url_map(),
                         self.map_panel.fold_ids(),
                     ))
                     .unwrap_or_else(|_| "{}".to_owned()),
-                    MapExportFormat::GraphMermaid => {
-                        export_graph_mermaid(&self.url_map, self.map_panel.max_graph_domains())
-                    }
-                    MapExportFormat::GraphDot => {
-                        export_graph_dot(&self.url_map, self.map_panel.max_graph_domains())
-                    }
+                    MapExportFormat::GraphMermaid => export_graph_mermaid(
+                        self.analysis.url_map(),
+                        self.map_panel.max_graph_domains(),
+                    ),
+                    MapExportFormat::GraphDot => export_graph_dot(
+                        self.analysis.url_map(),
+                        self.map_panel.max_graph_domains(),
+                    ),
                 };
                 self.save
                     .save_text_file(ctx, format.file_prefix(), format.extension(), content);
@@ -516,7 +514,8 @@ impl InspectorApp {
                     .layout(egui::Layout::top_down(egui::Align::Min)),
             );
             main.shrink_clip_rect(rect);
-            self.map_panel.show_graph_pane(&mut main, &self.url_map);
+            self.map_panel
+                .show_graph_pane(&mut main, self.analysis.url_map());
             return None;
         }
 
@@ -533,12 +532,12 @@ impl InspectorApp {
             ),
             |left_ui, right_ui| {
                 self.map_panel
-                    .show_tree_pane(left_ui, &self.url_map, shortcuts_allowed);
+                    .show_tree_pane(left_ui, self.analysis.url_map(), shortcuts_allowed);
                 self.map_panel.show_detail_pane(
                     right_ui,
-                    &self.url_map,
+                    self.analysis.url_map(),
                     &self.records,
-                    self.endpoints.schemas(),
+                    self.analysis.endpoint_schemas(),
                 )
             },
         );
@@ -669,14 +668,15 @@ fn request_shortcuts_allowed(ctx: &egui::Context) -> bool {
 #[cfg(test)]
 mod layout_tests {
     use super::{
-        DEFAULT_DETAIL_SHARE, DEFAULT_WINDOW, DetailTab, EndpointAnalysis, InspectorApp,
+        AnalysisPipeline, DEFAULT_DETAIL_SHARE, DEFAULT_WINDOW, DetailTab, InspectorApp,
         MAX_RECORDS, MIN_DETAIL_WIDTH, MIN_MAIN_HEIGHT, MIN_TABLE_WIDTH, MIN_WINDOW, MainView,
-        PortChoice, PreviewBodies, RecordFilter, RecordList, UrlMap, body_display, body_format,
+        PortChoice, PreviewBodies, RecordFilter, RecordList, body_display, body_format,
         body_saving, browser_panel, ca_panel, copy_curl, fonts, har_dialog, image_view,
         main_height, map_panel, replay_panel, request_table, save, search, split_detail_width,
         theme, toolbar,
     };
     use eframe::egui;
+    use http_proxy::analysis::url_map::UrlMap;
     use http_proxy::settings;
     use http_proxy::{Exchange, ProxyConfig, ProxyHandle};
     use std::sync::Arc;
@@ -694,11 +694,10 @@ mod layout_tests {
             curl: copy_curl::CurlCopy::default(),
             proxy: None,
             records: RecordList::new(MAX_RECORDS),
-            url_map: UrlMap::new(),
+            analysis: AnalysisPipeline::disabled(),
             map_panel: map_panel::MapPanel::new(),
             map_path_filter: None,
             map_filter_cache: map_panel::RecordMatchCache::default(),
-            endpoints: EndpointAnalysis::disabled(),
             selected: None,
             search: search::RequestSearch::new(&context),
             record_filter: RecordFilter::All,
@@ -1461,6 +1460,23 @@ mod layout_tests {
         Ok(())
     }
 
+    /// Lists `exchanges` in `app` and maps them together with synthetic
+    /// cross-site traffic.
+    fn load_synthetic_map(
+        app: &mut InspectorApp,
+        exchanges: Vec<Exchange>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut url_map = UrlMap::new();
+        for exchange in exchanges {
+            let _ = url_map.observe_exchange(&exchange);
+            let _evicted = app.records.push(exchange);
+        }
+        let _ = url_map.sync_live();
+        seed_synthetic_map_data(&mut url_map)?;
+        app.analysis = AnalysisPipeline::seeded(url_map);
+        Ok(())
+    }
+
     fn assert_no_secrets_painted(drawn: &[DrawnText], label: &str) {
         let secrets = [
             "abcdef0123456789",
@@ -1489,25 +1505,24 @@ mod layout_tests {
         let context = egui::Context::default();
         let mut app = test_app(context.clone());
         let wake_context = context.clone();
-        app.endpoints = EndpointAnalysis::start(Arc::new(PreviewBodies), move || {
+        app.analysis = AnalysisPipeline::start(Arc::new(PreviewBodies), move || {
             wake_context.request_repaint();
         });
         for exchange in exchanges {
-            if let Some(node) = app.url_map.observe_exchange(&exchange) {
-                app.endpoints.submit(node, &exchange);
-            }
+            app.analysis.record_added(&exchange);
             let _evicted = app.records.push(exchange);
         }
         timeout(Duration::from_secs(5), async {
-            while app.endpoints.schemas().version() < 3 {
-                app.endpoints.update();
+            while app.analysis.endpoint_schemas().version() < 3 {
+                let _changed = app.analysis.update();
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
         .await?;
 
         let origin = app
-            .url_map
+            .analysis
+            .url_map()
             .origins()
             .keys()
             .next()
@@ -1558,16 +1573,12 @@ mod layout_tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let exchanges = timeout(Duration::from_secs(5), capture_sample_exchanges()).await??;
         let mut app = test_app(egui::Context::default());
-        for exchange in exchanges {
-            let _ = app.url_map.observe_exchange(&exchange);
-            let _evicted = app.records.push(exchange);
-        }
-        let _ = app.url_map.sync_live();
-        seed_synthetic_map_data(&mut app.url_map)?;
+        load_synthetic_map(&mut app, exchanges)?;
 
         app.main_view = MainView::Map;
         let first_origin = app
-            .url_map
+            .analysis
+            .url_map()
             .origins()
             .keys()
             .next()
@@ -1602,7 +1613,8 @@ mod layout_tests {
         let _ = run_app_frame(&mut app, DEFAULT_WINDOW, time + 0.05, Vec::new());
 
         let local_origin = app
-            .url_map
+            .analysis
+            .url_map()
             .origins()
             .keys()
             .find(|origin| origin.host() == "127.0.0.1")
@@ -1637,7 +1649,7 @@ mod layout_tests {
 
         app.clear_session();
         assert_eq!(app.records.len(), 0);
-        assert_eq!(app.url_map.node_count(), 0);
+        assert_eq!(app.analysis.url_map().node_count(), 0);
         assert!(app.map_path_filter.is_none());
         Ok(())
     }
@@ -1782,13 +1794,15 @@ mod layout_tests {
     async fn measure_map_ui_frame_time_at_scale() -> Result<(), Box<dyn std::error::Error>> {
         let mut app = test_app(egui::Context::default());
         let (exchanges, local_origin) = capture_bulk_exchanges(MAX_RECORDS).await?;
+        let mut url_map = UrlMap::new();
         for record in exchanges {
-            let _ = app.url_map.observe_exchange(&record);
+            let _ = url_map.observe_exchange(&record);
             let _evicted = app.records.push(record);
         }
-        let _ = app.url_map.sync_live();
-        let insert_elapsed = seed_scale_workload(&mut app.url_map, 3_000);
-        let node_count = app.url_map.node_count();
+        let _ = url_map.sync_live();
+        let insert_elapsed = seed_scale_workload(&mut url_map, 3_000);
+        app.analysis = AnalysisPipeline::seeded(url_map);
+        let node_count = app.analysis.url_map().node_count();
         let retained_count = app.records.len();
 
         let selected_key = http_proxy::analysis::url_map::ViewNodeKey {
