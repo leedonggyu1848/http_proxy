@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 
 use eframe::egui::{self, TextureHandle, TextureOptions};
 use http_inspector_exchange::capture::{IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES};
-use http_inspector_exchange::{BodyLifecycle, BodyRetention, BodySnapshot, ImageFormat, RecordId};
+use http_inspector_exchange::{BodyLifecycle, BodySnapshot, ImageFormat, RecordId};
 
 use crate::ui::style::theme::Palette;
 use http_inspector_content::decode as body_view;
@@ -310,7 +310,13 @@ fn unavailable_reason(snapshot: &BodySnapshot) -> Option<String> {
             snapshot.observed_bytes()
         ));
     }
-    (snapshot.retention() != BodyRetention::Prefix).then(|| {
+    if matches!(
+        snapshot.lifecycle(),
+        BodyLifecycle::Interrupted | BodyLifecycle::Cancelled
+    ) {
+        return Some("The image body ended early. Use Hex to inspect the kept bytes.".to_owned());
+    }
+    (!snapshot.is_complete()).then(|| {
         format!(
             "The image cannot be drawn because only {} of {} bytes were kept. Image previews keep up to {} MiB per response and {} MiB across all responses; use Hex to inspect the kept bytes.",
             snapshot.bytes().len(),
@@ -463,6 +469,19 @@ mod tests {
         assert_eq!(file.format, ImageFormat::WebP);
         assert_eq!(mismatch_text(ImageFormat::WebP, file.format), None);
         assert!(ImageFile::decode_body(b"\x1f\x8b broken", &["gzip"], ImageFormat::Png).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn an_early_end_keeps_the_image_preview_unavailable() -> Result<(), Box<dyn Error>> {
+        let body = http_inspector_exchange::BodyPreviewWriter::new(32);
+        body.observe(b"image prefix");
+        body.interrupt();
+        let snapshot = body.preview().snapshot().ok_or("missing snapshot")?;
+        assert_eq!(
+            super::unavailable_reason(&snapshot).as_deref(),
+            Some("The image body ended early. Use Hex to inspect the kept bytes.")
+        );
         Ok(())
     }
 

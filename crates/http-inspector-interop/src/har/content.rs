@@ -71,8 +71,7 @@ pub(super) fn response_content(
             }
             let compression = body.observed_bytes().checked_sub(size).filter(|_| {
                 snapshot.as_ref().is_some_and(|snapshot| {
-                    snapshot.lifecycle() == BodyLifecycle::Complete
-                        && !encodings(headers).is_empty()
+                    snapshot.is_complete() && !encodings(headers).is_empty()
                 })
             });
             if let Some(compression) = compression {
@@ -154,8 +153,7 @@ fn body_text(snapshot: Option<&BodySnapshot>, encodings: &[&str]) -> BodyText {
                 .into(),
         };
     }
-    let whole = snapshot.lifecycle() == BodyLifecycle::Complete
-        && snapshot.retention() == BodyRetention::Prefix;
+    let whole = snapshot.is_complete();
     if !is_encoded(encodings) {
         let (text, base64) = encode_text(snapshot.bytes(), !whole);
         return BodyText::Text {
@@ -201,6 +199,11 @@ fn partial_note(snapshot: &BodySnapshot) -> Option<String> {
         ));
     }
     match snapshot.lifecycle() {
+        BodyLifecycle::Complete
+            if snapshot.retention() == BodyRetention::Prefix && !snapshot.is_complete() =>
+        {
+            parts.push("Partial: the retained length differs from the observed body size".into());
+        }
         BodyLifecycle::Complete => {}
         BodyLifecycle::Streaming => parts.push("Partial: still streaming when exported".into()),
         BodyLifecycle::Interrupted => {

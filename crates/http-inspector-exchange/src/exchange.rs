@@ -398,9 +398,11 @@ impl BodyPreview {
     /// Returns a coherent snapshot, or `None` when a writer holds the preview.
     #[must_use]
     pub fn snapshot(&self) -> Option<BodySnapshot> {
+        // Acquire the end of the stream before sampling its final counts and retention.
+        let lifecycle = self.lifecycle();
         let retention = BodyRetention::from_u8(self.inner.retention.load(Ordering::Acquire));
         if retention == BodyRetention::Omitted {
-            return Some(self.snapshot_with(Vec::new(), BodyRetention::Omitted));
+            return Some(self.snapshot_with(Vec::new(), BodyRetention::Omitted, lifecycle));
         }
 
         match self.inner.prefix.try_lock() {
@@ -412,20 +414,25 @@ impl BodyPreview {
                 } else {
                     prefix.clone()
                 };
-                Some(self.snapshot_with(bytes, retention))
+                Some(self.snapshot_with(bytes, retention, lifecycle))
             }
             Err(TryLockError::WouldBlock) => None,
             Err(TryLockError::Poisoned(_)) => {
-                Some(self.snapshot_with(Vec::new(), BodyRetention::Omitted))
+                Some(self.snapshot_with(Vec::new(), BodyRetention::Omitted, lifecycle))
             }
         }
     }
 
-    fn snapshot_with(&self, bytes: Vec<u8>, retention: BodyRetention) -> BodySnapshot {
+    fn snapshot_with(
+        &self,
+        bytes: Vec<u8>,
+        retention: BodyRetention,
+        lifecycle: BodyLifecycle,
+    ) -> BodySnapshot {
         BodySnapshot {
             bytes,
             observed_bytes: self.inner.observed_bytes.load(Ordering::Acquire),
-            lifecycle: self.lifecycle(),
+            lifecycle,
             retention,
         }
     }
@@ -441,6 +448,14 @@ pub struct BodySnapshot {
 }
 
 impl BodySnapshot {
+    /// Whether the stream ended cleanly and this snapshot retained every observed byte.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.lifecycle == BodyLifecycle::Complete
+            && self.retention == BodyRetention::Prefix
+            && u64::try_from(self.bytes.len()) == Ok(self.observed_bytes)
+    }
+
     /// Returns retained body bytes.
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
@@ -604,6 +619,52 @@ mod tests {
             assert_eq!(state.to_u8(), encoded);
             assert_eq!(BodyRetention::from_u8(state.to_u8()), state);
         }
+    }
+
+    #[test]
+    fn only_complete_streams_with_every_observed_byte_are_whole() {
+        use BodyLifecycle::{Cancelled, Complete, Interrupted, Streaming};
+        use BodyRetention::{Omitted, Prefix, Truncated};
+
+        for (bytes, observed_bytes, lifecycle, retention, complete) in [
+            (&b""[..], 0, Complete, Prefix, true),
+            (b"abc", 3, Complete, Prefix, true),
+            (b"abc", 3, Streaming, Prefix, false),
+            (b"abc", 3, Interrupted, Prefix, false),
+            (b"abc", 3, Cancelled, Prefix, false),
+            (b"abc", 3, Complete, Truncated, false),
+            (b"", 0, Complete, Omitted, false),
+            (b"abc", 4, Complete, Prefix, false),
+            (b"abc", 2, Complete, Prefix, false),
+        ] {
+            let snapshot = BodySnapshot {
+                bytes: bytes.to_vec(),
+                observed_bytes,
+                lifecycle,
+                retention,
+            };
+            assert_eq!(snapshot.is_complete(), complete, "{snapshot:?}");
+        }
+    }
+
+    #[test]
+    fn a_busy_preview_is_distinct_from_a_complete_empty_body() -> Result<(), &'static str> {
+        let writer = BodyPreviewWriter::new(8);
+        writer.complete();
+        let preview = writer.preview();
+        let guard = preview
+            .inner
+            .prefix
+            .lock()
+            .map_err(|_| "poisoned preview")?;
+        assert!(preview.snapshot().is_none());
+        drop(guard);
+        assert!(
+            preview
+                .snapshot()
+                .is_some_and(|snapshot| snapshot.is_complete())
+        );
+        Ok(())
     }
 
     #[test]

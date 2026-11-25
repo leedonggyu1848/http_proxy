@@ -89,14 +89,13 @@ fn read_captured_body(
     if preview.lifecycle() != BodyLifecycle::Complete {
         return ReadBodyOutcome::Incomplete;
     }
-    if preview.observed_bytes() == 0 {
-        return ReadBodyOutcome::Complete(Vec::new());
-    }
     let encodings: Vec<String> = headers.get("content-encoding").map(str::to_owned).collect();
     if let Some(snapshot) = preview.snapshot()
-        && snapshot.retention() == BodyRetention::Prefix
-        && u64::try_from(snapshot.bytes().len()).ok() == Some(snapshot.observed_bytes())
+        && snapshot.is_complete()
     {
+        if snapshot.bytes().is_empty() {
+            return ReadBodyOutcome::Complete(Vec::new());
+        }
         return decode_complete_bytes(snapshot.bytes(), &encodings, max_decoded_bytes);
     }
     store.map_or(ReadBodyOutcome::Incomplete, |store| {
@@ -112,8 +111,7 @@ use self::writer::Command;
 use super::lock_recovering;
 use http_inspector_exchange::BodySide;
 use http_inspector_exchange::{
-    BodyLifecycle, BodyRetention, BodySource, Exchange, MediaType, Outcome, ReadBodyOutcome,
-    RecordId,
+    BodyLifecycle, BodySource, Exchange, MediaType, Outcome, ReadBodyOutcome, RecordId,
 };
 
 /// Default limit on body bytes one session stores.
@@ -880,7 +878,7 @@ mod tests {
     }
 
     #[test]
-    fn preview_bodies_read_only_previews_that_kept_every_byte()
+    fn complete_body_reads_fall_back_to_disk_when_the_preview_is_cut()
     -> Result<(), Box<dyn std::error::Error>> {
         use http_inspector_exchange::capture::BODY_PREVIEW_BYTES;
         use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
@@ -899,10 +897,22 @@ mod tests {
             PreviewBodies.read(&short, BodySide::Response, 2),
             ReadBodyOutcome::TooLarge
         );
-        let long = respond(vec![b'a'; BODY_PREVIEW_BYTES + 1])?;
+        let mut bytes = vec![b'a'; BODY_PREVIEW_BYTES];
+        bytes.extend_from_slice(b"tail");
+        let long = respond(bytes.clone())?;
         assert_eq!(
             PreviewBodies.read(&long, BodySide::Response, usize::MAX),
             ReadBodyOutcome::Incomplete
+        );
+
+        let root = tempfile::tempdir()?;
+        let store = BodyStore::with_limits(root.path(), bytes.len() as u64, 0)?;
+        let mut recorder = BodyRecorder::new(store.clone(), long.id().value(), BodySide::Response);
+        recorder.observe(&bytes);
+        recorder.end(BodyLifecycle::Complete);
+        assert_eq!(
+            store.read(&long, BodySide::Response, bytes.len()),
+            ReadBodyOutcome::Complete(bytes)
         );
         Ok(())
     }

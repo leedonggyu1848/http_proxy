@@ -260,6 +260,33 @@ fn truncated_binary_and_compressed_bodies_are_marked() -> TestResult {
 }
 
 #[test]
+fn an_interrupted_compressed_body_is_omitted_even_if_its_bytes_decode() -> TestResult {
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(b"decoded text")?;
+    let record = ExchangeBuilder::http(Method::GET, format!("http://{TEST_HOST}/"))?.respond(
+        ResponseFixture::new(StatusCode::OK)
+            .header(CONTENT_ENCODING, HeaderValue::from_static("gzip"))
+            .body(encoder.finish()?, BodyLifecycle::Interrupted),
+    )?;
+    let options = HarOptions {
+        include_bodies: true,
+        include_sensitive_headers: false,
+    };
+    let har = document(&[record], options, SystemTime::now());
+    let [entry] = entries(&har) else {
+        return Err("expected one entry".into());
+    };
+    let content = &entry["response"]["content"];
+    assert!(content.get("text").is_none());
+    assert!(
+        content["comment"]
+            .as_str()
+            .is_some_and(|note| note.contains("partial compressed body"))
+    );
+    Ok(())
+}
+
+#[test]
 fn failures_tunnels_and_pending_requests_follow_the_documented_mapping() -> TestResult {
     let host = HeaderValue::from_static(TEST_HOST);
     let tunnel = ExchangeBuilder::connect(TEST_HOST)

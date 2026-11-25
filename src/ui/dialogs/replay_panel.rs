@@ -354,12 +354,8 @@ fn summary(record: &Exchange) -> String {
     for field in record.request().headers().entries() {
         let _ = writeln!(text, "{}: {}", field.name(), field.value());
     }
-    if let Some(body) = record
-        .request()
-        .body()
-        .and_then(http_inspector_exchange::BodyPreview::snapshot)
-    {
-        text.push_str(&String::from_utf8_lossy(body.bytes()));
+    if let Some(body) = record.request().body() {
+        append_body_preview(&mut text, body);
         text.push('\n');
     }
     if let http_inspector_exchange::Outcome::Response(response) = record.outcome() {
@@ -367,16 +363,22 @@ fn summary(record: &Exchange) -> String {
         for field in response.headers().entries() {
             let _ = writeln!(text, "{}: {}", field.name(), field.value());
         }
-        if let Some(body) = response.body().snapshot() {
-            text.push_str(&String::from_utf8_lossy(body.bytes()));
-            if body.observed_bytes() != body.bytes().len() as u64 {
-                text.push_str("\n[Partial body preview]");
-            }
-        }
+        append_body_preview(&mut text, response.body());
     } else {
         let _ = write!(text, "{:?}", record.outcome());
     }
     text
+}
+
+fn append_body_preview(text: &mut String, preview: &http_inspector_exchange::BodyPreview) {
+    if let Some(body) = preview.snapshot() {
+        text.push_str(&String::from_utf8_lossy(body.bytes()));
+        if !body.is_complete() {
+            text.push_str("\n[Partial body preview]");
+        }
+    } else {
+        text.push_str("[Preview is updating]");
+    }
 }
 
 /// Cached outcome of validating a JSON request body.

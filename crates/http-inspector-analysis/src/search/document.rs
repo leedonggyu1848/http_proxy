@@ -11,8 +11,7 @@ use super::SearchScope;
 use super::text_search::Matcher;
 use http_inspector_content::decode as body_view;
 use http_inspector_exchange::{
-    BodyLifecycle, BodyPreview, BodyRetention, BodySide, Exchange, HeaderPreview, MediaType,
-    Outcome, RecordId,
+    BodyLifecycle, BodyPreview, BodySide, Exchange, HeaderPreview, MediaType, Outcome, RecordId,
 };
 
 /// Bytes at the start of a decoded body that are checked for NUL when the
@@ -217,8 +216,7 @@ fn body_text(
         snapshot.bytes(),
         &encodings,
         media_type,
-        snapshot.retention() != BodyRetention::Prefix
-            || snapshot.lifecycle() != BodyLifecycle::Complete,
+        !snapshot.is_complete(),
     ));
     if settled {
         cache.bodies.insert(key, Arc::clone(&text));
