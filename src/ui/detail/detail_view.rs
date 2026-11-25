@@ -81,7 +81,6 @@ impl InspectorApp {
                     cache: &mut detail.body_cache,
                     search,
                 };
-                let mut response_body = None;
                 match detail.tab {
                     DetailTab::Headers => {
                         render_query(ui, request.target());
@@ -92,42 +91,18 @@ impl InspectorApp {
                             request.headers(),
                             body.headers_search(),
                         );
+                        ui.separator();
+                        render_outcome(ui, record, &mut body, None);
                     }
-                    DetailTab::Body => {
-                        let mut request_body = request.body().map(|body| {
-                            BodyDetail::new(body, request.headers(), request.media_type(), None)
-                        });
-                        if let Outcome::Response(response) = record.outcome() {
-                            let media_type = response.media_type();
-                            response_body = Some(BodyDetail::new(
-                                response.body(),
-                                response.headers(),
-                                media_type,
-                                media_type
-                                    .and_then(ImageFormat::from_media_type)
-                                    .map(|format| (&mut detail.image, format)),
-                            ));
-                        }
-                        let mode_bodies = [request_body.as_ref(), response_body.as_ref()]
-                            .map(|body| body.filter(|body| body.uses_view_mode()));
-                        if mode_bodies.iter().any(Option::is_some) {
-                            let has_tree = mode_bodies
-                                .into_iter()
-                                .flatten()
-                                .any(|body| has_tree(body.media_type));
-                            body.mode = view_mode_bar(ui, &mut detail.body_mode, has_tree);
-                        }
-                        body_saving.menus(ui, record, &self.dialogs.save);
-                        ui.strong("Request body");
-                        if let Some(request_body) = request_body.as_mut() {
-                            render_body(ui, request_body, &mut body, BodySide::Request);
-                        } else {
-                            ui.weak("Body was not observed.");
-                        }
-                    }
+                    DetailTab::Body => render_body_tab(
+                        ui,
+                        record,
+                        &mut body,
+                        &mut detail.body_mode,
+                        &mut detail.image,
+                        |ui| body_saving.menus(ui, record, &self.dialogs.save),
+                    ),
                 }
-                ui.separator();
-                render_outcome(ui, record, &mut body, response_body.as_mut());
             });
     }
 }
@@ -327,6 +302,53 @@ fn render_headers(ui: &mut egui::Ui, id: &str, headers: &HeaderPreview, search: 
     if headers.omitted() {
         ui.colored_label(Palette::of(ui).warning, "Additional headers were omitted.");
     }
+}
+
+fn render_body_tab(
+    ui: &mut egui::Ui,
+    record: &Exchange,
+    panel: &mut BodyPanel<'_>,
+    mode: &mut ViewMode,
+    image: &mut image_view::ImagePanel,
+    show_save_menus: impl FnOnce(&mut egui::Ui),
+) {
+    let request = record.request();
+    let mut request_body = request
+        .body()
+        .map(|body| BodyDetail::new(body, request.headers(), request.media_type(), None));
+    let mut response_body = match record.outcome() {
+        Outcome::Response(response) => {
+            let media_type = response.media_type();
+            let image = media_type
+                .and_then(ImageFormat::from_media_type)
+                .map(|format| (image, format));
+            Some(BodyDetail::new(
+                response.body(),
+                response.headers(),
+                media_type,
+                image,
+            ))
+        }
+        _ => None,
+    };
+    let mode_bodies = [request_body.as_ref(), response_body.as_ref()]
+        .map(|body| body.filter(|body| body.uses_view_mode()));
+    if mode_bodies.iter().any(Option::is_some) {
+        let has_tree = mode_bodies
+            .into_iter()
+            .flatten()
+            .any(|body| has_tree(body.media_type));
+        panel.mode = view_mode_bar(ui, mode, has_tree);
+    }
+    show_save_menus(ui);
+    ui.strong("Request body");
+    if let Some(request_body) = request_body.as_mut() {
+        render_body(ui, request_body, panel, BodySide::Request);
+    } else {
+        ui.weak("Body was not observed.");
+    }
+    ui.separator();
+    render_outcome(ui, record, panel, response_body.as_mut());
 }
 
 struct BodyDetail<'a> {
