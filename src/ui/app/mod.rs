@@ -289,7 +289,7 @@ impl InspectorApp {
 
 /// Fills content panes one surface above the window chrome around them.
 fn paint_pane_surfaces(ui: &egui::Ui, panes: [egui::Rect; 2]) {
-    let fill = Palette::of(ui).surfaces.panel;
+    let fill = Palette::of(ui).surfaces.pane;
     for pane in panes {
         ui.painter().rect_filled(pane, Radius::PANE, fill);
     }

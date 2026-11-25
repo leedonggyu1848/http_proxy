@@ -8,7 +8,7 @@ use http_inspector_analysis::url_map::{
 use http_inspector_exchange::ByteSize;
 
 use super::EdgeVisibility;
-use crate::ui::style::tokens::{Layout, Radius, Space, StrokeWidth};
+use crate::ui::style::tokens::{Category, Layout, Radius, Space, StrokeWidth, ThemeTokens};
 use crate::ui::style::{
     fonts,
     theme::{self, Palette},
@@ -52,7 +52,7 @@ pub(super) fn show(
     let (rect, response) = ui.allocate_exact_size(available, Sense::click_and_drag());
     let painter = ui.painter().with_clip_rect(rect);
 
-    painter.rect_filled(rect, Radius::GRAPH_CANVAS, palette.surfaces.inset);
+    painter.rect_filled(rect, Radius::GRAPH_CANVAS, palette.surfaces.input);
     painter.rect_stroke(
         rect,
         Radius::GRAPH_CANVAS,
@@ -93,7 +93,7 @@ pub(super) fn show(
         None
     };
 
-    paint_edges(&painter, layout.edges(), &positions, visibility, &palette);
+    paint_edges(&painter, layout.edges(), &positions, visibility);
     paint_nodes(
         &NodeCanvas {
             painter: &painter,
@@ -146,6 +146,7 @@ fn render_legend(
     visibility: EdgeVisibility,
     palette: &Palette,
 ) {
+    let tokens = ThemeTokens::for_theme(ui.ctx().theme());
     let chip = |ui: &mut egui::Ui, text: egui::RichText| {
         ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend));
     };
@@ -153,7 +154,7 @@ fn render_legend(
     let summary_color = if capped {
         palette.warning
     } else {
-        palette.muted
+        palette.secondary
     };
     ui.horizontal_wrapped(|ui| {
         chip(
@@ -164,7 +165,7 @@ fn render_legend(
         chip(
             ui,
             egui::RichText::new("1st-party (solid)")
-                .color(palette.info)
+                .color(tokens.category(Category::BlueSlate))
                 .small(),
         );
         chip(
@@ -177,26 +178,26 @@ fn render_legend(
         chip(
             ui,
             egui::RichText::new("Referer (solid)")
-                .color(palette.info)
+                .color(tokens.category(Category::BlueSlate))
                 .small(),
         );
         chip(
             ui,
             egui::RichText::new("Origin (dashed)")
-                .color(palette.warning)
+                .color(tokens.category(Category::Ochre))
                 .small(),
         );
         chip(
             ui,
             egui::RichText::new("Redirect (thick)")
-                .color(palette.success)
+                .color(tokens.category(Category::Teal))
                 .small(),
         );
         ui.separator();
         chip(
             ui,
             egui::RichText::new("Click a domain to open Tree view.")
-                .color(palette.muted)
+                .color(palette.secondary)
                 .small(),
         );
     });
@@ -231,8 +232,8 @@ fn paint_edges(
     edges: &[GraphEdge],
     positions: &[(Pos2, f32)],
     visibility: EdgeVisibility,
-    palette: &Palette,
 ) {
+    let tokens = ThemeTokens::for_theme(painter.ctx().theme());
     let visible: Vec<&GraphEdge> = edges
         .iter()
         .filter(|edge| visibility.allows(edge.kind))
@@ -244,9 +245,21 @@ fn paint_edges(
             continue;
         };
         let (color, width, dashed) = match edge.kind {
-            EdgeKind::Referer => (palette.info, StrokeWidth::GRAPH_LINK, false),
-            EdgeKind::Origin => (palette.warning, StrokeWidth::GRAPH_LINK, true),
-            EdgeKind::Redirect => (palette.success, StrokeWidth::GRAPH_REDIRECT, false),
+            EdgeKind::Referer => (
+                tokens.category(Category::BlueSlate),
+                StrokeWidth::GRAPH_LINK,
+                false,
+            ),
+            EdgeKind::Origin => (
+                tokens.category(Category::Ochre),
+                StrokeWidth::GRAPH_LINK,
+                true,
+            ),
+            EdgeKind::Redirect => (
+                tokens.category(Category::Teal),
+                StrokeWidth::GRAPH_REDIRECT,
+                false,
+            ),
         };
         if edge.from == edge.to {
             let loop_center =
@@ -348,8 +361,9 @@ fn paint_nodes(
 ) {
     let painter = canvas.painter;
     let palette = canvas.palette;
-    let fill = palette.surfaces.bg;
-    let hover_fill = palette.surfaces.hover;
+    let tokens = ThemeTokens::for_theme(painter.ctx().theme());
+    let fill = tokens.surfaces.elevated;
+    let hover_fill = fill.blend(tokens.surfaces.hover);
     let text_color = palette.text;
     let (label_font, count_font) = fonts::graph_fonts();
     let mut placed_labels: Vec<Rect> = Vec::with_capacity(nodes.len());
@@ -372,7 +386,11 @@ fn paint_nodes(
             } else {
                 StrokeWidth::GRAPH_NODE
             };
-            painter.circle_stroke(center, radius, Stroke::new(stroke_width, palette.info));
+            painter.circle_stroke(
+                center,
+                radius,
+                Stroke::new(stroke_width, tokens.category(Category::BlueSlate)),
+            );
         }
 
         // Numeric request count inside the node circle.

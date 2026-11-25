@@ -14,7 +14,9 @@ use http_inspector_exchange::{BodySide, ByteSize, Exchange};
 use http_inspector_file::{ExistingFile, publish};
 
 use crate::ui::AppAction;
+use crate::ui::style::indicator;
 use crate::ui::style::theme::Palette;
+use crate::ui::style::tokens::Tone;
 
 use super::background_task::{BackgroundTask, TaskPoll};
 
@@ -365,14 +367,13 @@ impl BodySaving {
 
     /// Body store warnings and the result of the last body save, for the status bar.
     pub(crate) fn status(&self, ui: &mut egui::Ui) -> bool {
-        let palette = Palette::of(ui);
         for warning in self.warnings() {
             ui.separator();
-            ui.colored_label(palette.warning, warning);
+            indicator::dot_label(ui, Tone::Warning, warning);
         }
         if let Some(error) = self.init_error.as_ref().or(self.settings_error.as_ref()) {
             ui.separator();
-            ui.colored_label(palette.error, error);
+            indicator::dot_label(ui, Tone::Danger, error);
         }
         if self.pending.is_some() {
             ui.separator();
@@ -396,7 +397,7 @@ impl BodySaving {
             }
             Some(SaveStatus::Failed(error)) => {
                 ui.separator();
-                ui.colored_label(palette.error, format!("Body save failed: {error}"));
+                indicator::dot_label(ui, Tone::Danger, format!("Body save failed: {error}"));
             }
             None => {}
         }

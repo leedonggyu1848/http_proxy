@@ -48,10 +48,7 @@ impl DetailView<'_> {
     ) {
         let Some(record) = self.record else {
             ui.centered_and_justified(|ui| {
-                ui.add(
-                    egui::Label::new("Select a request to inspect headers and body previews.")
-                        .wrap(),
-                );
+                ui.add(egui::Label::new(egui::RichText::new("No request selected").weak()).wrap());
             });
             return;
         };
@@ -117,8 +114,8 @@ fn detail_actions(
     actions: &mut Vec<AppAction>,
 ) {
     ui.horizontal_wrapped(|ui| {
-        let (status, color) = outcome_view::outcome_text(record.outcome(), &Palette::of(ui));
-        ui.colored_label(color, status);
+        let (status, tone) = outcome_view::outcome_text(record.outcome());
+        ui.colored_label(Palette::of(ui).status(tone), status);
         if ui
             .add_enabled(
                 record.source() != http_inspector_exchange::CaptureSource::Connect,
@@ -130,9 +127,7 @@ fn detail_actions(
         }
         curl.controls(ui, record, actions);
         if let Some(original) = record.replay_of()
-            && ui
-                .link(format!("Replay of #{} — show original", original.value()))
-                .clicked()
+            && ui.link(replay_link(original)).clicked()
         {
             actions.push(AppAction::SelectRecord(original));
         }
@@ -253,11 +248,10 @@ fn render_query(ui: &mut egui::Ui, target: &str) {
         return;
     }
     ui.strong("Query parameters");
-    let key_color = Palette::of(ui).muted;
+    let key_color = Palette::of(ui).secondary;
     let bounds = GridBounds::from_ui(ui);
     egui::Grid::new("query-parameters")
         .num_columns(2)
-        .striped(true)
         .max_col_width(bounds.available)
         .show(ui, |ui| {
             for (key, value) in pairs {
@@ -283,14 +277,13 @@ fn render_query(ui: &mut egui::Ui, target: &str) {
 /// Header names in secondary text so that the values, which matter more,
 /// stand out; the `:` after each name keeps them apart without color.
 fn render_headers(ui: &mut egui::Ui, id: &str, headers: &HeaderPreview, search: Option<&Query>) {
-    let name_color = Palette::of(ui).muted;
+    let name_color = Palette::of(ui).secondary;
     let font = egui::TextStyle::Monospace.resolve(ui.style());
     let text_color = Palette::of(ui).text;
     let colors = MatchColors::for_theme(ui.ctx().theme());
     let bounds = GridBounds::from_ui(ui);
     egui::Grid::new(id)
         .num_columns(2)
-        .striped(true)
         .max_col_width(bounds.available)
         .show(ui, |ui| {
             for header in headers.entries() {
@@ -507,7 +500,8 @@ fn render_outcome(
             render_tunnel(ui, tunnel);
         }
         outcome => {
-            let (text, color) = outcome_view::detail_text(outcome, &Palette::of(ui));
+            let (text, tone) = outcome_view::detail_text(outcome);
+            let color = Palette::of(ui).status(tone);
             if outcome.is_in_flight() {
                 ui.weak(text);
             } else if matches!(outcome, Outcome::InspectionEstablished) {
@@ -517,6 +511,12 @@ fn render_outcome(
             }
         }
     }
+}
+
+/// Link to the request a replay was sent from. Links keep the text color
+/// and are told apart by their underline.
+fn replay_link(original: RecordId) -> egui::RichText {
+    egui::RichText::new(format!("Replay of #{} — show original", original.value())).underline()
 }
 
 fn render_timing(ui: &mut egui::Ui, record: &Exchange) {

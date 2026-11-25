@@ -211,7 +211,7 @@ impl TreeView {
         ui.horizontal(|ui| {
             toggled = tree_row_prefix(ui, node.depth, expandable, open);
             let job = if matched {
-                Arc::new(highlighted(job, Palette::of(ui).surfaces.selection))
+                Arc::new(highlighted(job, Palette::of(ui).surfaces.selected))
             } else {
                 Arc::clone(job)
             };

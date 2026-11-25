@@ -3,9 +3,12 @@
 use crate::ui::app::capture::CaptureNotice;
 #[cfg(test)]
 use crate::ui::app::capture::PortChoice;
-use crate::ui::style::{theme::Palette, tokens::Layout};
+use crate::ui::style::{
+    indicator,
+    tokens::{Layout, Tone},
+};
 use crate::ui::{AppAction, InspectorApp, MAX_RECORDS};
-use eframe::egui::{self, RichText};
+use eframe::egui;
 use http_inspector_core::interception::{ProxyHandle, StartError};
 use http_inspector_core::recording::FullLog;
 use http_inspector_core::settings;
@@ -122,14 +125,14 @@ impl InspectorApp {
     fn proxy_controls(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
         if let Some(proxy) = self.session.capture.proxy.as_ref() {
             let address = proxy.local_addr();
-            ui.label(RichText::new("● Running").color(Palette::of(ui).success));
+            indicator::dot_label(ui, Tone::Success, "Running");
             ui.monospace(address.to_string());
             copy_menu(ui, address);
             if ui.button("Stop").clicked() {
                 actions.push(AppAction::StopProxy);
             }
         } else {
-            ui.label(RichText::new("● Stopped").color(Palette::of(ui).error));
+            indicator::dot_label(ui, Tone::Danger, "Stopped");
             ui.label("Port");
             let mut port = self.session.capture.port.text.clone();
             let edited = ui
@@ -177,17 +180,16 @@ impl InspectorApp {
 
     /// Errors and warnings that need attention, shown right below the toolbar.
     pub(crate) fn notices(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
-        let palette = Palette::of(ui);
         if let Some(warning) = self.session.capture.port.launch_warning.as_ref() {
-            ui.colored_label(palette.warning, warning);
+            indicator::dot_label(ui, Tone::Warning, warning);
         }
         if let Some(error) = self.session.capture.error.as_ref() {
-            ui.colored_label(palette.error, notice_text(error));
+            indicator::dot_label(ui, Tone::Danger, notice_text(error));
         } else if let Some(error) = self.session.error.as_ref() {
-            ui.colored_label(palette.error, error);
+            indicator::dot_label(ui, Tone::Danger, error);
         }
         if let Some(error) = self.dialogs.browsers.error() {
-            ui.colored_label(palette.error, error);
+            indicator::dot_label(ui, Tone::Danger, error);
         }
         if self.detail.curl.notice(ui) {
             actions.push(AppAction::DismissCurlNotice);
@@ -196,7 +198,7 @@ impl InspectorApp {
             self.dialogs.ca_panel.messages(ui);
             if self.dialogs.authorization_notice == AuthorizationNotice::Showing {
                 ui.horizontal_wrapped(|ui| {
-                    ui.colored_label(palette.warning, AUTHORIZATION_WARNING);
+                    indicator::dot_label(ui, Tone::Warning, AUTHORIZATION_WARNING);
                     if ui.small_button("Dismiss").clicked() {
                         actions.push(AppAction::DismissAuthorization);
                     }
@@ -207,13 +209,12 @@ impl InspectorApp {
 
     /// Counters and full-session log state below the request list.
     pub(crate) fn status_bar(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
-        let palette = Palette::of(ui);
         ui.horizontal_wrapped(|ui| {
             ui.label(format!("{} requests", self.requests.records.len()));
             let dropped = self.requests.records.dropped(self.session.capture.engine_dropped());
             if dropped > 0 {
                 ui.separator();
-                ui.colored_label(palette.error, format!("{dropped} records dropped"))
+                indicator::dot_label(ui, Tone::Danger, format!("{dropped} records dropped"))
                     .on_hover_text(
                         "The capture queue was full, so these exchanges were forwarded but not shown.",
                     );
@@ -221,15 +222,16 @@ impl InspectorApp {
             let evicted = self.requests.records.evicted();
             if evicted > 0 {
                 ui.separator();
-                ui.colored_label(palette.warning, format!("{evicted} older records removed"))
+                indicator::dot_label(ui, Tone::Warning, format!("{evicted} older records removed"))
                     .on_hover_text(format!(
                         "Only the newest {MAX_RECORDS} requests are kept on screen. The full-session log keeps every record."
                     ));
             }
             if self.map.analysis.url_map().node_limit_reached() {
                 ui.separator();
-                ui.colored_label(
-                    palette.warning,
+                indicator::dot_label(
+                    ui,
+                    Tone::Warning,
                     format!(
                         "URL map reached its {} node limit; deeper paths are folded into parent nodes.",
                         self.map.analysis.url_map().max_nodes()
@@ -243,7 +245,7 @@ impl InspectorApp {
                 .or_else(|| self.session.capture.full_log.as_ref().and_then(FullLog::error))
             {
                 ui.separator();
-                ui.colored_label(palette.error, error);
+                indicator::dot_label(ui, Tone::Danger, error);
             }
             if let Some(log) = self
                 .session.capture.full_log
@@ -251,8 +253,9 @@ impl InspectorApp {
                 .filter(|log| log.body_limit_reached())
             {
                 ui.separator();
-                ui.colored_label(
-                    palette.warning,
+                indicator::dot_label(
+                    ui,
+                    Tone::Warning,
                     format!(
                         "The full-session log reached its {} body limit. Later body bytes are omitted; headers and results are still logged.",
                         ByteSize::new(log.body_limit()).exact()

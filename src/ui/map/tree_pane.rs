@@ -3,12 +3,12 @@
 
 use std::time::Duration;
 
-use eframe::egui::{self, Color32, Key, RichText, Stroke};
+use eframe::egui::{self, Key, RichText, Stroke};
 use http_inspector_analysis::url_map::{NodeStats, RowKind, UrlMap, ViewNodeKey, VisibleRow};
 
 use super::MapPanel;
 use crate::ui::detail::tree_view;
-use crate::ui::style::theme::{self, Palette};
+use crate::ui::style::theme::Palette;
 use crate::ui::style::tokens::{Layout, Radius, Space, StrokeWidth};
 
 const NEW_NODE_HIGHLIGHT: Duration = Duration::from_secs(2);
@@ -99,10 +99,10 @@ fn render_row(ui: &mut egui::Ui, row: &VisibleRow, is_selected: bool) -> RowOutc
 
     let mut frame = egui::Frame::NONE.inner_margin(Layout::MAP_TREE_ROW_MARGIN);
     if is_selected {
-        frame = frame.fill(palette.surfaces.selection);
+        frame = frame.fill(palette.surfaces.selected);
     } else if fading {
-        let opacity = 1.0 - age.as_secs_f32() / NEW_NODE_HIGHLIGHT.as_secs_f32();
-        frame = frame.fill(theme::new_map_node_fill(ui, opacity));
+        let strength = new_highlight_strength(age);
+        frame = frame.fill(palette.surfaces.cross_highlight.gamma_multiply(strength));
     }
 
     let mut toggled = false;
@@ -146,7 +146,7 @@ fn format_row_label(row: &VisibleRow, palette: &Palette) -> RichText {
         RowKind::Origin => RichText::new(&row.label).strong(),
         RowKind::FoldedId { count } => RichText::new(format!("{} ({count} IDs)", row.label))
             .monospace()
-            .color(palette.info),
+            .color(palette.secondary),
         RowKind::Segment => RichText::new(&row.label).monospace(),
     }
 }
@@ -159,19 +159,19 @@ fn render_row_badges(ui: &mut egui::Ui, row: &VisibleRow, palette: &Palette) {
                 "[Tunnel] No path info · {} req",
                 stats.request_count
             ))
-            .color(palette.info)
+            .color(palette.secondary)
             .small(),
         );
         return;
     }
 
     if stats.has_tunnel {
-        ui.label(RichText::new("[Tunnel]").color(palette.info).small());
+        ui.label(RichText::new("[Tunnel]").color(palette.secondary).small());
     }
 
     ui.label(
         RichText::new(format!("{} req", stats.request_count))
-            .color(palette.muted)
+            .color(palette.secondary)
             .small(),
     );
 
@@ -181,23 +181,20 @@ fn render_row_badges(ui: &mut egui::Ui, row: &VisibleRow, palette: &Palette) {
     if !numeric_status.is_empty() {
         let color = if stats.status.errors() > 0 {
             palette.error
-        } else if stats.status.s3xx > 0 {
-            palette.warning
         } else {
-            palette.muted
+            palette.secondary
         };
         ui.label(RichText::new(numeric_status).color(color).small());
     }
 
     for method in stats.methods.names().into_iter().take(4) {
-        let color = method_color(method, palette);
-        ui.label(RichText::new(method).monospace().color(color).small());
+        ui.label(RichText::new(method).monospace().small());
     }
     let total_methods = stats.methods.names().len();
     if total_methods > 4 {
         ui.label(
             RichText::new(format!("+{}", total_methods - 4))
-                .color(palette.muted)
+                .color(palette.secondary)
                 .small(),
         );
     }
@@ -222,11 +219,12 @@ fn paint_status_bar(ui: &mut egui::Ui, stats: &NodeStats, palette: &Palette) {
         egui::Sense::hover(),
     );
     let painter = ui.painter();
-    painter.rect_filled(rect, Radius::STATUS_BAR, palette.surfaces.inset);
+    painter.rect_filled(rect, Radius::STATUS_BAR, palette.surfaces.input);
 
+    // Normal outcomes stay neutral so that only failures stand out.
     let segments = [
-        (stats.status.s2xx, palette.success),
-        (stats.status.s3xx, palette.warning),
+        (stats.status.s2xx, palette.secondary),
+        (stats.status.s3xx, palette.secondary),
         (
             stats
                 .status
@@ -235,8 +233,8 @@ fn paint_status_bar(ui: &mut egui::Ui, stats: &NodeStats, palette: &Palette) {
                 .saturating_add(stats.status.failed),
             palette.error,
         ),
-        (stats.status.tunnel, palette.info),
-        (stats.status.pending, palette.muted),
+        (stats.status.tunnel, palette.borders.control),
+        (stats.status.pending, palette.borders.control),
     ];
 
     let mut x = rect.left();
@@ -264,7 +262,7 @@ fn paint_status_bar(ui: &mut egui::Ui, stats: &NodeStats, palette: &Palette) {
     painter.rect_stroke(
         rect,
         Radius::STATUS_BAR,
-        Stroke::new(StrokeWidth::MAP_STATUS, palette.surfaces.border),
+        Stroke::new(StrokeWidth::MAP_STATUS, palette.borders.structural),
         egui::StrokeKind::Inside,
     );
 
@@ -301,13 +299,10 @@ fn compact_status_numbers(stats: &NodeStats) -> String {
     parts.join(" ")
 }
 
-fn method_color(method: &str, palette: &Palette) -> Color32 {
-    match method {
-        "GET" | "HEAD" => palette.info,
-        "POST" | "PUT" | "PATCH" => palette.success,
-        "DELETE" => palette.error,
-        _ => palette.warning,
-    }
+/// Share of the cross-highlight color left on a node of `age`: full when
+/// the node appears, fading to none over [`NEW_NODE_HIGHLIGHT`].
+fn new_highlight_strength(age: Duration) -> f32 {
+    1.0 - (age.as_secs_f32() / NEW_NODE_HIGHLIGHT.as_secs_f32()).clamp(0.0, 1.0)
 }
 
 #[derive(Clone, Copy)]

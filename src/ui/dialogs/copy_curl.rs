@@ -10,7 +10,8 @@ use http_inspector_interop::curl::{
 };
 
 use crate::ui::AppAction;
-use crate::ui::style::theme::Palette;
+use crate::ui::style::indicator;
+use crate::ui::style::tokens::Tone;
 
 /// Label shared by the request-list menu and the details panel.
 pub(super) const COPY_LABEL: &str = "Copy as cURL";
@@ -120,13 +121,14 @@ impl CurlCopy {
             ui.ctx()
                 .request_repaint_after(SUCCESS_NOTICE.saturating_sub(notice.shown_at.elapsed()));
         }
-        let palette = Palette::of(ui);
-        let color = match notice.kind {
-            NoticeKind::Copied => palette.success,
-            NoticeKind::CopiedWithRedactions | NoticeKind::Refused => palette.warning,
-        };
         ui.horizontal_wrapped(|ui| {
-            ui.colored_label(color, &notice.text);
+            // A plain copy is the normal outcome; only the others need a mark.
+            match notice.kind {
+                NoticeKind::Copied => ui.label(&notice.text),
+                NoticeKind::CopiedWithRedactions | NoticeKind::Refused => {
+                    indicator::dot_label(ui, Tone::Warning, &notice.text)
+                }
+            };
             ui.small_button("Dismiss").clicked()
         })
         .inner

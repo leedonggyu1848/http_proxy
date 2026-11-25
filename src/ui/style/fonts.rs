@@ -198,7 +198,7 @@ pub(crate) const fn code_large() -> egui::FontId {
 )]
 pub(crate) const fn graph_fonts() -> (egui::FontId, egui::FontId) {
     (
-        egui::FontId::proportional(TypeScale::SMALL),
+        egui::FontId::proportional(TypeScale::GRAPH_LABEL),
         egui::FontId::monospace(TypeScale::GRAPH_COUNT),
     )
 }

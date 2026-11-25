@@ -175,7 +175,7 @@ fn render_header(
 
     ui.horizontal_wrapped(|ui| {
         if node.subtree.is_tunnel_only() {
-            ui.label(RichText::new("[Tunnel] No path info").color(palette.info));
+            ui.label(RichText::new("[Tunnel] No path info").color(palette.secondary));
         }
         if node.is_folded_id {
             let kinds: Vec<&str> = node
@@ -191,7 +191,7 @@ fn render_header(
             };
             ui.label(
                 RichText::new(format!("Folded {} IDs{kind_text}", node.folded_count))
-                    .color(palette.info)
+                    .color(palette.secondary)
                     .small(),
             );
         }
@@ -233,7 +233,11 @@ fn render_header(
         } else {
             format!("{retained} retained")
         };
-        ui.label(RichText::new(retention_note).color(palette.muted).small());
+        ui.label(
+            RichText::new(retention_note)
+                .color(palette.secondary)
+                .small(),
+        );
     });
     action
 }
@@ -305,13 +309,13 @@ fn render_stats_section(ui: &mut egui::Ui, node: &ViewNode, retained: usize, evi
 
 fn render_status_counts(ui: &mut egui::Ui, stats: &NodeStats, palette: &Palette) {
     let buckets = [
-        ("2xx", stats.status.s2xx, palette.success),
-        ("3xx", stats.status.s3xx, palette.warning),
-        ("4xx", stats.status.s4xx, palette.error),
+        ("2xx", stats.status.s2xx, palette.text),
+        ("3xx", stats.status.s3xx, palette.text),
+        ("4xx", stats.status.s4xx, palette.warning),
         ("5xx", stats.status.s5xx, palette.error),
         ("Failed", stats.status.failed, palette.error),
-        ("Tunnel", stats.status.tunnel, palette.info),
-        ("Pending", stats.status.pending, palette.muted),
+        ("Tunnel", stats.status.tunnel, palette.text),
+        ("Pending", stats.status.pending, palette.secondary),
     ];
     let mut shown = false;
     for (label, count, color) in buckets {
@@ -392,7 +396,8 @@ fn render_requests_section(
         let Some(record) = records.get(*idx) else {
             continue;
         };
-        let (status_label, status_color) = outcome_text(record.outcome(), &palette);
+        let (status_label, status_tone) = outcome_text(record.outcome());
+        let status_color = palette.status(status_tone);
         ui.horizontal(|ui| {
             ui.monospace(record.request().method().as_str());
             ui.label(RichText::new(status_label).color(status_color).small());
