@@ -70,7 +70,12 @@ jobs:
         env:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
-        run: python3 scripts/package.py --validate
+        run: |
+          python3 scripts/package.py --validate
+          # 태그에는 같은 버전의 CHANGELOG 절이 있어야 한다. release 작업이 이 절을 릴리스 노트로 쓴다.
+          if [ "$REF_TYPE" = tag ]; then
+            python3 scripts/release-notes.py "${REF_NAME#v}" > /dev/null
+          fi
       - name: Show Rust version
         run: rustc --version --verbose
       - name: Cache Cargo dependencies
@@ -102,6 +107,18 @@ jobs:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
         run: python3 scripts/package.py ${{ matrix.target }}
+      - name: Install cargo-deb
+        if: matrix.package && runner.os == 'Linux'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb
+      - name: Build Debian package
+        # 위에서 만든 Release 바이너리를 그대로 넣는다. profile.release가 이미 심볼을 제거한다.
+        if: matrix.package && runner.os == 'Linux'
+        run: |
+          cargo deb --no-build --no-strip --target ${{ matrix.target }} --output dist/
+          cd dist
+          for deb in *.deb; do sha256sum "$deb" > "$deb.sha256"; done
       - uses: actions/upload-artifact@v4
         if: matrix.package
         with:
@@ -155,6 +172,17 @@ jobs:
       - name: Run downloaded binary (Linux X11)
         if: runner.os == 'Linux'
         run: xvfb-run -a python3 scripts/smoke-package.py downloaded
+      - name: Install and run Debian package (Linux X11)
+        if: runner.os == 'Linux'
+        # apt가 Depends를 해석해 설치하므로 패키지 이름이 틀리면 여기서 실패한다.
+        run: |
+          (cd downloaded && sha256sum --check ./*.deb.sha256)
+          sudo apt-get install --yes desktop-file-utils ./downloaded/*.deb
+          dpkg --listfiles http-inspector
+          desktop-file-validate /usr/share/applications/http-inspector.desktop
+          test -f /usr/share/icons/hicolor/scalable/apps/http-inspector.svg
+          test -f /usr/share/icons/hicolor/256x256/apps/http-inspector.png
+          xvfb-run -a python3 scripts/smoke-package.py --installed /usr/bin/http-proxy
       - name: Run downloaded binary (macOS)
         if: runner.os == 'macOS'
         run: python3 scripts/smoke-package.py downloaded
@@ -177,6 +205,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           pattern: http-proxy-*
@@ -189,7 +218,14 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           test "$(find dist -name '*.tar.gz' | wc -l)" -eq 3
-          test "$(find dist -name '*.sha256' | wc -l)" -eq 3
+          test "$(find dist -name '*.deb' | wc -l)" -eq 1
+          test "$(find dist -name '*.sha256' | wc -l)" -eq 4
           (cd dist && sha256sum --check ./*.sha256)
-          gh release create "$RELEASE_TAG" dist/* --verify-tag --draft --generate-notes
+          python3 scripts/release-notes.py "${RELEASE_TAG#v}" > release-notes.md
+          # v1.2.0-rc.1처럼 SemVer 사전 배포 꼬리표가 있으면 사전 배포로 표시한다.
+          prerelease=false
+          case "$RELEASE_TAG" in *-*) prerelease=true ;; esac
+          # CHANGELOG 절을 자동 생성 노트(PR 목록) 앞에 둔다.
+          gh release create "$RELEASE_TAG" dist/* --verify-tag --draft \
+            --prerelease="$prerelease" --notes-file release-notes.md --generate-notes
           gh release edit "$RELEASE_TAG" --draft=false

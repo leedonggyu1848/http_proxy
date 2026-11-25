@@ -1,4 +1,7 @@
-"""Run the downloaded GUI binary and forward a local test request through it."""
+"""Run the downloaded or installed GUI binary and forward a local test request through it.
+
+Usage: smoke-package.py <directory with one .tar.gz> | --installed <binary>
+"""
 import hashlib
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,17 +24,18 @@ class Origin(BaseHTTPRequestHandler):
         self.wfile.write(b"artifact-smoke-ok")
 
 
-archives = list(Path(sys.argv[1]).glob("*.tar.gz"))
-assert len(archives) == 1, archives
-archive = archives[0]
-expected = archive.with_suffix(archive.suffix + ".sha256").read_text().split()[0]
-assert hashlib.sha256(archive.read_bytes()).hexdigest() == expected
-with tempfile.TemporaryDirectory() as temporary:
-    root = Path(temporary)
-    with tarfile.open(archive) as package:
-        package.extractall(root, filter="data")
-    binary = next(root.glob("*/http-proxy"))
-    assert os.access(binary, os.X_OK), "Archive lost executable permission"
+def verified_archive(directory):
+    archives = list(Path(directory).glob("*.tar.gz"))
+    assert len(archives) == 1, archives
+    archive = archives[0]
+    expected = archive.with_suffix(archive.suffix + ".sha256").read_text().split()[0]
+    assert hashlib.sha256(archive.read_bytes()).hexdigest() == expected
+    return archive
+
+
+def forward_through(binary, label, root):
+    """Start the GUI binary with a temporary data directory and forward one request."""
+    assert os.access(binary, os.X_OK), f"{binary} is not executable"
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
@@ -58,7 +62,7 @@ with tempfile.TemporaryDirectory() as temporary:
                     time.sleep(0.5)
                 finally:
                     connection.close()
-            print(f"PASS downloaded {archive.name}: {platform.platform()} {platform.machine()}, GUI alive and HTTP forwarded")
+            print(f"PASS {label}: {platform.platform()} {platform.machine()}, GUI alive and HTTP forwarded")
         except BaseException:
             log.seek(0)
             print(log.read())
@@ -71,3 +75,22 @@ with tempfile.TemporaryDirectory() as temporary:
                 process.kill()
                 process.wait()
             origin.shutdown()
+
+
+def main(arguments):
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        if arguments[:1] == ["--installed"]:
+            # A binary installed by a system package, such as /usr/bin/http-proxy from the .deb.
+            binary = Path(arguments[1])
+            forward_through(binary, f"installed {binary}", root)
+            return
+        archive = verified_archive(arguments[0])
+        with tarfile.open(archive) as package:
+            package.extractall(root, filter="data")
+        binary = next(root.glob("*/http-proxy"))
+        assert os.access(binary, os.X_OK), "Archive lost executable permission"
+        forward_through(binary, f"downloaded {archive.name}", root)
+
+
+main(sys.argv[1:])

@@ -55,13 +55,13 @@ CI(`.github/workflows/ci.yml`)는 이벤트에 따라 실행 범위가 다르다
 | `quality (ubuntu-24.04, x86_64-unknown-linux-gnu)` | 전체 단계 | 전체 단계 |
 | `quality (macos-15, aarch64-apple-darwin)` | 포맷, 모듈 경계, Clippy, 테스트, 문서 | 전체 단계 |
 | `quality (macos-15-intel, x86_64-apple-darwin)` | 실행하지 않음 | 전체 단계 |
-| `package-smoke (ubuntu-24.04, x86_64-unknown-linux-gnu)` | artifact 다운로드·실행 검사 | 같음 |
+| `package-smoke (ubuntu-24.04, x86_64-unknown-linux-gnu)` | artifact 다운로드·실행 검사, `.deb` 설치·실행 검사 | 같음 |
 | `package-smoke (macos-15, aarch64-apple-darwin)` | 실행하지 않음 | artifact 다운로드·실행 검사 |
 | `package-smoke (macos-15-intel, x86_64-apple-darwin)` | 실행하지 않음 | artifact 다운로드·실행 검사 |
 | `dependencies` | `cargo deny check` | 같음 |
 | `release` | 실행하지 않음 | 태그 푸시에서만 |
 
-`quality`의 전체 단계는 포맷, 모듈 경계 검사, Clippy, 테스트, 문서, Release 빌드, 패키지, artifact 업로드다. PR의 macOS 작업은 Release 빌드부터 업로드까지를 모두 건너뛰므로 macOS artifact를 만들지 않는다. `package-smoke`는 `quality`가 모두 끝난 뒤 같은 OS의 새 러너에서 업로드된 artifact를 이름으로 받아 실행 파일을 검사한다. 업로드한 작업 안에서 바로 받으면 artifact 목록 반영이 늦어 `Artifact not found`로 실패할 수 있어서, 업로드 작업이 끝난 뒤 받도록 작업을 나눴다. Linux 러너에는 README의 런타임 라이브러리와 Xvfb만 설치한다. 태그 푸시는 PR이 아니므로 세 대상의 압축을 모두 만들고, `release` 작업은 `package-smoke`까지 성공한 세 압축을 확인한 뒤 공개한다.
+`quality`의 전체 단계는 포맷, 모듈 경계 검사, Clippy, 테스트, 문서, Release 빌드, 패키지, artifact 업로드다. Linux 작업은 같은 Release 바이너리로 `.deb`도 만들어 함께 업로드한다. PR의 macOS 작업은 Release 빌드부터 업로드까지를 모두 건너뛰므로 macOS artifact를 만들지 않는다. `package-smoke`는 `quality`가 모두 끝난 뒤 같은 OS의 새 러너에서 업로드된 artifact를 이름으로 받아 실행 파일을 검사한다. 업로드한 작업 안에서 바로 받으면 artifact 목록 반영이 늦어 `Artifact not found`로 실패할 수 있어서, 업로드 작업이 끝난 뒤 받도록 작업을 나눴다. Linux 러너에는 README의 런타임 라이브러리와 Xvfb만 설치한다. 태그 푸시는 PR이 아니므로 세 대상의 압축을 모두 만들고, `release` 작업은 `package-smoke`까지 성공한 세 압축과 `.deb`를 확인한 뒤 공개한다.
 
 - **Cargo 캐시:** `Swatinem/rust-cache`가 운영체제, rustc 버전, `Cargo.lock`을 키로 의존성 빌드 결과를 캐시한다. 캐시는 `main` 브랜치의 푸시·일정·수동 실행에서만 저장한다. PR과 태그 푸시는 `main` 캐시를 읽기만 한다. PR 캐시가 저장소 캐시 한도(10GB)를 채워 `main` 캐시를 밀어내지 않게 하기 위해서다.
 - **중복 실행 취소:** 같은 PR에 다시 푸시하면 이전 실행을 취소한다. `main` 푸시, 태그 푸시, 일정·수동 실행은 실행마다 별도 그룹이라 취소되거나 대체되지 않는다.
@@ -72,11 +72,48 @@ Intel macOS에서만 생기는 문제와 macOS 패키지 문제는 PR이 아니�
 
 ## 배포 검증
 
-CI는 Ubuntu 24.04 x86_64, macOS 15 arm64, macOS 15 Intel에서 각각 네이티브 빌드한다. PR에서는 이 중 Linux 대상만 빌드·패키지·실행 검사하고, 세 대상 전체는 `main` 푸시, 태그 푸시, 일정·수동 실행에서 검사한다([CI](#ci) 참고). `scripts/package.py`는 실행 파일과 공개 문서·라이선스만 복사해 tar.gz와 SHA-256 파일을 만든다. `scripts/smoke-package.py`는 Actions에서 다시 다운로드한 압축의 체크섬과 실행 권한을 확인하고, 임시 데이터 디렉터리에서 GUI를 실행해 로컬 HTTP 요청을 전달한다. Linux는 Xvfb를 사용한다. 성공 로그에 실제 OS와 CPU 아키텍처가 남는다. 서명·공증, Gatekeeper 승인과 사용자 화면 조작은 검사하지 않는다.
+CI는 Ubuntu 24.04 x86_64, macOS 15 arm64, macOS 15 Intel에서 각각 네이티브 빌드한다. PR에서는 이 중 Linux 대상만 빌드·패키지·실행 검사하고, 세 대상 전체는 `main` 푸시, 태그 푸시, 일정·수동 실행에서 검사한다([CI](#ci) 참고). `scripts/package.py`는 실행 파일과 공개 문서·라이선스만 복사해 tar.gz와 SHA-256 파일을 만든다. Linux 작업은 [`cargo-deb`](https://github.com/kornelski/cargo-deb)로 같은 실행 파일을 `.deb`로 묶는다(`cargo deb --no-build`). 패키지 구성은 `Cargo.toml`의 `[package.metadata.deb]`에 있다. `scripts/smoke-package.py`는 Actions에서 다시 다운로드한 압축의 체크섬과 실행 권한을 확인하고, 임시 데이터 디렉터리에서 GUI를 실행해 로컬 HTTP 요청을 전달한다. Linux는 Xvfb를 사용한다. Linux `package-smoke`는 이어서 `.deb`의 체크섬을 확인하고 `apt-get install`로 설치해 `Depends`가 해석되는지, 데스크톱 항목이 `desktop-file-validate`를 통과하는지, 아이콘이 설치됐는지 확인한 뒤 설치된 `/usr/bin/http-proxy`로 같은 전달 검사(`--installed`)를 한다. 성공 로그에 실제 OS와 CPU 아키텍처가 남는다. 서명·공증, Gatekeeper 승인과 사용자 화면 조작은 검사하지 않는다.
 
-릴리스를 만들 때는 `Cargo.toml`의 버전과 정확히 일치하는 `v<버전>` 태그를 push한다. 태그 검증, 세 대상의 품질 검사·빌드·실행 검사와 의존성 검사가 모두 성공해야 릴리스 job이 실행된다. 이 job은 세 압축과 체크섬을 확인하고 draft에 모두 첨부한 다음 공개한다. 실패한 draft는 정상 릴리스로 공개하지 않는다. 같은 태그의 릴리스가 이미 있으면 자동으로 덮어쓰지 않는다. 재실행 전에 해당 draft의 첨부 상태를 확인하고 필요하면 draft를 삭제한다. 이미 공개된 릴리스는 새 버전으로 수정한다.
+릴리스를 만들 때는 `Cargo.toml`의 버전과 정확히 일치하는 `v<버전>` 태그를 push한다. 태그 검증, 세 대상의 품질 검사·빌드·실행 검사와 의존성 검사가 모두 성공해야 릴리스 job이 실행된다. 이 job은 세 압축, `.deb`와 체크섬을 확인하고 `CHANGELOG.md`의 해당 버전 절을 릴리스 노트로 써서 draft에 모두 첨부한 다음 공개한다. 실패한 draft는 정상 릴리스로 공개하지 않는다. 같은 태그의 릴리스가 이미 있으면 자동으로 덮어쓰지 않는다. 재실행 전에 해당 draft의 첨부 상태를 확인하고 필요하면 draft를 삭제한다. 이미 공개된 릴리스는 새 버전으로 수정한다.
 
 Actions의 [파일 권한 제한](https://github.com/actions/upload-artifact/tree/v4#permission-loss) 때문에 실행 파일을 tar.gz로 감싼다. 대상은 GitHub의 [호스팅 runner 목록](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)에 따라 고정하고, 공개에는 GitHub CLI의 [draft와 verify-tag 옵션](https://cli.github.com/manual/gh_release_create)을 사용한다.
+
+## 릴리스와 버전
+
+### 배포 형식
+
+| 형식 | 대상 | 내용 |
+| --- | --- | --- |
+| `http-proxy-v<버전>-<대상>.tar.gz` | Linux x86_64, macOS arm64, macOS x86_64 | 실행 파일, README, 코드·폰트 라이선스, `BUILD.txt` |
+| `http-inspector_<버전>-1_amd64.deb` | Ubuntu 24.04 계열 x86_64 | `/usr/bin/http-proxy`, 데스크톱 항목, hicolor 아이콘(SVG, 256px PNG), 문서·라이선스 |
+
+모든 파일에는 같은 이름의 `.sha256` 파일이 붙는다. Linux 형식은 `.deb`와 tar.gz를 쓰고 AppImage는 만들지 않는다. 앱은 X11·OpenGL 라이브러리를 실행 중에 `dlopen`으로 불러오므로 AppImage로 묶어도 호스트 라이브러리에 의존하고, 이미 검증하는 tar.gz가 배포판에 묶이지 않는 실행 방법을 제공하기 때문이다. `.deb`는 apt가 런타임 라이브러리를 함께 설치하고 메뉴 항목을 등록하므로 Ubuntu 사용자의 설치 절차를 줄인다.
+
+- 데스크톱 항목은 `packaging/linux/http-inspector.desktop`, 아이콘은 `assets/icons/`에 있다. 창의 X11 `WM_CLASS`가 실행 파일 이름(`http-proxy`)이므로 `StartupWMClass=http-proxy`로 메뉴 항목과 창을 연결한다.
+- 실행 중 `dlopen`으로 불러오는 X11·OpenGL 라이브러리는 `cargo-deb`의 `$auto`가 찾지 못하므로 `depends`에 직접 적는다. README의 Linux 런타임 패키지를 바꾸면 이 목록도 같이 바꾼다. `libnss3-tools`는 HTTPS CA 등록에만 필요해 `recommends`로 둔다.
+- 로컬에서 `.deb`를 만들려면 `cargo install --locked cargo-deb`로 설치한 뒤 `cargo build --release --locked --target x86_64-unknown-linux-gnu`와 `cargo deb --no-build --no-strip --target x86_64-unknown-linux-gnu --output dist/`를 실행한다.
+
+### 버전 정책
+
+- 버전은 [SemVer 2.0.0](https://semver.org/lang/ko/)을 따르며, 루트 `Cargo.toml`의 `[workspace.package] version` 하나를 모든 크레이트가 공유한다. 크레이트는 crates.io에 공개하지 않으므로 버전은 앱 단위로 매긴다.
+- 기준은 사용자가 체감하는 동작이다. 명령줄 옵션, 설정·CA 저장 위치와 형식, 내보내기 형식(HAR, URL 맵)을 호환되지 않게 바꾸거나 기능을 제거하면 호환성 변경이다.
+- `1.0.0` 전에는 호환성 변경에 MINOR(`0.2.0`), 호환되는 기능 추가와 수정에 PATCH(`0.1.1`)를 올린다. `1.0.0`부터는 MAJOR·MINOR·PATCH를 SemVer대로 올린다.
+- 사전 배포는 `v0.2.0-rc.1`처럼 SemVer 꼬리표를 붙인 태그로 만들며, GitHub Release에 사전 배포로 표시된다. `.deb` 버전에서는 `cargo-deb`가 꼬리표 앞의 `-`를 `~`로 바꿔(`0.2.0~rc.1-1`) 정식 버전 `0.2.0-1`보다 낮게 정렬한다.
+
+### CHANGELOG 작성
+
+`CHANGELOG.md`는 [Keep a Changelog 1.1.0](https://keepachangelog.com/ko/1.1.0/) 형식을 따른다.
+
+- 사용자가 체감하는 동작을 바꾸는 PR은 `## [Unreleased]` 아래 `### 추가`, `### 변경`, `### 사용 중단`, `### 제거`, `### 수정`, `### 보안` 중 맞는 절에 한 줄 이상 적는다. 사용자 관점으로 쓰고 내부 구현은 적지 않는다.
+- 리팩터링, 테스트, CI처럼 사용자 동작이 바뀌지 않는 변경은 적지 않는다. 배포 형식이나 지원 환경이 바뀌는 CI 변경은 적는다.
+
+### 릴리스 절차
+
+1. 릴리스 PR에서 `Cargo.toml`의 `[workspace.package] version`을 올리고 `Cargo.lock`을 갱신한다(`cargo update --workspace`).
+2. 같은 PR에서 `CHANGELOG.md`의 `## [Unreleased]` 내용을 `## [<버전>] - YYYY-MM-DD` 절로 옮기고 빈 `## [Unreleased]`를 남긴다. 날짜는 태그를 만들 날이다.
+3. PR이 병합되면 최신 `main`에서 `git tag v<버전>`을 만들고 `git push origin v<버전>`으로 push한다.
+4. CI의 태그 검증 단계는 태그가 `Cargo.toml` 버전과 같은지, `scripts/release-notes.py`가 해당 CHANGELOG 절을 찾는지 확인한다. 어느 하나라도 실패하면 빌드 전에 멈춘다.
+5. 모든 작업이 성공하면 `release` 작업이 CHANGELOG 절과 자동 생성된 PR 목록을 릴리스 노트로 써서 공개한다.
 
 ## 워크스페이스 구조와 의존 규칙
 

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=HTTP Inspector
+GenericName=HTTP Proxy Inspector
+Comment=Inspect HTTP and decrypted HTTPS traffic through a local proxy
+Exec=http-proxy
+Icon=http-inspector
+Terminal=false
+Categories=Development;WebDevelopment;
+Keywords=http;https;proxy;network;debug;inspector;
+StartupWMClass=http-proxy
