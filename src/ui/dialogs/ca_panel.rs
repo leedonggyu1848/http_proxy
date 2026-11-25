@@ -176,45 +176,48 @@ impl CaPanel {
         let max_width = (viewport.width() - 32.0).clamp(240.0, 560.0);
         let max_height = (viewport.height() - 80.0).max(160.0);
         ui.set_max_width(max_width);
-        egui::ScrollArea::vertical()
-            .max_height(max_height)
-            .show(ui, |ui| {
-                copyable(
-                    ui,
-                    "Public CA certificate",
-                    &directory.join("root-ca.pem").display().to_string(),
-                );
-                if let Some(info) = &self.info {
-                    copyable(ui, "SHA-256 fingerprint", info.fingerprint_sha256());
-                }
-                if let Some(registration) = &self.registration {
+        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+            egui::ScrollArea::vertical()
+                .max_height(max_height)
+                .show(ui, |ui| {
                     copyable(
                         ui,
-                        &format!("Trust store: {}", registration.target),
-                        &registration.location.display().to_string(),
+                        "Public CA certificate",
+                        &directory.join("root-ca.pem").display().to_string(),
                     );
-                }
-                ui.separator();
-                ui.weak(REGISTER_HELP);
-                #[cfg(target_os = "macos")]
-                ui.weak(KEYCHAIN_HELP);
-                ui.add_enabled_ui(self.pending_action.is_none(), |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("Check registration").clicked() {
-                            self.start(Action::Check, directory, ui.ctx());
-                        }
-                        let registered = self.registration.as_ref().is_some_and(|registration| {
-                            registration.status != CaTrustStatus::NotInstalled
+                    if let Some(info) = &self.info {
+                        copyable(ui, "SHA-256 fingerprint", info.fingerprint_sha256());
+                    }
+                    if let Some(registration) = &self.registration {
+                        copyable(
+                            ui,
+                            &format!("Trust store: {}", registration.target),
+                            &registration.location.display().to_string(),
+                        );
+                    }
+                    ui.separator();
+                    ui.weak(REGISTER_HELP);
+                    #[cfg(target_os = "macos")]
+                    ui.weak(KEYCHAIN_HELP);
+                    ui.add_enabled_ui(self.pending_action.is_none(), |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            if ui.button("Check registration").clicked() {
+                                self.start(Action::Check, directory, ui.ctx());
+                            }
+                            let registered =
+                                self.registration.as_ref().is_some_and(|registration| {
+                                    registration.status != CaTrustStatus::NotInstalled
+                                });
+                            if ui
+                                .add_enabled(registered, egui::Button::new("Remove CA"))
+                                .clicked()
+                            {
+                                self.start(Action::Remove, directory, ui.ctx());
+                            }
                         });
-                        if ui
-                            .add_enabled(registered, egui::Button::new("Remove CA"))
-                            .clicked()
-                        {
-                            self.start(Action::Remove, directory, ui.ctx());
-                        }
                     });
                 });
-            });
+        });
     }
 
     /// Errors and follow-up guidance shown right below the toolbar so they
@@ -358,5 +361,58 @@ mod tests {
             palette.error
         );
         assert_eq!(Badge::Failed.color(&palette), palette.error);
+    }
+
+    fn collect_text_shapes(shapes: &[egui::Shape], out: &mut Vec<(String, bool)>) {
+        for shape in shapes {
+            match shape {
+                egui::Shape::Text(text) => {
+                    out.push((text.galley.text().to_owned(), text.galley.job.justify));
+                }
+                egui::Shape::Vec(nested) => collect_text_shapes(nested, out),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn details_popup_text_is_not_justified_inside_menu_layout() {
+        let mut panel = CaPanel {
+            registration: Some(Registration {
+                target: "NSS database",
+                location: PathBuf::from(
+                    "/tmp/http-inspector-test-trust-store/very/long/path/pki/nssdb",
+                ),
+                status: CaTrustStatus::NotInstalled,
+            }),
+            ..CaPanel::default()
+        };
+        let directory = PathBuf::from("/tmp/http-inspector-test-ca/very/long/directory/path");
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
+                panel.details(ui, &directory);
+            });
+        });
+        output.textures_delta.clear();
+        let shapes: Vec<_> = output
+            .shapes
+            .into_iter()
+            .map(|clipped| clipped.shape)
+            .collect();
+        let mut texts = Vec::new();
+        collect_text_shapes(&shapes, &mut texts);
+        assert!(
+            texts.iter().any(|(text, _)| text.contains("root-ca.pem")),
+            "expected CA certificate path to render"
+        );
+        assert!(
+            texts.iter().any(|(text, _)| text.contains("pki/nssdb")),
+            "expected trust store path to render"
+        );
+        assert!(
+            texts.iter().all(|(_, justified)| !justified),
+            "expected no justified text in CA details popup: {texts:?}"
+        );
     }
 }
