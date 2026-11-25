@@ -160,6 +160,10 @@ impl InspectorApp {
         self.receive_records();
         let _changed = self.map.analysis.update();
         self.release_failed_proxy();
+        // The closing frame still belongs to the dialog that received the input.
+        let dialog_open = self.session.body_saving.dialog_is_open()
+            || self.dialogs.har.is_open()
+            || self.detail.replay_is_open();
         self.session.body_saving.update(ui.ctx());
         self.detail.update_replay(
             ui.ctx(),
@@ -169,7 +173,7 @@ impl InspectorApp {
         self.har_export(ui.ctx());
         self.bulk_body_save(ui.ctx());
         self.range_merge(ui.ctx());
-        let shortcuts_allowed = request_shortcuts_allowed(ui.ctx());
+        let shortcuts_allowed = !dialog_open && request_shortcuts_allowed(ui.ctx());
         let viewport_height = ui.available_height();
         let mut pending_map_action: Option<MapAction> = None;
         egui::ScrollArea::vertical()
@@ -1237,6 +1241,77 @@ mod layout_tests {
                 modifiers: egui::Modifiers::NONE,
             }],
         );
+    }
+
+    #[test]
+    fn dialogs_suspend_request_shortcuts_until_they_close() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use http::Method;
+        use http_inspector_exchange::ExchangeBuilder;
+
+        let mut app = test_app(egui::Context::default());
+        let first = ExchangeBuilder::http(Method::GET, "http://fixture.test/first")?.in_flight()?;
+        let second =
+            ExchangeBuilder::http(Method::GET, "http://fixture.test/second")?.in_flight()?;
+        let first_id = first.id();
+        let second_id = second.id();
+        let _ = app.requests.record_added(first);
+        let _ = app.requests.record_added(second.clone());
+        app.requests.selected = Some(second_id);
+        let size = DEFAULT_WINDOW;
+        let mut time = 0.0;
+
+        app.session.body_saving.open_bulk();
+        press_key(&mut app, size, &mut time, egui::Key::ArrowUp);
+        press_key(&mut app, size, &mut time, egui::Key::F6);
+        assert_eq!(app.requests.selected, Some(second_id));
+        assert_eq!(app.detail.tab, DetailTab::Headers);
+        press_key(&mut app, size, &mut time, egui::Key::Escape);
+        assert!(!app.session.body_saving.dialog_is_open());
+
+        app.session.body_saving.open_bulk();
+        time += 0.05;
+        let _ = run_app_frame(&mut app, size, time, Vec::new());
+        let backdrop = egui::pos2(30.0, 500.0);
+        for pressed in [true, false] {
+            time += 0.05;
+            let _ = run_app_frame(
+                &mut app,
+                size,
+                time,
+                vec![
+                    egui::Event::PointerMoved(backdrop),
+                    egui::Event::PointerButton {
+                        pos: backdrop,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        assert!(!app.session.body_saving.dialog_is_open());
+
+        app.dialogs.har.open("fixture.har".to_owned());
+        press_key(&mut app, size, &mut time, egui::Key::ArrowUp);
+        press_key(&mut app, size, &mut time, egui::Key::F6);
+        assert_eq!(app.requests.selected, Some(second_id));
+        assert_eq!(app.detail.tab, DetailTab::Headers);
+        press_key(&mut app, size, &mut time, egui::Key::Escape);
+        assert!(!app.dialogs.har.is_open());
+
+        app.detail.open_replay(second)?;
+        press_key(&mut app, size, &mut time, egui::Key::ArrowUp);
+        press_key(&mut app, size, &mut time, egui::Key::F6);
+        assert_eq!(app.requests.selected, Some(second_id));
+        assert_eq!(app.detail.tab, DetailTab::Headers);
+
+        app.detail = DetailState::default();
+        press_key(&mut app, size, &mut time, egui::Key::ArrowUp);
+        press_key(&mut app, size, &mut time, egui::Key::F6);
+        assert_eq!(app.requests.selected, Some(first_id));
+        assert_eq!(app.detail.tab, DetailTab::Body);
+        Ok(())
     }
 
     #[tokio::test]
