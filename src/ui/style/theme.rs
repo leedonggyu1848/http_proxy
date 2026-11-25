@@ -62,6 +62,12 @@ impl Palette {
     }
 }
 
+/// Resolves the text color of the body's theme even when the context is
+/// still painting with the previous frame's style.
+pub(crate) fn body_text(context: &egui::Context, theme: Theme) -> Color32 {
+    context.style_of(theme).visuals.text_color()
+}
+
 pub(crate) fn new_map_node_fill(ui: &egui::Ui, alpha: u8) -> Color32 {
     ThemeTokens::for_theme(ui.ctx().theme()).new_map_node_fill(alpha)
 }
@@ -222,30 +228,37 @@ impl ThemeSettings {
     }
 
     /// Shows the theme choice inside the settings menu.
-    pub(crate) fn menu(&mut self, ui: &mut egui::Ui) {
-        let previous = self.preference;
+    pub(crate) fn menu(&self, ui: &mut egui::Ui) -> Option<egui::ThemePreference> {
+        let mut preference = self.preference;
         ui.label("Theme");
         for (value, label) in [
             (egui::ThemePreference::System, "System"),
             (egui::ThemePreference::Light, "Light"),
             (egui::ThemePreference::Dark, "Dark"),
         ] {
-            ui.radio_value(&mut self.preference, value, label);
+            ui.radio_value(&mut preference, value, label);
         }
-        if previous != self.preference {
-            ui.ctx().set_theme(self.preference);
-            ui.ctx().request_repaint();
-            self.error = self
-                .save()
-                .err()
-                .map(|error| format!("Could not save theme: {error}"));
-        }
-        if self.preference == egui::ThemePreference::System && ui.ctx().system_theme().is_none() {
+        if preference == egui::ThemePreference::System && ui.ctx().system_theme().is_none() {
             ui.colored_label(
                 Palette::of(ui).muted,
                 "System appearance unavailable; using Dark.",
             );
         }
+        (preference != self.preference).then_some(preference)
+    }
+
+    pub(crate) fn set_preference(
+        &mut self,
+        context: &egui::Context,
+        preference: egui::ThemePreference,
+    ) {
+        self.preference = preference;
+        context.set_theme(preference);
+        context.request_repaint();
+        self.error = self
+            .save()
+            .err()
+            .map(|error| format!("Could not save theme: {error}"));
     }
 
     /// Shows a theme save error in the status bar.

@@ -5,6 +5,12 @@ use std::time::Duration;
 use eframe::egui;
 use http_inspector_core::launcher::{Browser, BrowserEvent, BrowserSession};
 
+pub(crate) enum BrowserAction {
+    Open(Browser),
+    Close,
+    Refresh,
+}
+
 pub(crate) struct BrowserPanel {
     installed: Vec<Browser>,
     session: Option<BrowserSession>,
@@ -27,15 +33,13 @@ const PROFILE_NOTE: &str = "Opens a separate private profile. Inspector logs are
      Stopping the proxy closes this browser.";
 
 impl BrowserPanel {
-    /// Shows the `Open Browser` menu, or the open session with a close
-    /// button, inline in the toolbar. Returns whether a session ended.
+    /// Shows the available browsers or controls for the current session.
     pub(crate) fn toolbar(
-        &mut self,
+        &self,
         ui: &mut egui::Ui,
-        proxy: Option<SocketAddr>,
-        ca: Option<&Path>,
-    ) -> bool {
-        let mut changed = self.receive();
+        proxy_running: bool,
+        decrypt: bool,
+    ) -> Option<BrowserAction> {
         if self.session.is_some() {
             if self.opened {
                 ui.label("Browser open");
@@ -44,53 +48,63 @@ impl BrowserPanel {
                 ui.label("Opening browser…");
             }
             ui.ctx().request_repaint_after(Duration::from_millis(100));
-            if ui
+            return ui
                 .button("Close browser")
                 .on_hover_text(PROFILE_NOTE)
                 .clicked()
-            {
-                self.close();
-                changed = true;
-            }
-            return changed;
+                .then_some(BrowserAction::Close);
         }
-        let Some(address) = proxy else {
+        if !proxy_running {
             ui.add_enabled(false, egui::Button::new("Open Browser ▼"))
                 .on_disabled_hover_text("Start the proxy to open an inspection browser.");
-            return changed;
-        };
-        ui.menu_button("Open Browser ▼", |ui| self.menu(ui, address, ca))
-            .response
-            .on_hover_text(PROFILE_NOTE);
-        changed
+            return None;
+        }
+        let menu = ui.menu_button("Open Browser ▼", |ui| self.menu(ui, decrypt));
+        menu.response.on_hover_text(PROFILE_NOTE);
+        menu.inner.flatten()
     }
 
-    fn menu(&mut self, ui: &mut egui::Ui, address: SocketAddr, ca: Option<&Path>) {
+    fn menu(&self, ui: &mut egui::Ui, decrypt: bool) -> Option<BrowserAction> {
         if self.installed.is_empty() {
             ui.weak("No supported browser found on PATH. Install Firefox or Google Chrome, then refresh.");
         }
-        let mut chosen = None;
+        let mut action = None;
         for browser in &self.installed {
             if ui
                 .button(browser.name())
-                .on_hover_text(ca_note(browser, ca.is_some()))
+                .on_hover_text(ca_note(browser, decrypt))
                 .clicked()
             {
-                chosen = Some(browser.clone());
+                action = Some(BrowserAction::Open(browser.clone()));
+                ui.close();
             }
-        }
-        if let Some(browser) = chosen {
-            self.error = None;
-            self.opened = false;
-            match browser.open(address, ca.map(Path::to_owned)) {
-                Ok(session) => self.session = Some(session),
-                Err(error) => self.error = Some(error.to_string()),
-            }
-            ui.close();
         }
         ui.separator();
         if ui.button("Refresh browsers").clicked() {
-            self.installed = Browser::installed();
+            action = Some(BrowserAction::Refresh);
+        }
+        action
+    }
+
+    pub(crate) fn apply(
+        &mut self,
+        action: BrowserAction,
+        proxy: Option<SocketAddr>,
+        ca: Option<&Path>,
+    ) {
+        match action {
+            BrowserAction::Open(browser) => {
+                if let Some(address) = proxy {
+                    self.error = None;
+                    self.opened = false;
+                    match browser.open(address, ca.map(Path::to_owned)) {
+                        Ok(session) => self.session = Some(session),
+                        Err(error) => self.error = Some(error.to_string()),
+                    }
+                }
+            }
+            BrowserAction::Close => self.close(),
+            BrowserAction::Refresh => self.installed = Browser::installed(),
         }
     }
 
@@ -99,7 +113,7 @@ impl BrowserPanel {
         self.error.as_deref()
     }
 
-    fn receive(&mut self) -> bool {
+    pub(crate) fn receive(&mut self) -> bool {
         let mut changed = false;
         while let Some(event) = self.session.as_mut().and_then(BrowserSession::try_receive) {
             changed = true;

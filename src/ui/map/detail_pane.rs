@@ -245,7 +245,7 @@ fn render_stats_section(ui: &mut egui::Ui, node: &ViewNode, retained: usize, evi
     ui.label(RichText::new("Summary").strong());
     egui::Grid::new("url-map-stats-grid")
         .num_columns(2)
-        .spacing([12.0, 4.0])
+        .spacing([Space::MD, Space::XS])
         .show(ui, |ui| {
             ui.weak("Requests");
             let req_text = if node.direct.request_count > 0
@@ -354,7 +354,7 @@ fn render_query_params_section(ui: &mut egui::Ui, node: &ViewNode) {
     pairs.sort_by(|left, right| right.1.cmp(left.1).then_with(|| left.0.cmp(right.0)));
     egui::Grid::new("url-map-query-params")
         .num_columns(2)
-        .spacing([16.0, 2.0])
+        .spacing([Space::LG, Space::XXS])
         .show(ui, |ui| {
             for (name, count) in pairs.into_iter().take(40) {
                 ui.monospace(percent_decode_display(name));

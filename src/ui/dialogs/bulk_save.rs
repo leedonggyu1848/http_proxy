@@ -1,5 +1,6 @@
 //! The `Save bodies…` dialog and the progress of a running bulk save.
 
+use crate::ui::style::tokens::Layout;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -41,7 +42,7 @@ impl BulkSides {
 
 /// Choices made in the dialog.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct BulkChoice {
+pub(crate) struct BulkChoice {
     pub(super) scope: BulkScope,
     pub(super) sides: BulkSides,
     pub(super) format: SaveFormat,
@@ -99,8 +100,8 @@ impl BulkControls {
         let mut choice = self.dialog?;
         let mut confirmed = None;
         let viewport = context.content_rect();
-        let max_width = (viewport.width() - 48.0).clamp(240.0, 460.0);
-        let max_scroll_height = (viewport.height() - 140.0).max(120.0);
+        let max_width = Layout::BODY_EXPORT_WIDTH.fit(viewport.width());
+        let max_scroll_height = Layout::BODY_EXPORT_HEIGHT.fit(viewport.height());
         let modal = egui::Modal::new(egui::Id::unique("save-bodies")).show(context, |ui| {
             ui.set_max_width(max_width);
             ui.heading("Save bodies");
@@ -148,7 +149,7 @@ impl BulkControls {
     }
 
     /// Shows progress with a Cancel button, or the last result, in the status bar.
-    pub(super) fn status(&self, ui: &mut egui::Ui) {
+    pub(super) fn status(&self, ui: &mut egui::Ui) -> bool {
         if let Some(running) = self.running.as_ref() {
             let progress = running.progress();
             ui.separator();
@@ -159,7 +160,7 @@ impl BulkControls {
             let fraction = progress.done() as f32 / progress.total().max(1) as f32;
             ui.add(
                 egui::ProgressBar::new(fraction)
-                    .desired_width(crate::ui::style::tokens::Layout::BULK_FOLDER_INPUT_WIDTH)
+                    .desired_width(Layout::BULK_PROGRESS_WIDTH)
                     .text(format!("{}/{}", progress.done(), progress.total())),
             );
             ui.label(format!(
@@ -168,10 +169,9 @@ impl BulkControls {
             ));
             if progress.is_cancelled() {
                 ui.weak("Cancelling…");
-            } else if ui.small_button("Cancel").clicked() {
-                running.cancel();
+                return false;
             }
-            return;
+            return ui.small_button("Cancel").clicked();
         }
         match &self.result {
             Some(BulkResult::Finished(summary)) => {
@@ -186,6 +186,13 @@ impl BulkControls {
                 );
             }
             None => {}
+        }
+        false
+    }
+
+    pub(super) fn cancel(&self) {
+        if let Some(running) = self.running.as_ref() {
+            running.cancel();
         }
     }
 
@@ -327,16 +334,16 @@ pub(super) fn new_folder(directory: &Path) -> PathBuf {
 
 impl InspectorApp {
     /// Shows the `Save bodies…` dialog and starts the save it confirms.
-    pub(crate) fn bulk_body_save(&mut self, context: &egui::Context) {
-        self.session.body_saving.bulk.poll(context);
+    pub(crate) fn show_bulk_save(&mut self, context: &egui::Context) -> Option<BulkChoice> {
         let counts = ScopeCounts {
             all: self.requests.records.len(),
             filtered: self.requests.filtered_records().len(),
             selected: usize::from(self.requests.selected.is_some()),
         };
-        let Some(choice) = self.session.body_saving.bulk.show(context, counts) else {
-            return;
-        };
+        self.session.body_saving.bulk.show(context, counts)
+    }
+
+    pub(crate) fn save_bulk(&mut self, choice: BulkChoice) {
         let directory = match self.dialogs.save.directory() {
             Ok(directory) => directory,
             Err(error) => {

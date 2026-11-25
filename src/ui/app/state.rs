@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use eframe::egui;
@@ -6,59 +5,43 @@ use http_inspector_analysis::filter::{RecordFilter, RecordList};
 use http_inspector_analysis::pipeline::AnalysisPipeline;
 use http_inspector_analysis::url_map::RequestScope;
 use http_inspector_content::format::ViewMode;
-use http_inspector_core::https::HttpsInspection;
-use http_inspector_core::interception::{ProxyConfig, ProxyHandle};
-use http_inspector_core::recording::{FullLog, PreviewBodies};
+use http_inspector_core::interception::ProxyHandle;
+use http_inspector_core::recording::PreviewBodies;
 use http_inspector_core::replay::ReplayError;
-use http_inspector_core::settings;
 use http_inspector_exchange::{BodySource, Exchange, RecordId};
 
 use crate::ui::detail::detail_tabs::DetailTab;
-use crate::ui::detail::{
-    body_render::BodyViewCache, image_view::ImagePanel, search::RequestSearch,
-};
+use crate::ui::detail::{detail_view::DetailWidgets, search::RequestSearch};
 use crate::ui::dialogs::{
-    body_saving::BodySaving, browser_panel::BrowserPanel, ca_panel::CaPanel, copy_curl::CurlCopy,
-    har_dialog::HarDialog, replay_panel::ReplayPanel, save::SaveControls,
+    body_saving::BodySaving,
+    browser_panel::BrowserPanel,
+    ca_panel::CaPanel,
+    copy_curl::CurlCopy,
+    har_dialog::HarDialog,
+    replay_panel::{ReplayAction, ReplayPanel},
+    save::SaveControls,
 };
 use crate::ui::map::{MapPanel, RecordMatchCache};
 use crate::ui::requests::filter;
-use crate::ui::requests::request_table::RequestTable;
-use crate::ui::requests::toolbar::{self, AuthorizationNotice, PortChoice};
+use crate::ui::requests::toolbar::AuthorizationNotice;
 use crate::ui::style::theme::ThemeSettings;
 
 use crate::ui::style::tokens::Layout;
 
 use super::MAX_RECORDS;
+use super::capture::CaptureSession;
 
 pub(crate) struct SessionState {
-    pub(crate) proxy: Option<ProxyHandle>,
-    pub(crate) full_log: Option<FullLog>,
-    pub(crate) log_init_error: Option<String>,
+    pub(crate) capture: CaptureSession,
     pub(crate) body_saving: BodySaving,
-    pub(crate) https_inspection: bool,
-    pub(crate) ca_directory: Option<PathBuf>,
-    pub(crate) port: PortChoice,
     pub(crate) error: Option<String>,
 }
 
 impl SessionState {
     pub(super) fn new() -> Self {
-        let (full_log, log_init_error) = match FullLog::new() {
-            Ok(log) => (Some(log), None),
-            Err(error) => (
-                None,
-                Some(format!("Full-session logging is unavailable: {error}")),
-            ),
-        };
         Self {
-            proxy: None,
-            full_log,
-            log_init_error,
+            capture: CaptureSession::new(),
             body_saving: BodySaving::open(),
-            https_inspection: false,
-            ca_directory: settings::paths::ca_directory(|name| std::env::var_os(name)),
-            port: PortChoice::from_launch(),
             error: None,
         }
     }
@@ -69,60 +52,12 @@ impl SessionState {
             None => Arc::new(PreviewBodies),
         }
     }
-
-    pub(crate) fn start_proxy(&mut self, context: &egui::Context) {
-        let port = match settings::port::ProxyPort::parse(&self.port.text) {
-            Ok(port) => port,
-            Err(error) => {
-                self.error = Some(error.to_string());
-                return;
-            }
-        };
-        let mut config = ProxyConfig::loopback(port.value());
-        if self.https_inspection {
-            let Some(directory) = self.ca_directory.as_ref() else {
-                self.error = Some(
-                    "HTTPS inspection requires an application data directory; check HOME and platform storage settings"
-                        .to_owned(),
-                );
-                return;
-            };
-            config = config.with_https_inspection(HttpsInspection::new(directory.clone()));
-        }
-        if let Some(store) = self.body_saving.store() {
-            config = config.with_body_store(store.clone());
-        }
-        let result = self.full_log.as_ref().map_or_else(
-            || ProxyHandle::start(config.clone()),
-            |log| ProxyHandle::start_recording(config.clone(), log.clone()),
-        );
-        match result {
-            Ok(proxy) => {
-                let context = context.clone();
-                let _first_notifier = proxy.notify_on_event(move || context.request_repaint());
-                self.proxy = Some(proxy);
-                self.error = self
-                    .port
-                    .remember(port)
-                    .err()
-                    .map(|error| error.to_string());
-            }
-            Err(error) => {
-                self.error = Some(toolbar::start_error_text(&error, port));
-            }
-        }
-    }
-
-    pub(crate) fn engine_dropped(&self) -> u64 {
-        self.proxy.as_ref().map_or(0, ProxyHandle::dropped_records)
-    }
 }
 
 pub(crate) struct RequestsState {
     pub(crate) records: RecordList<Exchange>,
     pub(crate) record_filter: RecordFilter,
     pub(crate) search: RequestSearch,
-    pub(crate) table: RequestTable,
     pub(crate) selected: Option<RecordId>,
     pub(crate) map_path_filter: Option<RequestScope>,
     pub(crate) map_filter_cache: RecordMatchCache,
@@ -134,22 +69,15 @@ impl RequestsState {
             records: RecordList::new(MAX_RECORDS),
             record_filter: RecordFilter::All,
             search: RequestSearch::new(context),
-            table: RequestTable::new(),
             selected: None,
             map_path_filter: None,
             map_filter_cache: RecordMatchCache::default(),
         }
     }
 
+    #[cfg(test)]
     pub(super) fn record_added(&mut self, record: Exchange) -> Option<Exchange> {
-        let removed = self.records.push(record);
-        if removed
-            .as_ref()
-            .is_some_and(|record| self.selected == Some(record.id()))
-        {
-            self.selected = None;
-        }
-        removed
+        super::capture::add_record(&mut self.records, &mut self.selected, record)
     }
 
     pub(super) fn clear(&mut self, engine_dropped: u64) {
@@ -194,8 +122,7 @@ impl RequestsState {
 pub(crate) struct DetailState {
     pub(crate) tab: DetailTab,
     pub(crate) body_mode: ViewMode,
-    pub(crate) body_cache: BodyViewCache,
-    pub(crate) image: ImagePanel,
+    pub(crate) widgets: DetailWidgets,
     pub(crate) curl: CurlCopy,
     replay: Option<ReplayPanel>,
 }
@@ -205,8 +132,7 @@ impl Default for DetailState {
         Self {
             tab: DetailTab::Headers,
             body_mode: ViewMode::default(),
-            body_cache: BodyViewCache::default(),
-            image: ImagePanel::default(),
+            widgets: DetailWidgets::default(),
             curl: CurlCopy::default(),
             replay: None,
         }
@@ -223,20 +149,27 @@ impl DetailState {
         self.replay.is_some()
     }
 
-    pub(super) fn update_replay(
+    pub(super) fn show_replay(
         &mut self,
         context: &egui::Context,
-        proxy: Option<&ProxyHandle>,
+        proxy_running: bool,
         records: &RecordList<Exchange>,
-    ) {
-        if let Some(panel) = self.replay.as_mut() {
-            let latest = records
-                .iter()
-                .rev()
-                .find(|record| record.replay_of() == Some(panel.original_id()));
-            if !panel.show(context, proxy, latest) {
-                self.replay = None;
-            }
+    ) -> Vec<ReplayAction> {
+        let Some(panel) = self.replay.as_mut() else {
+            return Vec::new();
+        };
+        let latest = records
+            .iter()
+            .rev()
+            .find(|record| record.replay_of() == Some(panel.original_id()));
+        panel.show(context, proxy_running, latest)
+    }
+
+    pub(super) fn apply_replay(&mut self, action: ReplayAction, proxy: Option<&ProxyHandle>) {
+        if matches!(action, ReplayAction::Close) {
+            self.replay = None;
+        } else if let Some(panel) = self.replay.as_mut() {
+            panel.apply(action, proxy);
         }
     }
 }
@@ -287,7 +220,7 @@ impl Dialogs {
 
 /// Top-level inspector view switcher (`Requests` list vs `Map` site/relationship map).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(super) enum MainView {
+pub(crate) enum MainView {
     #[default]
     Requests,
     Map,
@@ -313,39 +246,5 @@ impl LayoutState {
             status_bar_height: 0.0,
             detail_share: Layout::DEFAULT_DETAIL_SHARE,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::error::Error;
-
-    use http::Method;
-    use http_inspector_exchange::ExchangeBuilder;
-
-    use super::*;
-
-    #[test]
-    fn eviction_clears_only_the_selection_that_was_removed() -> Result<(), Box<dyn Error>> {
-        let mut requests = RequestsState::new(&egui::Context::default());
-        requests.records = RecordList::new(2);
-        let oldest = ExchangeBuilder::http(Method::GET, "http://fixture.test/a")?.in_flight()?;
-        let selected = ExchangeBuilder::http(Method::GET, "http://fixture.test/b")?.in_flight()?;
-        let selected_id = selected.id();
-        let _evicted = requests.record_added(oldest);
-        let _evicted = requests.record_added(selected);
-        requests.selected = Some(selected_id);
-
-        let _evicted = requests.record_added(
-            ExchangeBuilder::http(Method::GET, "http://fixture.test/c")?.in_flight()?,
-        );
-        assert_eq!(requests.selected, Some(selected_id));
-
-        let _evicted = requests.record_added(
-            ExchangeBuilder::http(Method::GET, "http://fixture.test/d")?.in_flight()?,
-        );
-        assert_eq!(requests.selected, None);
-        assert_eq!(requests.records.evicted(), 2);
-        Ok(())
     }
 }

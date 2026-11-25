@@ -1,5 +1,6 @@
 //! Saving captured bodies to files from the session body store.
 
+use crate::ui::style::tokens::Layout;
 use std::io;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -12,7 +13,7 @@ use http_inspector_core::recording::{
 use http_inspector_exchange::{BodySide, ByteSize, Exchange};
 use http_inspector_file::{ExistingFile, publish};
 
-use crate::ui::dialogs::save::SaveControls;
+use crate::ui::AppAction;
 use crate::ui::style::theme::Palette;
 
 use super::background_task::{BackgroundTask, TaskPoll};
@@ -127,16 +128,17 @@ impl BodySaving {
     }
 
     /// The request and response `Save … body ▼` menus of the Body tab.
-    pub(crate) fn menus(&mut self, ui: &mut egui::Ui, record: &Exchange, save: &SaveControls) {
+    pub(crate) fn menus(&self, ui: &mut egui::Ui, record: &Exchange) -> Option<AppAction> {
         ui.horizontal_wrapped(|ui| {
-            for side in [BodySide::Request, BodySide::Response] {
-                self.menu(ui, record, side, save);
-            }
-        });
+            let request = self.menu(ui, record, BodySide::Request);
+            let response = self.menu(ui, record, BodySide::Response);
+            request.or(response)
+        })
+        .inner
     }
 
     /// One `Save … body ▼` menu of the Body tab.
-    fn menu(&mut self, ui: &mut egui::Ui, record: &Exchange, side: BodySide, save: &SaveControls) {
+    fn menu(&self, ui: &mut egui::Ui, record: &Exchange, side: BodySide) -> Option<AppAction> {
         let stored = self
             .store
             .as_ref()
@@ -155,17 +157,20 @@ impl BodySaving {
                     let (text, hover) = format_text(format);
                     if ui.button(text).on_hover_text(hover).clicked() {
                         ui.close();
-                        self.request(record, side, format, save.directory());
+                        return Some(AppAction::SaveBody(record.id(), side, format));
                     }
                 }
-                if side == BodySide::Response && self.merge.menu_items(ui, record) {
+                if side == BodySide::Response && super::range_merge::menu_items(ui, record) {
                     ui.close();
+                    return Some(AppAction::PlanRanges(record.id()));
                 }
+                None
             })
         });
         response
             .response
             .on_disabled_hover_text(self.unavailable_text());
+        response.inner.inner.flatten()
     }
 
     fn unavailable_text(&self) -> &str {
@@ -240,17 +245,11 @@ impl BodySaving {
         }
     }
 
-    /// Shows the confirmation dialog and collects finished saves; call once per frame.
-    pub(crate) fn update(&mut self, ctx: &egui::Context) {
-        self.poll();
-        if self.pending.is_some() {
-            ctx.request_repaint_after(Duration::from_millis(100));
-        }
-        let Some(confirmation) = self.confirmation.as_ref() else {
-            return;
-        };
+    /// Shows the pending confirmation without starting or cancelling a save.
+    pub(crate) fn show_confirmation(&self, ctx: &egui::Context) -> Option<bool> {
+        let confirmation = self.confirmation.as_ref()?;
         let mut choice = None;
-        let max_width = (ctx.content_rect().width() - 48.0).clamp(240.0, 420.0);
+        let max_width = Layout::BODY_CONFIRM_WIDTH.fit(ctx.content_rect().width());
         let modal = egui::Modal::new(egui::Id::unique("confirm-body-save")).show(ctx, |ui| {
             ui.set_max_width(max_width);
             ui.heading("Save body");
@@ -274,17 +273,27 @@ impl BodySaving {
                 }
             });
         });
-        if modal.should_close() || choice == Some(false) {
-            self.confirmation = None;
-        } else if choice == Some(true)
-            && let Some(confirmation) = self.confirmation.take()
+        if modal.should_close() {
+            Some(false)
+        } else {
+            choice
+        }
+    }
+
+    pub(crate) fn apply_confirmation(&mut self, confirmed: bool) {
+        if let Some(confirmation) = self.confirmation.take()
+            && confirmed
         {
             self.privacy_acknowledged |= confirmation.show_privacy;
             self.start(confirmation.request);
         }
     }
 
-    fn poll(&mut self) {
+    pub(crate) fn poll(&mut self, context: &egui::Context) {
+        self.bulk.poll(context);
+        if self.pending.is_some() {
+            context.request_repaint_after(Duration::from_millis(100));
+        }
         let Some(task) = self.pending.as_ref() else {
             return;
         };
@@ -301,14 +310,15 @@ impl BodySaving {
     }
 
     /// The body store limit inside the Settings menu.
-    pub(crate) fn settings_menu(&mut self, ui: &mut egui::Ui) {
-        let max_width = (ui.ctx().content_rect().width() - 48.0).clamp(220.0, 380.0);
+    pub(crate) fn settings_menu(&self, ui: &mut egui::Ui) -> Option<u64> {
+        let max_width = Layout::BODY_SETTINGS_WIDTH.fit(ui.ctx().content_rect().width());
         ui.set_max_width(max_width);
         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
             ui.label("Body store limit");
+            let mut limit = self.limit_mib;
             let changed = ui
                 .add(
-                    egui::DragValue::new(&mut self.limit_mib)
+                    egui::DragValue::new(&mut limit)
                         .range(1..=MAX_LIMIT_MIB)
                         .suffix(" MiB"),
                 )
@@ -316,15 +326,6 @@ impl BodySaving {
                     "Most body bytes kept for saving in one session. Later bodies are not stored once it is reached.",
                 )
                 .changed();
-            if changed {
-                if let Some(store) = self.store.as_ref() {
-                    store.set_limit_bytes(self.limit_mib * MIB);
-                }
-                self.settings_error = self
-                    .save_settings()
-                    .err()
-                    .map(|error| format!("Could not save the body store limit: {error}"));
-            }
             if let Some(store) = self.store.as_ref() {
                 ui.weak(format!(
                     "{} used · stored in {}",
@@ -332,7 +333,19 @@ impl BodySaving {
                     store.directory().display()
                 ));
             }
-        });
+            changed.then_some(limit)
+        }).inner
+    }
+
+    pub(crate) fn set_limit(&mut self, limit_mib: u64) {
+        self.limit_mib = limit_mib;
+        if let Some(store) = self.store.as_ref() {
+            store.set_limit_bytes(limit_mib * MIB);
+        }
+        self.settings_error = self
+            .save_settings()
+            .err()
+            .map(|error| format!("Could not save the body store limit: {error}"));
     }
 
     fn save_settings(&self) -> io::Result<()> {
@@ -351,7 +364,7 @@ impl BodySaving {
     }
 
     /// Body store warnings and the result of the last body save, for the status bar.
-    pub(crate) fn status(&self, ui: &mut egui::Ui) {
+    pub(crate) fn status(&self, ui: &mut egui::Ui) -> bool {
         let palette = Palette::of(ui);
         for warning in self.warnings() {
             ui.separator();
@@ -366,7 +379,7 @@ impl BodySaving {
             ui.spinner();
             ui.label("Saving body…");
         }
-        self.bulk.status(ui);
+        let cancel_bulk = self.bulk.status(ui);
         match &self.status {
             Some(SaveStatus::Saved(saved)) => {
                 ui.separator();
@@ -387,6 +400,11 @@ impl BodySaving {
             }
             None => {}
         }
+        cancel_bulk
+    }
+
+    pub(crate) fn cancel_bulk(&self) {
+        self.bulk.cancel();
     }
 
     fn warnings(&self) -> Vec<String> {
@@ -552,7 +570,7 @@ mod tests {
     fn settings_menu_text_is_not_justified_inside_menu_layout() -> io::Result<()> {
         let directory = tempfile::tempdir()?;
         let store = BodyStore::with_limits(directory.path(), 64 * MIB, 0)?;
-        let mut saving = BodySaving {
+        let saving = BodySaving {
             store: Some(store),
             init_error: None,
             limit_mib: 64,
@@ -568,7 +586,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
-                saving.settings_menu(ui);
+                let _ = saving.settings_menu(ui);
             });
         });
         output.textures_delta.clear();

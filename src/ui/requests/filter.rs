@@ -5,27 +5,47 @@ use eframe::egui;
 use http_inspector_analysis::filter::{
     self as analysis_filter, RecordFilter, RecordList, ScopeFilter,
 };
+use http_inspector_analysis::pipeline::AnalysisPipeline;
 use http_inspector_analysis::url_map::RequestScope;
-use http_inspector_exchange::Exchange;
+use http_inspector_exchange::{Exchange, RecordId};
+use std::net::SocketAddr;
 
-use crate::ui::InspectorApp;
+use super::request_table::RequestTable;
+use crate::ui::AppAction;
+use crate::ui::app::state::RequestsState;
 use crate::ui::detail::search::RequestSearch;
 use crate::ui::map::RecordMatchCache;
 use crate::ui::style::theme::Palette;
 
-impl InspectorApp {
+pub(crate) struct ListView<'a> {
+    pub(crate) requests: &'a RequestsState,
+    pub(crate) analysis: &'a AnalysisPipeline,
+    pub(crate) proxy: Option<SocketAddr>,
+    pub(crate) saving_body: bool,
+}
+
+impl ListView<'_> {
     /// Filter, list options, and Clear, shown right above the request list.
-    pub(crate) fn filters(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn filters(
+        &self,
+        ui: &mut egui::Ui,
+        table: &mut RequestTable,
+        actions: &mut Vec<AppAction>,
+    ) {
         ui.horizontal_wrapped(|ui| {
-            self.requests.search.controls(ui);
+            actions.extend(self.requests.search.controls(ui).map(AppAction::Search));
+            let mut filter_choice = self.requests.record_filter;
             egui::ComboBox::from_id_salt("record-filter")
                 .selected_text(self.requests.record_filter.label())
                 .show_ui(ui, |ui| {
                     for filter in RecordFilter::ALL {
-                        ui.selectable_value(&mut self.requests.record_filter, filter, filter.label());
+                        ui.selectable_value(&mut filter_choice, filter, filter.label());
                     }
                 });
-            self.requests.table.controls(ui);
+            if filter_choice != self.requests.record_filter {
+                actions.push(AppAction::Filter(filter_choice));
+            }
+            table.controls(ui);
             if ui
                 .button("Clear")
                 .on_hover_text(
@@ -33,26 +53,22 @@ impl InspectorApp {
                 )
                 .clicked()
             {
-                self.clear_session();
+                actions.push(AppAction::ClearSession);
             }
         });
-        self.map_filter_banner(ui);
+        self.map_filter_banner(ui, actions);
         self.requests.search.status(ui);
     }
 
-    fn map_filter_banner(&mut self, ui: &mut egui::Ui) {
-        let Some(key) = self.requests.map_path_filter.clone() else {
+    fn map_filter_banner(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+        let Some(key) = self.requests.map_path_filter.as_ref() else {
             return;
         };
-        self.requests
-            .map_filter_cache
-            .sync(&key, &self.requests.records, false);
         let palette = Palette::of(ui);
         let retained = self.requests.map_filter_cache.matched_count();
-        let counted = self.map_scope_total(&key);
+        let counted = self.map_scope_total(key);
         let evicted = counted.saturating_sub(u64::try_from(retained).unwrap_or(u64::MAX));
         let approximate = key.method.is_some() && self.requests.records.evicted() > 0;
-        let mut clear = false;
         ui.horizontal_wrapped(|ui| {
             ui.label(
                 egui::RichText::new(format!("Map filter: {}", key.display()))
@@ -73,35 +89,32 @@ impl InspectorApp {
                 count.on_hover_text("Estimate based on requests included in endpoint analysis.");
             }
             if ui.small_button("Clear map filter").clicked() {
-                clear = true;
+                actions.push(AppAction::ClearMapFilter);
             }
         });
-        if clear {
-            self.requests.clear_map_filter();
-        }
     }
 
     /// Requests the Map counted for `scope` since the last `Clear`.
     fn map_scope_total(&self, scope: &RequestScope) -> u64 {
         scope.method.as_ref().map_or_else(
-            || {
-                self.map
-                    .analysis
-                    .url_map()
-                    .matching_request_count(&scope.key)
-            },
+            || self.analysis.url_map().matching_request_count(&scope.key),
             |method| {
-                self.map.analysis.endpoint_schemas().request_count(
-                    &self.map.analysis.url_map().matching_node_ids(&scope.key),
+                self.analysis.endpoint_schemas().request_count(
+                    &self.analysis.url_map().matching_node_ids(&scope.key),
                     method,
                 )
             },
         )
     }
 
-    pub(crate) fn request_table(&mut self, ui: &mut egui::Ui, shortcuts_allowed: bool) {
-        let requests = &mut self.requests;
-        requests.update_filters(ui.ctx());
+    pub(crate) fn table(
+        &self,
+        ui: &mut egui::Ui,
+        table: &mut RequestTable,
+        shortcuts_allowed: bool,
+        actions: &mut Vec<AppAction>,
+    ) -> Option<RecordId> {
+        let requests = self.requests;
         let rows = visible_records(
             &requests.records,
             requests.record_filter,
@@ -110,42 +123,22 @@ impl InspectorApp {
             Some(&requests.map_filter_cache),
         );
         if rows.is_empty() {
-            let message = empty_list_text(
-                requests.records.len(),
-                self.session
-                    .proxy
-                    .as_ref()
-                    .map(http_inspector_core::interception::ProxyHandle::local_addr),
-            );
+            let message = empty_list_text(requests.records.len(), self.proxy);
             ui.centered_and_justified(|ui| {
                 ui.add(egui::Label::new(egui::RichText::new(message).weak()).wrap());
             });
-            return;
+            return None;
         }
-        requests.table.saving_body = self.session.body_saving.is_busy();
-        if let Some(selected) = requests
-            .table
-            .show(ui, rows, requests.selected, shortcuts_allowed)
-        {
-            requests.selected = Some(selected);
-        }
-        if let Some(record) = requests.table.copy_curl.take() {
-            self.detail.curl.copy(ui.ctx(), &record);
-        }
-        if let Some((record, side)) = requests.table.save_body.take() {
-            let directory = self.dialogs.save.directory();
-            self.session.body_saving.request(
-                &record,
-                side,
-                http_inspector_core::recording::SaveFormat::Decoded,
-                directory,
-            );
-        }
-        if let Some(original) = requests.table.replay.take()
-            && let Err(error) = self.detail.open_replay(original)
-        {
-            self.session.error = Some(error.to_string());
-        }
+        let result = table.show(
+            ui,
+            rows,
+            requests.selected,
+            shortcuts_allowed,
+            self.saving_body,
+        );
+        actions.extend(result.selected.map(AppAction::SelectRecord));
+        actions.extend(result.action);
+        result.selected
     }
 }
 

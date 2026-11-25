@@ -9,6 +9,7 @@ use http_inspector_interop::curl::{
     curl_unavailable_reason,
 };
 
+use crate::ui::AppAction;
 use crate::ui::style::theme::Palette;
 
 /// Label shared by the request-list menu and the details panel.
@@ -44,9 +45,14 @@ pub(crate) struct CurlCopy {
 
 impl CurlCopy {
     /// Shows the copy button for `record` and the redacted-header option.
-    pub(crate) fn controls(&mut self, ui: &mut egui::Ui, record: &Exchange) {
+    pub(crate) fn controls(
+        &self,
+        ui: &mut egui::Ui,
+        record: &Exchange,
+        actions: &mut Vec<AppAction>,
+    ) {
         if copy_button(ui, record).clicked() {
-            self.copy(ui.ctx(), record);
+            actions.push(AppAction::CopyCurl(record.id()));
         }
         let mut placeholders = self.redacted == RedactedHeaders::Placeholder;
         if ui
@@ -58,11 +64,12 @@ impl CurlCopy {
             ))
             .changed()
         {
-            self.redacted = if placeholders {
+            let redacted = if placeholders {
                 RedactedHeaders::Placeholder
             } else {
                 RedactedHeaders::Omit
             };
+            actions.push(AppAction::SetCurlRedactions(redacted));
         }
     }
 
@@ -88,32 +95,41 @@ impl CurlCopy {
         });
     }
 
-    /// Shows the latest result in the notice area.
-    pub(crate) fn notice(&mut self, ui: &mut egui::Ui) {
+    pub(crate) const fn set_redactions(&mut self, redacted: RedactedHeaders) {
+        self.redacted = redacted;
+    }
+
+    pub(crate) fn expire_notice(&mut self) {
+        if self.notice.as_ref().is_some_and(|notice| {
+            notice.kind == NoticeKind::Copied && notice.shown_at.elapsed() >= SUCCESS_NOTICE
+        }) {
+            self.dismiss_notice();
+        }
+    }
+
+    pub(crate) fn dismiss_notice(&mut self) {
+        self.notice = None;
+    }
+
+    /// Shows the latest result in the notice area and reports dismissal.
+    pub(crate) fn notice(&self, ui: &mut egui::Ui) -> bool {
         let Some(notice) = self.notice.as_ref() else {
-            return;
+            return false;
         };
         if notice.kind == NoticeKind::Copied {
-            let remaining = SUCCESS_NOTICE.saturating_sub(notice.shown_at.elapsed());
-            if remaining.is_zero() {
-                self.notice = None;
-                return;
-            }
-            ui.ctx().request_repaint_after(remaining);
+            ui.ctx()
+                .request_repaint_after(SUCCESS_NOTICE.saturating_sub(notice.shown_at.elapsed()));
         }
         let palette = Palette::of(ui);
         let color = match notice.kind {
             NoticeKind::Copied => palette.success,
             NoticeKind::CopiedWithRedactions | NoticeKind::Refused => palette.warning,
         };
-        let mut dismissed = false;
         ui.horizontal_wrapped(|ui| {
             ui.colored_label(color, &notice.text);
-            dismissed = ui.small_button("Dismiss").clicked();
-        });
-        if dismissed {
-            self.notice = None;
-        }
+            ui.small_button("Dismiss").clicked()
+        })
+        .inner
     }
 }
 

@@ -64,6 +64,41 @@ impl TypeScale {
     pub(crate) const GRAPH_COUNT: f32 = 10.5;
 }
 
+/// Bounds a dimension after reserving space for the surrounding UI.
+pub(crate) struct SizeLimit {
+    margin: f32,
+    min: f32,
+    max: f32,
+}
+
+impl SizeLimit {
+    const fn new(margin: f32, min: f32, max: f32) -> Self {
+        Self { margin, min, max }
+    }
+
+    pub(crate) fn fit(&self, available: f32) -> f32 {
+        (available - self.margin).clamp(self.min, self.max)
+    }
+}
+
+/// Fixed and minimum widths of the request list columns in points.
+pub(crate) struct RequestColumns {
+    pub(crate) method: f32,
+    pub(crate) path_min: f32,
+    pub(crate) path_compact: SizeLimit,
+    pub(crate) status_wide: f32,
+    pub(crate) status_compact: f32,
+    pub(crate) kind: f32,
+    pub(crate) size: f32,
+    pub(crate) duration: f32,
+    pub(crate) method_min: f32,
+    pub(crate) path_resize_min: f32,
+    pub(crate) status_min: f32,
+    pub(crate) kind_min: f32,
+    pub(crate) size_min: f32,
+    pub(crate) duration_min: f32,
+}
+
 /// Dimensions of individual components in points.
 pub(crate) struct Layout;
 
@@ -97,6 +132,7 @@ impl Layout {
     pub(crate) const GRAPH_ARROW_TIP_PADDING: f32 = 3.0;
     pub(crate) const GRAPH_DASH_LENGTH: f32 = 6.0;
     pub(crate) const GRAPH_LABEL_PADDING: egui::Vec2 = egui::vec2(3.0, 1.0);
+    pub(crate) const BODY_MIN_WRAP_TEXT: f32 = 80.0;
     pub(crate) const BODY_LINE_VIEW_HEIGHT: f32 = 480.0;
     pub(crate) const PORT_INPUT_WIDTH: f32 = 56.0;
     pub(crate) const TABLE_ROW_HEIGHT: f32 = 24.0;
@@ -105,7 +141,47 @@ impl Layout {
     pub(crate) const DETAIL_TREE_HEIGHT: f32 = 350.0;
     pub(crate) const IMAGE_DISPLAY_HEIGHT: f32 = 480.0;
     pub(crate) const IMAGE_CHECKER_TILE: f32 = Space::MD;
-    pub(crate) const BULK_FOLDER_INPUT_WIDTH: f32 = 120.0;
+    pub(crate) const BULK_PROGRESS_WIDTH: f32 = 120.0;
+    pub(crate) const REQUEST_COLUMNS: RequestColumns = RequestColumns {
+        method: 78.0,
+        path_min: 140.0,
+        path_compact: SizeLimit::new(0.0, 84.0, 220.0),
+        status_wide: 124.0,
+        status_compact: 104.0,
+        kind: 48.0,
+        size: 68.0,
+        duration: 68.0,
+        method_min: 40.0,
+        path_resize_min: 60.0,
+        status_min: 64.0,
+        kind_min: 32.0,
+        size_min: 40.0,
+        duration_min: 52.0,
+    };
+    pub(crate) const REPLAY_WIDTH: SizeLimit = SizeLimit::new(24.0, 280.0, f32::INFINITY);
+    pub(crate) const REPLAY_HEIGHT: SizeLimit = SizeLimit::new(48.0, 220.0, f32::INFINITY);
+    pub(crate) const REPLAY_URL_WIDTH: SizeLimit = SizeLimit::new(0.0, 120.0, f32::INFINITY);
+    pub(crate) const REPLAY_FILE_WIDTH: SizeLimit = SizeLimit::new(180.0, 140.0, 320.0);
+    pub(crate) const REPLAY_PAIR_LABEL_WIDTH: SizeLimit = SizeLimit::new(0.0, 72.0, 200.0);
+    pub(crate) const REPLAY_PAIR_CONTROL_WIDTH: f32 = 64.0;
+    pub(crate) const REPLAY_PAIR_MIN_WIDTH: f32 = 140.0;
+    pub(crate) const REPLAY_PAIR_MIN_VALUE: f32 = 72.0;
+    pub(crate) const HAR_WIDTH: SizeLimit = SizeLimit::new(32.0, 240.0, 460.0);
+    pub(crate) const HAR_HEIGHT: SizeLimit = SizeLimit::new(48.0, 200.0, f32::INFINITY);
+    pub(crate) const HAR_PATH_WIDTH: SizeLimit = SizeLimit::new(0.0, 180.0, 420.0);
+    pub(crate) const SAVE_DIRECTORY_WIDTH: SizeLimit = SizeLimit::new(48.0, 160.0, 320.0);
+    pub(crate) const BODY_EXPORT_WIDTH: SizeLimit = SizeLimit::new(48.0, 240.0, 460.0);
+    pub(crate) const BODY_EXPORT_HEIGHT: SizeLimit = SizeLimit::new(140.0, 120.0, f32::INFINITY);
+    pub(crate) const CA_DETAILS_WIDTH: SizeLimit = SizeLimit::new(32.0, 240.0, 560.0);
+    pub(crate) const SCOPE_HELP_WIDTH: SizeLimit = SizeLimit::new(32.0, 240.0, 520.0);
+    pub(crate) const TOOLBAR_POPOVER_HEIGHT: SizeLimit = SizeLimit::new(80.0, 160.0, f32::INFINITY);
+    pub(crate) const BODY_CONFIRM_WIDTH: SizeLimit = SizeLimit::new(48.0, 240.0, 420.0);
+    pub(crate) const BODY_SETTINGS_WIDTH: SizeLimit = SizeLimit::new(48.0, 220.0, 380.0);
+    pub(crate) const MAP_SEARCH_WIDTH: SizeLimit = SizeLimit::new(0.0, 90.0, 150.0);
+    pub(crate) const TREE_SEARCH_WIDTH: SizeLimit = SizeLimit::new(0.0, 100.0, 180.0);
+    pub(crate) const REQUEST_SEARCH_WIDTH: SizeLimit = SizeLimit::new(0.0, 120.0, 260.0);
+    pub(crate) const DETAIL_KEY_WIDTH: SizeLimit = SizeLimit::new(0.0, 72.0, 220.0);
+    pub(crate) const DETAIL_ROW_MIN_WIDTH: f32 = 120.0;
     pub(crate) const REPLAY_DIALOG: egui::Vec2 = egui::vec2(650.0, 600.0);
 }
 

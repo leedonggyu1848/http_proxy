@@ -7,6 +7,7 @@ mod tree_pane;
 
 pub(crate) use detail_pane::RecordMatchCache;
 
+use crate::ui::style::tokens::Layout;
 use std::collections::{HashMap, HashSet};
 
 use eframe::egui;
@@ -352,7 +353,7 @@ impl MapPanel {
     }
 
     fn tree_controls(&mut self, ui: &mut egui::Ui) {
-        let width = ui.available_width().clamp(90.0, 150.0);
+        let width = Layout::MAP_SEARCH_WIDTH.fit(ui.available_width());
         ui.add(
             egui::TextEdit::singleline(&mut self.filter.host_query)
                 .desired_width(width)

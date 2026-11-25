@@ -1,3 +1,4 @@
+use crate::ui::style::tokens::Layout;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::SendError;
 use std::time::Duration;
@@ -29,7 +30,7 @@ struct Registration {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Action {
+pub(crate) enum Action {
     Check,
     Install,
     Remove,
@@ -118,21 +119,26 @@ impl CaPanel {
         }
     }
 
-    /// Shows the registration badge, the action that fits it, and a
-    /// `CA details` menu, inline in the toolbar.
-    pub(crate) fn summary(&mut self, ui: &mut egui::Ui, directory: Option<&Path>) {
+    pub(crate) fn poll(&mut self, context: &egui::Context, directory: Option<&Path>) {
         self.receive();
+        if let Some(directory) = directory
+            && !self.checked
+            && self.pending_action.is_none()
+        {
+            self.start(Action::Check, directory, context);
+            self.checked = true;
+        }
+    }
+
+    /// Shows the registration badge and the available CA actions.
+    pub(crate) fn summary(&self, ui: &mut egui::Ui, directory: Option<&Path>) -> Option<Action> {
         let palette = Palette::of(ui);
         let Some(directory) = directory else {
             ui.colored_label(palette.error, "● CA storage unavailable")
                 .on_hover_text("Check HOME and platform storage settings.");
-            return;
+            return None;
         };
-        if !self.checked && self.pending_action.is_none() {
-            self.start(Action::Check, directory, ui.ctx());
-            self.checked = true;
-        }
-
+        let mut action = None;
         let badge = self.badge();
         ui.label("CA");
         if matches!(badge, Badge::Busy(_)) {
@@ -147,7 +153,7 @@ impl CaPanel {
             .on_hover_text("CA registration status. Click to check again.")
             .clicked()
         {
-            self.start(Action::Check, directory, ui.ctx());
+            action = Some(Action::Check);
         }
         match badge.primary() {
             Some(Action::Install) => {
@@ -156,7 +162,7 @@ impl CaPanel {
                     .on_hover_text(REGISTER_HELP)
                     .clicked()
                 {
-                    self.start(Action::Install, directory, ui.ctx());
+                    action = Some(Action::Install);
                 }
             }
             Some(Action::Remove) => {
@@ -165,19 +171,21 @@ impl CaPanel {
                     .on_hover_text("Remove the CA that HTTP Inspector registered.")
                     .clicked()
                 {
-                    self.start(Action::Remove, directory, ui.ctx());
+                    action = Some(Action::Remove);
                 }
             }
             Some(Action::Check) | None => {}
         }
-        ui.menu_button("CA details", |ui| self.details(ui, directory));
+        let menu = ui.menu_button("CA details", |ui| self.details(ui, directory));
+        action.or_else(|| menu.inner.flatten())
     }
 
     /// Paths, fingerprint, and less frequent actions, shown only on request.
-    fn details(&mut self, ui: &mut egui::Ui, directory: &Path) {
+    fn details(&self, ui: &mut egui::Ui, directory: &Path) -> Option<Action> {
+        let mut action = None;
         let viewport = ui.ctx().content_rect();
-        let max_width = (viewport.width() - 32.0).clamp(240.0, 560.0);
-        let max_height = (viewport.height() - 80.0).max(160.0);
+        let max_width = Layout::CA_DETAILS_WIDTH.fit(viewport.width());
+        let max_height = Layout::TOOLBAR_POPOVER_HEIGHT.fit(viewport.height());
         ui.set_max_width(max_width);
         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
             egui::ScrollArea::vertical()
@@ -205,7 +213,7 @@ impl CaPanel {
                     ui.add_enabled_ui(self.pending_action.is_none(), |ui| {
                         ui.horizontal_wrapped(|ui| {
                             if ui.button("Check registration").clicked() {
-                                self.start(Action::Check, directory, ui.ctx());
+                                action = Some(Action::Check);
                             }
                             let registered =
                                 self.registration.as_ref().is_some_and(|registration| {
@@ -215,12 +223,13 @@ impl CaPanel {
                                 .add_enabled(registered, egui::Button::new("Remove CA"))
                                 .clicked()
                             {
-                                self.start(Action::Remove, directory, ui.ctx());
+                                action = Some(Action::Remove);
                             }
                         });
                     });
                 });
         });
+        action
     }
 
     /// Errors and follow-up guidance shown right below the toolbar so they
@@ -239,7 +248,7 @@ impl CaPanel {
         }
     }
 
-    fn start(&mut self, action: Action, directory: &Path, context: &egui::Context) {
+    pub(crate) fn start(&mut self, action: Action, directory: &Path, context: &egui::Context) {
         if self.pending.is_some() {
             return;
         }
@@ -396,7 +405,7 @@ mod tests {
 
     #[test]
     fn details_popup_text_is_not_justified_inside_menu_layout() {
-        let mut panel = CaPanel {
+        let panel = CaPanel {
             registration: Some(Registration {
                 target: "NSS database",
                 location: PathBuf::from(

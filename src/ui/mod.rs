@@ -32,4 +32,4 @@ mod style;
 pub use app::main;
 #[cfg(test)]
 use app::request_shortcuts_allowed;
-use app::{InspectorApp, MAX_RECORDS};
+use app::{AppAction, InspectorApp, MAX_RECORDS};

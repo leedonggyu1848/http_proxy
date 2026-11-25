@@ -188,7 +188,7 @@ fn render_query(ui: &mut egui::Ui, schema: &EndpointSchema, salt: &str) {
     let palette = Palette::of(ui);
     egui::Grid::new(format!("{salt}/query"))
         .num_columns(3)
-        .spacing([12.0, 2.0])
+        .spacing([Space::MD, Space::XXS])
         .show(ui, |ui| {
             for (name, stats) in schema.query() {
                 ui.monospace(percent_decode_display(name));
@@ -208,7 +208,7 @@ fn render_headers(ui: &mut egui::Ui, schema: &EndpointSchema, salt: &str) {
     }
     egui::Grid::new(format!("{salt}/headers"))
         .num_columns(2)
-        .spacing([12.0, 2.0])
+        .spacing([Space::MD, Space::XXS])
         .show(ui, |ui| {
             for (name, count) in schema.headers() {
                 ui.monospace(name);

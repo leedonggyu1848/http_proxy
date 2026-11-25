@@ -11,6 +11,15 @@ use std::path::Path;
 /// Bodies above this size are summarized instead of laid out in the text editor.
 const EDITABLE_BODY_BYTES: usize = 256 * 1024;
 
+#[derive(Clone, Copy)]
+pub(crate) enum ReplayAction {
+    LoadBody,
+    Send,
+    Cancel,
+    Reset,
+    Close,
+}
+
 pub(crate) struct ReplayPanel {
     draft: ReplayDraft,
     task: Option<ReplayTask>,
@@ -53,13 +62,14 @@ impl ReplayPanel {
     pub(crate) fn show(
         &mut self,
         context: &egui::Context,
-        proxy: Option<&ProxyHandle>,
+        proxy_running: bool,
         latest: Option<&Exchange>,
-    ) -> bool {
+    ) -> Vec<ReplayAction> {
+        let mut actions = Vec::new();
         let mut open = true;
         let viewport = context.content_rect();
-        let max_width = (viewport.width() - 24.0).max(280.0);
-        let max_height = (viewport.height() - 48.0).max(220.0);
+        let max_width = Layout::REPLAY_WIDTH.fit(viewport.width());
+        let max_height = Layout::REPLAY_HEIGHT.fit(viewport.height());
         egui::Window::new("Edit and Resend")
             .open(&mut open)
             .default_width(Layout::REPLAY_DIALOG.x.min(max_width))
@@ -67,15 +77,21 @@ impl ReplayPanel {
             .max_width(max_width)
             .max_height(max_height)
             .vscroll(true)
-            .show(context, |ui| self.contents(ui, proxy, latest));
-        open
+            .show(context, |ui| {
+                self.contents(ui, proxy_running, latest, &mut actions);
+            });
+        if !open {
+            actions.push(ReplayAction::Close);
+        }
+        actions
     }
 
     fn contents(
         &mut self,
         ui: &mut egui::Ui,
-        proxy: Option<&ProxyHandle>,
+        proxy_running: bool,
         latest: Option<&Exchange>,
+        actions: &mut Vec<ReplayAction>,
     ) {
         ui.label(format!("Original #{}", self.draft.original.id().value()));
         ui.label("Redacted values must be entered or disabled. Hop-by-hop headers are removed; Content-Length is calculated.");
@@ -87,7 +103,7 @@ impl ReplayPanel {
                         ui.selectable_value(&mut self.draft.method, method.to_owned(), method);
                     }
                 });
-            let url_width = ui.available_width().max(120.0);
+            let url_width = Layout::REPLAY_URL_WIDTH.fit(ui.available_width());
             ui.add(egui::TextEdit::singleline(&mut self.draft.url).desired_width(url_width));
         });
         self.query_ui(ui);
@@ -112,8 +128,8 @@ impl ReplayPanel {
                 });
             }
         });
-        self.body_ui(ui);
-        self.send_ui(ui, proxy);
+        self.body_ui(ui, actions);
+        self.send_ui(ui, proxy_running, actions);
         self.comparison_ui(ui, latest);
     }
     fn query_ui(&mut self, ui: &mut egui::Ui) {
@@ -125,7 +141,7 @@ impl ReplayPanel {
         });
     }
 
-    fn body_ui(&mut self, ui: &mut egui::Ui) {
+    fn body_ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<ReplayAction>) {
         ui.strong("Body");
         let content_type = self
             .draft
@@ -177,24 +193,17 @@ impl ReplayPanel {
             self.body_source = None;
         }
         ui.horizontal_wrapped(|ui| {
-            let file_width = (ui.available_width() - 180.0).clamp(140.0, 320.0);
+            let file_width = Layout::REPLAY_FILE_WIDTH.fit(ui.available_width());
             ui.add(egui::TextEdit::singleline(&mut self.file).desired_width(file_width));
             if ui.button("Load complete body file").clicked() {
-                match self.draft.load_body_file(Path::new(&self.file)) {
-                    Ok(()) => {
-                        self.body = BodyView::new(&self.draft.body);
-                        self.body_source = Some(self.file.clone());
-                        self.error = None;
-                    }
-                    Err(error) => self.error = Some(error.to_string()),
-                }
+                actions.push(ReplayAction::LoadBody);
             }
         });
         if self.draft.body_missing {
             ui.colored_label(crate::ui::style::theme::Palette::of(ui).warning, "Capture is incomplete. Load the full body; omitted headers require another complete capture.");
         }
     }
-    fn send_ui(&mut self, ui: &mut egui::Ui, proxy: Option<&ProxyHandle>) {
+    fn send_ui(&mut self, ui: &mut egui::Ui, proxy_running: bool, actions: &mut Vec<ReplayAction>) {
         if self.draft.needs_confirmation() && !self.skip_confirmation {
             ui.checkbox(
                 &mut self.confirmed,
@@ -213,36 +222,18 @@ impl ReplayPanel {
                 !self.draft.needs_confirmation() || self.confirmed || self.skip_confirmation;
             if ui
                 .add_enabled(
-                    !running && approved && proxy.is_some(),
+                    !running && approved && proxy_running,
                     egui::Button::new("Send"),
                 )
                 .clicked()
-                && let Some(proxy) = proxy
             {
-                match proxy.replay(&self.draft) {
-                    Ok(task) => {
-                        self.task = Some(task);
-                        self.error = None;
-                        self.confirmed = false;
-                    }
-                    Err(error) => self.error = Some(error.to_string()),
-                }
+                actions.push(ReplayAction::Send);
             }
-            if running
-                && ui.button("Cancel").clicked()
-                && let Some(task) = &self.task
-            {
-                task.cancel();
+            if running && ui.button("Cancel").clicked() {
+                actions.push(ReplayAction::Cancel);
             }
             if ui.button("Reset to original").clicked() {
-                match ReplayDraft::new(self.draft.original.clone()) {
-                    Ok(draft) => {
-                        self.body = BodyView::new(&draft.body);
-                        self.body_source = None;
-                        self.draft = draft;
-                    }
-                    Err(error) => self.error = Some(error.to_string()),
-                }
+                actions.push(ReplayAction::Reset);
             }
             ui.checkbox(&mut self.compare, "Compare with original");
         });
@@ -250,6 +241,45 @@ impl ReplayPanel {
             ui.colored_label(crate::ui::style::theme::Palette::of(ui).error, error);
         }
     }
+    pub(crate) fn apply(&mut self, action: ReplayAction, proxy: Option<&ProxyHandle>) {
+        match action {
+            ReplayAction::LoadBody => match self.draft.load_body_file(Path::new(&self.file)) {
+                Ok(()) => {
+                    self.body = BodyView::new(&self.draft.body);
+                    self.body_source = Some(self.file.clone());
+                    self.error = None;
+                }
+                Err(error) => self.error = Some(error.to_string()),
+            },
+            ReplayAction::Send => {
+                if let Some(proxy) = proxy {
+                    match proxy.replay(&self.draft) {
+                        Ok(task) => {
+                            self.task = Some(task);
+                            self.error = None;
+                            self.confirmed = false;
+                        }
+                        Err(error) => self.error = Some(error.to_string()),
+                    }
+                }
+            }
+            ReplayAction::Cancel => {
+                if let Some(task) = &self.task {
+                    task.cancel();
+                }
+            }
+            ReplayAction::Reset => match ReplayDraft::new(self.draft.original.clone()) {
+                Ok(draft) => {
+                    self.body = BodyView::new(&draft.body);
+                    self.body_source = None;
+                    self.draft = draft;
+                }
+                Err(error) => self.error = Some(error.to_string()),
+            },
+            ReplayAction::Close => {}
+        }
+    }
+
     fn comparison_ui(&self, ui: &mut egui::Ui, latest: Option<&Exchange>) {
         if self.compare {
             let original = &self.draft.original;
@@ -296,10 +326,14 @@ impl Drop for ReplayPanel {
 }
 
 fn pair_input_widths(ui: &egui::Ui) -> (f32, f32) {
-    let controls_width = ui.spacing().item_spacing.x.mul_add(3.0, 64.0);
-    let inputs = (ui.available_width() - controls_width).max(140.0);
-    let name_width = (inputs * 0.36).clamp(72.0, 200.0);
-    let value_width = (inputs - name_width).max(72.0);
+    let controls_width = ui
+        .spacing()
+        .item_spacing
+        .x
+        .mul_add(3.0, Layout::REPLAY_PAIR_CONTROL_WIDTH);
+    let inputs = (ui.available_width() - controls_width).max(Layout::REPLAY_PAIR_MIN_WIDTH);
+    let name_width = Layout::REPLAY_PAIR_LABEL_WIDTH.fit(inputs * 0.36);
+    let value_width = (inputs - name_width).max(Layout::REPLAY_PAIR_MIN_VALUE);
     (name_width, value_width)
 }
 

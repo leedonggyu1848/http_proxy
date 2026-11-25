@@ -166,7 +166,7 @@ impl TreeView {
             }
             ui.label("Search:");
             let mut query = self.query.clone();
-            let search_width = ui.available_width().clamp(100.0, 180.0);
+            let search_width = Layout::TREE_SEARCH_WIDTH.fit(ui.available_width());
             if ui
                 .add(egui::TextEdit::singleline(&mut query).desired_width(search_width))
                 .changed()

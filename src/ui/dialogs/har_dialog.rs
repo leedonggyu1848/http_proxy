@@ -1,5 +1,6 @@
 //! The `Export HAR` window: which records, what to include, and where to save.
 
+use crate::ui::style::tokens::Layout;
 use std::path::PathBuf;
 
 use eframe::egui;
@@ -77,8 +78,8 @@ impl HarDialog {
         let mut confirmed = None;
         let viewport = context.content_rect();
         let center = viewport.center();
-        let max_width = (viewport.width() - 32.0).clamp(240.0, 460.0);
-        let max_height = (viewport.height() - 48.0).max(200.0);
+        let max_width = Layout::HAR_WIDTH.fit(viewport.width());
+        let max_height = Layout::HAR_HEIGHT.fit(viewport.height());
         egui::Window::new("Export HAR")
             .open(&mut open)
             .pivot(egui::Align2::CENTER_CENTER)
@@ -127,7 +128,7 @@ impl HarDialog {
         );
         ui.separator();
         ui.label("File");
-        let path_width = ui.available_width().clamp(180.0, 420.0);
+        let path_width = Layout::HAR_PATH_WIDTH.fit(ui.available_width());
         ui.add(
             egui::TextEdit::singleline(&mut self.path)
                 .desired_width(path_width)
