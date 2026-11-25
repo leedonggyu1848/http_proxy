@@ -1,0 +1,18 @@
+[package]
+name = "http-inspector-encoding"
+description = "HTTP Content-Encoding parsing and streaming decoders for HTTP Inspector"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+brotli-decompressor.workspace = true
+flate2.workspace = true
+thiserror.workspace = true
+zstd.workspace = true
+
+[lints]
+workspace = true

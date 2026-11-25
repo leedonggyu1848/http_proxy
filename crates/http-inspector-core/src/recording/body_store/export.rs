@@ -11,10 +11,10 @@ use tempfile::NamedTempFile;
 
 use super::file_name::numbered;
 use super::index::Segment;
+use http_inspector_encoding::{EmptyTokens, Encodings, ParseError};
 use http_inspector_exchange::ReadBodyOutcome;
 
-/// Most `Content-Encoding` layers decoded for one body.
-const MAX_ENCODINGS: usize = 4;
+const BROTLI_BUFFER: usize = 64 * 1024;
 /// Decoded output is always allowed up to this size.
 const DECODED_FLOOR_BYTES: u64 = 256 * 1024 * 1024;
 /// Decoded output may otherwise be this many times the encoded size.
@@ -35,61 +35,19 @@ pub enum SaveFormat {
     AsReceived,
 }
 
-/// A supported `Content-Encoding` layer.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ContentEncoding {
-    Gzip,
-    Deflate,
-    Brotli,
-    Zstd,
-}
-
-impl ContentEncoding {
-    /// Parses `Content-Encoding` values into the layers in the order they
-    /// were applied, without `identity`.
-    pub(super) fn parse_all(values: &[String]) -> io::Result<Vec<Self>> {
-        let layers: Vec<_> = values
-            .iter()
-            .flat_map(|value| value.split(','))
-            .map(str::trim)
-            .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("identity"))
-            .map(Self::parse)
-            .collect::<io::Result<_>>()?;
-        if layers.len() > MAX_ENCODINGS {
-            return Err(io::Error::new(
+pub(super) fn storage_encodings(values: &[String]) -> io::Result<Encodings> {
+    Encodings::parse(values.iter().map(String::as_str), EmptyTokens::Skip).map_err(|error| {
+        match error {
+            ParseError::TooManyLayers => io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Too many Content-Encoding layers to decode safely; save the body as received",
-            ));
-        }
-        Ok(layers)
-    }
-
-    fn parse(value: &str) -> io::Result<Self> {
-        match value.to_ascii_lowercase().as_str() {
-            "gzip" | "x-gzip" => Ok(Self::Gzip),
-            "deflate" => Ok(Self::Deflate),
-            "br" => Ok(Self::Brotli),
-            "zstd" => Ok(Self::Zstd),
-            _ => Err(io::Error::new(
+            ),
+            ParseError::Unsupported(value) => io::Error::new(
                 io::ErrorKind::Unsupported,
                 format!("Content-Encoding {value:?} cannot be decoded; save the body as received"),
-            )),
+            ),
         }
-    }
-
-    fn decoder<'a>(self, reader: Box<dyn Read + 'a>) -> io::Result<Box<dyn Read + 'a>> {
-        Ok(match self {
-            Self::Gzip => Box::new(flate2::read::MultiGzDecoder::new(reader)),
-            Self::Deflate => Box::new(flate2::read::ZlibDecoder::new(reader)),
-            Self::Brotli => Box::new(brotli_decompressor::Decompressor::new(reader, 64 * 1024)),
-            Self::Zstd => {
-                let mut decoder = zstd::stream::read::Decoder::new(reader)?;
-                // HTTP zstd limits the window to 8 MiB; refuse larger allocations.
-                decoder.window_log_max(23)?;
-                Box::new(decoder)
-            }
-        })
-    }
+    })
 }
 
 /// Reads stored segments of the data file in order, as one stream.
@@ -150,7 +108,7 @@ pub(super) struct CopyPlan {
     pub(super) segments: Vec<Segment>,
     pub(super) stored_bytes: u64,
     /// Layers to remove, in the order they were applied.
-    pub(super) decode: Vec<ContentEncoding>,
+    pub(super) decode: Encodings,
     /// Whether the stored body is known to be incomplete; decoding then
     /// keeps what could be decoded instead of failing at the cut.
     pub(super) incomplete: bool,
@@ -293,16 +251,10 @@ fn write_body(copy: CopyPlan, output: &mut impl Write) -> io::Result<u64> {
     let limit = DECODED_FLOOR_BYTES
         .max(stored_bytes.saturating_mul(DECODED_RATIO))
         .min(DECODED_CEILING_BYTES);
-    let mut reader: Box<dyn Read> = Box::new(io::BufReader::new(raw));
-    for layer in decode.iter().rev() {
-        reader = Box::new(layer.decoder(reader)?.take(limit.saturating_add(1)));
-    }
+    let probe = limit.saturating_add(1);
+    let reader = decode.reader(io::BufReader::new(raw), probe, BROTLI_BUFFER)?;
     let mut output = io::BufWriter::new(output);
-    let copied = copy_decoded(
-        &mut reader.take(limit.saturating_add(1)),
-        &mut output,
-        incomplete,
-    );
+    let copied = copy_decoded(&mut reader.take(probe), &mut output, incomplete);
     output.flush()?;
     let written = copied?;
     if written > limit {
@@ -347,10 +299,10 @@ fn copy_decoded(
 pub(super) fn read_decoded_segments(
     data: File,
     segments: Vec<Segment>,
-    decode: &[ContentEncoding],
+    decode: &Encodings,
     max_decoded_bytes: usize,
 ) -> ReadBodyOutcome {
-    let reader: Box<dyn Read> = Box::new(io::BufReader::new(SegmentReader::new(data, segments)));
+    let reader = io::BufReader::new(SegmentReader::new(data, segments));
     read_decoded_bounded(reader, decode, max_decoded_bytes)
 }
 
@@ -360,7 +312,7 @@ pub(super) fn decode_complete_bytes(
     encodings: &[String],
     max_decoded_bytes: usize,
 ) -> ReadBodyOutcome {
-    let Ok(decode) = ContentEncoding::parse_all(encodings) else {
+    let Ok(decode) = storage_encodings(encodings) else {
         return ReadBodyOutcome::DecodeFailed;
     };
     if decode.is_empty() {
@@ -370,23 +322,19 @@ pub(super) fn decode_complete_bytes(
             ReadBodyOutcome::Complete(bytes.to_vec())
         };
     }
-    let reader: Box<dyn Read + '_> = Box::new(bytes);
-    read_decoded_bounded(reader, &decode, max_decoded_bytes)
+    read_decoded_bounded(bytes, &decode, max_decoded_bytes)
 }
 
-fn read_decoded_bounded<'a>(
-    mut reader: Box<dyn Read + 'a>,
-    decode: &[ContentEncoding],
+fn read_decoded_bounded(
+    reader: impl Read,
+    decode: &Encodings,
     max_decoded_bytes: usize,
 ) -> ReadBodyOutcome {
     let limit = u64::try_from(max_decoded_bytes).unwrap_or(u64::MAX);
     let probe = limit.saturating_add(1);
-    for layer in decode.iter().rev() {
-        let Ok(wrapped) = layer.decoder(reader) else {
-            return ReadBodyOutcome::DecodeFailed;
-        };
-        reader = Box::new(wrapped.take(probe));
-    }
+    let Ok(reader) = decode.reader(reader, probe, BROTLI_BUFFER) else {
+        return ReadBodyOutcome::DecodeFailed;
+    };
     let mut out = Vec::new();
     let mut bounded = reader.take(probe);
     if bounded.read_to_end(&mut out).is_err() {
@@ -446,7 +394,7 @@ mod tests {
         Ok((file, reader))
     }
 
-    fn copy(data: File, segments: Vec<Segment>, decode: Vec<ContentEncoding>) -> CopyPlan {
+    fn copy(data: File, segments: Vec<Segment>, decode: Encodings) -> CopyPlan {
         let stored_bytes = segments.iter().map(|segment| segment.length).sum();
         CopyPlan {
             data,
@@ -518,13 +466,13 @@ mod tests {
             }]
         };
         let (raw, raw_bytes, _, _) = save(
-            copy(data.try_clone()?, whole(), Vec::new()),
+            copy(data.try_clone()?, whole(), Encodings::default()),
             directory.path(),
             "body.gz",
         )?;
         assert_eq!(std::fs::read(&raw)?, encoded);
         assert_eq!(raw_bytes, encoded.len() as u64);
-        let decode = vec![ContentEncoding::Gzip];
+        let decode = storage_encodings(&["gzip".to_owned()])?;
         let (decoded, decoded_bytes, _, _) = save(
             copy(data.try_clone()?, whole(), decode.clone()),
             directory.path(),
@@ -551,26 +499,18 @@ mod tests {
                 length: cut as u64,
             }]
         };
-        let complete = copy(data.try_clone()?, segments(), vec![ContentEncoding::Gzip]);
+        let complete = copy(
+            data.try_clone()?,
+            segments(),
+            storage_encodings(&["gzip".to_owned()])?,
+        );
         assert!(save(complete, directory.path(), "cut").is_err());
-        let mut partial = copy(data, segments(), vec![ContentEncoding::Gzip]);
+        let mut partial = copy(data, segments(), storage_encodings(&["gzip".to_owned()])?);
         partial.incomplete = true;
         let (path, _, _, _) = save(partial, directory.path(), "cut.partial")?;
         let kept = std::fs::read(path)?;
         assert!(original.starts_with(&kept));
         Ok(())
-    }
-
-    #[test]
-    fn parses_encoding_layers_and_rejects_unknown_ones() {
-        let values = ["gzip, identity".to_owned(), "BR".to_owned()];
-        assert_eq!(
-            ContentEncoding::parse_all(&values).ok(),
-            Some(vec![ContentEncoding::Gzip, ContentEncoding::Brotli])
-        );
-        assert!(ContentEncoding::parse_all(&["compress".to_owned()]).is_err());
-        assert!(ContentEncoding::parse_all(&["gzip,gzip,gzip,gzip,gzip".to_owned()]).is_err());
-        assert_eq!(ContentEncoding::parse_all(&[]).ok(), Some(Vec::new()));
     }
 
     #[test]
@@ -584,7 +524,7 @@ mod tests {
             length: BROTLI.len() as u64,
         }];
         let (path, _, _, _) = save(
-            copy(data, segments, vec![ContentEncoding::Brotli]),
+            copy(data, segments, storage_encodings(&["br".to_owned()])?),
             directory.path(),
             "br",
         )?;
@@ -596,7 +536,7 @@ mod tests {
             length: zstd.len() as u64,
         }];
         let (path, _, _, _) = save(
-            copy(data, segments, vec![ContentEncoding::Zstd]),
+            copy(data, segments, storage_encodings(&["zstd".to_owned()])?),
             directory.path(),
             "zst",
         )?;

@@ -203,6 +203,36 @@ fn query_string_exports_raw_ordered_pairs_before_the_fragment() {
 }
 
 #[test]
+fn omits_complete_bodies_with_unknown_or_invalid_encoding() -> TestResult {
+    for (encoding, reason) in [
+        ("identity, Custom, ", "Unsupported Content-Encoding"),
+        ("gzip", "Could not decompress"),
+    ] {
+        let record = ExchangeBuilder::http(Method::GET, format!("http://{TEST_HOST}/"))?.respond(
+            ResponseFixture::new(StatusCode::OK)
+                .header(CONTENT_ENCODING, HeaderValue::from_static(encoding))
+                .body(b"readable wire bytes", BodyLifecycle::Complete),
+        )?;
+        let options = HarOptions {
+            include_bodies: true,
+            ..HarOptions::default()
+        };
+        let har = document(&[record], options, SystemTime::now());
+        let [entry] = entries(&har) else {
+            return Err("expected one entry".into());
+        };
+        let content = &entry["response"]["content"];
+        assert!(content.get("text").is_none());
+        assert!(
+            content["comment"]
+                .as_str()
+                .is_some_and(|note| note.contains(reason))
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn truncated_binary_and_compressed_bodies_are_marked() -> TestResult {
     let get = || -> Result<ExchangeBuilder, Box<dyn Error>> {
         Ok(

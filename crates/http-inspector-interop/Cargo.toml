@@ -9,6 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+http-inspector-encoding.workspace = true
 http.workspace = true
 http-inspector-analysis.workspace = true
 http-inspector-content.workspace = true

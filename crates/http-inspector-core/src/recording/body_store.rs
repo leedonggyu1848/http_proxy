@@ -103,12 +103,13 @@ fn read_captured_body(
     })
 }
 
-use self::export::{ContentEncoding, CopyPlan, decode_complete_bytes, read_decoded_segments};
+use self::export::{CopyPlan, decode_complete_bytes, read_decoded_segments, storage_encodings};
 use self::file_name::NameSource;
 use self::index::{BodyKey, Index};
 use self::location::SessionDirectory;
 use self::writer::Command;
 use super::lock_recovering;
+use http_inspector_encoding::{EmptyTokens, Encodings, tokens};
 use http_inspector_exchange::BodySide;
 use http_inspector_exchange::{
     BodyLifecycle, BodySource, Exchange, MediaType, Outcome, ReadBodyOutcome, RecordId,
@@ -358,8 +359,7 @@ impl BodyStore {
         if body.stored_bytes() == 0 {
             return ReadBodyOutcome::Complete(Vec::new());
         }
-        let layers = encoding_layers(encodings);
-        let Ok(decode) = ContentEncoding::parse_all(&layers) else {
+        let Ok(decode) = storage_encodings(encodings) else {
             return ReadBodyOutcome::DecodeFailed;
         };
         let limit_u64 = u64::try_from(max_decoded_bytes).unwrap_or(u64::MAX);
@@ -415,10 +415,9 @@ impl BodyStore {
                     "This body was not stored; it was captured before the body store opened or was never forwarded",
                 )
             })?;
-        let layers = encoding_layers(&request.encodings);
         let (decode, kept) = match request.format {
-            SaveFormat::Decoded => (ContentEncoding::parse_all(&layers)?, Vec::new()),
-            SaveFormat::AsReceived => (Vec::new(), layers),
+            SaveFormat::Decoded => (storage_encodings(&request.encodings)?, Vec::new()),
+            SaveFormat::AsReceived => (Encodings::default(), encoding_layers(&request.encodings)),
         };
         // A 206 body shorter or longer than its Content-Range is not the
         // range its name promises.
@@ -528,14 +527,9 @@ impl BodyStore {
 /// The next numbering attempt for each intended file path.
 type NameNumbers = std::collections::HashMap<PathBuf, u32>;
 
-/// Splits `Content-Encoding` values into lowercase layers in the order they
-/// were applied, without `identity`.
+/// Names retained in raw filenames and compared when grouping byte ranges.
 fn encoding_layers(values: &[String]) -> Vec<String> {
-    values
-        .iter()
-        .flat_map(|value| value.split(','))
-        .map(str::trim)
-        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("identity"))
+    tokens(values.iter().map(String::as_str), EmptyTokens::Skip)
         .map(str::to_ascii_lowercase)
         .collect()
 }
