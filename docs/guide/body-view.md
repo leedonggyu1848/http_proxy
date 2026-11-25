@@ -76,11 +76,11 @@ CSS 실제 화면 캡처는 macOS 접근성 권한이 없는 환경에서 추가
 
 ![같은 JSON 응답의 Raw 보기](../screenshots/body-raw-json.png)
 
-다음은 어두운 테마에서 minified HTML 응답을 Pretty로 본 화면과, 쿼리 매개변수·헤더 강조를 보여 주는 **Headers** 탭이다.
+다음은 어두운 테마에서 minified HTML 응답을 Pretty로 본 화면과, 쿼리 매개변수와 헤더를 보여 주는 **Headers** 탭이다. **Headers** 탭은 이름을 흐린 글자로, 값을 기본 글자로 표시한다.
 
 ![어두운 테마의 minified HTML Pretty 보기](../screenshots/body-pretty-html-dark.png)
 
-![쿼리 매개변수와 헤더 이름 강조](../screenshots/headers-query-highlight.png)
+![이름을 흐린 글자로 표시한 쿼리 매개변수와 요청·응답 헤더](../screenshots/headers-query-highlight.png)
 
 ## 이미지 응답 미리보기
 

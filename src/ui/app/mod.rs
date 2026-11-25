@@ -8,6 +8,7 @@ use self::state::{
 use crate::ui::dialogs::har_dialog;
 use crate::ui::map::{MapAction, MapExportFormat, MapSubView};
 use crate::ui::style::fonts;
+use crate::ui::style::tokens::ThemeTokens;
 
 use eframe::egui;
 use http_inspector_analysis::pipeline::AnalysisPipeline;
@@ -389,6 +390,14 @@ impl InspectorApp {
     }
 }
 
+/// Fills content panes one surface above the window chrome around them.
+fn paint_pane_surfaces(ui: &egui::Ui, panes: [egui::Rect; 2]) {
+    let fill = ThemeTokens::for_theme(ui.ctx().theme()).surfaces.panel;
+    for pane in panes {
+        ui.painter().rect_filled(pane, 0.0, fill);
+    }
+}
+
 fn split_panes<R>(
     ui: &mut egui::Ui,
     height: f32,
@@ -456,6 +465,7 @@ fn split_panes<R>(
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
     right_ui.shrink_clip_rect(right_rect);
+    paint_pane_surfaces(&main, [left_rect, right_outer]);
     let result = render(&mut left_ui, &mut right_ui);
 
     let handle_rect = egui::Rect::from_x_y_ranges(

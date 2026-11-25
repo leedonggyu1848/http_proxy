@@ -4,6 +4,7 @@ use eframe::egui::Color32;
 use http_inspector_exchange::{Outcome, TunnelPreview, TunnelState};
 
 use crate::ui::style::theme::Palette;
+use crate::ui::style::tokens::Tone;
 
 /// Orders responses by status code, then every other outcome after them.
 pub(super) const fn status_rank(outcome: &Outcome) -> (u8, u16) {
@@ -45,17 +46,50 @@ fn short_text(outcome: &Outcome) -> String {
 
 /// Status color for one outcome in the current theme's palette.
 fn outcome_color(outcome: &Outcome, palette: &Palette) -> Color32 {
+    match outcome_tone(outcome) {
+        Tone::Neutral => palette.muted,
+        Tone::Info => palette.info,
+        Tone::Success => palette.success,
+        Tone::Warning => palette.warning,
+        Tone::Danger => palette.error,
+    }
+}
+
+/// Meaning of one outcome: 2xx success, 1xx and 3xx informational, 4xx a
+/// warning, 5xx and failures danger, and pending or open tunnels neutral.
+pub(crate) fn outcome_tone(outcome: &Outcome) -> Tone {
     match outcome {
-        Outcome::InFlight => palette.muted,
-        Outcome::Response(response) if response.status().as_u16() < 400 => palette.success,
-        Outcome::Response(_) | Outcome::Failed { .. } => palette.error,
-        Outcome::Tunnel(tunnel) => match tunnel.snapshot().state() {
-            TunnelState::Open | TunnelState::Closed => palette.info,
-            TunnelState::Failed { .. } => palette.error,
-            TunnelState::Incomplete => palette.warning,
+        Outcome::InFlight | Outcome::InspectionEstablished => Tone::Neutral,
+        Outcome::Response(response) => match response.status().as_u16() {
+            200..=299 => Tone::Success,
+            400..=499 => Tone::Warning,
+            500..=599 => Tone::Danger,
+            _ => Tone::Info,
         },
-        Outcome::InspectionEstablished => palette.info,
-        Outcome::Cancelled | Outcome::Incomplete => palette.warning,
+        Outcome::Tunnel(tunnel) => match tunnel.snapshot().state() {
+            TunnelState::Open | TunnelState::Closed => Tone::Neutral,
+            TunnelState::Failed { .. } => Tone::Danger,
+            TunnelState::Incomplete => Tone::Warning,
+        },
+        Outcome::Failed { .. } => Tone::Danger,
+        Outcome::Cancelled | Outcome::Incomplete => Tone::Warning,
+    }
+}
+
+/// Tone of the edge mark that makes a request stand out in the list: client
+/// errors, server errors, and failed connections or tunnels.
+pub(super) fn alert_tone(outcome: &Outcome) -> Option<Tone> {
+    match outcome {
+        Outcome::Response(response) if response.status().as_u16() >= 400 => {
+            Some(outcome_tone(outcome))
+        }
+        Outcome::Failed { .. } => Some(Tone::Danger),
+        Outcome::Tunnel(tunnel)
+            if matches!(tunnel.snapshot().state(), TunnelState::Failed { .. }) =>
+        {
+            Some(Tone::Danger)
+        }
+        _ => None,
     }
 }
 
@@ -132,6 +166,33 @@ mod tests {
         assert_eq!(status_class(404), "client error");
         assert_eq!(status_class(503), "server error");
         assert_eq!(status_class(999), "nonstandard status");
+    }
+
+    #[test]
+    fn tones_follow_status_class_and_marks_only_errors() -> Result<(), Box<dyn std::error::Error>> {
+        use http::{Method, StatusCode};
+        use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
+
+        for (status, tone, alert) in [
+            (200, Tone::Success, None),
+            (301, Tone::Info, None),
+            (404, Tone::Warning, Some(Tone::Warning)),
+            (503, Tone::Danger, Some(Tone::Danger)),
+        ] {
+            let record = ExchangeBuilder::http(Method::GET, "http://example.test/")?
+                .respond(ResponseFixture::new(StatusCode::from_u16(status)?))?;
+            assert_eq!(outcome_tone(record.outcome()), tone, "{status}");
+            assert_eq!(alert_tone(record.outcome()), alert, "{status}");
+        }
+        let failed = Outcome::Failed {
+            stage: FailureStage::Connect,
+            message: "refused".to_owned(),
+        };
+        assert_eq!(alert_tone(&failed), Some(Tone::Danger));
+        assert_eq!(outcome_tone(&Outcome::InFlight), Tone::Neutral);
+        assert_eq!(alert_tone(&Outcome::InFlight), None);
+        assert_eq!(alert_tone(&Outcome::Cancelled), None);
+        Ok(())
     }
 
     #[test]

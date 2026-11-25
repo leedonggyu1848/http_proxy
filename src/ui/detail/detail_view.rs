@@ -4,7 +4,6 @@ use crate::ui::InspectorApp;
 use crate::ui::detail::body_cache::{BodySource, Capture};
 use crate::ui::detail::body_render::BodyViewCache;
 use crate::ui::detail::detail_tabs::{self, DetailTab};
-use crate::ui::detail::highlight::SyntaxPalette;
 use crate::ui::detail::image_view;
 use crate::ui::detail::search::Query;
 use crate::ui::detail::search::highlight::{self, MatchColors};
@@ -220,7 +219,7 @@ fn render_query(ui: &mut egui::Ui, target: &str) {
         return;
     }
     ui.strong("Query parameters");
-    let key_color = SyntaxPalette::for_theme(ui.ctx().theme()).key;
+    let key_color = Palette::of(ui).muted;
     let bounds = GridBounds::from_ui(ui);
     egui::Grid::new("query-parameters")
         .num_columns(2)
@@ -247,8 +246,10 @@ fn render_query(ui: &mut egui::Ui, target: &str) {
     ui.separator();
 }
 
+/// Header names in secondary text so that the values, which matter more,
+/// stand out; the `:` after each name keeps them apart without color.
 fn render_headers(ui: &mut egui::Ui, id: &str, headers: &HeaderPreview, search: Option<&Query>) {
-    let name_color = SyntaxPalette::for_theme(ui.ctx().theme()).key;
+    let name_color = Palette::of(ui).muted;
     let font = egui::TextStyle::Monospace.resolve(ui.style());
     let text_color = ui.visuals().text_color();
     let colors = MatchColors::for_theme(ui.ctx().theme());

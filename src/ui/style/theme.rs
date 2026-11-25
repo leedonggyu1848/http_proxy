@@ -3,6 +3,9 @@ use eframe::egui::{self, Color32};
 pub(crate) use egui::Theme;
 use http_inspector_file::{ExistingFile, publish};
 
+use super::tokens::{Radius, Space, ThemeTokens, TypeScale};
+
+/// Semantic text colors of the current theme, from its design tokens.
 pub(crate) struct Palette {
     pub(crate) success: Color32,
     pub(crate) error: Color32,
@@ -17,56 +20,97 @@ impl Palette {
     }
 
     pub(crate) const fn for_theme(theme: Theme) -> Self {
-        match theme {
-            Theme::Light => Self {
-                success: Color32::from_rgb(0, 90, 40),
-                error: Color32::from_rgb(160, 15, 25),
-                warning: Color32::from_rgb(110, 65, 0),
-                info: Color32::from_rgb(0, 65, 150),
-                muted: Color32::from_gray(70),
-            },
-            Theme::Dark => Self {
-                success: Color32::from_rgb(140, 240, 170),
-                error: Color32::from_rgb(255, 170, 170),
-                warning: Color32::from_rgb(255, 220, 130),
-                info: Color32::from_rgb(160, 210, 255),
-                muted: Color32::from_gray(205),
-            },
+        let tokens = ThemeTokens::for_theme(theme);
+        Self {
+            success: tokens.success,
+            error: tokens.error,
+            warning: tokens.warning,
+            info: tokens.info,
+            muted: tokens.muted,
         }
     }
 }
 
+/// egui visuals of `theme`, built from its design tokens.
 fn visuals(theme: Theme) -> egui::Visuals {
+    let tokens = ThemeTokens::for_theme(theme);
+    let surfaces = tokens.surfaces;
     let mut visuals = theme.default_visuals();
-    let palette = Palette::for_theme(theme);
-    let text = match theme {
-        Theme::Light => Color32::from_gray(35),
-        Theme::Dark => Color32::from_gray(225),
-    };
-    visuals.override_text_color = Some(text);
-    for widget in [
-        &mut visuals.widgets.noninteractive,
-        &mut visuals.widgets.inactive,
-        &mut visuals.widgets.hovered,
-        &mut visuals.widgets.active,
-        &mut visuals.widgets.open,
-    ] {
-        widget.fg_stroke.color = text;
-    }
+    visuals.override_text_color = Some(tokens.text);
     visuals.weak_text_alpha = 1.0;
-    visuals.weak_text_color = Some(palette.muted);
-    visuals.warn_fg_color = palette.warning;
-    visuals.error_fg_color = palette.error;
-    visuals.hyperlink_color = palette.info;
-    let (stripe, hover, selection) = match theme {
-        Theme::Light => (242, 232, 218),
-        Theme::Dark => (32, 40, 48),
-    };
-    visuals.faint_bg_color = Color32::from_gray(stripe);
-    visuals.widgets.hovered.bg_fill = Color32::from_gray(hover);
-    visuals.selection.bg_fill = Color32::from_gray(selection);
-    visuals.selection.stroke.color = palette.info;
+    visuals.weak_text_color = Some(tokens.muted);
+    visuals.warn_fg_color = tokens.warning;
+    visuals.error_fg_color = tokens.error;
+    visuals.hyperlink_color = tokens.info;
+
+    visuals.panel_fill = surfaces.bg;
+    visuals.window_fill = surfaces.raised;
+    visuals.extreme_bg_color = surfaces.inset;
+    visuals.text_edit_bg_color = Some(surfaces.inset);
+    visuals.code_bg_color = surfaces.stripe;
+    visuals.faint_bg_color = surfaces.stripe;
+    visuals.window_stroke.color = surfaces.border;
+    visuals.window_corner_radius = egui::CornerRadius::same(Radius::CARD);
+    visuals.menu_corner_radius = egui::CornerRadius::same(Radius::CARD);
+
+    let control = egui::CornerRadius::same(Radius::CONTROL);
+    let widgets = &mut visuals.widgets;
+    widgets.noninteractive.bg_fill = surfaces.panel;
+    widgets.noninteractive.weak_bg_fill = surfaces.panel;
+    widgets.noninteractive.bg_stroke.color = surfaces.border;
+    for (widget, fill) in [
+        (&mut widgets.inactive, surfaces.raised),
+        (&mut widgets.hovered, surfaces.hover),
+        (&mut widgets.active, surfaces.hover),
+        (&mut widgets.open, surfaces.hover),
+    ] {
+        widget.bg_fill = fill;
+        widget.weak_bg_fill = fill;
+    }
+    // Outline resting controls so that white buttons and checkboxes stay
+    // visible on light surfaces.
+    widgets.inactive.bg_stroke = egui::Stroke::new(1.0, surfaces.border);
+    widgets.hovered.bg_stroke.color = tokens.muted;
+    widgets.active.bg_stroke.color = tokens.accent;
+    for widget in [
+        &mut widgets.noninteractive,
+        &mut widgets.inactive,
+        &mut widgets.hovered,
+        &mut widgets.active,
+        &mut widgets.open,
+    ] {
+        widget.fg_stroke.color = tokens.text;
+        widget.corner_radius = control;
+    }
+    visuals.selection.bg_fill = surfaces.selection;
+    visuals.selection.stroke.color = tokens.accent;
     visuals
+}
+
+/// Applies the spacing and type scales shared by both themes.
+fn apply_scales(style: &mut egui::Style) {
+    use egui::{FontFamily, FontId, TextStyle};
+    let spacing = &mut style.spacing;
+    spacing.item_spacing = egui::vec2(Space::SM, Space::XS);
+    spacing.button_padding = egui::vec2(Space::SM, 2.0);
+    spacing.menu_margin = egui::Margin::from(Space::SM);
+    spacing.window_margin = egui::Margin::from(Space::MD);
+    spacing.indent = Space::LG;
+    for (text_style, size, family) in [
+        (
+            TextStyle::Heading,
+            TypeScale::HEADING,
+            FontFamily::Proportional,
+        ),
+        (TextStyle::Body, TypeScale::BODY, FontFamily::Proportional),
+        (TextStyle::Button, TypeScale::BODY, FontFamily::Proportional),
+        (TextStyle::Monospace, TypeScale::DATA, FontFamily::Monospace),
+        (TextStyle::Small, TypeScale::SMALL, FontFamily::Proportional),
+    ] {
+        style
+            .text_styles
+            .insert(text_style, FontId::new(size, family));
+    }
 }
 
 pub(crate) struct ThemeSettings {
@@ -101,6 +145,7 @@ impl ThemeSettings {
             .and_then(|path| std::fs::read_to_string(path).ok())
             .map_or(egui::ThemePreference::System, |value| parse(&value));
         context.options_mut(|options| options.fallback_theme = Theme::Dark);
+        context.all_styles_mut(apply_scales);
         for theme in [Theme::Light, Theme::Dark] {
             let visuals = visuals(theme);
             context.set_visuals_of(theme, visuals);
@@ -167,37 +212,30 @@ impl ThemeSettings {
 /// text widget of `theme` can have.
 #[cfg(test)]
 pub(crate) fn assert_readable(theme: Theme, foreground: Color32) {
-    fn luminance(color: Color32) -> f64 {
-        let linear = |channel: u8| {
-            let value = f64::from(channel) / 255.0;
-            if value <= 0.04045 {
-                value / 12.92
-            } else {
-                ((value + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.0722_f64.mul_add(
-            linear(color.b()),
-            0.7152_f64.mul_add(linear(color.g()), 0.2126 * linear(color.r())),
-        )
-    }
-    let visuals = visuals(theme);
-    for background in [
-        visuals.panel_fill,
-        visuals.window_fill,
-        visuals.extreme_bg_color,
-        visuals.faint_bg_color,
-        visuals.widgets.hovered.bg_fill,
-        visuals.selection.bg_fill,
-    ] {
-        let a = luminance(foreground);
-        let b = luminance(background);
-        let contrast = (a.max(b) + 0.05) / (a.min(b) + 0.05);
+    for background in text_backgrounds(theme) {
+        let contrast = super::tokens::contrast_ratio(foreground, background);
         assert!(
             contrast >= 4.5,
             "{theme:?}: {foreground:?} on {background:?}: {contrast}"
         );
     }
+}
+
+/// Every surface that text of `theme` is drawn on.
+#[cfg(test)]
+fn text_backgrounds(theme: Theme) -> [Color32; 9] {
+    let visuals = visuals(theme);
+    [
+        visuals.panel_fill,
+        ThemeTokens::for_theme(theme).surfaces.panel,
+        visuals.window_fill,
+        visuals.extreme_bg_color,
+        visuals.faint_bg_color,
+        visuals.widgets.inactive.weak_bg_fill,
+        visuals.widgets.hovered.bg_fill,
+        visuals.widgets.hovered.weak_bg_fill,
+        visuals.selection.bg_fill,
+    ]
 }
 
 #[cfg(test)]
@@ -215,6 +253,8 @@ mod tests {
                 palette.info,
                 palette.muted,
                 visuals(theme).text_color(),
+                // Selected rows draw their text in the selection stroke color.
+                visuals(theme).selection.stroke.color,
             ] {
                 assert_readable(theme, foreground);
             }
