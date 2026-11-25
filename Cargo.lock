@@ -1747,10 +1747,10 @@ dependencies = [
 name = "http-inspector-content"
 version = "0.1.0"
 dependencies = [
- "brotli-decompressor",
  "cssparser",
  "flate2",
  "gif",
+ "http-inspector-encoding",
  "http-inspector-exchange",
  "image",
  "image-webp",
@@ -1760,20 +1760,19 @@ dependencies = [
  "resvg",
  "serde_json",
  "thiserror 2.0.21",
- "zstd",
 ]
 
 [[package]]
 name = "http-inspector-core"
 version = "0.1.0"
 dependencies = [
- "brotli-decompressor",
  "bytes",
  "flate2",
  "fs2",
  "http",
  "http-body",
  "http-body-util",
+ "http-inspector-encoding",
  "http-inspector-exchange",
  "http-inspector-file",
  "hyper",
@@ -1789,6 +1788,16 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tracing",
+ "zstd",
+]
+
+[[package]]
+name = "http-inspector-encoding"
+version = "0.1.0"
+dependencies = [
+ "brotli-decompressor",
+ "flate2",
+ "thiserror 2.0.21",
  "zstd",
 ]
 
@@ -1816,6 +1825,7 @@ dependencies = [
  "http",
  "http-inspector-analysis",
  "http-inspector-content",
+ "http-inspector-encoding",
  "http-inspector-exchange",
  "http-inspector-file",
  "serde_json",

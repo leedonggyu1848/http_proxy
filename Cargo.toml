@@ -32,6 +32,7 @@ http-body-util = "0.1"
 http-inspector-analysis = { path = "crates/http-inspector-analysis" }
 http-inspector-content = { path = "crates/http-inspector-content" }
 http-inspector-core = { path = "crates/http-inspector-core" }
+http-inspector-encoding = { path = "crates/http-inspector-encoding" }
 http-inspector-exchange = { path = "crates/http-inspector-exchange" }
 http-inspector-file = { path = "crates/http-inspector-file" }
 http-inspector-interop = { path = "crates/http-inspector-interop" }

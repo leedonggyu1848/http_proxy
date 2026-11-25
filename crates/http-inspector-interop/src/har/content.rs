@@ -8,6 +8,7 @@
 use serde_json::{Map, Value, json};
 
 use http_inspector_content::decode as body_view;
+use http_inspector_encoding::{EmptyTokens, tokens};
 use http_inspector_exchange::{
     BodyLifecycle, BodyPreview, BodyRetention, BodySnapshot, HeaderPreview,
 };
@@ -132,11 +133,9 @@ fn encodings(headers: &HeaderPreview) -> Vec<&str> {
 }
 
 fn is_encoded(encodings: &[&str]) -> bool {
-    encodings
-        .iter()
-        .flat_map(|value| value.split(','))
-        .map(str::trim)
-        .any(|encoding| !encoding.is_empty() && !encoding.eq_ignore_ascii_case("identity"))
+    tokens(encodings.iter().copied(), EmptyTokens::Skip)
+        .next()
+        .is_some()
 }
 
 fn body_text(snapshot: Option<&BodySnapshot>, encodings: &[&str]) -> BodyText {

@@ -3,13 +3,15 @@
 use std::fmt::Write as _;
 use std::io::{self, Write as _};
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
+use http_inspector_content::decode::{BodyText, decode};
 use http_inspector_core::interception::{ProxyConfig, ProxyHandle};
 use http_inspector_core::recording::{
     BodyLayout, BodyStore, SaveBody, SaveFormat, SavedBody, StoreGap,
 };
-use http_inspector_exchange::{BodyLifecycle, BodySide, Exchange};
+use http_inspector_exchange::{BodyLifecycle, BodySide, Exchange, Outcome};
+use http_inspector_interop::har::{HarOptions, document};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -52,8 +54,8 @@ fn reply_for(path: &str) -> Reply {
             pseudo_random(300_000, 2),
         ),
         "/api/data" => Reply::new(
-            "Content-Type: application/json\r\nContent-Encoding: gzip\r\n",
-            gzip(JSON).unwrap_or_default(),
+            "Content-Type: application/json\r\nContent-Encoding: identity, BR\r\nContent-Encoding: x-gzip\r\n",
+            gzip(include_bytes!("fixtures/body-preview.json.br")).unwrap_or_default(),
         ),
         "/evil" => Reply::new(
             "Content-Type: text/plain\r\nContent-Disposition: attachment; filename*=UTF-8''..%2F..%2F%2Fetc%2Fpasswd%0A\r\n",
@@ -311,6 +313,30 @@ impl Harness {
     }
 }
 
+/// Checks the same captured bytes that the raw and decoded saves read.
+fn assert_preview_and_har(exchange: &Exchange) -> TestResult {
+    let Outcome::Response(response) = exchange.outcome() else {
+        return Err("missing response".into());
+    };
+    let snapshot = response.body().snapshot().ok_or("no body snapshot")?;
+    let encodings: Vec<_> = response.headers().get("content-encoding").collect();
+    let BodyText::Ready { text, .. } = decode(snapshot.bytes(), &encodings, true) else {
+        return Err("unavailable preview".into());
+    };
+    assert_eq!(text.as_bytes(), JSON);
+    let options = HarOptions {
+        include_bodies: true,
+        ..HarOptions::default()
+    };
+    let har = document(std::slice::from_ref(exchange), options, SystemTime::now());
+    assert_eq!(
+        har.pointer("/log/entries/0/response/content/text")
+            .and_then(serde_json::Value::as_str),
+        Some(std::str::from_utf8(JSON)?)
+    );
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn saved_bodies_match_the_received_bytes() -> TestResult {
     let mut harness = Harness::start(u64::MAX).await?;
@@ -336,6 +362,7 @@ async fn saved_bodies_match_the_received_bytes() -> TestResult {
     }
 
     let encoded = harness.fetch("GET", "/api/data", b"").await?;
+    assert_preview_and_har(&harness.exchange("/api/data").await?)?;
     let raw = harness
         .save(
             "/api/data",
@@ -344,7 +371,7 @@ async fn saved_bodies_match_the_received_bytes() -> TestResult {
             output.path(),
         )
         .await?;
-    assert_eq!(raw.path(), output.path().join("data.json.gz"));
+    assert_eq!(raw.path(), output.path().join("data.json.br.gz"));
     assert_eq!(sha256(&std::fs::read(raw.path())?), sha256(&encoded));
     let decoded = harness
         .save(

@@ -1,7 +1,8 @@
 use std::io::{self, Read};
 
+use http_inspector_encoding::{EmptyTokens, Encodings, ParseError};
+
 const PREVIEW_BYTES: usize = 8 * 1024;
-const MAX_ENCODINGS: usize = 4;
 const INTERMEDIATE_BYTES: u64 = 64 * 1024;
 
 /// Reason a `Content-Encoding` body could not be decoded.
@@ -37,7 +38,7 @@ pub enum BodyText {
 
 #[must_use]
 pub fn decode(bytes: &[u8], encodings: &[&str], complete: bool) -> BodyText {
-    let encodings = match content_encodings(encodings) {
+    let encodings = match preview_encodings(encodings) {
         Ok(encodings) => encodings,
         Err(error) => return BodyText::Unavailable(error.to_string()),
     };
@@ -50,6 +51,7 @@ pub fn decode(bytes: &[u8], encodings: &[&str], complete: bool) -> BodyText {
             notice: limited.then(|| "first 8 KiB of retained bytes".to_owned()),
         };
     }
+    let names = encodings.names().collect::<Vec<_>>().join(", ");
     match read_decoded(bytes, &encodings, PREVIEW_BYTES, INTERMEDIATE_BYTES) {
         Ok((mut decoded, error)) => {
             let limited = decoded.len() > PREVIEW_BYTES;
@@ -58,8 +60,7 @@ pub fn decode(bytes: &[u8], encodings: &[&str], complete: bool) -> BodyText {
                 && (complete || decoded.is_empty())
             {
                 return BodyText::Unavailable(format!(
-                    "Could not decompress preview ({}): {error}. The captured data may be incomplete, invalid, or exceed preview limits.",
-                    encodings.join(", ")
+                    "Could not decompress preview ({names}): {error}. The captured data may be incomplete, invalid, or exceed preview limits."
                 ));
             }
             let detail = if limited {
@@ -71,10 +72,7 @@ pub fn decode(bytes: &[u8], encodings: &[&str], complete: bool) -> BodyText {
             };
             BodyText::Ready {
                 text: text(&decoded, limited || !complete),
-                notice: Some(format!(
-                    "Content-Encoding: {} · {detail}",
-                    encodings.join(", ")
-                )),
+                notice: Some(format!("Content-Encoding: {names} · {detail}")),
             }
         }
         Err(error) => BodyText::Unavailable(format!("Could not decompress preview: {error}")),
@@ -94,7 +92,7 @@ pub struct DecodedPrefix {
 ///
 /// A decoding error after some output keeps that output, as an incomplete capture would.
 pub fn decode_prefix(bytes: &[u8], encodings: &[&str]) -> Result<DecodedPrefix, DecodeError> {
-    let encodings = content_encodings(encodings)?;
+    let encodings = preview_encodings(encodings)?;
     let mut decoded = if encodings.is_empty() {
         bytes.get(..=PREVIEW_BYTES).unwrap_or(bytes).to_vec()
     } else {
@@ -102,7 +100,10 @@ pub fn decode_prefix(bytes: &[u8], encodings: &[&str]) -> Result<DecodedPrefix, 
             .map_err(|source| DecodeError::Init { source })?;
         match error {
             Some(source) if decoded.is_empty() => {
-                return Err(DecodeError::Decompress { encodings, source });
+                return Err(DecodeError::Decompress {
+                    encodings: encodings.names().map(str::to_owned).collect(),
+                    source,
+                });
             }
             _ => decoded,
         }
@@ -125,7 +126,7 @@ pub fn decode_complete(
     encodings: &[&str],
     limit: usize,
 ) -> Result<Vec<u8>, DecodeError> {
-    let encodings = content_encodings(encodings)?;
+    let encodings = preview_encodings(encodings)?;
     if encodings.is_empty() {
         return Ok(bytes.to_vec());
     }
@@ -135,7 +136,10 @@ pub fn decode_complete(
     let (decoded, error) = read_decoded(bytes, &encodings, limit, intermediate)
         .map_err(|source| DecodeError::Init { source })?;
     if let Some(source) = error {
-        return Err(DecodeError::Decompress { encodings, source });
+        return Err(DecodeError::Decompress {
+            encodings: encodings.names().map(str::to_owned).collect(),
+            source,
+        });
     }
     if decoded.len() > limit {
         return Err(DecodeError::LimitExceeded { limit });
@@ -143,72 +147,28 @@ pub fn decode_complete(
     Ok(decoded)
 }
 
-/// Splits `Content-Encoding` values into lowercase layers in the order they
-/// were applied, without `identity`, and rejects layers it cannot decode.
-fn content_encodings(values: &[&str]) -> Result<Vec<String>, DecodeError> {
-    let encodings: Vec<_> = values
-        .iter()
-        .flat_map(|value| value.split(','))
-        .map(str::trim)
-        .filter(|value| !value.eq_ignore_ascii_case("identity"))
-        .take(MAX_ENCODINGS + 1)
-        .map(str::to_ascii_lowercase)
-        .collect();
-    if encodings.len() > MAX_ENCODINGS {
-        return Err(DecodeError::TooManyLayers);
-    }
-    if let Some(unsupported) = encodings.iter().find(|encoding| {
-        !matches!(
-            encoding.as_str(),
-            "gzip" | "x-gzip" | "deflate" | "br" | "zstd"
-        )
-    }) {
-        return Err(DecodeError::UnsupportedEncoding {
-            encoding: unsupported.clone(),
-        });
-    }
-    Ok(encodings)
+fn preview_encodings(values: &[&str]) -> Result<Encodings, DecodeError> {
+    Encodings::parse(values.iter().copied(), EmptyTokens::Keep).map_err(|error| match error {
+        ParseError::TooManyLayers => DecodeError::TooManyLayers,
+        ParseError::Unsupported(encoding) => DecodeError::UnsupportedEncoding { encoding },
+    })
 }
 
 /// Reads at most `limit + 1` decoded bytes so callers can tell whether the
 /// output was cut, and stops each inner layer after `intermediate` bytes.
 fn read_decoded(
     bytes: &[u8],
-    encodings: &[String],
+    encodings: &Encodings,
     limit: usize,
     intermediate: u64,
 ) -> io::Result<(Vec<u8>, Option<io::Error>)> {
-    let mut reader: Box<dyn Read + '_> = Box::new(bytes);
-    for encoding in encodings.iter().rev() {
-        // Bound hidden expansion while inner decoders consume headers or skippable frames.
-        reader = Box::new(decoder(reader, encoding)?.take(intermediate));
-    }
+    let reader = encodings.reader(bytes, intermediate, 4096)?;
     let mut decoded = Vec::new();
     let error = reader
         .take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
         .read_to_end(&mut decoded)
         .err();
     Ok((decoded, error))
-}
-
-fn decoder<'a>(reader: Box<dyn Read + 'a>, encoding: &str) -> io::Result<Box<dyn Read + 'a>> {
-    match encoding {
-        "gzip" | "x-gzip" => Ok(Box::new(flate2::read::MultiGzDecoder::new(reader))),
-        "deflate" => Ok(Box::new(flate2::read::ZlibDecoder::new(reader))),
-        "br" => Ok(Box::new(brotli_decompressor::Decompressor::new(
-            reader, 4096,
-        ))),
-        "zstd" => {
-            let mut decoder = zstd::stream::read::Decoder::new(reader)?;
-            // HTTP zstd permits an 8 MiB window; do not accept arbitrary frame allocations.
-            decoder.window_log_max(23)?;
-            Ok(Box::new(decoder))
-        }
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Unsupported Content-Encoding",
-        )),
-    }
 }
 
 fn text(bytes: &[u8], prefix: bool) -> String {
