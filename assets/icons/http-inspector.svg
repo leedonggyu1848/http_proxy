@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <title>HTTP Inspector</title>
+  <rect x="16" y="16" width="224" height="224" rx="48" fill="#1d3557"/>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="14">
+    <path d="M50 72h100m-22-22 22 22-22 22" stroke="#8ecae6"/>
+    <path d="M150 118H50m22 22-22-22 22-22" stroke="#ffb703"/>
+    <circle cx="150" cy="156" r="36" stroke="#f1faee" stroke-width="16" fill="#1d3557"/>
+    <path d="M176 182l28 28" stroke="#f1faee" stroke-width="20"/>
+  </g>
+</svg>

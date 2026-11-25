@@ -30,7 +30,18 @@ HTTP Inspector는 로컬 HTTP 프록시를 거치는 요청과 응답을 기록�
 sudo apt-get install --yes libgl1 libegl1 libx11-6 libxkbcommon0 libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2 libnss3-tools
 ```
 
-다운로드한 폴더에서 체크섬을 확인하고 압축을 푼다. 아래 파일 이름은 실제 받은 이름으로 바꾼다.
+Ubuntu 24.04 계열 x86_64에서는 `.deb` 패키지(`http-inspector_버전-1_amd64.deb`)로 설치할 수도 있다. apt가 위 런타임 라이브러리를 함께 설치하고, 애플리케이션 메뉴에 **HTTP Inspector** 항목과 아이콘을 등록한다. 실행 파일은 `/usr/bin/http-proxy`에 설치된다. 아래 파일 이름은 실제 받은 이름으로 바꾼다.
+
+```bash
+sha256sum --check http-inspector_0.1.0-1_amd64.deb.sha256
+sudo apt-get install ./http-inspector_0.1.0-1_amd64.deb
+# 제거
+sudo apt-get remove http-inspector
+```
+
+패키지를 제거해도 사용자 데이터 폴더의 CA와 설정, 브라우저에 등록한 CA는 남는다. 등록한 CA는 제거 전에 앱의 **Remove CA**로 지운다.
+
+tar.gz는 다운로드한 폴더에서 체크섬을 확인하고 압축을 푼다. 아래 파일 이름은 실제 받은 이름으로 바꾼다.
 
 ```bash
 # Linux
@@ -46,7 +57,7 @@ xattr -d com.apple.quarantine ./http-proxy-v0.1.0-aarch64-apple-darwin/http-prox
 ./http-proxy-v0.1.0-aarch64-apple-darwin/http-proxy
 ```
 
-체크섬은 다운로드 손상을 확인하며 서명이나 배포자의 신원 검증을 대신하지 않는다. 배포 압축에는 실행 파일, README, 코드·폰트 라이선스와 빌드 정보만 포함한다. CA 개인키·설정·트래픽은 포함하지 않는다. CI는 artifact를 다시 내려받아 체크섬과 실행 권한을 확인하고, GUI 프로세스가 실행된 상태에서 로컬 HTTP 요청을 전달한다. Gatekeeper 승인, 실제 사용자 화면 조작과 브라우저 CA 등록은 이 자동 검사 범위에 포함되지 않는다.
+체크섬은 다운로드 손상을 확인하며 서명이나 배포자의 신원 검증을 대신하지 않는다. 배포 압축에는 실행 파일, README, 코드·폰트 라이선스와 빌드 정보만 포함한다. `.deb`에는 여기에 데스크톱 항목, 아이콘과 `CHANGELOG.md`가 더해진다. CA 개인키·설정·트래픽은 포함하지 않는다. CI는 artifact를 다시 내려받아 체크섬과 실행 권한을 확인하고, GUI 프로세스가 실행된 상태에서 로컬 HTTP 요청을 전달한다. `.deb`는 Ubuntu 24.04에 실제로 설치한 뒤 같은 검사를 한다. Gatekeeper 승인, 실제 사용자 화면 조작과 브라우저 CA 등록은 이 자동 검사 범위에 포함되지 않는다.
 
 ### 소스에서 빌드
 

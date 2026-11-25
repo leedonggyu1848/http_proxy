@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.100"
 license = "MIT"
-repository = "https://github.com/leedonggyu1848/http_proxt"
+repository = "https://github.com/leedonggyu1848/http_proxy"
 publish = false
 
 [workspace.dependencies]
@@ -113,7 +113,7 @@ name = "http-proxy"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "A Linux and macOS desktop HTTP network inspector"
+description = "Desktop HTTP network inspector for Linux and macOS"
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
@@ -166,6 +166,33 @@ eframe = { workspace = true, features = ["x11"] }
 
 [lints]
 workspace = true
+
+# Linux .deb package built by `cargo deb --no-build` in CI. See docs/development.md.
+[package.metadata.deb]
+name = "http-inspector"
+maintainer = "leedonggyu1848 <53461960+leedonggyu1848@users.noreply.github.com>"
+copyright = "2026 이동규"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+Desktop app that records HTTP requests and responses passing through a local \
+proxy, and optionally decrypts HTTPS traffic with a locally generated CA. \
+Requires an X11 display."""
+section = "net"
+priority = "optional"
+# The X11 and OpenGL libraries are loaded at runtime with dlopen, so $auto
+# cannot see them. Keep this list in sync with the README runtime packages.
+depends = "$auto, libgl1, libegl1, libx11-6, libxkbcommon0, libxkbcommon-x11-0, libxcursor1, libxi6, libxrandr2"
+# NSS certutil is needed only to register the HTTPS inspection CA.
+recommends = "libnss3-tools"
+assets = [
+	["target/release/http-proxy", "usr/bin/", "755"],
+	["packaging/linux/http-inspector.desktop", "usr/share/applications/", "644"],
+	["assets/icons/http-inspector.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+	["assets/icons/http-inspector-256.png", "usr/share/icons/hicolor/256x256/apps/http-inspector.png", "644"],
+	["README.md", "usr/share/doc/http-inspector/", "644"],
+	["CHANGELOG.md", "usr/share/doc/http-inspector/", "644"],
+	["assets/fonts/OFL.txt", "usr/share/doc/http-inspector/FONT-LICENSE.txt", "644"],
+]
 
 [profile.release]
 codegen-units = 1
