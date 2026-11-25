@@ -8,10 +8,17 @@ use egui_extras::{Column, TableBuilder};
 use http_inspector_exchange::{ByteSize, Exchange, Outcome, RecordId};
 
 use crate::ui::dialogs::copy_curl;
-use crate::ui::requests::outcome_view::{outcome_summary, outcome_text, status_rank};
+use crate::ui::requests::outcome_view::{
+    alert_tone, outcome_summary, outcome_text, outcome_tone, status_rank,
+};
+use crate::ui::requests::target_view::{TargetParts, host_fits, middle_ellipsis, shared_host};
+use crate::ui::style::badge::Badge;
+use crate::ui::style::tokens::Space;
 
-const ROW_HEIGHT: f32 = 20.0;
-const HEADER_HEIGHT: f32 = 22.0;
+const ROW_HEIGHT: f32 = 24.0;
+const HEADER_HEIGHT: f32 = 24.0;
+/// Width of the colored edge that marks error and failure rows.
+const ALERT_EDGE_WIDTH: f32 = 3.0;
 
 /// Sortable column of the request list.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,7 +44,7 @@ impl Field {
     const fn title(self) -> &'static str {
         match self {
             Self::Method => "Method",
-            Self::Target => "Host / Path",
+            Self::Target => "Path",
             Self::Status => "Status",
             Self::Type => "Type",
             Self::Size => "Size",
@@ -312,6 +319,8 @@ impl RequestTable {
         if let Some(index) = scroll_to {
             table = table.scroll_to_row(index, None).animate_scrolling(false);
         }
+        // One shared host moves from every row to the column header.
+        let shared_host = shared_host(rows.iter().map(|record| record.request().target()));
         let body = table
             .header(HEADER_HEIGHT, |mut header| {
                 for field in Field::ALL {
@@ -327,6 +336,14 @@ impl RequestTable {
                         {
                             self.sort = self.sort.toggled(field);
                         }
+                        if field == Field::Target
+                            && let Some(host) = shared_host
+                        {
+                            ui.add(
+                                egui::Label::new(RichText::new(host).monospace().weak()).truncate(),
+                            )
+                            .on_hover_text("Every request in the list goes to this host.");
+                        }
                     });
                 }
             })
@@ -340,7 +357,8 @@ impl RequestTable {
                     row.set_selected(selected == Some(record.id()));
                     let selected_row = selected == Some(record.id());
                     let focus_row = scroll_to == Some(row.index());
-                    if show_cells(&mut row, record, selected_row, focus_row) {
+                    let show_host = shared_host.is_none();
+                    if show_cells(&mut row, record, selected_row, focus_row, show_host) {
                         self.follow_newest = false;
                         self.keyboard_row = None;
                         *changed = Some(record.id());
@@ -357,13 +375,13 @@ impl RequestTable {
 }
 
 /// Computes responsive initial column widths for `viewport_width`.
-/// When all six columns fit, `Host / Path` takes the spare width. When the
-/// table is narrower, `Host / Path` fills the space beside the leading columns
+/// When all six columns fit, `Path` takes the spare width. When the
+/// table is narrower, `Path` fills the space beside the leading columns
 /// that fit cleanly without slicing the next column at the pane border, while
 /// the remaining columns stay reachable via horizontal scrolling.
 fn column_widths(viewport_width: f32, spacing_x: f32, scroll_gutter: f32) -> [f32; 6] {
     const METHOD: f32 = 78.0;
-    const STATUS_WIDE: f32 = 112.0;
+    const STATUS_WIDE: f32 = 124.0;
     const STATUS_COMPACT: f32 = 104.0;
     const TYPE: f32 = 48.0;
     const SIZE: f32 = 68.0;
@@ -466,65 +484,18 @@ fn save_body_items(
     chosen
 }
 
+/// Fills one row and returns whether its method badge was clicked.
 fn show_cells(
     row: &mut egui_extras::TableRow<'_, '_>,
     record: &Exchange,
     selected: bool,
     focus: bool,
+    show_host: bool,
 ) -> bool {
     let mut clicked = false;
-    row.col(|ui| {
-        ui.push_id(record.id(), |ui| {
-            let method = record.request().method().as_str();
-            let response = ui
-                .add(egui::Button::selectable(selected, method).truncate())
-                .on_hover_text(method);
-            response.widget_info(|| {
-                egui::WidgetInfo::selected(
-                    egui::Role::ListBoxOption,
-                    ui.is_enabled(),
-                    selected,
-                    format!(
-                        "{} {} · {}",
-                        record.request().method(),
-                        record.request().target(),
-                        outcome_summary(record.outcome()),
-                    ),
-                )
-            });
-            ui.ctx().accesskit_node_builder(response.id, |node| {
-                node.clear_toggled();
-                node.set_selected(selected);
-            });
-            if focus && !response.has_focus() {
-                response.request_focus();
-            }
-            clicked = response.clicked();
-        });
-    });
-    row.col(|ui| {
-        ui.add(
-            egui::Label::new(
-                RichText::new(record.replay_of().map_or_else(
-                    || target_text(record).to_owned(),
-                    |original| format!("Replay of #{} · {}", original.value(), target_text(record)),
-                ))
-                .monospace(),
-            )
-            .truncate(),
-        )
-        .on_hover_text(record.request().target());
-    });
-    row.col(|ui| {
-        let (text, color) =
-            outcome_text(record.outcome(), &crate::ui::style::theme::Palette::of(ui));
-        let status = ui.add(egui::Label::new(RichText::new(text).color(color)).truncate());
-        if matches!(record.outcome(), Outcome::Tunnel(_)) {
-            status.on_hover_text(crate::ui::dialogs::scope_help::TUNNEL_NOTE);
-        } else {
-            status.on_hover_text(outcome_summary(record.outcome()));
-        }
-    });
+    row.col(|ui| clicked = method_cell(ui, record, selected, focus));
+    row.col(|ui| target_cell(ui, record, show_host));
+    row.col(|ui| status_cell(ui, record));
     row.col(|ui| {
         ui.add(egui::Label::new(content_type(record).unwrap_or("—")).truncate());
     });
@@ -545,6 +516,95 @@ fn show_cells(
         ui.add(egui::Label::new(RichText::new(duration_text(record)).monospace()).truncate());
     });
     clicked
+}
+
+/// The method badge, which also carries the row's keyboard focus and its
+/// screen reader name, plus the alert edge of error rows.
+fn method_cell(ui: &mut egui::Ui, record: &Exchange, selected: bool, focus: bool) -> bool {
+    if let Some(tone) = alert_tone(record.outcome()) {
+        let cell = ui.max_rect();
+        let edge =
+            egui::Rect::from_min_size(cell.left_top(), egui::vec2(ALERT_EDGE_WIDTH, cell.height()));
+        ui.painter()
+            .rect_filled(edge, 0.0, tone.colors(ui.ctx().theme()).fg);
+    }
+    ui.add_space(ALERT_EDGE_WIDTH + Space::XS);
+    ui.push_id(record.id(), |ui| {
+        let method = record.request().method().as_str();
+        let response = ui
+            .add(Badge::method(method).sense(egui::Sense::click()))
+            .on_hover_text(method);
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::Role::ListBoxOption,
+                ui.is_enabled(),
+                selected,
+                format!(
+                    "{} {} · {}",
+                    record.request().method(),
+                    record.request().target(),
+                    outcome_summary(record.outcome()),
+                ),
+            )
+        });
+        ui.ctx().accesskit_node_builder(response.id, |node| {
+            node.clear_toggled();
+            node.set_selected(selected);
+        });
+        if focus && !response.has_focus() {
+            response.request_focus();
+        }
+        response.clicked()
+    })
+    .inner
+}
+
+/// The path, elided in the middle when it does not fit, then the host in
+/// secondary text when the list shows several hosts.
+fn target_cell(ui: &mut egui::Ui, record: &Exchange, show_host: bool) {
+    let target = record.request().target();
+    if let Some(original) = record.replay_of() {
+        ui.add(egui::Label::new(
+            RichText::new(format!("Replay of #{} ·", original.value())).weak(),
+        ))
+        .on_hover_text(target);
+    }
+    let parts = TargetParts::of(target);
+    let font = egui::TextStyle::Monospace.resolve(ui.style());
+    let char_width = ui.fonts_mut(|fonts| fonts.glyph_width(&font, 'M'));
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "Widths are nonnegative and UI-sized; the cell holds only whole characters and the gap rounds up"
+    )]
+    let (max_chars, gap_chars) = {
+        let char_width = char_width.max(1.0);
+        (
+            (ui.available_width() / char_width) as usize,
+            (ui.spacing().item_spacing.x / char_width).ceil() as usize,
+        )
+    };
+    let primary = middle_ellipsis(parts.primary(), max_chars);
+    let host = parts
+        .secondary()
+        .filter(|&host| show_host && host_fits(max_chars, &primary, gap_chars, host));
+    ui.add(egui::Label::new(RichText::new(primary).monospace()).truncate())
+        .on_hover_text(target);
+    if let Some(host) = host {
+        ui.add(egui::Label::new(RichText::new(host).monospace().weak()).truncate())
+            .on_hover_text(target);
+    }
+}
+
+/// The status pill, with the status class or tunnel note on hover.
+fn status_cell(ui: &mut egui::Ui, record: &Exchange) {
+    let (text, _) = outcome_text(record.outcome(), &crate::ui::style::theme::Palette::of(ui));
+    let status = ui.add(Badge::status(text, outcome_tone(record.outcome())));
+    if matches!(record.outcome(), Outcome::Tunnel(_)) {
+        status.on_hover_text(crate::ui::dialogs::scope_help::TUNNEL_NOTE);
+    } else {
+        status.on_hover_text(outcome_summary(record.outcome()));
+    }
 }
 
 /// Target without the `http://` or `https://` prefix.
@@ -788,11 +848,10 @@ mod tests {
         for _ in 0..3 {
             shapes = run(Vec::new());
         }
-        let before_target =
-            header_left(&shapes, "Host / Path").ok_or("missing Host / Path header")?;
+        let before_target = header_left(&shapes, "Path").ok_or("missing Path header")?;
         let before_size = header_left(&shapes, "Size").ok_or("missing Size header")?;
 
-        // Column 0 resize handle sits halfway across the spacing between Method and Host / Path.
+        // Column 0 resize handle sits halfway across the spacing between Method and Path.
         let handle_x = before_target - 4.0;
         let drag_y = 12.0;
         let _ = run(vec![egui::Event::PointerMoved(egui::pos2(
@@ -816,12 +875,11 @@ mod tests {
         }]);
 
         let settled = run(Vec::new());
-        let after_target =
-            header_left(&settled, "Host / Path").ok_or("missing Host / Path header after drag")?;
+        let after_target = header_left(&settled, "Path").ok_or("missing Path header after drag")?;
         let after_size = header_left(&settled, "Size").ok_or("missing Size header after drag")?;
         assert!(
             after_target > before_target + 60.0,
-            "expected Method column expansion to shift Host / Path right: before={before_target}, after={after_target}"
+            "expected Method column expansion to shift Path right: before={before_target}, after={after_target}"
         );
         assert!(
             after_size > before_size + 60.0,
@@ -830,8 +888,8 @@ mod tests {
 
         // Width stays preserved on subsequent frames while viewport width is unchanged.
         let next = run(Vec::new());
-        let next_target = header_left(&next, "Host / Path")
-            .ok_or("missing Host / Path header on subsequent frame")?;
+        let next_target =
+            header_left(&next, "Path").ok_or("missing Path header on subsequent frame")?;
         assert!((next_target - after_target).abs() < 1.0);
         Ok(())
     }
