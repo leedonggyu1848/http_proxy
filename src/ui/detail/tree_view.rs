@@ -2,8 +2,11 @@
 //! view are drawn, the open state survives theme and font changes, and
 //! every row can be searched and its path or value copied.
 
-use crate::ui::detail::highlight::{self, SyntaxPalette};
-use crate::ui::style::theme::Theme;
+use crate::ui::detail::highlight;
+#[cfg(test)]
+use crate::ui::style::fonts;
+use crate::ui::style::theme::{Palette, SyntaxPalette, Theme};
+use crate::ui::style::tokens::Layout;
 use eframe::egui::{self, FontId, text::LayoutJob};
 use http_inspector_content::format::tree::TreeModel;
 use std::sync::Arc;
@@ -12,8 +15,6 @@ use std::sync::Arc;
 const OPEN_LEVELS: usize = 2;
 /// Deepest level that still adds indentation, so rows stay on screen.
 const MAX_INDENT: usize = 64;
-/// Height of the row list before it scrolls.
-const ROWS_HEIGHT: f32 = 350.0;
 
 /// Row layouts for one theme and font.
 struct Labels {
@@ -182,7 +183,7 @@ impl TreeView {
             .max(ui.text_style_height(&egui::TextStyle::Monospace));
         egui::ScrollArea::both()
             .id_salt("tree_rows")
-            .max_height(ROWS_HEIGHT)
+            .max_height(Layout::DETAIL_TREE_HEIGHT)
             .show_rows(ui, height, visible.len(), |ui, range| {
                 for row in range {
                     if let Some(&index) = visible.get(row) {
@@ -210,7 +211,7 @@ impl TreeView {
         ui.horizontal(|ui| {
             toggled = tree_row_prefix(ui, node.depth, expandable, open);
             let job = if matched {
-                Arc::new(highlighted(job, ui.visuals().selection.bg_fill))
+                Arc::new(highlighted(job, Palette::of(ui).surfaces.selection))
             } else {
                 Arc::clone(job)
             };
@@ -257,11 +258,11 @@ pub(crate) fn tree_row_prefix(
     open: bool,
 ) -> bool {
     let clamped = u16::try_from(depth.min(MAX_INDENT)).unwrap_or(0);
-    ui.add_space(f32::from(clamped) * 12.0);
+    ui.add_space(f32::from(clamped) * Layout::TREE_INDENT);
     if expandable {
         ui.small_button(if open { "▼" } else { "▶" }).clicked()
     } else {
-        ui.add_space(20.0);
+        ui.add_space(Layout::TREE_LEAF_PREFIX);
         false
     }
 }
@@ -369,7 +370,7 @@ mod tests {
     #[test]
     fn theme_change_relays_labels_and_keeps_open_rows() -> Result<(), String> {
         let ctx = egui::Context::default();
-        let font = FontId::monospace(12.0);
+        let font = fonts::code();
         let mut view = view(BodyFormat::Json, r#"{"a":{"b":{"c":1}}}"#)?;
         view.set_all(false);
         view.toggle(0);

@@ -6,7 +6,12 @@
 //! [`Tone`] instead of a color so that meaning, not a hue, is chosen at the
 //! call site.
 
-use eframe::egui::{Color32, Theme};
+#![expect(
+    clippy::disallowed_methods,
+    reason = "design tokens define raw theme colors"
+)]
+
+use eframe::egui::{self, Color32, Theme};
 
 /// Spacing scale in points. Layouts use these four steps only.
 pub(crate) struct Space;
@@ -14,6 +19,7 @@ pub(crate) struct Space;
 impl Space {
     /// Gap inside compact items such as badges and between a row's parts.
     pub(crate) const XS: f32 = 4.0;
+    pub(crate) const XXS: f32 = 2.0;
     /// Default gap between neighboring controls.
     pub(crate) const SM: f32 = 8.0;
     /// Padding inside windows and cards.
@@ -32,6 +38,10 @@ impl Radius {
     pub(crate) const BADGE: u8 = 4;
     /// Cards, menus, and windows.
     pub(crate) const CARD: u8 = 8;
+    pub(crate) const PANE: u8 = 0;
+    pub(crate) const GRAPH_CANVAS: u8 = 4;
+    pub(crate) const GRAPH_LABEL: u8 = 2;
+    pub(crate) const STATUS_BAR: u8 = 2;
 }
 
 /// Text sizes in points. UI text uses the proportional font and data (URLs,
@@ -47,6 +57,93 @@ impl TypeScale {
     pub(crate) const DATA: f32 = 12.5;
     /// Secondary text and badges.
     pub(crate) const SMALL: f32 = 11.5;
+    #[cfg(test)]
+    pub(crate) const CODE: f32 = 12.0;
+    #[cfg(test)]
+    pub(crate) const LARGE_CODE: f32 = 13.0;
+    pub(crate) const GRAPH_COUNT: f32 = 10.5;
+}
+
+/// Dimensions of individual components in points.
+pub(crate) struct Layout;
+
+impl Layout {
+    pub(crate) const WINDOW: [f32; 2] = [1_280.0, 820.0];
+    pub(crate) const MIN_WINDOW: [f32; 2] = [640.0, 420.0];
+    pub(crate) const MIN_MAIN_HEIGHT: f32 = 280.0;
+    pub(crate) const MIN_TABLE_WIDTH: f32 = 320.0;
+    pub(crate) const MIN_DETAIL_WIDTH: f32 = 280.0;
+    pub(crate) const DEFAULT_DETAIL_SHARE: f32 = 0.4;
+    pub(crate) const SPLIT_HANDLE_HALF_WIDTH: f32 = 3.0;
+    pub(crate) const SPLIT_GUTTER_HALF_WIDTH: f32 = 1.0;
+    pub(crate) const TREE_INDENT: f32 = Space::MD;
+    pub(crate) const TREE_LEAF_PREFIX: f32 = 20.0;
+    pub(crate) const MAP_TREE_ROW_HEIGHT: f32 = 22.0;
+    pub(crate) const MAP_TREE_ROW_MARGIN: egui::Margin = egui::Margin::symmetric(4, 1);
+    pub(crate) const MAP_STATUS_WIDTH: f32 = 44.0;
+    pub(crate) const MAP_STATUS_HEIGHT: f32 = Space::SM;
+    pub(crate) const MAP_STATUS_MIN_SEGMENT: f32 = Space::XXS;
+    pub(crate) const GRAPH_CANVAS_MIN: f32 = 120.0;
+    pub(crate) const GRAPH_CANVAS_PADDING: f32 = 56.0;
+    pub(crate) const GRAPH_AXIS_MIN: f32 = 20.0;
+    pub(crate) const GRAPH_MIN_NODE_RADIUS: f32 = 12.0;
+    pub(crate) const GRAPH_MAX_NODE_RADIUS: f32 = 28.0;
+    pub(crate) const GRAPH_ARROW_LENGTH: f32 = 9.0;
+    pub(crate) const GRAPH_ARROW_HALF_WIDTH: f32 = 4.5;
+    pub(crate) const GRAPH_LOOP_OFFSET: f32 = Space::MD;
+    pub(crate) const GRAPH_LOOP_RADIUS: f32 = 10.0;
+    pub(crate) const GRAPH_EDGE_CLEARANCE: f32 = 6.0;
+    pub(crate) const GRAPH_EDGE_SEPARATION: f32 = 9.0;
+    pub(crate) const GRAPH_ARROW_TIP_PADDING: f32 = 3.0;
+    pub(crate) const GRAPH_DASH_LENGTH: f32 = 6.0;
+    pub(crate) const GRAPH_LABEL_PADDING: egui::Vec2 = egui::vec2(3.0, 1.0);
+    pub(crate) const BODY_LINE_VIEW_HEIGHT: f32 = 480.0;
+    pub(crate) const PORT_INPUT_WIDTH: f32 = 56.0;
+    pub(crate) const TABLE_ROW_HEIGHT: f32 = 24.0;
+    pub(crate) const TABLE_HEADER_HEIGHT: f32 = 24.0;
+    pub(crate) const TABLE_ALERT_WIDTH: f32 = 3.0;
+    pub(crate) const DETAIL_TREE_HEIGHT: f32 = 350.0;
+    pub(crate) const IMAGE_DISPLAY_HEIGHT: f32 = 480.0;
+    pub(crate) const IMAGE_CHECKER_TILE: f32 = Space::MD;
+    pub(crate) const BULK_FOLDER_INPUT_WIDTH: f32 = 120.0;
+    pub(crate) const REPLAY_DIALOG: egui::Vec2 = egui::vec2(650.0, 600.0);
+}
+
+pub(crate) struct StrokeWidth;
+
+impl StrokeWidth {
+    pub(crate) const CONTROL: f32 = 1.0;
+    pub(crate) const MAP_STATUS: f32 = 0.5;
+    pub(crate) const GRAPH_LINK: f32 = 1.6;
+    pub(crate) const GRAPH_REDIRECT: f32 = 2.6;
+    pub(crate) const GRAPH_NODE_PENDING: f32 = 2.5;
+    pub(crate) const GRAPH_NODE: f32 = 2.0;
+    pub(crate) const GRAPH_NODE_HOVERED: f32 = 3.0;
+}
+
+/// Syntax colors that keep at least 4.5:1 contrast on the panel, text field,
+/// stripe, hover, and selection backgrounds of their theme. Color only adds
+/// to cues already in the text: keys end with `:` or `=`, strings and
+/// attribute values keep their quotes, tags keep their angle brackets,
+/// namespace prefixes end with `:`, entities keep `&` and `;`, `CDATA` and
+/// instructions keep their `<![CDATA[` and `<?` delimiters, and comments are
+/// also italic.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SyntaxPalette {
+    pub(crate) key: Color32,
+    pub(crate) string: Color32,
+    pub(crate) number: Color32,
+    pub(crate) literal: Color32,
+    pub(crate) punctuation: Color32,
+    pub(crate) tag: Color32,
+    pub(crate) comment: Color32,
+}
+
+/// Background of every match, and of the match the user moved to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MatchColors {
+    pub(crate) other: Color32,
+    pub(crate) current: Color32,
 }
 
 /// Surface colors from the window background up to raised cards and popups.
@@ -74,6 +171,8 @@ pub(crate) struct Surfaces {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ThemeTokens {
     pub(crate) surfaces: Surfaces,
+    pub(crate) syntax: SyntaxPalette,
+    pub(crate) search: MatchColors,
     /// Primary text.
     pub(crate) text: Color32,
     /// Secondary text such as header names and hosts.
@@ -98,6 +197,19 @@ struct ToneFills {
 }
 
 const LIGHT: ThemeTokens = ThemeTokens {
+    syntax: SyntaxPalette {
+        key: Color32::from_rgb(120, 30, 125),
+        string: Color32::from_rgb(0, 95, 35),
+        number: Color32::from_rgb(0, 70, 160),
+        literal: Color32::from_rgb(150, 45, 0),
+        punctuation: Color32::from_gray(75),
+        tag: Color32::from_rgb(140, 20, 55),
+        comment: Color32::from_gray(80),
+    },
+    search: MatchColors {
+        other: Color32::from_rgb(255, 236, 150),
+        current: Color32::from_rgb(255, 196, 110),
+    },
     surfaces: Surfaces {
         bg: Color32::from_rgb(238, 240, 243),
         panel: Color32::from_rgb(250, 250, 251),
@@ -125,6 +237,19 @@ const LIGHT: ThemeTokens = ThemeTokens {
 };
 
 const DARK: ThemeTokens = ThemeTokens {
+    syntax: SyntaxPalette {
+        key: Color32::from_rgb(230, 175, 255),
+        string: Color32::from_rgb(150, 230, 160),
+        number: Color32::from_rgb(150, 205, 255),
+        literal: Color32::from_rgb(255, 195, 135),
+        punctuation: Color32::from_gray(190),
+        tag: Color32::from_rgb(255, 165, 185),
+        comment: Color32::from_gray(175),
+    },
+    search: MatchColors {
+        other: Color32::from_rgb(92, 72, 0),
+        current: Color32::from_rgb(150, 82, 0),
+    },
     surfaces: Surfaces {
         bg: Color32::from_rgb(22, 24, 28),
         panel: Color32::from_rgb(28, 31, 36),
@@ -152,6 +277,10 @@ const DARK: ThemeTokens = ThemeTokens {
 };
 
 impl ThemeTokens {
+    pub(crate) fn new_map_node_fill(self, alpha: u8) -> Color32 {
+        Color32::from_rgba_unmultiplied(self.info.r(), self.info.g(), self.info.b(), alpha)
+    }
+
     pub(crate) const fn for_theme(theme: Theme) -> Self {
         match theme {
             Theme::Light => LIGHT,

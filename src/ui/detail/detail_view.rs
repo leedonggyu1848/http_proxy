@@ -6,9 +6,10 @@ use crate::ui::detail::body_render::BodyViewCache;
 use crate::ui::detail::detail_tabs::{self, DetailTab};
 use crate::ui::detail::image_view;
 use crate::ui::detail::search::Query;
-use crate::ui::detail::search::highlight::{self, MatchColors};
+use crate::ui::detail::search::highlight;
 use crate::ui::dialogs::scope_help;
 use crate::ui::requests::outcome_view;
+use crate::ui::style::theme::MatchColors;
 use crate::ui::style::theme::Palette;
 use eframe::egui;
 use http_inspector_content::detect;
@@ -128,7 +129,7 @@ fn render_title(ui: &mut egui::Ui, record: &Exchange, search: Option<&Query>) {
     let label = match search.filter(|query| query.scope.covers_url()) {
         Some(query) => {
             let font = egui::TextStyle::Monospace.resolve(ui.style());
-            let color = ui.visuals().strong_text_color();
+            let color = Palette::of(ui).text;
             let colors = MatchColors::for_theme(ui.ctx().theme());
             let mut job = highlight::plain(&title, &query.matcher, font, color, colors);
             job.wrap.max_width = ui.available_width();
@@ -251,7 +252,7 @@ fn render_query(ui: &mut egui::Ui, target: &str) {
 fn render_headers(ui: &mut egui::Ui, id: &str, headers: &HeaderPreview, search: Option<&Query>) {
     let name_color = Palette::of(ui).muted;
     let font = egui::TextStyle::Monospace.resolve(ui.style());
-    let text_color = ui.visuals().text_color();
+    let text_color = Palette::of(ui).text;
     let colors = MatchColors::for_theme(ui.ctx().theme());
     let bounds = GridBounds::from_ui(ui);
     egui::Grid::new(id)

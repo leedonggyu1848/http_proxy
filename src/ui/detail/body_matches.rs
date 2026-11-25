@@ -6,7 +6,8 @@ use std::ops::Range;
 use eframe::egui::{self, text::LayoutJob};
 use http_inspector_analysis::search::Matcher;
 
-use crate::ui::detail::search::highlight::{self, MatchColors};
+use crate::ui::detail::search::highlight;
+use crate::ui::style::theme::MatchColors;
 
 /// One match: the line it is on (0 for text shown without line numbers)
 /// and its byte range in that line or text.

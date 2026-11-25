@@ -5,6 +5,7 @@
 //! counts from [`EndpointSchema`]. The schema holds no query, header,
 //! cookie, credential or body value, so none can appear here.
 
+use crate::ui::style::tokens::Space;
 use std::fmt::Write as _;
 
 use eframe::egui::{self, RichText};
@@ -427,7 +428,7 @@ fn types_text(types: &TypeCounts, palette: &Palette) -> RichText {
 }
 
 fn section_title(ui: &mut egui::Ui, title: &str) {
-    ui.add_space(4.0);
+    ui.add_space(Space::XS);
     ui.label(RichText::new(title).strong().small());
 }
 

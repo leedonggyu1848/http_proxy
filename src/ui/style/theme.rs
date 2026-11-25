@@ -3,7 +3,34 @@ use eframe::egui::{self, Color32};
 pub(crate) use egui::Theme;
 use http_inspector_file::{ExistingFile, publish};
 
-use super::tokens::{Radius, Space, ThemeTokens, TypeScale};
+pub(crate) use super::tokens::{MatchColors, SyntaxPalette};
+use super::tokens::{Radius, Space, StrokeWidth, ThemeTokens, TypeScale};
+use http_inspector_content::format::TokenKind;
+
+impl SyntaxPalette {
+    pub(crate) const fn for_theme(theme: Theme) -> Self {
+        ThemeTokens::for_theme(theme).syntax
+    }
+
+    pub(crate) const fn color(&self, kind: TokenKind, text: Color32) -> Color32 {
+        match kind {
+            TokenKind::Text => text,
+            TokenKind::Key | TokenKind::AttributeName => self.key,
+            TokenKind::String | TokenKind::AttributeValue | TokenKind::CData => self.string,
+            TokenKind::Number | TokenKind::Entity => self.number,
+            TokenKind::Literal | TokenKind::Namespace => self.literal,
+            TokenKind::Punctuation => self.punctuation,
+            TokenKind::Tag => self.tag,
+            TokenKind::Comment | TokenKind::Instruction => self.comment,
+        }
+    }
+}
+
+impl MatchColors {
+    pub(crate) const fn for_theme(theme: Theme) -> Self {
+        ThemeTokens::for_theme(theme).search
+    }
+}
 
 /// Semantic text colors of the current theme, from its design tokens.
 pub(crate) struct Palette {
@@ -12,6 +39,8 @@ pub(crate) struct Palette {
     pub(crate) warning: Color32,
     pub(crate) info: Color32,
     pub(crate) muted: Color32,
+    pub(crate) text: Color32,
+    pub(crate) surfaces: super::tokens::Surfaces,
 }
 
 impl Palette {
@@ -27,8 +56,38 @@ impl Palette {
             warning: tokens.warning,
             info: tokens.info,
             muted: tokens.muted,
+            text: tokens.text,
+            surfaces: tokens.surfaces,
         }
     }
+}
+
+pub(crate) fn new_map_node_fill(ui: &egui::Ui, alpha: u8) -> Color32 {
+    ThemeTokens::for_theme(ui.ctx().theme()).new_map_node_fill(alpha)
+}
+
+pub(crate) fn divider_stroke(ui: &egui::Ui, response: &egui::Response) -> egui::Stroke {
+    let widgets = &ui.visuals().widgets;
+    if response.dragged() {
+        widgets.active.fg_stroke
+    } else if response.hovered() {
+        widgets.hovered.fg_stroke
+    } else {
+        structural_stroke(ui)
+    }
+}
+
+pub(crate) fn structural_stroke(ui: &egui::Ui) -> egui::Stroke {
+    ui.visuals().widgets.noninteractive.bg_stroke
+}
+
+pub(crate) fn image_border(ui: &egui::Ui) -> egui::Stroke {
+    ui.visuals().window_stroke
+}
+
+pub(crate) fn image_checker_colors(ui: &egui::Ui) -> [Color32; 2] {
+    let surfaces = Palette::of(ui).surfaces;
+    [surfaces.inset, surfaces.hover]
 }
 
 /// egui visuals of `theme`, built from its design tokens.
@@ -69,7 +128,7 @@ fn visuals(theme: Theme) -> egui::Visuals {
     }
     // Outline resting controls so that white buttons and checkboxes stay
     // visible on light surfaces.
-    widgets.inactive.bg_stroke = egui::Stroke::new(1.0, surfaces.border);
+    widgets.inactive.bg_stroke = egui::Stroke::new(StrokeWidth::CONTROL, surfaces.border);
     widgets.hovered.bg_stroke.color = tokens.muted;
     widgets.active.bg_stroke.color = tokens.accent;
     for widget in [
@@ -88,11 +147,15 @@ fn visuals(theme: Theme) -> egui::Visuals {
 }
 
 /// Applies the spacing and type scales shared by both themes.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the theme installs design typography"
+)]
 fn apply_scales(style: &mut egui::Style) {
     use egui::{FontFamily, FontId, TextStyle};
     let spacing = &mut style.spacing;
     spacing.item_spacing = egui::vec2(Space::SM, Space::XS);
-    spacing.button_padding = egui::vec2(Space::SM, 2.0);
+    spacing.button_padding = egui::vec2(Space::SM, Space::XXS);
     spacing.menu_margin = egui::Margin::from(Space::SM);
     spacing.window_margin = egui::Margin::from(Space::MD);
     spacing.indent = Space::LG;
@@ -246,7 +309,15 @@ mod tests {
     fn status_text_meets_aa_on_all_widget_backgrounds() {
         for theme in [Theme::Light, Theme::Dark] {
             let palette = Palette::for_theme(theme);
+            let syntax = SyntaxPalette::for_theme(theme);
             for foreground in [
+                syntax.key,
+                syntax.string,
+                syntax.number,
+                syntax.literal,
+                syntax.punctuation,
+                syntax.tag,
+                syntax.comment,
                 palette.success,
                 palette.error,
                 palette.warning,

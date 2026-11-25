@@ -1,5 +1,6 @@
 //! Explains which traffic the proxy can and cannot record.
 
+use crate::ui::style::tokens::Space;
 use eframe::egui;
 
 /// One-line scope at the top of the capture help.
@@ -51,12 +52,12 @@ fn contents(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>) {
             .max_height(max_height)
             .show(ui, |ui| {
                 ui.label(SCOPE_SUMMARY);
-                ui.add_space(4.0);
+                ui.add_space(Space::XS);
                 ui.strong("Recorded");
                 for line in RECORDED {
                     ui.label(format!("• {line}"));
                 }
-                ui.add_space(4.0);
+                ui.add_space(Space::XS);
                 ui.strong("Not recorded");
                 for line in NOT_RECORDED {
                     ui.colored_label(
@@ -64,7 +65,7 @@ fn contents(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>) {
                         format!("• {line}"),
                     );
                 }
-                ui.add_space(4.0);
+                ui.add_space(Space::XS);
                 ui.label(QUIC_HINT);
                 if let Some(address) = address {
                     ui.add(

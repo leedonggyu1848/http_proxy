@@ -159,7 +159,7 @@ impl BulkControls {
             let fraction = progress.done() as f32 / progress.total().max(1) as f32;
             ui.add(
                 egui::ProgressBar::new(fraction)
-                    .desired_width(120.0)
+                    .desired_width(crate::ui::style::tokens::Layout::BULK_FOLDER_INPUT_WIDTH)
                     .text(format!("{}/{}", progress.done(), progress.total())),
             );
             ui.label(format!(

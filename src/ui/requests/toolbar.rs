@@ -1,6 +1,6 @@
 //! Toolbar controls, launch port choice, and clipboard actions.
 
-use crate::ui::style::theme::Palette;
+use crate::ui::style::{theme::Palette, tokens::Layout};
 use crate::ui::{InspectorApp, MAX_RECORDS};
 use eframe::egui::{self, RichText};
 use http_inspector_core::interception::{ProxyHandle, StartError};
@@ -143,7 +143,7 @@ impl InspectorApp {
             ui.label(RichText::new("● Stopped").color(Palette::of(ui).error));
             ui.label("Port");
             let edited = ui
-                .add(egui::TextEdit::singleline(&mut self.session.port.text).desired_width(56.0))
+                .add(egui::TextEdit::singleline(&mut self.session.port.text).desired_width(Layout::PORT_INPUT_WIDTH))
                 .on_hover_text(
                     "Loopback port for the proxy. 0 picks a free port. A port you type is remembered.",
                 )

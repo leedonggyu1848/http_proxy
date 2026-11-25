@@ -61,13 +61,14 @@ impl Badge {
 
     fn padding(&self) -> f32 {
         match self.shape {
-            Shape::Tag => Space::XS + 2.0,
+            Shape::Tag => Space::XS + Space::XXS,
             Shape::Pill => Space::SM,
         }
     }
 }
 
 impl Widget for Badge {
+    #[expect(clippy::disallowed_methods, reason = "badge font uses the type scale")]
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         let colors = self.tone.colors(ui.ctx().theme());
         let padding = self.padding();

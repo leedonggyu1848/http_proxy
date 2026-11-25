@@ -13,12 +13,7 @@ use crate::ui::requests::outcome_view::{
 };
 use crate::ui::requests::target_view::{TargetParts, host_fits, middle_ellipsis, shared_host};
 use crate::ui::style::badge::Badge;
-use crate::ui::style::tokens::Space;
-
-const ROW_HEIGHT: f32 = 24.0;
-const HEADER_HEIGHT: f32 = 24.0;
-/// Width of the colored edge that marks error and failure rows.
-const ALERT_EDGE_WIDTH: f32 = 3.0;
+use crate::ui::style::tokens::{Layout, Space};
 
 /// Sortable column of the request list.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -260,7 +255,7 @@ impl RequestTable {
         let total_width = spacing_x.mul_add(5.0, widths.iter().sum::<f32>()) + scroll_gutter;
         let width_changed = (viewport_width - self.last_viewport_width).abs() > 1.0;
         self.last_viewport_width = viewport_width;
-        let row_stride = ROW_HEIGHT + ui.spacing().item_spacing.y;
+        let row_stride = Layout::TABLE_ROW_HEIGHT + ui.spacing().item_spacing.y;
 
         let inner_height = egui::ScrollArea::horizontal()
             .id_salt("requests-hscroll")
@@ -322,7 +317,7 @@ impl RequestTable {
         // One shared host moves from every row to the column header.
         let shared_host = shared_host(rows.iter().map(|record| record.request().target()));
         let body = table
-            .header(HEADER_HEIGHT, |mut header| {
+            .header(Layout::TABLE_HEADER_HEIGHT, |mut header| {
                 for field in Field::ALL {
                     header.col(|ui| {
                         let title = format!("{}{}", field.title(), self.sort.arrow(field));
@@ -350,7 +345,7 @@ impl RequestTable {
             .body(|mut body| {
                 // Let the table cells handle row clicks while labels still show tooltips.
                 body.ui_mut().style_mut().interaction.selectable_labels = false;
-                body.rows(ROW_HEIGHT, rows.len(), |mut row| {
+                body.rows(Layout::TABLE_ROW_HEIGHT, rows.len(), |mut row| {
                     let Some(record) = rows.get(row.index()) else {
                         return;
                     };
@@ -523,12 +518,14 @@ fn show_cells(
 fn method_cell(ui: &mut egui::Ui, record: &Exchange, selected: bool, focus: bool) -> bool {
     if let Some(tone) = alert_tone(record.outcome()) {
         let cell = ui.max_rect();
-        let edge =
-            egui::Rect::from_min_size(cell.left_top(), egui::vec2(ALERT_EDGE_WIDTH, cell.height()));
+        let edge = egui::Rect::from_min_size(
+            cell.left_top(),
+            egui::vec2(Layout::TABLE_ALERT_WIDTH, cell.height()),
+        );
         ui.painter()
             .rect_filled(edge, 0.0, tone.colors(ui.ctx().theme()).fg);
     }
-    ui.add_space(ALERT_EDGE_WIDTH + Space::XS);
+    ui.add_space(Layout::TABLE_ALERT_WIDTH + Space::XS);
     ui.push_id(record.id(), |ui| {
         let method = record.request().method().as_str();
         let response = ui

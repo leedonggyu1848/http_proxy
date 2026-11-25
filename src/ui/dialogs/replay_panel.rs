@@ -1,4 +1,5 @@
 //! Manual replay editor. Sensitive inputs live only as long as the editor.
+use crate::ui::style::{theme::Palette, tokens::Layout};
 use eframe::egui;
 use http_inspector_core::interception::ProxyHandle;
 use http_inspector_core::replay::{ReplayDraft, ReplayError, ReplayField, ReplayTask};
@@ -61,8 +62,8 @@ impl ReplayPanel {
         let max_height = (viewport.height() - 48.0).max(220.0);
         egui::Window::new("Edit and Resend")
             .open(&mut open)
-            .default_width(650.0_f32.min(max_width))
-            .default_height(600.0_f32.min(max_height))
+            .default_width(Layout::REPLAY_DIALOG.x.min(max_width))
+            .default_height(Layout::REPLAY_DIALOG.y.min(max_height))
             .max_width(max_width)
             .max_height(max_height)
             .vscroll(true)
@@ -272,7 +273,7 @@ impl ReplayPanel {
                                 if changed {
                                     crate::ui::style::theme::Palette::of(column).warning
                                 } else {
-                                    column.visuals().text_color()
+                                    Palette::of(column).text
                                 },
                                 line,
                             );

@@ -8,7 +8,8 @@ use self::state::{
 use crate::ui::dialogs::har_dialog;
 use crate::ui::map::{MapAction, MapExportFormat, MapSubView};
 use crate::ui::style::fonts;
-use crate::ui::style::tokens::ThemeTokens;
+use crate::ui::style::theme::{self, Palette};
+use crate::ui::style::tokens::{Layout, Radius, Space};
 
 use eframe::egui;
 use http_inspector_analysis::pipeline::AnalysisPipeline;
@@ -23,23 +24,13 @@ pub(super) const MAX_RECORDS: usize = 2_000;
 const LIVE_REPAINT: Duration = Duration::from_millis(250);
 /// Repaint interval otherwise, to notice an engine that stopped on its own.
 const IDLE_REPAINT: Duration = Duration::from_secs(1);
-/// Default window size, large enough for the list and details side by side.
-const DEFAULT_WINDOW: [f32; 2] = [1_280.0, 820.0];
-const MIN_WINDOW: [f32; 2] = [640.0, 420.0];
-/// Height kept for the request list and details even in a short window,
-/// about ten table rows; the window scrolls instead of shrinking it further.
-const MIN_MAIN_HEIGHT: f32 = 280.0;
-const MIN_TABLE_WIDTH: f32 = 320.0;
-const MIN_DETAIL_WIDTH: f32 = 280.0;
-/// Share of the main area the details panel takes before the user drags it.
-const DEFAULT_DETAIL_SHARE: f32 = 0.4;
 
 pub fn main() -> eframe::Result {
     init_tracing();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size(DEFAULT_WINDOW)
-            .with_min_inner_size(MIN_WINDOW),
+            .with_inner_size(Layout::WINDOW)
+            .with_min_inner_size(Layout::MIN_WINDOW),
         ..eframe::NativeOptions::default()
     };
     eframe::run_native(
@@ -392,9 +383,9 @@ impl InspectorApp {
 
 /// Fills content panes one surface above the window chrome around them.
 fn paint_pane_surfaces(ui: &egui::Ui, panes: [egui::Rect; 2]) {
-    let fill = ThemeTokens::for_theme(ui.ctx().theme()).surfaces.panel;
+    let fill = Palette::of(ui).surfaces.panel;
     for pane in panes {
-        ui.painter().rect_filled(pane, 0.0, fill);
+        ui.painter().rect_filled(pane, Radius::PANE, fill);
     }
 }
 
@@ -405,9 +396,6 @@ fn split_panes<R>(
     ids: (&str, &str, &str, &str),
     render: impl FnOnce(&mut egui::Ui, &mut egui::Ui) -> R,
 ) -> R {
-    const SPLIT_HANDLE_HALF_WIDTH: f32 = 3.0;
-    const DETAIL_LEFT_MARGIN: f32 = 8.0;
-
     let size = egui::vec2(ui.available_width(), height);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let mut main = ui.new_child(
@@ -436,15 +424,21 @@ fn split_panes<R>(
         .clamp(rect.left(), rect.right());
     let left_rect = egui::Rect::from_min_max(
         rect.min,
-        egui::pos2((split_x - 1.0).max(rect.left()), rect.max.y),
+        egui::pos2(
+            (split_x - Layout::SPLIT_GUTTER_HALF_WIDTH).max(rect.left()),
+            rect.max.y,
+        ),
     );
     let right_outer = egui::Rect::from_min_max(
-        egui::pos2((split_x + 1.0).min(rect.right()), rect.min.y),
+        egui::pos2(
+            (split_x + Layout::SPLIT_GUTTER_HALF_WIDTH).min(rect.right()),
+            rect.min.y,
+        ),
         rect.max,
     );
     let right_rect = egui::Rect::from_min_max(
         egui::pos2(
-            (right_outer.left() + DETAIL_LEFT_MARGIN).min(right_outer.right()),
+            (right_outer.left() + Space::SM).min(right_outer.right()),
             right_outer.top(),
         ),
         right_outer.max,
@@ -469,8 +463,8 @@ fn split_panes<R>(
     let result = render(&mut left_ui, &mut right_ui);
 
     let handle_rect = egui::Rect::from_x_y_ranges(
-        (split_x - SPLIT_HANDLE_HALF_WIDTH).max(rect.left())
-            ..=(split_x + SPLIT_HANDLE_HALF_WIDTH).min(rect.right()),
+        (split_x - Layout::SPLIT_HANDLE_HALF_WIDTH).max(rect.left())
+            ..=(split_x + Layout::SPLIT_HANDLE_HALF_WIDTH).min(rect.right()),
         rect.y_range(),
     );
     let handle = main.interact(handle_rect, split_id, egui::Sense::drag());
@@ -482,21 +476,15 @@ fn split_panes<R>(
         main.ctx()
             .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
     }
-    let stroke = if handle.dragged() {
-        main.visuals().widgets.active.fg_stroke
-    } else if handle.hovered() {
-        main.visuals().widgets.hovered.fg_stroke
-    } else {
-        main.visuals().widgets.noninteractive.bg_stroke
-    };
+    let stroke = theme::divider_stroke(&main, &handle);
     main.painter().vline(split_x, rect.y_range(), stroke);
     result
 }
 
 /// Minimum and maximum width of the right details pane for `total_width`.
 fn detail_width_bounds(total_width: f32) -> (f32, f32) {
-    let min_detail = MIN_DETAIL_WIDTH.min((total_width * 0.5).floor());
-    let max_detail = (total_width - MIN_TABLE_WIDTH).max(min_detail);
+    let min_detail = Layout::MIN_DETAIL_WIDTH.min((total_width * 0.5).floor());
+    let max_detail = (total_width - Layout::MIN_TABLE_WIDTH).max(min_detail);
     (min_detail, max_detail)
 }
 
@@ -509,7 +497,9 @@ fn split_detail_width(total_width: f32, share: f32) -> f32 {
 /// Height left for the request list and details once the controls above and
 /// the status bar below are placed, but never less than [`MIN_MAIN_HEIGHT`].
 fn main_height(viewport: f32, above: f32, below: f32) -> f32 {
-    (viewport - above - below).floor().max(MIN_MAIN_HEIGHT)
+    (viewport - above - below)
+        .floor()
+        .max(Layout::MIN_MAIN_HEIGHT)
 }
 
 pub(super) fn request_shortcuts_allowed(ctx: &egui::Context) -> bool {
@@ -521,8 +511,7 @@ pub(super) fn request_shortcuts_allowed(ctx: &egui::Context) -> bool {
 #[cfg(test)]
 mod layout_tests {
     use super::{
-        AnalysisPipeline, DEFAULT_DETAIL_SHARE, DEFAULT_WINDOW, DetailState, Dialogs, InspectorApp,
-        LayoutState, MAX_RECORDS, MIN_DETAIL_WIDTH, MIN_MAIN_HEIGHT, MIN_TABLE_WIDTH, MIN_WINDOW,
+        AnalysisPipeline, DetailState, Dialogs, InspectorApp, Layout, LayoutState, MAX_RECORDS,
         MainView, MapState, RequestsState, SessionState, fonts, main_height, split_detail_width,
     };
     use crate::ui::detail::detail_tabs::DetailTab;
@@ -638,25 +627,30 @@ mod layout_tests {
     #[test]
     fn main_area_fills_the_rest_but_keeps_a_minimum() {
         assert!((main_height(700.0, 90.0, 30.0) - 580.0).abs() < f32::EPSILON);
-        assert!((main_height(300.0, 90.0, 30.0) - MIN_MAIN_HEIGHT).abs() < f32::EPSILON);
+        assert!((main_height(300.0, 90.0, 30.0) - Layout::MIN_MAIN_HEIGHT).abs() < f32::EPSILON);
     }
 
     #[test]
     fn split_detail_width_clamps_narrow_and_restores_wide() {
-        let narrow_total = MIN_WINDOW[0] - 16.0;
-        let narrow_detail = split_detail_width(narrow_total, DEFAULT_DETAIL_SHARE);
-        assert!(narrow_detail >= MIN_DETAIL_WIDTH);
-        assert!(narrow_total - narrow_detail >= MIN_TABLE_WIDTH);
+        let narrow_total = Layout::MIN_WINDOW[0] - 16.0;
+        let narrow_detail = split_detail_width(narrow_total, Layout::DEFAULT_DETAIL_SHARE);
+        assert!(narrow_detail >= Layout::MIN_DETAIL_WIDTH);
+        assert!(narrow_total - narrow_detail >= Layout::MIN_TABLE_WIDTH);
 
         // Widening again from the same stored share restores proportional detail space.
-        let wide_total = DEFAULT_WINDOW[0] - 16.0;
-        let wide_detail = split_detail_width(wide_total, DEFAULT_DETAIL_SHARE);
+        let wide_total = Layout::WINDOW[0] - 16.0;
+        let wide_detail = split_detail_width(wide_total, Layout::DEFAULT_DETAIL_SHARE);
         assert!(wide_detail > narrow_detail + 150.0);
-        assert!(wide_total.mul_add(-DEFAULT_DETAIL_SHARE, wide_detail).abs() < 1.0);
+        assert!(
+            wide_total
+                .mul_add(-Layout::DEFAULT_DETAIL_SHARE, wide_detail)
+                .abs()
+                < 1.0
+        );
 
         // A user-dragged custom share is clamped when narrow and recovered when wide.
         let custom_narrow = split_detail_width(narrow_total, 0.55);
-        assert!((custom_narrow - (narrow_total - MIN_TABLE_WIDTH)).abs() < 1.0);
+        assert!((custom_narrow - (narrow_total - Layout::MIN_TABLE_WIDTH)).abs() < 1.0);
         let custom_wide = split_detail_width(wide_total, 0.55);
         assert!(wide_total.mul_add(-0.55, custom_wide).abs() < 1.0);
     }
@@ -832,11 +826,11 @@ mod layout_tests {
         }
 
         for size in [
-            DEFAULT_WINDOW,
+            Layout::WINDOW,
             [800.0, 420.0],
             [700.0, 420.0],
-            MIN_WINDOW,
-            [MIN_WINDOW[0], 900.0],
+            Layout::MIN_WINDOW,
+            [Layout::MIN_WINDOW[0], 900.0],
             [1_100.0, 700.0],
         ] {
             app.detail.tab = DetailTab::Headers;
@@ -856,7 +850,7 @@ mod layout_tests {
             );
 
             // At 640x900, query parameters and wrapped request/response headers are all visible.
-            if (size[0] - MIN_WINDOW[0]).abs() < 1.0 && (size[1] - 900.0).abs() < 1.0 {
+            if (size[0] - Layout::MIN_WINDOW[0]).abs() < 1.0 && (size[1] - 900.0).abs() < 1.0 {
                 assert!(
                     drawn.iter().any(|item| item.text.contains("x-request-id")),
                     "expected wrapped response headers to be visible at 640x900"
@@ -884,18 +878,20 @@ mod layout_tests {
             app.detail.body_mode = mode;
             let viewport = egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
-                egui::vec2(MIN_WINDOW[0], MIN_WINDOW[1]),
+                egui::vec2(Layout::MIN_WINDOW[0], Layout::MIN_WINDOW[1]),
             );
-            let drawn = render_settled(&mut app, MIN_WINDOW);
+            let drawn = render_settled(&mut app, Layout::MIN_WINDOW);
             assert_no_text_overlap(&drawn, viewport, &format!("body-{mode:?}@640x420"));
         }
 
         // Empty list and unselected detail pane at minimum window size.
         app.requests.records.clear(0);
         app.requests.selected = None;
-        let min_viewport =
-            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(MIN_WINDOW[0], MIN_WINDOW[1]));
-        let drawn = render_settled(&mut app, MIN_WINDOW);
+        let min_viewport = egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(Layout::MIN_WINDOW[0], Layout::MIN_WINDOW[1]),
+        );
+        let drawn = render_settled(&mut app, Layout::MIN_WINDOW);
         assert_no_text_overlap(&drawn, min_viewport, "empty@640x420");
 
         Ok(())
@@ -988,9 +984,11 @@ mod layout_tests {
         );
 
         // Shrink to minimum size: clamped cleanly without overwriting the user's preferred share.
-        let min_viewport =
-            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(MIN_WINDOW[0], MIN_WINDOW[1]));
-        let narrow_drawn = render_settled(&mut app, MIN_WINDOW);
+        let min_viewport = egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(Layout::MIN_WINDOW[0], Layout::MIN_WINDOW[1]),
+        );
+        let narrow_drawn = render_settled(&mut app, Layout::MIN_WINDOW);
         assert_no_text_overlap(&narrow_drawn, min_viewport, "dragged-shrunk@640x420");
         assert!((app.layout.detail_share - dragged_share).abs() < f32::EPSILON);
 
@@ -1013,8 +1011,10 @@ mod layout_tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let exchanges = timeout(Duration::from_secs(5), capture_sample_exchanges()).await??;
         let sample = exchanges.last().cloned().ok_or("missing sample exchange")?;
-        let viewport =
-            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(MIN_WINDOW[0], MIN_WINDOW[1]));
+        let viewport = egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(Layout::MIN_WINDOW[0], Layout::MIN_WINDOW[1]),
+        );
 
         // Export HAR dialog at 640x420.
         let ctx = egui::Context::default();
@@ -1256,7 +1256,7 @@ mod layout_tests {
     #[test]
     fn escape_closes_the_body_modal_before_export_har() {
         let mut app = test_app(egui::Context::default());
-        let size = DEFAULT_WINDOW;
+        let size = Layout::WINDOW;
         let mut time = 0.05;
         app.dialogs.har.open("edited-fixture.har".to_owned());
         let _ = run_app_frame(&mut app, size, time, Vec::new());
@@ -1294,7 +1294,7 @@ mod layout_tests {
         let _ = app.requests.record_added(first);
         let _ = app.requests.record_added(second.clone());
         app.requests.selected = Some(second_id);
-        let size = DEFAULT_WINDOW;
+        let size = Layout::WINDOW;
         let mut time = 0.0;
 
         app.session.body_saving.open_bulk();
@@ -1365,7 +1365,7 @@ mod layout_tests {
         app.detail.tab = DetailTab::Body;
         app.detail.body_mode = body_format::ViewMode::Pretty;
 
-        let size = DEFAULT_WINDOW;
+        let size = Layout::WINDOW;
         let mut time = 0.0;
         let mut initial = None;
         for _ in 0..3 {
@@ -1396,10 +1396,12 @@ mod layout_tests {
         );
 
         // Narrow window with focused body selection must remain overlap-free.
-        let min_viewport =
-            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(MIN_WINDOW[0], MIN_WINDOW[1]));
+        let min_viewport = egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(Layout::MIN_WINDOW[0], Layout::MIN_WINDOW[1]),
+        );
         time += 0.05;
-        let narrow = run_app_frame(&mut app, MIN_WINDOW, time, Vec::new());
+        let narrow = run_app_frame(&mut app, Layout::MIN_WINDOW, time, Vec::new());
         assert_no_text_overlap(
             &collect_text_shapes(&narrow.shapes),
             min_viewport,
@@ -1530,7 +1532,7 @@ mod layout_tests {
 
         app.requests
             .show_map_scope(RequestScope::endpoint(key.clone(), Method::GET));
-        let drawn = render_settled(&mut app, DEFAULT_WINDOW);
+        let drawn = render_settled(&mut app, Layout::WINDOW);
         assert!(
             drawn
                 .iter()
@@ -1538,7 +1540,7 @@ mod layout_tests {
         );
 
         app.requests.show_map_scope(RequestScope::subtree(key));
-        let drawn = render_settled(&mut app, DEFAULT_WINDOW);
+        let drawn = render_settled(&mut app, Layout::WINDOW);
         assert!(
             drawn
                 .iter()
@@ -1589,8 +1591,8 @@ mod layout_tests {
                 })
                 .collect(),
         });
-        let tall = [DEFAULT_WINDOW[0], 2_000.0];
-        for size in [DEFAULT_WINDOW, MIN_WINDOW, tall] {
+        let tall = [Layout::WINDOW[0], 2_000.0];
+        for size in [Layout::WINDOW, Layout::MIN_WINDOW, tall] {
             let viewport =
                 egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size[0], size[1]));
             let drawn = render_settled(&mut app, size);
@@ -1640,7 +1642,7 @@ mod layout_tests {
             path: Vec::new(),
         });
 
-        for size in [DEFAULT_WINDOW, MIN_WINDOW] {
+        for size in [Layout::WINDOW, Layout::MIN_WINDOW] {
             let viewport =
                 egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size[0], size[1]));
             for (sub, tag) in [
@@ -1657,11 +1659,11 @@ mod layout_tests {
 
         app.map.panel.sub_view = super::MapSubView::Tree;
         let mut time = 0.0;
-        let _ = run_app_frame(&mut app, DEFAULT_WINDOW, time, Vec::new());
-        press_key(&mut app, DEFAULT_WINDOW, &mut time, egui::Key::ArrowDown);
+        let _ = run_app_frame(&mut app, Layout::WINDOW, time, Vec::new());
+        press_key(&mut app, Layout::WINDOW, &mut time, egui::Key::ArrowDown);
         assert!(app.map.panel.selected.is_some());
-        press_key(&mut app, DEFAULT_WINDOW, &mut time, egui::Key::ArrowRight);
-        let _ = run_app_frame(&mut app, DEFAULT_WINDOW, time + 0.05, Vec::new());
+        press_key(&mut app, Layout::WINDOW, &mut time, egui::Key::ArrowRight);
+        let _ = run_app_frame(&mut app, Layout::WINDOW, time + 0.05, Vec::new());
 
         let local_origin = app
             .map
@@ -1689,9 +1691,11 @@ mod layout_tests {
         assert_eq!(app.layout.main_view, MainView::Requests);
         assert_eq!(app.requests.filtered_records().len(), 2);
 
-        let min_viewport =
-            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(MIN_WINDOW[0], MIN_WINDOW[1]));
-        let filtered_drawn = render_settled(&mut app, MIN_WINDOW);
+        let min_viewport = egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(Layout::MIN_WINDOW[0], Layout::MIN_WINDOW[1]),
+        );
+        let filtered_drawn = render_settled(&mut app, Layout::MIN_WINDOW);
         assert_no_text_overlap(&filtered_drawn, min_viewport, "requests-map-filter@640x420");
         assert!(
             filtered_drawn
@@ -1770,7 +1774,7 @@ mod layout_tests {
         for _ in 0..frames {
             *time += 0.016;
             let start = std::time::Instant::now();
-            let _ = run_app_frame(app, DEFAULT_WINDOW, *time, Vec::new());
+            let _ = run_app_frame(app, Layout::WINDOW, *time, Vec::new());
             samples.push(start.elapsed());
         }
         samples.sort();

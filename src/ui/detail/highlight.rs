@@ -1,66 +1,10 @@
 //! Theme colors for [`TokenKind`]s and conversion of [`Styled`] text into an
 //! egui [`LayoutJob`].
 
-use crate::ui::style::theme::Theme;
+use crate::ui::style::theme::SyntaxPalette;
 use eframe::egui::{self, Color32, FontId, TextFormat, text::LayoutJob};
 use http_inspector_content::format::{LineIndent, Styled, TokenKind};
 use std::collections::HashMap;
-
-/// Syntax colors that keep at least 4.5:1 contrast on the panel, text field,
-/// stripe, hover, and selection backgrounds of their theme. Color only adds
-/// to cues already in the text: keys end with `:` or `=`, strings and
-/// attribute values keep their quotes, tags keep their angle brackets,
-/// namespace prefixes end with `:`, entities keep `&` and `;`, `CDATA` and
-/// instructions keep their `<![CDATA[` and `<?` delimiters, and comments are
-/// also italic.
-#[derive(Clone, Copy, Debug)]
-pub(super) struct SyntaxPalette {
-    pub(super) key: Color32,
-    pub(super) string: Color32,
-    pub(super) number: Color32,
-    pub(super) literal: Color32,
-    pub(super) punctuation: Color32,
-    pub(super) tag: Color32,
-    pub(super) comment: Color32,
-}
-
-impl SyntaxPalette {
-    pub(super) const fn for_theme(theme: Theme) -> Self {
-        match theme {
-            Theme::Light => Self {
-                key: Color32::from_rgb(120, 30, 125),
-                string: Color32::from_rgb(0, 95, 35),
-                number: Color32::from_rgb(0, 70, 160),
-                literal: Color32::from_rgb(150, 45, 0),
-                punctuation: Color32::from_gray(75),
-                tag: Color32::from_rgb(140, 20, 55),
-                comment: Color32::from_gray(80),
-            },
-            Theme::Dark => Self {
-                key: Color32::from_rgb(230, 175, 255),
-                string: Color32::from_rgb(150, 230, 160),
-                number: Color32::from_rgb(150, 205, 255),
-                literal: Color32::from_rgb(255, 195, 135),
-                punctuation: Color32::from_gray(190),
-                tag: Color32::from_rgb(255, 165, 185),
-                comment: Color32::from_gray(175),
-            },
-        }
-    }
-
-    const fn color(&self, kind: TokenKind, text: Color32) -> Color32 {
-        match kind {
-            TokenKind::Text => text,
-            TokenKind::Key | TokenKind::AttributeName => self.key,
-            TokenKind::String | TokenKind::AttributeValue | TokenKind::CData => self.string,
-            TokenKind::Number | TokenKind::Entity => self.number,
-            TokenKind::Literal | TokenKind::Namespace => self.literal,
-            TokenKind::Punctuation => self.punctuation,
-            TokenKind::Tag => self.tag,
-            TokenKind::Comment | TokenKind::Instruction => self.comment,
-        }
-    }
-}
 
 /// Caches measured logical widths of alignment prefixes for one layout build.
 struct PrefixWidths<'a> {
@@ -221,25 +165,7 @@ fn indent_at<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::style::theme;
-
-    #[test]
-    fn syntax_colors_meet_aa_on_all_widget_backgrounds() {
-        for theme in [Theme::Light, Theme::Dark] {
-            let palette = SyntaxPalette::for_theme(theme);
-            for color in [
-                palette.key,
-                palette.string,
-                palette.number,
-                palette.literal,
-                palette.punctuation,
-                palette.tag,
-                palette.comment,
-            ] {
-                theme::assert_readable(theme, color);
-            }
-        }
-    }
+    use crate::ui::style::theme::{Palette, Theme};
 
     #[test]
     fn splits_layout_into_lines_with_their_colors() {
@@ -252,8 +178,8 @@ mod tests {
             &ctx,
             &styled,
             &palette,
-            Color32::BLACK,
-            &FontId::monospace(12.0),
+            Palette::for_theme(Theme::Light).text,
+            &crate::ui::style::fonts::code(),
         );
         let texts: Vec<_> = lines.iter().map(|line| line.text.as_str()).collect();
         assert_eq!(texts, ["/* a", "b */", "", "c"]);
@@ -276,8 +202,8 @@ mod tests {
             &ctx,
             &styled,
             &palette,
-            Color32::WHITE,
-            &FontId::monospace(12.0),
+            Palette::for_theme(Theme::Dark).text,
+            &crate::ui::style::fonts::code(),
         );
         assert_eq!(job.text, "<!-- a --> b");
         assert_eq!(job.sections.len(), 2);
@@ -288,7 +214,7 @@ mod tests {
         );
         assert_eq!(
             job.sections.get(1).map(|section| section.format.color),
-            Some(Color32::WHITE)
+            Some(Palette::for_theme(Theme::Dark).text)
         );
     }
 
@@ -312,7 +238,7 @@ mod tests {
     -> Result<(), String> {
         let ctx = egui::Context::default();
         let palette = SyntaxPalette::for_theme(Theme::Light);
-        let font = FontId::monospace(13.0);
+        let font = crate::ui::style::fonts::code_large();
         let mut result: Result<(), String> = Ok(());
 
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -322,7 +248,13 @@ mod tests {
                 styled.push_multiline("첫째줄\n\n둘째줄\r\n셋째줄", TokenKind::Text, "    <메모>");
                 styled.push("</메모>\n    <next>ok</next>", TokenKind::Tag);
 
-                let job = layout_job(ui.ctx(), &styled, &palette, Color32::BLACK, &font);
+                let job = layout_job(
+                    ui.ctx(),
+                    &styled,
+                    &palette,
+                    Palette::for_theme(Theme::Light).text,
+                    &font,
+                );
                 assert_eq!(job.text, styled.text());
 
                 let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
@@ -338,7 +270,13 @@ mod tests {
                 assert!((x1 - x2).abs() < 0.5, "x1={x1}, x2={x2}");
                 assert!((x1 - x3).abs() < 0.5, "x1={x1}, x3={x3}");
 
-                let lines = line_jobs(ui.ctx(), &styled, &palette, Color32::BLACK, &font);
+                let lines = line_jobs(
+                    ui.ctx(),
+                    &styled,
+                    &palette,
+                    Palette::for_theme(Theme::Light).text,
+                    &font,
+                );
                 let line_texts: Vec<_> = lines.iter().map(|line| line.text.as_str()).collect();
                 assert_eq!(
                     line_texts,

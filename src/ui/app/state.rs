@@ -27,7 +27,9 @@ use crate::ui::requests::request_table::RequestTable;
 use crate::ui::requests::toolbar::{self, AuthorizationNotice, PortChoice};
 use crate::ui::style::theme::ThemeSettings;
 
-use super::{DEFAULT_DETAIL_SHARE, MAX_RECORDS};
+use crate::ui::style::tokens::Layout;
+
+use super::MAX_RECORDS;
 
 pub(crate) struct SessionState {
     pub(crate) proxy: Option<ProxyHandle>,
@@ -309,7 +311,7 @@ impl LayoutState {
             theme: ThemeSettings::new(context),
             main_view: MainView::default(),
             status_bar_height: 0.0,
-            detail_share: DEFAULT_DETAIL_SHARE,
+            detail_share: Layout::DEFAULT_DETAIL_SHARE,
         }
     }
 }

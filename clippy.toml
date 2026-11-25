@@ -8,6 +8,18 @@ disallowed-methods = [
     { path = "std::process::abort", reason = "Return an error so proxy shutdown and destructors can run." },
     { path = "tokio::sync::mpsc::unbounded_channel", reason = "Use a bounded channel to limit queued capture memory." },
     { path = "std::thread::sleep", reason = "Use tokio::time::sleep in async work to avoid blocking a runtime worker." },
+    { path = "eframe::egui::Color32::from_rgb", reason = "Define colors in ui/style/tokens.rs and use semantic colors on screens." },
+    { path = "eframe::egui::Color32::from_rgb_additive", reason = "Define colors in ui/style/tokens.rs and use semantic colors on screens." },
+    { path = "eframe::egui::Color32::from_rgba_premultiplied", reason = "Define colors in ui/style/tokens.rs and use semantic colors on screens." },
+    { path = "eframe::egui::Color32::from_rgba_unmultiplied", reason = "Define colors in ui/style/tokens.rs and use semantic colors on screens." },
+    { path = "eframe::egui::Color32::from_rgba_unmultiplied_const", reason = "Define colors in ui/style/tokens.rs and use semantic colors on screens." },
+    { path = "eframe::egui::Color32::from_gray", reason = "Define colors in ui/style/tokens.rs and use semantic colors on screens." },
+    { path = "eframe::egui::Color32::from_black_alpha", reason = "Define colors in ui/style/tokens.rs and use semantic colors on screens." },
+    { path = "eframe::egui::Color32::from_white_alpha", reason = "Define colors in ui/style/tokens.rs and use semantic colors on screens." },
+    { path = "eframe::egui::Color32::from_additive_luminance", reason = "Define colors in ui/style/tokens.rs and use semantic colors on screens." },
+    { path = "eframe::egui::FontId::new", reason = "Use theme text styles or font helpers from ui/style." },
+    { path = "eframe::egui::FontId::monospace", reason = "Use theme text styles or font helpers from ui/style." },
+    { path = "eframe::egui::FontId::proportional", reason = "Use theme text styles or font helpers from ui/style." },
 ]
 
 # Runtime channels must have explicit capacity and overflow handling.

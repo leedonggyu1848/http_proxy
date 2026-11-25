@@ -6,31 +6,7 @@ use eframe::egui::text::{ByteIndex, LayoutJob, LayoutSection, TextFormat};
 use eframe::egui::{Color32, FontId};
 use http_inspector_analysis::search::Matcher;
 
-use crate::ui::style::theme::Theme;
-
-/// Background of every match, and of the match the user moved to.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct MatchColors {
-    pub(crate) other: Color32,
-    pub(crate) current: Color32,
-}
-
-impl MatchColors {
-    /// Pale backgrounds in light mode and dark ones in dark mode, so the
-    /// syntax colors of each theme stay readable on them.
-    pub(crate) const fn for_theme(theme: Theme) -> Self {
-        match theme {
-            Theme::Light => Self {
-                other: Color32::from_rgb(255, 236, 150),
-                current: Color32::from_rgb(255, 196, 110),
-            },
-            Theme::Dark => Self {
-                other: Color32::from_rgb(92, 72, 0),
-                current: Color32::from_rgb(150, 82, 0),
-            },
-        }
-    }
-}
+use crate::ui::style::theme::MatchColors;
 
 /// Byte ranges of the matches in `text`, on character boundaries.
 pub(crate) fn ranges(matcher: &Matcher, text: &str) -> Vec<Range<usize>> {
@@ -108,6 +84,10 @@ pub(crate) fn plain(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::style::{
+        fonts,
+        theme::{Palette, Theme},
+    };
     use http_inspector_analysis::search::MatchOptions;
 
     fn sections(job: &LayoutJob) -> Vec<(&str, bool)> {
@@ -125,6 +105,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "distinct fixture colors exercise split sections"
+    )]
     fn marks_matches_that_cross_styled_sections() -> Result<(), Box<dyn std::error::Error>> {
         let matcher = Matcher::new("ab", MatchOptions::default())?;
         let mut job = LayoutJob::default();
@@ -163,8 +147,8 @@ mod tests {
         let job = plain(
             "새 주문",
             &matcher,
-            FontId::monospace(12.0),
-            Color32::WHITE,
+            fonts::code(),
+            Palette::for_theme(Theme::Dark).text,
             MatchColors::for_theme(Theme::Dark),
         );
         assert_eq!(sections(&job), [("새 ", false), ("주문", true)]);

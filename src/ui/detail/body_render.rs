@@ -3,17 +3,14 @@
 use crate::ui::detail::body_cache::{BodyCache, BodySource, PreparedBody};
 use crate::ui::detail::body_matches::{BodyMatches, Hit};
 use crate::ui::detail::highlight;
-use crate::ui::detail::search::highlight::MatchColors;
 use crate::ui::detail::tree_view::TreeView;
-use crate::ui::style::theme::{Palette, Theme};
+use crate::ui::style::theme::{MatchColors, Palette, SyntaxPalette, Theme};
+use crate::ui::style::tokens::Layout;
 use eframe::egui::{self, Galley, text::LayoutJob};
 use http_inspector_analysis::search::Query;
 use http_inspector_content::format::{BodyFormat, Notice, NoticeLevel, Styled, ViewMode};
 use http_inspector_exchange::BodySide;
 use std::sync::Arc;
-
-/// Height of the numbered line view before it scrolls.
-const LINE_VIEW_HEIGHT: f32 = 480.0;
 
 #[derive(Clone, PartialEq)]
 struct RenderStyle {
@@ -113,7 +110,7 @@ fn layout_text(
 ) -> Content {
     // The frame style still belongs to the previous theme after a theme switch.
     let text_color = ctx.style_of(style.theme).visuals.text_color();
-    let palette = highlight::SyntaxPalette::for_theme(style.theme);
+    let palette = SyntaxPalette::for_theme(style.theme);
     let job = highlight::layout_job(ctx, styled, &palette, text_color, &style.font);
     let lines = format
         .spec()
@@ -322,7 +319,7 @@ fn render_numbered_lines(
     let digits = lines.len().to_string().len();
     let mut area = egui::ScrollArea::both()
         .id_salt(("body-lines", side))
-        .max_height(LINE_VIEW_HEIGHT)
+        .max_height(Layout::BODY_LINE_VIEW_HEIGHT)
         .auto_shrink([false, true]);
     if let Some(line) = scroll_to {
         // `show_rows` places rows `row_height` plus item spacing apart.
@@ -332,7 +329,7 @@ fn render_numbered_lines(
             reason = "line counts of an 8 KiB preview fit in f32"
         )]
         let top = line as f32 * (row_height + spacing);
-        area = area.vertical_scroll_offset((top - LINE_VIEW_HEIGHT / 2.0).max(0.0));
+        area = area.vertical_scroll_offset((top - Layout::BODY_LINE_VIEW_HEIGHT / 2.0).max(0.0));
     }
     area.show_rows(ui, row_height, lines.len(), |ui, rows| {
         for number in rows {

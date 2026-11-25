@@ -172,6 +172,37 @@ fn is_korean_family_name(name: &str) -> bool {
         .any(|word| word == "KR" || word.eq_ignore_ascii_case("Korean"))
 }
 
+use super::tokens::TypeScale;
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the code font is defined by the typography tokens"
+)]
+#[cfg(test)]
+pub(crate) const fn code() -> egui::FontId {
+    egui::FontId::monospace(TypeScale::CODE)
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the fixture uses the large code size"
+)]
+pub(crate) const fn code_large() -> egui::FontId {
+    egui::FontId::monospace(TypeScale::LARGE_CODE)
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "graph typography comes from the type scale"
+)]
+pub(crate) const fn graph_fonts() -> (egui::FontId, egui::FontId) {
+    (
+        egui::FontId::proportional(TypeScale::SMALL),
+        egui::FontId::monospace(TypeScale::GRAPH_COUNT),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::error::Error;
@@ -193,6 +224,10 @@ mod tests {
         }
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "check glyphs independently of the type scale"
+    )]
     fn assert_renders_korean(fonts: FontDefinitions) {
         let mut fonts = Fonts::new(TextOptions::default(), fonts);
         for font_id in [FontId::proportional(14.0), FontId::monospace(14.0)] {

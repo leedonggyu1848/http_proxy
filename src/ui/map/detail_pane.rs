@@ -4,6 +4,7 @@
 //! pane. Matching requests display path-only URLs with query parameter *names*
 //! only.
 
+use crate::ui::style::tokens::Space;
 use std::collections::HashSet;
 use std::time::SystemTime;
 
@@ -216,7 +217,7 @@ fn render_header(
         }
     });
 
-    ui.add_space(4.0);
+    ui.add_space(Space::XS);
     ui.horizontal_wrapped(|ui| {
         if ui
             .button("Show in Requests")

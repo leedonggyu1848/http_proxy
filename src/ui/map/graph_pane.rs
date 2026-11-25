@@ -1,20 +1,18 @@
 //! Interactive force-directed domain relationship graph rendered directly with
 //! [`egui::Painter`].
 
-use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
+use eframe::egui::{self, Align2, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use http_inspector_analysis::url_map::{
     EdgeKind, ForceLayout, GraphEdge, GraphNode, RelationshipGraph, STEPS_PER_FRAME,
 };
 use http_inspector_exchange::ByteSize;
 
 use super::EdgeVisibility;
-use crate::ui::style::theme::Palette;
-
-const CANVAS_PADDING: f32 = 56.0;
-const MIN_NODE_RADIUS: f32 = 12.0;
-const MAX_NODE_RADIUS: f32 = 28.0;
-const ARROW_LENGTH: f32 = 9.0;
-const ARROW_HALF_WIDTH: f32 = 4.5;
+use crate::ui::style::tokens::{Layout, Radius, Space, StrokeWidth};
+use crate::ui::style::{
+    fonts,
+    theme::{self, Palette},
+};
 
 /// Renders the relationship graph and returns the clicked host (if any) to jump
 /// to in Tree view.
@@ -48,15 +46,17 @@ pub(super) fn show(
         return None;
     }
 
-    let available = ui.available_size().max(Vec2::new(120.0, 120.0));
+    let available = ui
+        .available_size()
+        .max(Vec2::splat(Layout::GRAPH_CANVAS_MIN));
     let (rect, response) = ui.allocate_exact_size(available, Sense::click_and_drag());
     let painter = ui.painter().with_clip_rect(rect);
 
-    painter.rect_filled(rect, 4.0, ui.visuals().extreme_bg_color);
+    painter.rect_filled(rect, Radius::GRAPH_CANVAS, palette.surfaces.inset);
     painter.rect_stroke(
         rect,
-        4.0,
-        ui.visuals().widgets.noninteractive.bg_stroke,
+        Radius::GRAPH_CANVAS,
+        theme::structural_stroke(ui),
         egui::StrokeKind::Inside,
     );
 
@@ -97,7 +97,6 @@ pub(super) fn show(
     paint_nodes(
         &NodeCanvas {
             painter: &painter,
-            visuals: ui.visuals(),
             rect,
             palette: &palette,
         },
@@ -245,18 +244,23 @@ fn paint_edges(
             continue;
         };
         let (color, width, dashed) = match edge.kind {
-            EdgeKind::Referer => (palette.info, 1.6, false),
-            EdgeKind::Origin => (palette.warning, 1.6, true),
-            EdgeKind::Redirect => (palette.success, 2.6, false),
+            EdgeKind::Referer => (palette.info, StrokeWidth::GRAPH_LINK, false),
+            EdgeKind::Origin => (palette.warning, StrokeWidth::GRAPH_LINK, true),
+            EdgeKind::Redirect => (palette.success, StrokeWidth::GRAPH_REDIRECT, false),
         };
         if edge.from == edge.to {
-            let loop_center = Pos2::new(from_pos.x, from_pos.y - from_r - 12.0);
-            painter.circle_stroke(loop_center, 10.0, Stroke::new(width, color));
+            let loop_center =
+                Pos2::new(from_pos.x, from_pos.y - from_r - Layout::GRAPH_LOOP_OFFSET);
+            painter.circle_stroke(
+                loop_center,
+                Layout::GRAPH_LOOP_RADIUS,
+                Stroke::new(width, color),
+            );
             continue;
         }
         let delta = to_pos - from_pos;
         let distance = delta.length();
-        if distance <= from_r + to_r + 6.0 {
+        if distance <= from_r + to_r + Layout::GRAPH_EDGE_CLEARANCE {
             continue;
         }
         let dir = delta / distance;
@@ -275,11 +279,12 @@ fn paint_edges(
             .filter(|other| (other.from.min(other.to), other.from.max(other.to)) == pair)
             .count();
         #[allow(clippy::cast_precision_loss, reason = "small count of parallel edges")]
-        let shift = (siblings.saturating_sub(1) as f32).mul_add(-0.5, rank as f32) * 9.0;
+        let shift = (siblings.saturating_sub(1) as f32).mul_add(-0.5, rank as f32)
+            * Layout::GRAPH_EDGE_SEPARATION;
         let offset = perp * shift;
 
-        let start = from_pos + dir * (from_r + 2.0) + offset;
-        let end = to_pos - dir * (to_r + 3.0) + offset;
+        let start = from_pos + dir * (from_r + Space::XXS) + offset;
+        let end = to_pos - dir * (to_r + Layout::GRAPH_ARROW_TIP_PADDING) + offset;
 
         if dashed {
             paint_dashed_line(painter, start, end, Stroke::new(width, color));
@@ -291,8 +296,8 @@ fn paint_edges(
 }
 
 fn paint_dashed_line(painter: &egui::Painter, start: Pos2, end: Pos2, stroke: Stroke) {
-    const DASH: f32 = 6.0;
-    const GAP: f32 = 4.0;
+    const DASH: f32 = Layout::GRAPH_DASH_LENGTH;
+    const GAP: f32 = Space::XS;
     const STRIDE: f32 = DASH + GAP;
     let delta = end - start;
     let total = delta.length();
@@ -319,9 +324,9 @@ fn paint_dashed_line(painter: &egui::Painter, start: Pos2, end: Pos2, stroke: St
 
 fn paint_arrowhead(painter: &egui::Painter, tip: Pos2, dir: Vec2, color: Color32) {
     let perp = Vec2::new(-dir.y, dir.x);
-    let base = tip - dir * ARROW_LENGTH;
-    let left = base + perp * ARROW_HALF_WIDTH;
-    let right = base - perp * ARROW_HALF_WIDTH;
+    let base = tip - dir * Layout::GRAPH_ARROW_LENGTH;
+    let left = base + perp * Layout::GRAPH_ARROW_HALF_WIDTH;
+    let right = base - perp * Layout::GRAPH_ARROW_HALF_WIDTH;
     painter.add(egui::Shape::convex_polygon(
         vec![tip, left, right],
         color,
@@ -331,7 +336,6 @@ fn paint_arrowhead(painter: &egui::Painter, tip: Pos2, dir: Vec2, color: Color32
 
 struct NodeCanvas<'a> {
     painter: &'a egui::Painter,
-    visuals: &'a egui::Visuals,
     rect: Rect,
     palette: &'a Palette,
 }
@@ -344,11 +348,10 @@ fn paint_nodes(
 ) {
     let painter = canvas.painter;
     let palette = canvas.palette;
-    let fill = canvas.visuals.panel_fill;
-    let hover_fill = canvas.visuals.widgets.hovered.bg_fill;
-    let text_color = canvas.visuals.text_color();
-    let label_font = FontId::proportional(11.5);
-    let count_font = FontId::monospace(10.5);
+    let fill = palette.surfaces.bg;
+    let hover_fill = palette.surfaces.hover;
+    let text_color = palette.text;
+    let (label_font, count_font) = fonts::graph_fonts();
     let mut placed_labels: Vec<Rect> = Vec::with_capacity(nodes.len());
 
     for (index, (node, &(center, radius))) in nodes.iter().zip(positions.iter()).enumerate() {
@@ -357,9 +360,18 @@ fn paint_nodes(
         painter.circle_filled(center, radius, node_fill);
 
         if node.third_party {
-            paint_dashed_circle(painter, center, radius, Stroke::new(2.5, palette.warning));
+            paint_dashed_circle(
+                painter,
+                center,
+                radius,
+                Stroke::new(StrokeWidth::GRAPH_NODE_PENDING, palette.warning),
+            );
         } else {
-            let stroke_width = if is_hovered { 3.0 } else { 2.0 };
+            let stroke_width = if is_hovered {
+                StrokeWidth::GRAPH_NODE_HOVERED
+            } else {
+                StrokeWidth::GRAPH_NODE
+            };
             painter.circle_stroke(center, radius, Stroke::new(stroke_width, palette.info));
         }
 
@@ -381,23 +393,27 @@ fn paint_nodes(
         let label_size = galley.size();
         let half_w = label_size.x * 0.5;
         let label_x = center.x.clamp(
-            canvas.rect.left() + half_w + 4.0,
-            canvas.rect.right() - half_w - 4.0,
+            canvas.rect.left() + half_w + Space::XS,
+            canvas.rect.right() - half_w - Space::XS,
         );
-        let preferred_y = center.y + radius + 4.0;
-        let label_y = if preferred_y + label_size.y <= canvas.rect.bottom() - 4.0 {
+        let preferred_y = center.y + radius + Space::XS;
+        let label_y = if preferred_y + label_size.y <= canvas.rect.bottom() - Space::XS {
             preferred_y
         } else {
-            (center.y - radius - label_size.y - 4.0).max(canvas.rect.top() + 4.0)
+            (center.y - radius - label_size.y - Space::XS).max(canvas.rect.top() + Space::XS)
         };
         let label_rect = Rect::from_min_size(Pos2::new(label_x - half_w, label_y), label_size);
 
         // Skip secondary overlapping labels unless this node is hovered, preventing overlap.
         let overlaps = placed_labels
             .iter()
-            .any(|existing| existing.expand(2.0).intersects(label_rect));
+            .any(|existing| existing.expand(Space::XXS).intersects(label_rect));
         if !overlaps || is_hovered {
-            painter.rect_filled(label_rect.expand2(Vec2::new(3.0, 1.0)), 2.0, fill);
+            painter.rect_filled(
+                label_rect.expand2(Layout::GRAPH_LABEL_PADDING),
+                Radius::GRAPH_LABEL,
+                fill,
+            );
             painter.galley(label_rect.min, galley, text_color);
             placed_labels.push(label_rect);
         }
@@ -427,15 +443,27 @@ fn paint_dashed_circle(painter: &egui::Painter, center: Pos2, radius: f32, strok
 }
 
 fn to_screen(rect: Rect, nx: f32, ny: f32) -> Pos2 {
-    let half_w = rect.width().mul_add(0.5, -CANVAS_PADDING).max(20.0);
-    let half_h = rect.height().mul_add(0.5, -CANVAS_PADDING).max(20.0);
+    let half_w = rect
+        .width()
+        .mul_add(0.5, -Layout::GRAPH_CANVAS_PADDING)
+        .max(Layout::GRAPH_AXIS_MIN);
+    let half_h = rect
+        .height()
+        .mul_add(0.5, -Layout::GRAPH_CANVAS_PADDING)
+        .max(Layout::GRAPH_AXIS_MIN);
     let center = rect.center();
     Pos2::new(nx.mul_add(half_w, center.x), ny.mul_add(half_h, center.y))
 }
 
 fn from_screen(rect: Rect, pos: Pos2) -> (f32, f32) {
-    let half_w = rect.width().mul_add(0.5, -CANVAS_PADDING).max(20.0);
-    let half_h = rect.height().mul_add(0.5, -CANVAS_PADDING).max(20.0);
+    let half_w = rect
+        .width()
+        .mul_add(0.5, -Layout::GRAPH_CANVAS_PADDING)
+        .max(Layout::GRAPH_AXIS_MIN);
+    let half_h = rect
+        .height()
+        .mul_add(0.5, -Layout::GRAPH_CANVAS_PADDING)
+        .max(Layout::GRAPH_AXIS_MIN);
     let center = rect.center();
     ((pos.x - center.x) / half_w, (pos.y - center.y) / half_h)
 }
@@ -448,7 +476,10 @@ fn node_radius(node: &GraphNode, max_requests: u64) -> f32 {
     let numerator = (node.request_count.max(1) as f32).ln_1p();
     let denominator = (max_requests.max(1) as f32).ln_1p().max(1.0);
     let t = (numerator / denominator).clamp(0.0, 1.0);
-    t.mul_add(MAX_NODE_RADIUS - MIN_NODE_RADIUS, MIN_NODE_RADIUS)
+    t.mul_add(
+        Layout::GRAPH_MAX_NODE_RADIUS - Layout::GRAPH_MIN_NODE_RADIUS,
+        Layout::GRAPH_MIN_NODE_RADIUS,
+    )
 }
 
 fn hit_test(positions: &[(Pos2, f32)], pointer: Pos2) -> Option<usize> {
@@ -456,7 +487,7 @@ fn hit_test(positions: &[(Pos2, f32)], pointer: Pos2) -> Option<usize> {
         .iter()
         .enumerate()
         .rev()
-        .find(|(_, (center, radius))| center.distance(pointer) <= radius + 4.0)
+        .find(|(_, (center, radius))| center.distance(pointer) <= radius + Space::XS)
         .map(|(index, _)| index)
 }
 

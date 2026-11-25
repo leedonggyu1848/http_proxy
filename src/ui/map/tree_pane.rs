@@ -8,11 +8,9 @@ use http_inspector_analysis::url_map::{NodeStats, RowKind, UrlMap, ViewNodeKey, 
 
 use super::MapPanel;
 use crate::ui::detail::tree_view;
-use crate::ui::style::theme::Palette;
+use crate::ui::style::theme::{self, Palette};
+use crate::ui::style::tokens::{Layout, Radius, Space, StrokeWidth};
 
-const ROW_HEIGHT: f32 = 22.0;
-const STATUS_BAR_WIDTH: f32 = 44.0;
-const STATUS_BAR_HEIGHT: f32 = 8.0;
 const NEW_NODE_HIGHLIGHT: Duration = Duration::from_secs(2);
 
 pub(super) fn show(panel: &mut MapPanel, ui: &mut egui::Ui, map: &UrlMap, shortcuts_allowed: bool) {
@@ -28,14 +26,15 @@ pub(super) fn show(panel: &mut MapPanel, ui: &mut egui::Ui, map: &UrlMap, shortc
         return;
     }
 
-    let available_height = ui.available_height().max(ROW_HEIGHT);
+    let available_height = ui.available_height().max(Layout::MAP_TREE_ROW_HEIGHT);
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "positive viewport height divided by fixed row height"
     )]
     {
-        panel.page_rows = ((available_height / ROW_HEIGHT).floor() as usize).max(1);
+        panel.page_rows =
+            ((available_height / Layout::MAP_TREE_ROW_HEIGHT).floor() as usize).max(1);
     }
 
     if shortcuts_allowed {
@@ -48,7 +47,7 @@ pub(super) fn show(panel: &mut MapPanel, ui: &mut egui::Ui, map: &UrlMap, shortc
     if let Some(target_row) = panel.keyboard_scroll_to.take() {
         #[allow(clippy::cast_precision_loss, reason = "row index for scroll offset")]
         let offset = available_height
-            .mul_add(-0.35, target_row as f32 * ROW_HEIGHT)
+            .mul_add(-0.35, target_row as f32 * Layout::MAP_TREE_ROW_HEIGHT)
             .max(0.0);
         scroll = scroll.vertical_scroll_offset(offset);
     }
@@ -58,7 +57,7 @@ pub(super) fn show(panel: &mut MapPanel, ui: &mut egui::Ui, map: &UrlMap, shortc
     let mut any_fading = false;
     let row_count = panel.cached_rows.len();
 
-    scroll.show_rows(ui, ROW_HEIGHT, row_count, |ui, range| {
+    scroll.show_rows(ui, Layout::MAP_TREE_ROW_HEIGHT, row_count, |ui, range| {
         for index in range {
             let Some(row) = panel.cached_rows.get(index) else {
                 continue;
@@ -98,24 +97,19 @@ fn render_row(ui: &mut egui::Ui, row: &VisibleRow, is_selected: bool) -> RowOutc
     let age = row.created_at.elapsed();
     let fading = age < NEW_NODE_HIGHLIGHT;
 
-    let mut frame = egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 1));
+    let mut frame = egui::Frame::NONE.inner_margin(Layout::MAP_TREE_ROW_MARGIN);
     if is_selected {
-        frame = frame.fill(ui.visuals().selection.bg_fill);
+        frame = frame.fill(palette.surfaces.selection);
     } else if fading {
         let alpha = new_highlight_alpha(age);
-        frame = frame.fill(Color32::from_rgba_unmultiplied(
-            palette.info.r(),
-            palette.info.g(),
-            palette.info.b(),
-            alpha,
-        ));
+        frame = frame.fill(theme::new_map_node_fill(ui, alpha));
     }
 
     let mut toggled = false;
     let mut clicked = false;
     frame.show(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.set_min_height(ROW_HEIGHT - 4.0);
+            ui.set_min_height(Layout::MAP_TREE_ROW_HEIGHT - Space::XS);
             toggled = tree_view::tree_row_prefix(
                 ui,
                 row.depth,
@@ -224,11 +218,11 @@ fn paint_status_bar(ui: &mut egui::Ui, stats: &NodeStats, palette: &Palette) {
         return;
     }
     let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(STATUS_BAR_WIDTH, STATUS_BAR_HEIGHT),
+        egui::vec2(Layout::MAP_STATUS_WIDTH, Layout::MAP_STATUS_HEIGHT),
         egui::Sense::hover(),
     );
     let painter = ui.painter();
-    painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
+    painter.rect_filled(rect, Radius::STATUS_BAR, palette.surfaces.inset);
 
     let segments = [
         (stats.status.s2xx, palette.success),
@@ -254,7 +248,9 @@ fn paint_status_bar(ui: &mut egui::Ui, stats: &NodeStats, palette: &Palette) {
         }
         #[allow(clippy::cast_precision_loss, reason = "proportional status bar width")]
         let share = (count as f32 / total_f) * rect.width();
-        let seg_width = share.max(2.0).min(rect.right() - x);
+        let seg_width = share
+            .max(Layout::MAP_STATUS_MIN_SEGMENT)
+            .min(rect.right() - x);
         if seg_width <= 0.0 {
             break;
         }
@@ -262,13 +258,13 @@ fn paint_status_bar(ui: &mut egui::Ui, stats: &NodeStats, palette: &Palette) {
             egui::pos2(x, rect.top()),
             egui::pos2((x + seg_width).min(rect.right()), rect.bottom()),
         );
-        painter.rect_filled(seg_rect, 0.0, color);
+        painter.rect_filled(seg_rect, Radius::PANE, color);
         x += seg_width;
     }
     painter.rect_stroke(
         rect,
-        2.0,
-        Stroke::new(0.5, ui.visuals().widgets.noninteractive.bg_stroke.color),
+        Radius::STATUS_BAR,
+        Stroke::new(StrokeWidth::MAP_STATUS, palette.surfaces.border),
         egui::StrokeKind::Inside,
     );
 
