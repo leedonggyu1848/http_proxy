@@ -79,6 +79,9 @@ where
         .map(|body| ObservedBody::new(body, request_body, capture.body_sinks(BodySide::Request)));
 
     let Ok(response) = timeout(engine.response_timeout, sender.send_request(request)).await else {
+        if capture.is_stopped() {
+            return std::future::pending().await;
+        }
         return failed_response(
             capture,
             FailureStage::ResponseTimeout,
@@ -105,6 +108,13 @@ where
                     ObservedBody::new(body, response_body, capture.body_sinks(BodySide::Response))
                 })
                 .map(BodyExt::boxed)
+        }
+        Err(_) if capture.is_stopped() => {
+            // `drop(runtime)` cancels the spawned upstream connection driver
+            // independently of this task; wait to be cancelled so
+            // `CaptureContext::drop` records `Outcome::Incomplete` without
+            // sending a synthetic error response to the client.
+            std::future::pending().await
         }
         Err(error) => failed_response(
             capture,
