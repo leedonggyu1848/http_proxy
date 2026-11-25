@@ -89,14 +89,13 @@ fn read_captured_body(
     if preview.lifecycle() != BodyLifecycle::Complete {
         return ReadBodyOutcome::Incomplete;
     }
-    if preview.observed_bytes() == 0 {
-        return ReadBodyOutcome::Complete(Vec::new());
-    }
     let encodings: Vec<String> = headers.get("content-encoding").map(str::to_owned).collect();
     if let Some(snapshot) = preview.snapshot()
-        && snapshot.retention() == BodyRetention::Prefix
-        && u64::try_from(snapshot.bytes().len()).ok() == Some(snapshot.observed_bytes())
+        && snapshot.is_complete()
     {
+        if snapshot.bytes().is_empty() {
+            return ReadBodyOutcome::Complete(Vec::new());
+        }
         return decode_complete_bytes(snapshot.bytes(), &encodings, max_decoded_bytes);
     }
     store.map_or(ReadBodyOutcome::Incomplete, |store| {
@@ -113,8 +112,7 @@ use super::lock_recovering;
 use http_inspector_encoding::{EmptyTokens, Encodings, tokens};
 use http_inspector_exchange::BodySide;
 use http_inspector_exchange::{
-    BodyLifecycle, BodyRetention, BodySource, Exchange, MediaType, Outcome, ReadBodyOutcome,
-    RecordId,
+    BodyLifecycle, BodySource, Exchange, MediaType, Outcome, ReadBodyOutcome, RecordId,
 };
 
 /// Default limit on body bytes one session stores.
@@ -357,6 +355,9 @@ impl BodyStore {
         };
         if !body.is_complete() {
             return ReadBodyOutcome::Incomplete;
+        }
+        if body.stored_bytes() == 0 {
+            return ReadBodyOutcome::Complete(Vec::new());
         }
         let Ok(decode) = storage_encodings(encodings) else {
             return ReadBodyOutcome::DecodeFailed;
@@ -874,7 +875,7 @@ mod tests {
     }
 
     #[test]
-    fn preview_bodies_read_only_previews_that_kept_every_byte()
+    fn complete_body_reads_fall_back_to_disk_when_the_preview_is_cut()
     -> Result<(), Box<dyn std::error::Error>> {
         use http_inspector_exchange::capture::BODY_PREVIEW_BYTES;
         use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
@@ -893,11 +894,58 @@ mod tests {
             PreviewBodies.read(&short, BodySide::Response, 2),
             ReadBodyOutcome::TooLarge
         );
-        let long = respond(vec![b'a'; BODY_PREVIEW_BYTES + 1])?;
+        let mut bytes = vec![b'a'; BODY_PREVIEW_BYTES];
+        bytes.extend_from_slice(b"tail");
+        let long = respond(bytes.clone())?;
         assert_eq!(
             PreviewBodies.read(&long, BodySide::Response, usize::MAX),
             ReadBodyOutcome::Incomplete
         );
+
+        let root = tempfile::tempdir()?;
+        let store = BodyStore::with_limits(root.path(), bytes.len() as u64, 0)?;
+        let mut recorder = BodyRecorder::new(store.clone(), long.id().value(), BodySide::Response);
+        recorder.observe(&bytes);
+        recorder.end(BodyLifecycle::Complete);
+        assert_eq!(
+            store.read(&long, BodySide::Response, bytes.len()),
+            ReadBodyOutcome::Complete(bytes)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_locked_empty_head_response_is_read_from_disk_without_decoding()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use http::header::{CONTENT_ENCODING, CONTENT_TYPE};
+        use http::{HeaderValue, Method, StatusCode};
+        use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
+
+        let record = ExchangeBuilder::http(Method::HEAD, "http://example.test/")?.respond(
+            ResponseFixture::new(StatusCode::OK)
+                .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+                .header(CONTENT_ENCODING, HeaderValue::from_static("gzip")),
+        )?;
+        let Outcome::Response(response) = record.outcome() else {
+            return Err("missing response".into());
+        };
+        let root = tempfile::tempdir()?;
+        let store = BodyStore::with_limits(root.path(), 1024, 0)?;
+        let side = BodySide::Response;
+        let mut recorder = BodyRecorder::new(store.clone(), record.id().value(), side);
+        recorder.end(BodyLifecycle::Complete);
+
+        assert_eq!(
+            store.read(&record, side, 1024),
+            ReadBodyOutcome::Complete(Vec::new())
+        );
+        response.body().with_locked_prefix_for_test(|| {
+            assert!(response.body().snapshot().is_none());
+            assert_eq!(
+                store.read(&record, side, 1024),
+                ReadBodyOutcome::Complete(Vec::new())
+            );
+        });
         Ok(())
     }
 

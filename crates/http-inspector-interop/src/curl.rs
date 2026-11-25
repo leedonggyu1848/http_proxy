@@ -244,27 +244,19 @@ fn request_body(request: &CapturedRequest) -> Result<Option<Vec<u8>>, CurlUnavai
         };
     };
     let snapshot = preview.snapshot().ok_or(CurlUnavailable::BodyInProgress)?;
-    match snapshot.lifecycle() {
-        BodyLifecycle::Streaming => return Err(CurlUnavailable::BodyInProgress),
-        BodyLifecycle::Interrupted | BodyLifecycle::Cancelled => {
-            return Err(CurlUnavailable::BodyIncomplete);
-        }
-        BodyLifecycle::Complete => {}
-    }
-    match snapshot.retention() {
-        BodyRetention::Omitted => return Err(CurlUnavailable::BodyNotCaptured),
-        BodyRetention::Truncated => {
-            return Err(CurlUnavailable::BodyTruncated {
+    if !snapshot.is_complete() {
+        return Err(match snapshot.lifecycle() {
+            BodyLifecycle::Streaming => CurlUnavailable::BodyInProgress,
+            BodyLifecycle::Interrupted | BodyLifecycle::Cancelled => {
+                CurlUnavailable::BodyIncomplete
+            }
+            BodyLifecycle::Complete if snapshot.retention() == BodyRetention::Omitted => {
+                CurlUnavailable::BodyNotCaptured
+            }
+            BodyLifecycle::Complete => CurlUnavailable::BodyTruncated {
                 retained: snapshot.bytes().len(),
                 observed: snapshot.observed_bytes(),
-            });
-        }
-        BodyRetention::Prefix => {}
-    }
-    if snapshot.observed_bytes() != snapshot.bytes().len() as u64 {
-        return Err(CurlUnavailable::BodyTruncated {
-            retained: snapshot.bytes().len(),
-            observed: snapshot.observed_bytes(),
+            },
         });
     }
     let body = snapshot.bytes();

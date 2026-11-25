@@ -12,7 +12,7 @@ use http_body_util::Full;
 use http_inspector_exchange::http_semantics::{
     REDACTED_VALUE, is_sensitive_header, remove_hop_by_hop_headers,
 };
-use http_inspector_exchange::{BodyLifecycle, BodyPreview, CaptureSource, Exchange};
+use http_inspector_exchange::{BodyPreview, BodySnapshot, CaptureSource, Exchange};
 
 /// Largest replacement body file the editor loads into memory.
 pub const REPLAY_BODY_FILE_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
@@ -126,10 +126,8 @@ impl ReplayDraft {
             return Err(ReplayError::ConnectTunnel);
         }
         let snapshot = original.request().body().and_then(BodyPreview::snapshot);
-        let body_missing = snapshot.as_ref().is_none_or(|body| {
-            body.lifecycle() != BodyLifecycle::Complete
-                || body.observed_bytes() != body.bytes().len() as u64
-        }) || original.request().headers().omitted();
+        let body_missing = !snapshot.as_ref().is_some_and(BodySnapshot::is_complete)
+            || original.request().headers().omitted();
         let entries = original.request().headers().entries();
         let removed =
             framing_header_names(entries.iter().map(|field| (field.name(), field.value())));
@@ -309,8 +307,8 @@ mod tests {
 
     use super::*;
     use http_inspector_exchange::{
-        BodyPreviewWriter, CapturedHeader, CapturedRequest, ExchangeWriter, HeaderPreview,
-        RecordId, SessionId,
+        BodyLifecycle, BodyPreviewWriter, CapturedHeader, CapturedRequest, ExchangeWriter,
+        HeaderPreview, RecordId, SessionId,
     };
 
     const PROXY: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080);

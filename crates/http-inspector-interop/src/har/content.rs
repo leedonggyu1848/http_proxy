@@ -72,8 +72,7 @@ pub(super) fn response_content(
             }
             let compression = body.observed_bytes().checked_sub(size).filter(|_| {
                 snapshot.as_ref().is_some_and(|snapshot| {
-                    snapshot.lifecycle() == BodyLifecycle::Complete
-                        && !encodings(headers).is_empty()
+                    snapshot.is_complete() && !encodings(headers).is_empty()
                 })
             });
             if let Some(compression) = compression {
@@ -91,17 +90,23 @@ pub(super) fn response_content(
     Value::Object(content)
 }
 
-/// Builds the request `postData`, or `None` when the export leaves bodies
-/// out or the request had no body bytes.
+/// Builds the request `postData`, or `None` when body export is disabled,
+/// no body exists, or a complete request has an empty body.
 pub(super) fn post_data(
     body: Option<&BodyPreview>,
     headers: &HeaderPreview,
     include_body: bool,
 ) -> Option<Value> {
-    let body = body.filter(|body| include_body && body.observed_bytes() > 0)?;
+    let body = body.filter(|_| include_body)?;
+    let snapshot = body.snapshot();
+    if snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.is_complete() && snapshot.bytes().is_empty())
+    {
+        return None;
+    }
     let mut data = Map::new();
     let _ = data.insert("mimeType".into(), json!(mime_type(headers)));
-    let snapshot = body.snapshot();
     match body_text(snapshot.as_ref(), &encodings(headers)) {
         BodyText::Text {
             text,
@@ -153,8 +158,7 @@ fn body_text(snapshot: Option<&BodySnapshot>, encodings: &[&str]) -> BodyText {
                 .into(),
         };
     }
-    let whole = snapshot.lifecycle() == BodyLifecycle::Complete
-        && snapshot.retention() == BodyRetention::Prefix;
+    let whole = snapshot.is_complete();
     if !is_encoded(encodings) {
         let (text, base64) = encode_text(snapshot.bytes(), !whole);
         return BodyText::Text {
@@ -200,6 +204,11 @@ fn partial_note(snapshot: &BodySnapshot) -> Option<String> {
         ));
     }
     match snapshot.lifecycle() {
+        BodyLifecycle::Complete
+            if snapshot.retention() == BodyRetention::Prefix && !snapshot.is_complete() =>
+        {
+            parts.push("Partial: the retained length differs from the observed body size".into());
+        }
         BodyLifecycle::Complete => {}
         BodyLifecycle::Streaming => parts.push("Partial: still streaming when exported".into()),
         BodyLifecycle::Interrupted => {

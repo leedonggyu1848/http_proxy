@@ -16,8 +16,8 @@ use http_inspector_content::detect;
 use http_inspector_content::format::{BodyFormat, ViewMode, form};
 use http_inspector_exchange::http_semantics::urlencoded;
 use http_inspector_exchange::{
-    BodyLifecycle, BodyPreview, BodyRetention, BodySide, CapturedRequest, Exchange, HeaderPreview,
-    MediaType, Outcome, RecordId, TunnelPreview,
+    BodyLifecycle, BodyPreview, BodyRetention, BodySide, BodySnapshot, CapturedRequest, Exchange,
+    HeaderPreview, MediaType, Outcome, RecordId, TunnelPreview,
 };
 use std::time::Duration;
 
@@ -333,7 +333,7 @@ fn render_body(
         "{} bytes observed · {} · {}",
         snapshot.observed_bytes(),
         lifecycle_text(snapshot.lifecycle()),
-        retention_text(snapshot.retention())
+        retention_text(&snapshot)
     ));
     if snapshot.retention() == BodyRetention::Omitted {
         ui.colored_label(
@@ -342,7 +342,7 @@ fn render_body(
         );
         return;
     }
-    if snapshot.bytes().is_empty() {
+    if snapshot.is_complete() && snapshot.bytes().is_empty() {
         ui.weak("Empty body.");
         return;
     }
@@ -360,7 +360,7 @@ fn render_body(
         bytes: snapshot.bytes(),
         encodings: &encodings,
         media_type,
-        capture: Capture::of(snapshot.lifecycle(), snapshot.retention()),
+        capture: Capture::of(&snapshot),
         search: panel.search.filter(|query| query.scope.covers_body(side)),
     };
     panel.cache.show(ui, &source, panel.mode);
@@ -375,9 +375,10 @@ const fn lifecycle_text(lifecycle: BodyLifecycle) -> &'static str {
     }
 }
 
-const fn retention_text(retention: BodyRetention) -> &'static str {
-    match retention {
-        BodyRetention::Prefix => "full preview",
+fn retention_text(snapshot: &BodySnapshot) -> &'static str {
+    match snapshot.retention() {
+        BodyRetention::Prefix if snapshot.is_complete() => "full preview",
+        BodyRetention::Prefix => "partial preview",
         BodyRetention::Truncated => "truncated preview",
         BodyRetention::Omitted => "preview omitted",
     }
