@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::f32::consts::TAU;
 
-use super::edges::{EdgeKind, RelationshipGraph};
+use super::edges::{DomainSummary, EdgeKind, RelationshipGraph};
 
 /// Default maximum number of domains shown in the relationship graph.
 pub const DEFAULT_MAX_GRAPH_DOMAINS: usize = 40;
@@ -156,34 +156,36 @@ impl ForceLayout {
             return;
         }
         self.total_domains = graph.domains().len();
-        let top_n_changed = self.total_domains > self.max_domains
-            && top_n_membership_changed(&self.nodes, graph, self.max_domains);
-        if self.topology_version == graph.topology_version() && !top_n_changed {
+        let topology_changed = self.topology_version != graph.topology_version();
+        let limit = self.max_domains.max(1);
+        let selected_domains =
+            (topology_changed || self.total_domains > limit).then(|| select_domains(graph, limit));
+        if let Some(domains) = selected_domains
+            && (topology_changed
+                || !domains
+                    .iter()
+                    .map(|summary| &summary.host)
+                    .eq(self.nodes.iter().map(|node| &node.host)))
+        {
+            self.rebuild(graph, domains);
+        } else {
             self.refresh_counts(graph);
-            self.synced_graph_version = graph.version();
-            return;
         }
+        self.topology_version = graph.topology_version();
+        self.synced_graph_version = graph.version();
+    }
 
+    fn rebuild(&mut self, graph: &RelationshipGraph, domains: Vec<&DomainSummary>) {
         let previous_positions: HashMap<String, (f32, f32)> = self
             .nodes
             .iter()
             .map(|node| (node.host.clone(), (node.x, node.y)))
             .collect();
 
-        let mut ranked: Vec<_> = graph.domains().values().collect();
-        ranked.sort_by(|left, right| {
-            right
-                .request_count
-                .cmp(&left.request_count)
-                .then_with(|| left.host.cmp(&right.host))
-        });
-        ranked.truncate(self.max_domains.max(1));
-        ranked.sort_by(|left, right| left.host.cmp(&right.host));
-
-        let count = ranked.len();
+        let count = domains.len();
         let mut host_to_index = HashMap::with_capacity(count);
         let mut nodes = Vec::with_capacity(count);
-        for (index, summary) in ranked.into_iter().enumerate() {
+        for (index, summary) in domains.into_iter().enumerate() {
             let (x, y) = previous_positions
                 .get(&summary.host)
                 .copied()
@@ -219,8 +221,6 @@ impl ForceLayout {
             }
         }
 
-        self.topology_version = graph.topology_version();
-        self.synced_graph_version = graph.version();
         self.nodes = nodes;
         self.edges = edges;
         self.steps_done = 0;
@@ -339,27 +339,20 @@ impl ForceLayout {
     }
 }
 
-fn top_n_membership_changed(
-    current: &[GraphNode],
-    graph: &RelationshipGraph,
-    max_domains: usize,
-) -> bool {
-    let limit = max_domains.max(1);
-    let mut ranked: Vec<_> = graph.domains().values().collect();
-    ranked.sort_by(|left, right| {
-        right
-            .request_count
-            .cmp(&left.request_count)
-            .then_with(|| left.host.cmp(&right.host))
-    });
-    ranked.truncate(limit);
-    ranked.sort_by(|left, right| left.host.cmp(&right.host));
-
-    ranked.len() != current.len()
-        || ranked
-            .iter()
-            .zip(current.iter())
-            .any(|(summary, node)| summary.host != node.host)
+fn select_domains(graph: &RelationshipGraph, limit: usize) -> Vec<&DomainSummary> {
+    // The domain map is already ordered by host.
+    let mut domains: Vec<_> = graph.domains().values().collect();
+    if domains.len() > limit {
+        domains.sort_by(|left, right| {
+            right
+                .request_count
+                .cmp(&left.request_count)
+                .then_with(|| left.host.cmp(&right.host))
+        });
+        domains.truncate(limit);
+        domains.sort_by(|left, right| left.host.cmp(&right.host));
+    }
+    domains
 }
 
 #[allow(
@@ -425,46 +418,110 @@ mod tests {
         let a = OriginKey::new("https", "a.example.com", None);
         let b = OriginKey::new("https", "b.example.com", None);
         let c = OriginKey::new("https", "c.example.com", None);
-        for _ in 0..5 {
-            graph.record_request(&a, false);
-        }
         for _ in 0..3 {
+            graph.record_request(&a, false);
+            graph.record_request(&c, false);
+        }
+        for _ in 0..5 {
             graph.record_request(&b, false);
         }
-        graph.record_request(&c, false);
+        for destination in [&a, &c] {
+            graph.record_edge(
+                b.host(),
+                destination.host(),
+                "https://b.example.com/".to_owned(),
+                format!("https://{}/", destination.host()),
+                EdgeKind::Referer,
+            );
+        }
 
         let mut layout = ForceLayout::new(2);
         layout.sync(&graph);
         let topo_before = graph.topology_version();
-        let version_before = graph.version();
         let hosts_before: Vec<&str> = layout.nodes().iter().map(|n| n.host.as_str()).collect();
-        assert_eq!(hosts_before, vec!["a.example.com", "b.example.com"]);
+        assert_eq!(hosts_before, vec![a.host(), b.host()]);
+        assert_eq!(
+            layout.edges(),
+            &[GraphEdge {
+                from: 1,
+                to: 0,
+                kind: EdgeKind::Referer,
+                count: 1,
+                third_party: false,
+            }]
+        );
 
         // Settling and calling sync again while graph.version() is unchanged is a no-op.
-        let mut rounds = 0;
-        while !layout.is_settled() && rounds < 20 {
-            let _ = layout.step(STEPS_PER_FRAME);
-            rounds += 1;
-        }
+        let _ = layout.step(MAX_TOTAL_STEPS + 1);
         assert!(layout.is_settled());
         layout.sync(&graph);
         assert!(layout.is_settled());
-        assert_eq!(graph.version(), version_before);
 
-        // Traffic surges on `c.example.com` without adding any new host or edge.
-        for _ in 0..10 {
-            graph.record_request(&c, false);
-        }
+        graph.record_request(&b, true);
+        graph.record_error(b.host());
+        graph.record_edge(
+            b.host(),
+            a.host(),
+            "https://b.example.com/".to_owned(),
+            "https://a.example.com/".to_owned(),
+            EdgeKind::Referer,
+        );
+        layout.sync(&graph);
+        assert!(layout.is_settled());
+        let retained_node = layout.nodes().last().cloned();
+        assert_eq!(
+            retained_node.as_ref().map(|node| (
+                node.request_count,
+                node.error_count,
+                node.third_party
+            )),
+            Some((6, 1, true))
+        );
+        assert_eq!(layout.edges().first().map(|edge| edge.count), Some(2));
+
+        // One more request to `c.example.com` breaks the tie with `a.example.com`.
+        graph.record_request(&c, false);
         assert_eq!(graph.topology_version(), topo_before);
-        assert!(graph.version() > version_before);
 
         layout.sync(&graph);
         let hosts_after: Vec<&str> = layout.nodes().iter().map(|n| n.host.as_str()).collect();
-        assert_eq!(hosts_after, vec!["a.example.com", "c.example.com"]);
+        assert_eq!(hosts_after, vec![b.host(), c.host()]);
+        assert_eq!(layout.nodes().first(), retained_node.as_ref());
+        assert_eq!(
+            layout.edges(),
+            &[GraphEdge {
+                from: 0,
+                to: 1,
+                kind: EdgeKind::Referer,
+                count: 1,
+                third_party: false,
+            }]
+        );
+        assert!(!layout.is_settled());
 
         // Changing max_domains forces a rebuild even when graph.version() is unchanged.
         layout.set_max_domains(3);
         layout.sync(&graph);
         assert_eq!(layout.nodes().len(), 3);
+    }
+
+    #[test]
+    fn refreshes_counts_at_domain_limit_without_restarting_layout() {
+        let mut graph = RelationshipGraph::default();
+        let a = OriginKey::new("https", "a.example.com", None);
+        let b = OriginKey::new("https", "b.example.com", None);
+        graph.record_request(&a, false);
+        graph.record_request(&b, false);
+
+        let mut layout = ForceLayout::new(2);
+        layout.sync(&graph);
+        let _ = layout.step(1);
+        graph.record_request(&a, false);
+        layout.sync(&graph);
+        assert_eq!(layout.steps_done, 1);
+        assert_eq!(
+            layout.nodes().first().map(|node| node.request_count),
+            Some(2)
+        );
     }
 }
