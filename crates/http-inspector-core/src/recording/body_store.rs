@@ -25,6 +25,18 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use self::export::{CopyPlan, decode_complete_bytes, read_decoded_segments, storage_encodings};
+use self::file_name::NameSource;
+use self::index::{BodyKey, Index};
+use self::location::SessionDirectory;
+use self::writer::Command;
+use super::lock_recovering;
+use http_inspector_encoding::{EmptyTokens, Encodings, tokens};
+use http_inspector_exchange::BodySide;
+use http_inspector_exchange::{
+    BodyLifecycle, BodySource, Exchange, MediaType, Outcome, ReadBodyOutcome, RecordId,
+};
+
 pub use bulk::{BodyLayout, BulkProgress, BulkSave, BulkSummary};
 pub use export::SaveFormat;
 pub use index::{StoreGap, StoredBody};
@@ -102,18 +114,6 @@ fn read_captured_body(
         store.read_complete_decoded(exchange.id(), side, &encodings, max_decoded_bytes)
     })
 }
-
-use self::export::{CopyPlan, decode_complete_bytes, read_decoded_segments, storage_encodings};
-use self::file_name::NameSource;
-use self::index::{BodyKey, Index};
-use self::location::SessionDirectory;
-use self::writer::Command;
-use super::lock_recovering;
-use http_inspector_encoding::{EmptyTokens, Encodings, tokens};
-use http_inspector_exchange::BodySide;
-use http_inspector_exchange::{
-    BodyLifecycle, BodySource, Exchange, MediaType, Outcome, ReadBodyOutcome, RecordId,
-};
 
 /// Default limit on body bytes one session stores.
 pub const BODY_STORE_LIMIT_BYTES: u64 = 2 * 1024 * 1024 * 1024;

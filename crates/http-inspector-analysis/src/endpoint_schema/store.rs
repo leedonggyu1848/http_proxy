@@ -39,14 +39,21 @@ impl EndpointSchemas {
 
     /// Adds one observed exchange to the endpoint `key`.
     pub fn record(&mut self, key: &EndpointKey, observation: &EndpointObservation) {
-        let methods = self.by_node.entry(key.node).or_default();
         let method = key.method.as_str();
-        if let Some(schema) = methods.get_mut(method) {
+        if let Some(schema) = self
+            .by_node
+            .get_mut(&key.node)
+            .and_then(|methods| methods.get_mut(method))
+        {
             schema.record(observation);
         } else if self.endpoints < MAX_ENDPOINTS {
             let mut schema = EndpointSchema::default();
             schema.record(observation);
-            let _ = methods.insert(method.to_owned(), schema);
+            let _ = self
+                .by_node
+                .entry(key.node)
+                .or_default()
+                .insert(method.to_owned(), schema);
             self.endpoints += 1;
         } else {
             self.omitted_endpoints = self.omitted_endpoints.saturating_add(1);
@@ -134,4 +141,77 @@ pub fn method_rank(method: &str) -> usize {
         .iter()
         .position(|known| *known == method)
         .unwrap_or(ORDER.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+
+    use http::StatusCode;
+    use http_inspector_exchange::{ExchangeBuilder, MemoryBodySource, ResponseFixture};
+
+    use super::*;
+    use crate::endpoint_schema::observe_exchange;
+    use crate::url_map::UrlMap;
+
+    #[test]
+    fn endpoint_cap_does_not_create_empty_node_entries() -> Result<(), Box<dyn Error>> {
+        let mut map = UrlMap::new();
+        let mut schemas = EndpointSchemas::new();
+        let bodies = MemoryBodySource::new();
+        let first = ExchangeBuilder::http(Method::GET, "http://fixture.test/0")?
+            .respond(ResponseFixture::new(StatusCode::NO_CONTENT))?;
+        let observation = observe_exchange(&first, &bodies);
+
+        for index in 0..MAX_ENDPOINTS {
+            let exchange =
+                ExchangeBuilder::http(Method::GET, format!("http://fixture.test/{index}"))?
+                    .respond(ResponseFixture::new(StatusCode::NO_CONTENT))?;
+            let node = map
+                .observe_exchange(&exchange)
+                .ok_or("missing URL map node")?;
+            schemas.record(
+                &EndpointKey {
+                    node,
+                    method: Method::GET,
+                },
+                &observation,
+            );
+        }
+
+        let omitted = ExchangeBuilder::http(Method::GET, "http://fixture.test/overflow")?
+            .respond(ResponseFixture::new(StatusCode::NO_CONTENT))?;
+        let omitted_node = map
+            .observe_exchange(&omitted)
+            .ok_or("missing URL map node")?;
+        schemas.record(
+            &EndpointKey {
+                node: omitted_node,
+                method: Method::GET,
+            },
+            &observation,
+        );
+        assert!(!schemas.by_node.contains_key(&omitted_node));
+        assert_eq!(schemas.by_node.len(), MAX_ENDPOINTS);
+
+        let first_node = map.observe_exchange(&first).ok_or("missing URL map node")?;
+        schemas.record(
+            &EndpointKey {
+                node: first_node,
+                method: Method::POST,
+            },
+            &observation,
+        );
+        schemas.record(
+            &EndpointKey {
+                node: first_node,
+                method: Method::GET,
+            },
+            &observation,
+        );
+        assert_eq!(schemas.omitted_endpoints(), 2);
+        assert_eq!(schemas.request_count(&[first_node], &Method::GET), 2);
+        assert_eq!(schemas.request_count(&[first_node], &Method::POST), 0);
+        Ok(())
+    }
 }

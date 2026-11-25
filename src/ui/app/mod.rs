@@ -132,7 +132,9 @@ impl InspectorApp {
         };
         while let Some(record) = proxy.try_receive() {
             self.map.analysis.record_added(&record);
-            self.requests.record_added(record);
+            if let Some(evicted) = self.requests.record_added(record) {
+                self.map.analysis.record_evicted(&evicted);
+            }
         }
     }
 
@@ -571,7 +573,7 @@ mod layout_tests {
         app.map.panel.selected = Some(key.clone());
         app.map.panel.sub_view = super::MapSubView::Graph;
         let id = record.id();
-        app.requests.record_added(record);
+        let _evicted = app.requests.record_added(record);
         app.requests.show_map_scope(RequestScope::subtree(key));
         app.requests.selected = Some(id);
         app.requests.record_filter = RecordFilter::Failures;
@@ -1389,6 +1391,49 @@ mod layout_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn endpoint_filter_marks_unanalyzed_evictions_as_estimates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use http::Method;
+        use http_inspector_analysis::filter::RecordList;
+        use http_inspector_analysis::url::{OriginKey, PathSegmentPattern};
+        use http_inspector_analysis::url_map::{RequestScope, ViewNodeKey};
+        use http_inspector_exchange::ExchangeBuilder;
+
+        let mut app = test_app(egui::Context::default());
+        app.requests.records = RecordList::new(1);
+        let key = ViewNodeKey {
+            origin: OriginKey::new("http", "fixture.test", None),
+            path: vec![PathSegmentPattern::Literal("api".to_owned())],
+        };
+        for _ in 0..2 {
+            let record =
+                ExchangeBuilder::http(Method::GET, "http://fixture.test/api")?.in_flight()?;
+            app.map.analysis.record_added(&record);
+            if let Some(evicted) = app.requests.record_added(record) {
+                app.map.analysis.record_evicted(&evicted);
+            }
+        }
+
+        app.requests
+            .show_map_scope(RequestScope::endpoint(key.clone(), Method::GET));
+        let drawn = render_settled(&mut app, DEFAULT_WINDOW);
+        assert!(
+            drawn
+                .iter()
+                .any(|item| item.text == "(1 retained · ≈0 older removed)")
+        );
+
+        app.requests.show_map_scope(RequestScope::subtree(key));
+        let drawn = render_settled(&mut app, DEFAULT_WINDOW);
+        assert!(
+            drawn
+                .iter()
+                .any(|item| item.text == "(1 retained · 1 older removed)")
+        );
+        Ok(())
     }
 
     #[tokio::test]

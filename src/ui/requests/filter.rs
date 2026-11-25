@@ -49,8 +49,9 @@ impl InspectorApp {
             .sync(&key, &self.requests.records, false);
         let palette = Palette::of(ui);
         let retained = self.requests.map_filter_cache.matched_count();
-        let total = self.map_scope_total(&key, retained);
-        let evicted = total.saturating_sub(u64::try_from(retained).unwrap_or(u64::MAX));
+        let counted = self.map_scope_total(&key);
+        let evicted = counted.saturating_sub(u64::try_from(retained).unwrap_or(u64::MAX));
+        let approximate = key.method.is_some() && self.requests.records.evicted() > 0;
         let mut clear = false;
         ui.horizontal_wrapped(|ui| {
             ui.label(
@@ -58,18 +59,18 @@ impl InspectorApp {
                     .monospace()
                     .color(palette.info),
             );
-            if evicted > 0 {
-                ui.label(
-                    egui::RichText::new(format!("({retained} retained · {evicted} older removed)"))
-                        .color(palette.warning)
-                        .small(),
-                );
+            let color = if evicted > 0 || approximate {
+                palette.warning
             } else {
-                ui.label(
-                    egui::RichText::new(format!("({retained} matching)"))
-                        .color(palette.muted)
-                        .small(),
-                );
+                palette.muted
+            };
+            let count = ui.label(
+                egui::RichText::new(map_retention_label(retained, evicted, approximate))
+                    .color(color)
+                    .small(),
+            );
+            if approximate {
+                count.on_hover_text("Estimate based on requests included in endpoint analysis.");
             }
             if ui.small_button("Clear map filter").clicked() {
                 clear = true;
@@ -80,10 +81,9 @@ impl InspectorApp {
         }
     }
 
-    /// Requests the Map counted for `scope` since the last `Clear`, never
-    /// fewer than the `retained` ones still listed.
-    fn map_scope_total(&self, scope: &RequestScope, retained: usize) -> u64 {
-        let counted = scope.method.as_ref().map_or_else(
+    /// Requests the Map counted for `scope` since the last `Clear`.
+    fn map_scope_total(&self, scope: &RequestScope) -> u64 {
+        scope.method.as_ref().map_or_else(
             || {
                 self.map
                     .analysis
@@ -96,8 +96,7 @@ impl InspectorApp {
                     method,
                 )
             },
-        );
-        counted.max(u64::try_from(retained).unwrap_or(u64::MAX))
+        )
     }
 
     pub(crate) fn request_table(&mut self, ui: &mut egui::Ui, shortcuts_allowed: bool) {
@@ -150,6 +149,16 @@ impl InspectorApp {
     }
 }
 
+fn map_retention_label(retained: usize, evicted: u64, approximate: bool) -> String {
+    if approximate {
+        format!("({retained} retained · ≈{evicted} older removed)")
+    } else if evicted > 0 {
+        format!("({retained} retained · {evicted} older removed)")
+    } else {
+        format!("({retained} matching)")
+    }
+}
+
 /// Records that match the outcome filter, optional Map node prefix, and search, in arrival order.
 pub(crate) fn visible_records<'a>(
     records: &'a RecordList<Exchange>,
@@ -188,6 +197,23 @@ mod tests {
     use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
 
     use super::*;
+
+    #[test]
+    fn endpoint_evictions_are_marked_as_estimates_even_at_zero() {
+        assert_eq!(
+            map_retention_label(5, 0, true),
+            "(5 retained · ≈0 older removed)"
+        );
+        assert_eq!(
+            map_retention_label(5, 2, true),
+            "(5 retained · ≈2 older removed)"
+        );
+        assert_eq!(
+            map_retention_label(5, 2, false),
+            "(5 retained · 2 older removed)"
+        );
+        assert_eq!(map_retention_label(5, 0, false), "(5 matching)");
+    }
 
     #[test]
     fn empty_list_explains_the_next_step() {

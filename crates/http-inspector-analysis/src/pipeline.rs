@@ -57,8 +57,8 @@ pub enum CaptureEvent<'a> {
     /// after `RecordAdded`. A record still in flight gets it only if the
     /// pipeline could watch it: when [`MAX_WATCHED_RECORDS`] in-flight records
     /// are already watched, it gets none and is counted in
-    /// [`AnalysisPipeline::unwatched_records`]. Records of a session cleared
-    /// before they finish get none either.
+    /// [`AnalysisPipeline::unwatched_records`]. A record evicted or cleared
+    /// while still in flight gets no settled event.
     RecordSettled {
         /// The settled record.
         exchange: &'a Exchange,
@@ -92,11 +92,11 @@ pub trait Analyzer: Any {
 impl Analyzer for EndpointAnalysis {
     fn handle(&mut self, event: &CaptureEvent<'_>) {
         match *event {
-            CaptureEvent::RecordAdded {
+            CaptureEvent::RecordSettled {
                 exchange,
                 node: Some(node),
             } => self.submit(node, exchange),
-            CaptureEvent::RecordAdded { node: None, .. } | CaptureEvent::RecordSettled { .. } => {}
+            CaptureEvent::RecordAdded { .. } | CaptureEvent::RecordSettled { node: None, .. } => {}
             CaptureEvent::SessionCleared => self.clear(),
         }
     }
@@ -204,6 +204,28 @@ impl AnalysisPipeline {
             });
         } else {
             self.unwatched = self.unwatched.saturating_add(1);
+            self.endpoints.note_unwatched(node, exchange);
+        }
+    }
+
+    /// Stops watching an evicted record. If it has already settled, delivers
+    /// its final state before releasing it.
+    pub fn record_evicted(&mut self, exchange: &Exchange) {
+        let Some(index) = self
+            .watched
+            .iter()
+            .position(|record| record.exchange.id() == exchange.id())
+        else {
+            return;
+        };
+        let record = self.watched.remove(index);
+        if record.exchange.is_live() {
+            self.endpoints.note_unwatched(record.node, &record.exchange);
+        } else {
+            self.dispatch(&CaptureEvent::RecordSettled {
+                exchange: &record.exchange,
+                node: record.node,
+            });
         }
     }
 
@@ -337,7 +359,7 @@ mod tests {
 
     fn in_flight_writer() -> ExchangeWriter {
         ExchangeWriter::start(
-            RecordId::new(9_001),
+            RecordId::next(),
             SessionId::next(),
             CaptureSource::HttpProxy,
             CapturedRequest::new(
@@ -401,6 +423,31 @@ mod tests {
         assert_eq!(settled(&pipeline), Some(vec![id]));
         assert!(!pipeline.update());
         assert_eq!(settled(&pipeline), Some(vec![id]));
+    }
+
+    #[test]
+    fn eviction_releases_live_requests_and_delivers_already_settled_requests()
+    -> Result<(), Box<dyn Error>> {
+        let mut pipeline = AnalysisPipeline::start(Arc::new(MemoryBodySource::new()), || {});
+        pipeline.register(Box::new(CountingAnalyzer::default()));
+        let live = in_flight_writer();
+        let settled = in_flight_writer();
+        pipeline.record_added(live.exchange());
+        pipeline.record_added(settled.exchange());
+
+        assert!(settled.settle(Outcome::Cancelled));
+        pipeline.record_evicted(live.exchange());
+        pipeline.record_evicted(settled.exchange());
+
+        assert!(pipeline.watched.is_empty());
+        assert_eq!(pipeline.endpoint_schemas().skipped_requests(), 1);
+        assert!(live.settle(Outcome::Cancelled));
+        let _changed = pipeline.update();
+        let counter = pipeline
+            .analyzer::<CountingAnalyzer>()
+            .ok_or("missing analyzer")?;
+        assert_eq!(counter.settled, vec![settled.exchange().id()]);
+        Ok(())
     }
 
     #[test]

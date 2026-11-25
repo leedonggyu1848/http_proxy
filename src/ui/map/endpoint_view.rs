@@ -76,7 +76,7 @@ pub(super) fn show(
     if skipped > 0 {
         ui.label(
             RichText::new(format!(
-                "{skipped} request(s) were not analyzed because the analysis queue was full."
+                "Endpoint analysis skipped {skipped} request(s) this session."
             ))
             .color(palette.warning)
             .small(),
