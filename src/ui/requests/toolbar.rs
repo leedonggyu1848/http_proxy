@@ -117,9 +117,11 @@ impl InspectorApp {
                 None => {}
             }
             ui.menu_button("Settings", |ui| {
-                self.layout.theme.menu(ui);
-                ui.separator();
-                self.session.body_saving.settings_menu(ui);
+                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                    self.layout.theme.menu(ui);
+                    ui.separator();
+                    self.session.body_saving.settings_menu(ui);
+                });
             });
             crate::ui::dialogs::scope_help::button(
                 ui,

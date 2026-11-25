@@ -304,33 +304,35 @@ impl BodySaving {
     pub(crate) fn settings_menu(&mut self, ui: &mut egui::Ui) {
         let max_width = (ui.ctx().content_rect().width() - 48.0).clamp(220.0, 380.0);
         ui.set_max_width(max_width);
-        ui.label("Body store limit");
-        let changed = ui
-            .add(
-                egui::DragValue::new(&mut self.limit_mib)
-                    .range(1..=MAX_LIMIT_MIB)
-                    .suffix(" MiB"),
-            )
-            .on_hover_text(
-                "Most body bytes kept for saving in one session. Later bodies are not stored once it is reached.",
-            )
-            .changed();
-        if changed {
-            if let Some(store) = self.store.as_ref() {
-                store.set_limit_bytes(self.limit_mib * MIB);
+        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+            ui.label("Body store limit");
+            let changed = ui
+                .add(
+                    egui::DragValue::new(&mut self.limit_mib)
+                        .range(1..=MAX_LIMIT_MIB)
+                        .suffix(" MiB"),
+                )
+                .on_hover_text(
+                    "Most body bytes kept for saving in one session. Later bodies are not stored once it is reached.",
+                )
+                .changed();
+            if changed {
+                if let Some(store) = self.store.as_ref() {
+                    store.set_limit_bytes(self.limit_mib * MIB);
+                }
+                self.settings_error = self
+                    .save_settings()
+                    .err()
+                    .map(|error| format!("Could not save the body store limit: {error}"));
             }
-            self.settings_error = self
-                .save_settings()
-                .err()
-                .map(|error| format!("Could not save the body store limit: {error}"));
-        }
-        if let Some(store) = self.store.as_ref() {
-            ui.weak(format!(
-                "{} used · stored in {}",
-                ByteSize::new(store.used_bytes()),
-                store.directory().display()
-            ));
-        }
+            if let Some(store) = self.store.as_ref() {
+                ui.weak(format!(
+                    "{} used · stored in {}",
+                    ByteSize::new(store.used_bytes()),
+                    store.directory().display()
+                ));
+            }
+        });
     }
 
     fn save_settings(&self) -> io::Result<()> {
@@ -532,5 +534,59 @@ mod tests {
             .ok_or_else(|| io::Error::other("no capture"))?;
         proxy.stop().map_err(io::Error::other)?;
         Ok(exchange)
+    }
+
+    fn collect_text_shapes(shapes: &[egui::Shape], out: &mut Vec<(String, bool)>) {
+        for shape in shapes {
+            match shape {
+                egui::Shape::Text(text) => {
+                    out.push((text.galley.text().to_owned(), text.galley.job.justify));
+                }
+                egui::Shape::Vec(nested) => collect_text_shapes(nested, out),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn settings_menu_text_is_not_justified_inside_menu_layout() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = BodyStore::with_limits(directory.path(), 64 * MIB, 0)?;
+        let mut saving = BodySaving {
+            store: Some(store),
+            init_error: None,
+            limit_mib: 64,
+            settings_path: None,
+            settings_error: None,
+            pending: None,
+            status: None,
+            confirmation: None,
+            privacy_acknowledged: false,
+            bulk: crate::ui::dialogs::bulk_save::BulkControls::default(),
+            merge: crate::ui::dialogs::range_merge::MergeControls::default(),
+        };
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
+                saving.settings_menu(ui);
+            });
+        });
+        output.textures_delta.clear();
+        let shapes: Vec<_> = output
+            .shapes
+            .into_iter()
+            .map(|clipped| clipped.shape)
+            .collect();
+        let mut texts = Vec::new();
+        collect_text_shapes(&shapes, &mut texts);
+        assert!(
+            texts.iter().any(|(text, _)| text.contains("stored in")),
+            "expected body store summary text to render"
+        );
+        assert!(
+            texts.iter().all(|(_, justified)| !justified),
+            "expected no justified text in settings menu: {texts:?}"
+        );
+        Ok(())
     }
 }
