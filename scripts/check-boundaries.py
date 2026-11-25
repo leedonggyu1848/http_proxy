@@ -19,7 +19,7 @@ alone does not guarantee:
 3. Multi-module crates (`http-inspector-exchange`, `http-inspector-core`) keep
    their internal module dependency direction (`crate::`, `<crate>::`, `self::`,
    `super::` normalized against the file's module path, including inline `mod`
-   blocks, and crate-root aliases rejected).
+   blocks, and crate-root aliases including `extern crate self` rejected).
 4. `Exchange` write handles (`ExchangeWriter`, `BodyPreviewWriter`,
    `TunnelWriter`) may be used in production code only inside
    `http-inspector-exchange` and `http-inspector-core`'s `interception` and
@@ -577,6 +577,32 @@ def _parse_use_tree(
     return results, pos
 
 
+def extract_extern_crate_self_aliases(tokens: list[Token]) -> list[CrateRef]:
+    """Find `extern crate self as <name>;` declarations."""
+    refs: list[CrateRef] = []
+    n = len(tokens)
+    i = 0
+    while i + 4 < n:
+        tok = tokens[i]
+        if (
+            tok.kind == "IDENT"
+            and tok.text == "extern"
+            and tokens[i + 1].kind == "IDENT"
+            and tokens[i + 1].text == "crate"
+            and tokens[i + 2].kind == "IDENT"
+            and tokens[i + 2].text == "self"
+            and tokens[i + 3].kind == "IDENT"
+            and tokens[i + 3].text == "as"
+            and tokens[i + 4].kind == "IDENT"
+        ):
+            raw = f"extern crate self as {tokens[i + 4].text}"
+            refs.append(CrateRef([], raw, tok.line, tok.in_test))
+            i += 5
+            continue
+        i += 1
+    return refs
+
+
 def normalize_crate_path(
     raw_path: list[str], cur_mod_path: tuple[str, ...], crate_ident: str
 ) -> list[str] | None:
@@ -857,6 +883,20 @@ def check_intra_crate(root: Path, spec: CrateBoundarySpec) -> list[Violation]:
             module_path_for(src_dir, rs_file),
         )
         src_mod = top_level_module(src_dir, rs_file)
+        scope = (
+            spec.crate_ident
+            if src_mod is None
+            else f"{spec.crate_ident}::{src_mod}"
+        )
+        for ref in extract_extern_crate_self_aliases(tokens):
+            violations.append(
+                Violation(
+                    rs_file,
+                    ref.line,
+                    f"forbidden crate-root import or alias via `{ref.raw}` "
+                    f"in `{scope}`",
+                )
+            )
         if src_mod is None or src_mod not in spec.allowed_deps:
             continue
 
