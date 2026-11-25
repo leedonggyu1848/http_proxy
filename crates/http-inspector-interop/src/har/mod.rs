@@ -28,6 +28,7 @@ use std::time::SystemTime;
 use http_inspector_exchange::http_semantics::is_sensitive_header;
 use http_inspector_exchange::http_semantics::urlencoded;
 use http_inspector_exchange::{CaptureSource, Exchange, HeaderPreview, Outcome, TunnelState};
+use http_inspector_file::{ExistingFile, publish};
 use serde_json::{Map, Value, json};
 
 use self::timings::{Phases, iso8601, millis};
@@ -79,16 +80,12 @@ pub fn write(path: &Path, document: &Value) -> io::Result<PathBuf> {
             format!("{} is not an existing directory", directory.display()),
         ));
     }
-    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
-    {
-        let mut writer = BufWriter::new(temporary.as_file_mut());
+    publish(path, ExistingFile::Preserve, |file| {
+        let mut writer = BufWriter::new(file);
         serde_json::to_writer_pretty(&mut writer, document)?;
         writer.flush()?;
-    }
-    temporary.as_file().sync_all()?;
-    temporary
-        .persist_noclobber(path)
-        .map_err(|error| error.error)?;
+        writer.get_ref().sync_all()
+    })?;
     Ok(path.to_path_buf())
 }
 

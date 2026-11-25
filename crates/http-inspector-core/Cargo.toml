@@ -17,6 +17,7 @@ http.workspace = true
 http-body.workspace = true
 http-body-util.workspace = true
 http-inspector-exchange.workspace = true
+http-inspector-file.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 rcgen.workspace = true

@@ -6,6 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use eframe::egui::{self, Color32, ColorImage};
 use http_inspector_core::recording::FullLog;
 use http_inspector_exchange::Exchange;
+use http_inspector_file::{ExistingFile, publish};
 use http_inspector_interop::har::{self, HarOptions};
 
 use super::background_task::{BackgroundTask, TaskPoll};
@@ -243,36 +244,22 @@ fn save_png(path: &Path, image: &ColorImage) -> io::Result<()> {
     let width = u32::try_from(image.size[0]).map_err(io::Error::other)?;
     let height = u32::try_from(image.size[1]).map_err(io::Error::other)?;
     let pixels: Vec<u8> = image.pixels.iter().flat_map(Color32::to_array).collect();
-    let directory = path
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Save path has no directory"))?;
-    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
-    {
-        let mut encoder = png::Encoder::new(temporary.as_file_mut(), width, height);
+    publish(path, ExistingFile::Preserve, |file| {
+        let mut encoder = png::Encoder::new(&mut *file, width, height);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
         let mut writer = encoder.write_header().map_err(io::Error::other)?;
         writer.write_image_data(&pixels).map_err(io::Error::other)?;
         writer.finish().map_err(io::Error::other)?;
-    }
-    temporary.flush()?;
-    temporary
-        .persist_noclobber(path)
-        .map_err(|error| error.error)?;
-    Ok(())
+        file.flush()
+    })
 }
 
 fn save_text_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let directory = path
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Save path has no directory"))?;
-    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
-    temporary.write_all(bytes)?;
-    temporary.flush()?;
-    temporary
-        .persist_noclobber(path)
-        .map_err(|error| error.error)?;
-    Ok(())
+    publish(path, ExistingFile::Preserve, |file| {
+        file.write_all(bytes)?;
+        file.flush()
+    })
 }
 
 #[cfg(test)]
