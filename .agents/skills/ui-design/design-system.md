@@ -81,7 +81,7 @@ WCAG 2 대비비를 계산했다. 반투명 배경은 `--bg-pane` 위에 합성�
 | --- | --- | --- | --- | --- |
 | `text.primary` | 10.54 | 14.98 | 통과 | 제한 없음 |
 | `text.secondary` | 5.07 | 6.36 | 통과 | 제한 없음 |
-| `text.muted` | 2.73 (pane 3.82) | 2.60 (pane 3.10) | 미달 | 키-값 콜론, 줄 번호·오프셋 거터, 라벨이 따로 있는 입력의 힌트 |
+| `text.muted` | 2.73 (pane 3.82) | 2.60 (pane 3.10) | 미달 | 비활성 아이콘(글자 아님, 1.4.11 예외), 키-값 콜론, 줄 번호·오프셋 거터, 라벨이 따로 있는 입력의 힌트 |
 | `text.disabled` | 1.71 | 1.62 | 미달 | 비활성 컨트롤 글자(WCAG 1.4.3 예외) |
 | `accent.primary` | 6.98 | 3.14 | 라이트 미달 | 글자 금지, 표시만 |
 | `accent.secondary` | 6.06 | 3.44 | 라이트 미달 | 글자 금지, 표시만 |
@@ -93,7 +93,7 @@ WCAG 2 대비비를 계산했다. 반투명 배경은 `--bg-pane` 위에 합성�
 
 데이터 표면은 `pane`, `elevated`, `hover`, `selected`다. 이 네 배경에서는 `status.warn`, `status.error`, Cat-1~4가 모두 4.5:1을 넘는다. `chrome`과 `cross_highlight` 위에서는 의미를 도트나 레프트 틱으로 보이고 글자는 `text.primary`나 `text.secondary`로 쓴다.
 
-`accent.*`와 `status.ok`는 모든 표면에서 3:1을 넘으므로 표시에는 쓸 수 있다. 다크의 글자 대비는 충분하지만 두 테마의 구조를 같게 두려고 두 테마 모두 글자에 쓰지 않는다. `borders.*`는 표면 대비 1.1~1.6이다. 경계선은 영역 구분용이고, 컨트롤은 글자 라벨로 알아본다.
+`accent.*`와 `status.ok`는 모든 표면에서 3:1을 넘으므로 표시에는 쓸 수 있다. 다크의 글자 대비는 충분하지만 두 테마의 구조를 같게 두려고 두 테마 모두 글자에 쓰지 않는다. `borders.*`는 표면 대비 1.0~1.6이다. 경계선은 영역 구분용이고, 컨트롤은 글자 라벨로 알아본다.
 
 주 실행 버튼 글자는 다크 6.41, 라이트 5.47로 통과한다.
 
@@ -103,7 +103,7 @@ UI 글자는 sans, 데이터는 mono로 나눈다. egui의 `FontFamily::Proporti
 
 | 역할 | 크기/행간 | 굵기 | 서체 | Rust 이름 |
 | --- | --- | --- | --- | --- |
-| 패널 제목, 툴바 제목 | 12/16 | 600 | sans | `TypeScale::PANEL_TITLE` |
+| 패널 제목, 툴바 제목 | 12/16 | 600 | sans, 자간 0.01em | `TypeScale::PANEL_TITLE`, `TypeScale::PANEL_TITLE_TRACKING` |
 | 컨트롤, 버튼, 탭 | 12/16 | 500 | sans, 줄바꿈 없음 | `TypeScale::CONTROL` |
 | 표 열 헤더 | 11/16 | 600 | sans, `text.secondary` | `TypeScale::COLUMN_HEADER` |
 | 본문 | 12.5/18 | 400 | sans | `TypeScale::BODY` |
@@ -111,7 +111,7 @@ UI 글자는 sans, 데이터는 mono로 나눈다. egui의 `FontFamily::Proporti
 | 핵심 수치 | 16/20 | 600 | mono | `TypeScale::KPI` |
 | 상태 바, 보조 메타 | 11/14 | 400 | mono, `text.secondary` | `TypeScale::STATUS` |
 
-원문 서체는 sans `Pretendard`, mono `JetBrains Mono`다. 현재 앱은 egui 기본 글꼴에 Noto Sans KR 서브셋(`assets/fonts/`)을 이어 붙인다. egui는 굵기 축이 없어서 500·600은 별도 글꼴 파일을 등록해야 한다. 서체와 굵기는 규칙 28대로 재디자인 PR에서 정한다. 행간은 여러 줄 글자(본문, 원시 뷰어)에서 `TextFormat::line_height`로 적용한다.
+원문 서체는 sans `Pretendard`, mono `JetBrains Mono`다. 현재 앱은 egui 기본 글꼴에 Noto Sans KR 서브셋(`assets/fonts/`)을 이어 붙인다. egui는 굵기 축이 없어서 500·600은 별도 글꼴 파일을 등록해야 한다. 서체와 굵기는 규칙 28대로 재디자인 PR에서 정한다. 행간은 여러 줄 글자(본문, 원시 뷰어)에서 `TextFormat::line_height`로 적용한다. 패널 제목의 자간 0.01em은 12pt × 0.01 = 0.12pt이고, `TextFormat::extra_letter_spacing`에 `TypeScale::PANEL_TITLE_TRACKING`(0.12)을 넣는다.
 
 ## 간격과 곡률
 
@@ -181,7 +181,7 @@ UI 글자는 sans, 데이터는 mono로 나눈다. egui의 `FontFamily::Proporti
 | Outline | `surfaces.elevated` | 1px `borders.control` | `text.primary` | 보조 행동 |
 | Primary | `primary_action.fill` | `primary_action.stroke` | `primary_action.text` | 화면의 가장 중요한 행동 하나 |
 
-원문은 켜진 토글 글자를 `--accent-primary`로 칠한다. 라이트에서 3.40:1이므로 글자는 `text.primary`로 두고 켜짐은 아래 2px 바로 표시한다. 높이는 툴바 28, 패널 안 24다. 그림자를 넣지 않는다.
+원문은 켜진 토글 글자를 `--accent-primary`로 칠한다. 라이트 `surfaces.selected` 위에서 3.41:1이므로 글자는 `text.primary`로 두고 켜짐은 아래 2px 바로 표시한다. 높이는 툴바 28, 패널 안 24다. 그림자를 넣지 않는다.
 
 ### 입력과 필터 줄
 
@@ -197,8 +197,8 @@ UI 글자는 sans, 데이터는 mono로 나눈다. egui의 `FontFamily::Proporti
 ### 데이터 표
 
 - 헤더: 높이 28, 배경 `surfaces.chrome`, 아래 1px `borders.structural`, 스크롤해도 위에 고정한다.
-- 행: 높이 26, 아래 1px `borders.subtle`. 줄무늬(`striped`)를 쓰지 않는다.
-- 선택: 배경 `surfaces.selected`, 행 왼쪽 끝에 2px `accent.primary` 세로 바, 글자는 `text.primary`
+- 행: 높이 26, 아래 1px `borders.subtle`. 줄무늬(`striped`)를 쓰지 않는다. 원문은 강한 줄무늬만 금지하지만 두 가지 이유로 약한 줄무늬도 뺐다. 행마다 있는 `borders.subtle` 선이 이미 행을 나누므로 줄무늬는 같은 정보의 두 번째 표시다(규칙 4). 원문에 줄무늬 색 토큰이 없어 어떤 줄무늬 색도 토큰 밖 색이 된다(규칙 6).
+- 선택: 배경 `surfaces.selected`, 행 왼쪽 끝에 2px `accent.primary` 세로 바, 글자는 `text.primary`. 배경과 바는 한 표시다. 실패 행의 레프트 틱은 행 끝이 아니라 상태 셀의 글자 앞에 두어 선택 바와 겹치지 않는다.
 - 정렬: 글자는 왼쪽, 숫자·크기·시간은 오른쪽에 맞추고 mono로 쓴다.
 
 ### 트리와 키-값 인스펙터
