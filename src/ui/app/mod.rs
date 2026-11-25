@@ -161,16 +161,16 @@ impl InspectorApp {
         let _changed = self.map.analysis.update();
         self.release_failed_proxy();
         // The closing frame still belongs to the dialog that received the input.
-        let dialog_open = self.session.body_saving.dialog_is_open()
-            || self.dialogs.har.is_open()
-            || self.detail.replay_is_open();
+        let body_dialog_open = self.session.body_saving.dialog_is_open();
+        let dialog_open =
+            body_dialog_open || self.dialogs.har.is_open() || self.detail.replay_is_open();
         self.session.body_saving.update(ui.ctx());
         self.detail.update_replay(
             ui.ctx(),
             self.session.proxy.as_ref(),
             &self.requests.records,
         );
-        self.har_export(ui.ctx());
+        self.har_export(ui.ctx(), !body_dialog_open);
         self.bulk_body_save(ui.ctx());
         self.range_merge(ui.ctx());
         let shortcuts_allowed = !dialog_open && request_shortcuts_allowed(ui.ctx());
@@ -288,7 +288,7 @@ impl InspectorApp {
     }
 
     /// Shows the `Export HAR` window and starts the export it confirms.
-    fn har_export(&mut self, context: &egui::Context) {
+    fn har_export(&mut self, context: &egui::Context, escape_enabled: bool) {
         if !self.dialogs.har.is_open() {
             return;
         }
@@ -296,10 +296,10 @@ impl InspectorApp {
             all: self.requests.records.len(),
             filtered: self.requests.filtered_records().len(),
         };
-        let Some(export) = self
-            .dialogs
-            .har
-            .show(context, counts, self.dialogs.save.is_busy())
+        let Some(export) =
+            self.dialogs
+                .har
+                .show(context, counts, self.dialogs.save.is_busy(), escape_enabled)
         else {
             return;
         };
@@ -1022,7 +1022,7 @@ mod layout_tests {
                 ..Default::default()
             };
             let mut output = ctx.run_ui(input, |ui| {
-                let _ = har.show(ui.ctx(), counts, false);
+                let _ = har.show(ui.ctx(), counts, false, true);
             });
             output.textures_delta.clear();
             drawn = collect_text_shapes(&output.shapes);
@@ -1241,6 +1241,32 @@ mod layout_tests {
                 modifiers: egui::Modifiers::NONE,
             }],
         );
+    }
+
+    #[test]
+    fn escape_closes_the_body_modal_before_export_har() {
+        let mut app = test_app(egui::Context::default());
+        let size = DEFAULT_WINDOW;
+        let mut time = 0.05;
+        app.dialogs.har.open("edited-fixture.har".to_owned());
+        let _ = run_app_frame(&mut app, size, time, Vec::new());
+
+        app.session.body_saving.open_bulk();
+        time += 0.05;
+        let _ = run_app_frame(&mut app, size, time, Vec::new());
+        press_key(&mut app, size, &mut time, egui::Key::Escape);
+        assert!(!app.session.body_saving.dialog_is_open());
+        assert!(
+            app.dialogs.har.is_open(),
+            "Escape closed the HAR draft under the modal"
+        );
+
+        time += 0.05;
+        let output = run_app_frame(&mut app, size, time, Vec::new());
+        assert!(find_galley(&output.shapes, "edited-fixture.har").is_some());
+
+        press_key(&mut app, size, &mut time, egui::Key::Escape);
+        assert!(!app.dialogs.har.is_open());
     }
 
     #[test]
