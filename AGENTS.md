@@ -70,8 +70,10 @@ cargo build --release
 
 ## UI 디자인 지침
 
-- `src/ui`의 화면, 위젯, 스타일, 화면 문구를 바꾸는 작성 agent(이슈 해결 지침 1·3단계)는 작업 전에 `.agents/skills/ui-design/SKILL.md`를 읽고 따른다. PR 본문에 그 스킬의 점검 결과와 캡처를 넣는다.
-- UI를 바꾼 PR을 리뷰하는 리뷰 agent(2단계)는 같은 스킬로 캡처를 점검한다. 규칙 위반은 규칙 번호를 인용해 코멘트하고 머지하지 않는다.
+- `src/ui`의 화면, 위젯, 스타일, 화면 문구를 바꾸는 작성 agent(이슈 해결 지침 1·3단계)와 그 PR을 리뷰하는 리뷰 agent(2단계)는 작업 전에 다음 두 문서를 읽고 따른다.
+  - 범용 슬롭 방지 규칙(`S` 번호)과 캡처 점검 절차: `.agents/skills/ui-unslop/SKILL.md`
+  - 이 프로젝트의 디자인 시스템과 전용 규칙(`D` 번호): [docs/ui-design-system.md](docs/ui-design-system.md)
+- 작성 agent는 PR 본문에 두 문서의 점검 결과와 캡처를 넣는다. 리뷰 agent는 규칙 위반을 규칙 번호로 인용해 코멘트하고 머지하지 않는다.
 
 ## Git과 커밋 지침.
 

@@ -1,10 +1,101 @@
-# 정밀 도킹 워크벤치 디자인 시스템
+# UI 디자인 시스템
 
-HTTP Inspector UI의 색 토큰, 글자, 간격, 레이아웃 치수, 컴포넌트 규격을 정한다. 테마는 Slate Navy & Muted Teal이고 다크와 라이트 두 가지다. 규칙과 점검 절차는 [SKILL.md](SKILL.md)에 있고, 이 문서는 그 규칙이 가리키는 값을 담는다.
+HTTP Inspector UI에만 적용하는 디자인 규칙과 값을 정한다. 어떤 UI에도 적용되는 슬롭 방지 규칙과 PR 전 캡처 점검 절차는 [ui-unslop 스킬](../.agents/skills/ui-unslop/SKILL.md)에 있다. UI를 바꾸는 작성 agent와 UI PR을 리뷰하는 리뷰 agent는 두 문서를 모두 따른다.
 
-원문 명세는 CSS 변수로 쓰였다. egui 앱은 CSS를 읽지 않으므로 각 토큰을 `src/ui/style/tokens.rs`의 Rust 이름 하나에 대응시킨다. 표의 Rust 이름은 재디자인 PR이 만들 이름이다. 지금 코드에 있는 이름과 다르면 재디자인 PR에서 바꾼다.
+HTTP Inspector는 개발 도구다. 디자인 시스템은 정밀 도킹 워크벤치이고 테마는 Slate Navy & Muted Teal이고 다크와 라이트 두 가지다. 화면을 1px 선으로 나눈 평면 패널로 채우고, 면적의 95% 이상을 무채색으로 둔다. 빽빽함과 글자 중심의 기준은 DevTools Network 패널, Wireshark, mitmproxy, Charles다.
+
+규칙 번호 `D1`, `D2`…는 리뷰에서 인용하는 고정 식별자다. `S` 번호는 ui-unslop 스킬의 규칙이다. 삭제된 규칙의 번호는 빈 채로 두고, 새 규칙은 다음 번호를 받아 해당 절 끝에 둔다. 각 규칙은 캡처나 코드를 보고 예나 아니오로 판정한다.
+
+규칙이 가리키는 색 값, 글자 크기, 치수, 컴포넌트 규격과 그 Rust 이름은 이 문서 뒤쪽의 [색 토큰](#색-토큰)부터 [egui 설정 대응](#egui-설정-대응)까지에 있다. 스타일 토큰이나 위젯을 만들거나 바꿀 때, 그리고 리뷰에서 값을 대조할 때 읽는다.
+
+## 정리 대상 코드
+
+현재 코드의 다음 항목은 새 시스템과 다른 정리 대상이다. 코드에 있다는 사실은 다시 쓸 근거가 아니다.
+
+- `src/ui/style/tokens.rs`의 `LIGHT`·`DARK` 색 값 전체, `ToneFills`, `ToneColors::fill`, `Tone::Neutral`, `Tone::Info`
+- `Radius::CONTROL`(6pt), `Radius::BADGE`, `Radius::CARD`, `TypeScale`의 현재 값
+- `src/ui/style/badge.rs`의 `Badge`와 `BADGE_HEIGHT`
+- `src/ui/requests/request_table.rs`의 `ALERT_EDGE_WIDTH`(3pt 띠)와 pill의 이중 표시, 지역 상수 `ROW_HEIGHT`·`HEADER_HEIGHT`(24pt), `.striped(true)`
+- `src/ui/style/theme.rs`에서 선택 글자를 `accent`로 칠하는 `selection.stroke`, `hyperlink_color = info`, egui 기본 그림자와 `animation_time`(0.2초)
+
+## 규칙
+
+### 색
+
+- **D1.** 2xx 응답 행, `GET`·`POST` 같은 일반 메서드, 완료된 단계에 의미 색을 칠하지 않고 기본 글자색으로 쓴다(S7). `status.ok`는 연결됨, 실행 중 같은 상태 도트에만 쓴다.
+- **D2.** 의미 색을 쓰는 예외와 상태 변화(S8)는 4xx·5xx 응답, 연결 실패, 취소, 프록시 중지다.
+- **D3.** `accent.primary`는 선택 바, 켜진 토글 바, 활성 경로, 차트 선에 쓴다. `accent.secondary`는 포커스 링, 교차 강조, 스플리터 호버에 쓴다.
+- **D4.** 실패 행은 레프트 틱과 상태 글자색 중 하나만 쓴다(S15). 선택 행과 켜진 토글의 배경과 2px 바 조합(D23, D25)은 한 표시로 센다. 선택은 실패와 다른 정보이므로 함께 써도 되고, 행 왼쪽 끝은 선택 바가 쓰며 레프트 틱은 상태 셀의 글자 앞에 둔다.
+- **D5.** 그림자는 팝업과 드롭다운 메뉴의 경계 그림자만 허용한다. 반투명 색은 `surfaces.hover`, `surfaces.selected`, `surfaces.cross_highlight` 토큰으로만 쓴다.
+- **D6.** 색 값은 `src/ui/style/tokens.rs`에만 정의한다. 화면 코드는 토큰 이름이나 `Tone`으로 의미를 고르고 `Color32::from_rgb`·`from_rgba_unmultiplied`를 직접 쓰지 않는다.
+- **D7.** 색만으로 의미를 전달하지 않는다. 상태는 `404 Not Found`처럼 글자로도 보인다. 글자와 그 글자가 실제로 놓이는 배경의 대비는 라이트·다크 테마 모두 WCAG AA(4.5:1) 이상이다. 도트, 틱, 바, 포커스 링은 인접 배경과 3:1 이상이다. `src/ui/style/theme.rs`의 `status_text_meets_aa_on_all_widget_backgrounds`가 글자 대비를 검사한다. 새 글자색은 그 테스트의 글자색 목록에, 글자가 놓이는 새 배경은 `text_backgrounds()`에 추가한다.
+- **D8.** 다음 토큰은 4.5:1에 못 미치는 배경이 있으므로 정한 용도에만 쓴다. 토큰 값을 바꾸지 않고 용도를 줄인다. 계산값은 [대비](#대비)에 있다.
+  - `text.muted`: 비활성 아이콘, 키-값 콜론, 줄 번호·오프셋 거터, 라벨이나 툴팁이 따로 있는 입력의 힌트
+  - `text.disabled`: 비활성 컨트롤 글자
+  - `accent.primary`, `accent.secondary`, `status.ok`: 글자에 쓰지 않는다. 바, 도트, 틱, 링, 선에만 쓴다.
+  - `status.warn`, `status.error`, 범주 색 글자: `pane`, `elevated`, `hover`, `selected` 배경에만 쓴다. `chrome`과 `cross_highlight` 위에서는 도트나 틱과 기본 글자색을 쓴다.
+- **D9.** 범주 색(Cat-1~5)은 글자나 6px 도트에만 쓰고 면을 채우지 않는다. Cat-5는 도트에만 쓴다.
+
+### 모양
+
+- **D10.** 영역은 `borders.structural` 1px 선으로 나눈 도킹 패널이다(S12).
+- **D11.** 패널, 툴바, 표, 분할 영역, 상세 패널의 모서리는 0(`Radius::PANE`)이다. 버튼, 입력, 드롭다운, 팝업, 메뉴는 4pt(`Radius::CONTROL`)다. 단축키 칩과 스크롤바 썸만 2pt(`Radius::MICRO`)다. 양 끝이 반원인 pill 모양은 쓰지 않는다.
+- **D12.** 간격, 모서리, 글자 크기, 치수는 `tokens.rs`의 `Space`, `Radius`, `TypeScale`, `Layout` 값만 쓴다. 토큰 값이 다른 규칙을 어기면 화면 코드에서 우회하지 말고 `tokens.rs`의 값을 고친다. 새 값이 필요하면 `tokens.rs`에 더하고 PR 본문에 이유를 적는다.
+
+### 글
+
+- **D13.** 툴팁보다 긴 설명(S1)은 `docs/guide/`에 둔다.
+- **D14.** 화면 문구는 영어로 쓰고 **unslop** 스킬의 원칙을 따른다.
+
+### 서체와 아이콘
+
+서체와 아이콘 도입은 아직 정하지 않았다. D16과 D17이 그 결정의 조건이다.
+
+- **D15.** UI 글자는 sans, 데이터는 mono로 쓴다. 시간, 크기, 개수, 상태 코드, 포트처럼 바뀌거나 세로로 비교하는 숫자는 mono로 써서 자릿수 폭을 고정한다. 글자 크기와 굵기는 [글자](#글자)의 타입 스케일을 따른다.
+- **D16.** 서체를 바꾸거나 더하는 결정은 재디자인 PR 한 곳에서 내린다. 그 PR은 라이선스(OFL 여부), 바이너리 크기 변화, 현대 한글 11,172자 커버리지, 굵기 500·600 표현 방법을 비교해 본문에 적는다. 그 밖의 PR은 글꼴을 추가하지 않는다.
+- **D17.** 아이콘 없이 글자 라벨만으로 모든 규칙을 지킬 수 있다. 아이콘을 들이면 14 또는 16px, 1.5px 라인 아이콘 세트 하나만 쓰고, 컨트롤의 글자 라벨을 대신할 때만 쓴다. 아이콘만 있는 버튼에는 1~3단어 툴팁과 접근성 라벨을 단다. 아이콘 글꼴이나 크레이트를 추가하는 PR은 라이선스를 적고 `cargo deny check`를 통과한다.
+
+### 배치
+
+- **D18.** 밀도를 우선한다. 표 행은 `Layout::TABLE_ROW_HEIGHT`(26pt), 표 헤더는 28pt, 트리 행은 24pt다. 행 전체를 클릭 영역으로 두어 24pt 이상의 대상 크기를 지킨다. 데이터 영역 안의 여백은 `Space::SM`(8pt) 이하다.
+- **D19.** 차트 선은 1.5px 단색이고 면을 채우지 않는다.
+- **D20.** 호버, 선택, 포커스 전환은 즉시이거나 80ms 이하다. 패널 접기 같은 레이아웃 전환만 140ms 이하다. 테마는 애니메이션 없이 바꾼다.
+- **D21.** 목록, 표, 트리는 ↑·↓, ←·→, Enter, Esc로 다룰 수 있다. 한 패널의 선택과 연관된 다른 패널의 항목은 `surfaces.cross_highlight` 배경으로 보인다.
+- **D22.** 화면은 툴바(42pt), 선택적 보조 스트립, 주 패널과 인스펙터 분할, 상태 바(24pt) 순서다. 분할 패널마다 28pt 패널 헤더를 두고 왼쪽에 이름이나 탭, 오른쪽에 그 패널의 행동만 둔다. 스플리터는 1px 선과 5px 히트 영역, 스크롤바는 6pt다.
+- **D23.** 표 헤더는 `surfaces.chrome` 배경으로 위에 고정한다. 행은 `borders.subtle` 1px 선으로 나누고 줄무늬를 쓰지 않는다. 근거는 [데이터 표](#데이터-표)에 있다. 선택 행은 `surfaces.selected` 배경과 왼쪽 2px `accent.primary` 바로 표시한다. 숫자, 크기, 시간 열은 오른쪽에 맞춘다.
+- **D24.** 트리와 키-값 인스펙터는 깊이마다 16pt 들여쓰고 1px 가이드를 그린다. 키는 `text.secondary`, 값은 mono `text.primary`다. 원시 뷰어의 범위 강조는 테두리 없는 배경 하나다.
+- **D25.** 버튼은 Ghost, Outline, Primary 세 종류이고 높이는 툴바 28pt, 패널 안 24pt다. 입력은 28pt이고, 포커스는 `accent.secondary` 테두리와 1px 바깥 선으로, 잘못된 값은 `status.error` 테두리와 오른쪽 끝 한 줄로 보인다.
+- **D26.** 보조 스트립과 핵심 수치(`TypeScale::KPI`)는 표나 상태 바에 없는 값을 비교하거나 판단해야 할 때만 쓴다. 이미 보이는 개수를 크게 다시 적는 장식 숫자를 만들지 않는다. 수치마다 1~3단어 라벨을 붙인다.
+
+## 이 저장소의 예
+
+아래 나쁜 예는 `docs/screenshots/request-list-dark.png`(PR #228)와 PR #229의 `start-checklist.png`, `https-setup.png`에서 확인한 화면이다.
+
+| 나쁜 예 | 어긴 규칙 | 좋은 예 |
+| --- | --- | --- |
+| 모든 행에 파란 `GET` 배지와 초록 `200 OK` pill이 있어 `403`·`500` 행이 묻힌다. 실패 행은 왼쪽 띠와 빨간 pill로 두 번 표시된다. | S7, D1, S15, D4, S11, D11 | `GET`과 `200 OK`는 `text.primary` 글자다. `403 Forbidden`은 `status.warn`, `500 Internal Server Error`는 `status.error` 글자색 하나로 표시한다. |
+| 빈 화면의 `Start capturing` 카드에 부제, 번호 동그라미, `Done`·`Needed`·`Optional` pill, 단계별 설명 문단이 있다. | S12, S1, S2, S3, S17 | 표 자리에 `No requests yet. Proxy listening on 127.0.0.1:18930` 한 줄과 `Open Browser`, `Copy proxy URL` 버튼을 둔다. |
+| HTTPS 설정 패널의 단계마다 2~3줄 설명이 있고 권한 경고가 늘 보인다. | S1, S4, S17 | `Create CA`, `Register CA`, `Restart with decryption`을 순서대로 두고 앞 단계가 끝나지 않은 항목은 비활성으로 둔다. 이유는 한 문장 툴팁으로 쓴다. 경고는 복호화를 켜는 확인 단계에서 한 번 보인다. |
+| 요청 수가 `Requests 17`, `All 17`, `17 requests`로 세 번 보이고 `Open Browser`가 상단 바와 체크리스트에 두 번 있다. | S16 | 요청 수는 상태 바에만, `Open Browser`는 상단 바에만 둔다. |
+
+## 프로젝트 점검 항목
+
+ui-unslop 스킬의 PR 전 점검 절차에 아래 항목을 더한다. 결과는 같은 "UI 디자인 점검" 절에 적는다.
+
+- 캡처: 색이나 스타일 토큰을 바꿨다면 라이트·다크 테마를 모두 찍는다. 캡처에는 테스트 트래픽을 쓴다.
+- 아래 질문에 모두 아니오여야 한다.
+  - 2xx 행, 일반 메서드, 완료된 단계에 의미 색이 있거나 `status.ok`를 도트 밖에 썼는가? (D1, D2)
+  - 둥근 패널·표가 있는가? (D11)
+  - 토큰 밖 색이나 줄무늬가 있는가? (D5, D6, D23)
+  - 대비 미달 토큰을 D8의 용도 밖에 썼거나 `accent.*`·`status.ok`로 칠한 글자가 있는가? (D7, D8)
+  - 툴바·상태 바·패널 헤더·표·트리의 치수가 `Layout` 값과 다르거나 숫자 리터럴로 정해졌는가? 라이트와 다크 캡처에서 경계 위치가 다른가? (D12, D18, D22)
+  - 숫자, 크기, 시간이 sans이거나 왼쪽 정렬인가? (D15, D23)
+  - 정한 세트 밖의 아이콘이나 80ms를 넘는 상태 전환이 있는가? (D17, D20)
+  - DevTools Network 패널 옆에서 혼자 달라 보이는 요소가 있는가? 있으면 어긴 규칙을 찾는다.
 
 ## 원칙
+
+원문 명세는 CSS 변수로 쓰였다. egui 앱은 CSS를 읽지 않으므로 각 토큰을 `src/ui/style/tokens.rs`의 Rust 이름 하나에 대응시킨다. 표의 Rust 이름은 재디자인 PR이 만들 이름이다. 지금 코드에 있는 이름과 다르면 재디자인 PR에서 바꾼다.
 
 - 화면은 1px 실선으로 나눈 평면 패널로 채운다. 패널을 둥근 카드로 띄우지 않는다.
 - 면적의 95% 이상은 무채색과 딥 슬레이트다. 틸과 스카이 블루는 활성 상태, 선택 항목, 핵심 행동에만 쓴다.
@@ -32,13 +123,13 @@ HTTP Inspector UI의 색 토큰, 글자, 간격, 레이아웃 치수, 컴포넌�
 
 입력 필드 배경은 다크에서 `--bg-base`, 라이트에서 `--bg-elevated`다. 두 테마의 코드 경로를 같게 두려고 `surfaces.input`(Dark `#0B1017`, Light `#FFFFFF`) 하나로 둔다.
 
-### 글자
+### 글자색
 
 | 원문 토큰 | Dark | Light | Rust 이름 | 용도 |
 | --- | --- | --- | --- | --- |
 | `--text-primary` | `#E2E8F0` | `#0F172A` | `text.primary` | 데이터 값, 활성 탭, 본문, 선택 행 글자 |
 | `--text-secondary` | `#94A3B8` | `#475569` | `text.secondary` | 열 헤더, 라벨, 호스트, 상태 바 메타 |
-| `--text-muted` | `#64748B` | `#8494A7` | `text.muted` | 규칙 25의 용도만 |
+| `--text-muted` | `#64748B` | `#8494A7` | `text.muted` | D8의 용도만 |
 | `--text-disabled` | `#475569` | `#B0BCCB` | `text.disabled` | 비활성 컨트롤 글자 |
 
 ### 포인트와 의미 색
@@ -111,7 +202,7 @@ UI 글자는 sans, 데이터는 mono로 나눈다. egui의 `FontFamily::Proporti
 | 핵심 수치 | 16/20 | 600 | mono | `TypeScale::KPI` |
 | 상태 바, 보조 메타 | 11/14 | 400 | mono, `text.secondary` | `TypeScale::STATUS` |
 
-원문 서체는 sans `Pretendard`, mono `JetBrains Mono`다. 현재 앱은 egui 기본 글꼴에 Noto Sans KR 서브셋(`assets/fonts/`)을 이어 붙인다. egui는 굵기 축이 없어서 500·600은 별도 글꼴 파일을 등록해야 한다. 서체와 굵기는 규칙 28대로 재디자인 PR에서 정한다. 행간은 여러 줄 글자(본문, 원시 뷰어)에서 `TextFormat::line_height`로 적용한다. 패널 제목의 자간 0.01em은 12pt × 0.01 = 0.12pt이고, `TextFormat::extra_letter_spacing`에 `TypeScale::PANEL_TITLE_TRACKING`(0.12)을 넣는다.
+원문 서체는 sans `Pretendard`, mono `JetBrains Mono`다. 현재 앱은 egui 기본 글꼴에 Noto Sans KR 서브셋(`assets/fonts/`)을 이어 붙인다. egui는 굵기 축이 없어서 500·600은 별도 글꼴 파일을 등록해야 한다. 서체와 굵기는 D16대로 재디자인 PR에서 정한다. 행간은 여러 줄 글자(본문, 원시 뷰어)에서 `TextFormat::line_height`로 적용한다. 패널 제목의 자간 0.01em은 12pt × 0.01 = 0.12pt이고, `TextFormat::extra_letter_spacing`에 `TypeScale::PANEL_TITLE_TRACKING`(0.12)을 넣는다.
 
 ## 간격과 곡률
 
@@ -162,7 +253,7 @@ UI 글자는 sans, 데이터는 mono로 나눈다. egui의 `FontFamily::Proporti
 화면은 위에서부터 다음 슬롯으로 나눈다. 슬롯 사이는 `borders.structural` 1px 선이다.
 
 1. 툴바: 높이 42, 배경 `surfaces.chrome`
-2. 보조 스트립: 선택 사항이고 접을 수 있다. 규칙 36의 조건을 만족할 때만 둔다.
+2. 보조 스트립: 선택 사항이고 접을 수 있다. D26의 조건을 만족할 때만 둔다.
 3. 주 패널과 인스펙터: 기본 폭 6:4로 나누고 스플리터로 조절한다. 인스펙터는 위아래로 다시 나눌 수 있다.
 4. 상태 바: 높이 24, 배경 `surfaces.chrome`
 
@@ -185,7 +276,7 @@ UI 글자는 sans, 데이터는 mono로 나눈다. egui의 `FontFamily::Proporti
 
 ### 입력과 필터 줄
 
-높이 28, 배경 `surfaces.input`, 테두리 1px `borders.control`, 모서리 `Radius::CONTROL`이다. 포커스되면 테두리를 `accent.secondary`로 바꾸고 바깥에 1px 선을 더한다. 흐린 글로우는 쓰지 않는다. 값이 잘못되면 테두리를 `status.error`로 바꾸고 입력 오른쪽 끝에 11pt 오류 글자를 한 줄 둔다. 이 한 줄은 규칙 15의 실패 예외로 센다.
+높이 28, 배경 `surfaces.input`, 테두리 1px `borders.control`, 모서리 `Radius::CONTROL`이다. 포커스되면 테두리를 `accent.secondary`로 바꾸고 바깥에 1px 선을 더한다. 흐린 글로우는 쓰지 않는다. 값이 잘못되면 테두리를 `status.error`로 바꾸고 입력 오른쪽 끝에 11pt 오류 글자를 한 줄 둔다. 이 한 줄은 S1의 실패 예외로 센다.
 
 ### 상태·범주 인디케이터
 
@@ -197,7 +288,7 @@ UI 글자는 sans, 데이터는 mono로 나눈다. egui의 `FontFamily::Proporti
 ### 데이터 표
 
 - 헤더: 높이 28, 배경 `surfaces.chrome`, 아래 1px `borders.structural`, 스크롤해도 위에 고정한다.
-- 행: 높이 26, 아래 1px `borders.subtle`. 줄무늬(`striped`)를 쓰지 않는다. 원문은 강한 줄무늬만 금지하지만 두 가지 이유로 약한 줄무늬도 뺐다. 행마다 있는 `borders.subtle` 선이 이미 행을 나누므로 줄무늬는 같은 정보의 두 번째 표시다(규칙 4). 원문에 줄무늬 색 토큰이 없어 어떤 줄무늬 색도 토큰 밖 색이 된다(규칙 6).
+- 행: 높이 26, 아래 1px `borders.subtle`. 줄무늬(`striped`)를 쓰지 않는다. 원문은 강한 줄무늬만 금지하지만 두 가지 이유로 약한 줄무늬도 뺐다. 행마다 있는 `borders.subtle` 선이 이미 행을 나누므로 줄무늬는 같은 정보의 두 번째 표시다(S15). 원문에 줄무늬 색 토큰이 없어 어떤 줄무늬 색도 토큰 밖 색이 된다(D6).
 - 선택: 배경 `surfaces.selected`, 행 왼쪽 끝에 2px `accent.primary` 세로 바, 글자는 `text.primary`. 배경과 바는 한 표시다. 실패 행의 레프트 틱은 행 끝이 아니라 상태 셀의 글자 앞에 두어 선택 바와 겹치지 않는다.
 - 정렬: 글자는 왼쪽, 숫자·크기·시간은 오른쪽에 맞추고 mono로 쓴다.
 
@@ -216,7 +307,7 @@ UI 글자는 sans, 데이터는 mono로 나눈다. egui의 `FontFamily::Proporti
 
 ### 아이콘
 
-아이콘은 선택 사항이다. 넣는다면 14 또는 16px, 선 굵기 1.5px의 라인 아이콘 세트 하나만 쓴다. 도입 조건은 규칙 29에 있다.
+아이콘은 선택 사항이다. 넣는다면 14 또는 16px, 선 굵기 1.5px의 라인 아이콘 세트 하나만 쓴다. 도입 조건은 D17에 있다.
 
 ## 인터랙션과 모션
 
@@ -239,3 +330,8 @@ UI 글자는 sans, 데이터는 mono로 나눈다. egui의 `FontFamily::Proporti
 | `Visuals::hyperlink_color` | `text.primary`. 링크는 밑줄로 구분한다. |
 | `Spacing::scroll` | `ScrollStyle::solid()` 기반, `bar_width` 6 |
 | `Style::animation_time` | 0.08 이하 |
+
+## 출처
+
+- 정밀 도킹 워크벤치 UI 디자인 시스템 명세서, Slate Navy & Muted Teal(사용자 제공, 값은 이 문서에 옮김)
+- [WCAG 2.2](https://www.w3.org/TR/WCAG22/) 1.4.3 글자 대비, 1.4.11 글자 아닌 대비, 2.5.8 대상 크기
