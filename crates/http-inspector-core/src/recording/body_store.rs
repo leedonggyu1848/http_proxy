@@ -355,6 +355,9 @@ impl BodyStore {
         if !body.is_complete() {
             return ReadBodyOutcome::Incomplete;
         }
+        if body.stored_bytes() == 0 {
+            return ReadBodyOutcome::Complete(Vec::new());
+        }
         let layers = encoding_layers(encodings);
         let Ok(decode) = ContentEncoding::parse_all(&layers) else {
             return ReadBodyOutcome::DecodeFailed;
@@ -914,6 +917,41 @@ mod tests {
             store.read(&long, BodySide::Response, bytes.len()),
             ReadBodyOutcome::Complete(bytes)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_locked_empty_head_response_is_read_from_disk_without_decoding()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use http::header::{CONTENT_ENCODING, CONTENT_TYPE};
+        use http::{HeaderValue, Method, StatusCode};
+        use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
+
+        let record = ExchangeBuilder::http(Method::HEAD, "http://example.test/")?.respond(
+            ResponseFixture::new(StatusCode::OK)
+                .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+                .header(CONTENT_ENCODING, HeaderValue::from_static("gzip")),
+        )?;
+        let Outcome::Response(response) = record.outcome() else {
+            return Err("missing response".into());
+        };
+        let root = tempfile::tempdir()?;
+        let store = BodyStore::with_limits(root.path(), 1024, 0)?;
+        let side = BodySide::Response;
+        let mut recorder = BodyRecorder::new(store.clone(), record.id().value(), side);
+        recorder.end(BodyLifecycle::Complete);
+
+        assert_eq!(
+            store.read(&record, side, 1024),
+            ReadBodyOutcome::Complete(Vec::new())
+        );
+        response.body().with_locked_prefix_for_test(|| {
+            assert!(response.body().snapshot().is_none());
+            assert_eq!(
+                store.read(&record, side, 1024),
+                ReadBodyOutcome::Complete(Vec::new())
+            );
+        });
         Ok(())
     }
 
