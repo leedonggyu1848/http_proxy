@@ -289,37 +289,31 @@ impl MapPanel {
 
     /// Jumps from the relationship graph to the first origin matching `host` in Tree view.
     ///
-    /// If `host` exists in `map` but is hidden by the active tree filters, clears
-    /// the blocking filters so the host is visible, expanded, and selected.
+    /// Keeps active tree filters when a matching origin is already visible in the
+    /// projected tree. If `host` exists in `map` but is hidden by the active tree
+    /// filters, first clears only `host_query` to preserve matching status,
+    /// content-type, and party filters; if still hidden, clears the remaining
+    /// blocking filters. If `host` is absent from `map`, leaves active filters
+    /// unchanged.
     pub(super) fn jump_to_host(&mut self, map: &UrlMap, host: &str) {
         self.sub_view = MapSubView::Tree;
-        if !self.filter.host_query.is_empty()
-            && !host
-                .to_ascii_lowercase()
-                .contains(&self.filter.host_query.trim().to_ascii_lowercase())
-        {
-            self.filter.host_query.clear();
-        }
         self.ensure_projection(map);
 
-        let exists_in_map = map.origins().keys().any(|origin| origin.host() == host);
-        let mut target_key = self
-            .cached_roots
-            .iter()
-            .find(|root| root.key.origin.host() == host)
-            .map(|root| root.key.clone());
+        let mut target_key = self.first_root_for_host(host);
+        if target_key.is_none() && map.origins().keys().any(|origin| origin.host() == host) {
+            if !self.filter.host_query.is_empty() {
+                self.filter.host_query.clear();
+                self.ensure_projection(map);
+                target_key = self.first_root_for_host(host);
+            }
 
-        if target_key.is_none() && exists_in_map {
-            self.filter.host_query.clear();
-            self.filter.status = StatusFilter::All;
-            self.filter.content_type = ContentTypeFilter::All;
-            self.filter.party = PartyFilter::All;
-            self.ensure_projection(map);
-            target_key = self
-                .cached_roots
-                .iter()
-                .find(|root| root.key.origin.host() == host)
-                .map(|root| root.key.clone());
+            if target_key.is_none() {
+                self.filter.status = StatusFilter::All;
+                self.filter.content_type = ContentTypeFilter::All;
+                self.filter.party = PartyFilter::All;
+                self.ensure_projection(map);
+                target_key = self.first_root_for_host(host);
+            }
         }
 
         if let Some(key) = target_key {
@@ -329,6 +323,13 @@ impl MapPanel {
             self.ensure_projection(map);
             self.keyboard_scroll_to = self.cached_rows.iter().position(|row| row.key == key);
         }
+    }
+
+    fn first_root_for_host(&self, host: &str) -> Option<ViewNodeKey> {
+        self.cached_roots
+            .iter()
+            .find(|root| root.key.origin.host() == host)
+            .map(|root| root.key.clone())
     }
 
     pub(super) fn set_expanded(&mut self, key: ViewNodeKey, expanded: bool) {
@@ -537,5 +538,191 @@ mod tests {
             panel.selected.as_ref().map(|k| k.origin.host()),
             Some("app.example.test")
         );
+    }
+
+    fn observe_url(map: &mut UrlMap, url: &str, status: StatusBucket, content_type: Option<&str>) {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let Some(target) = parse_url(url) else {
+            unreachable!("valid url: {url}");
+        };
+        let _ = map.observe(ObservedInput {
+            target,
+            method: Method::GET,
+            status,
+            content_type: content_type.map(str::to_owned),
+            bytes: 128,
+            duration: None,
+            started_at: now,
+            referer: None,
+            origin_header: None,
+            redirect_location: None,
+        });
+    }
+
+    #[test]
+    fn jump_to_host_preserves_port_and_scheme_filters_matching_origin() {
+        let mut map = UrlMap::new();
+        observe_url(
+            &mut map,
+            "http://example.test/plain",
+            StatusBucket::S2xx,
+            Some("application/json"),
+        );
+        observe_url(
+            &mut map,
+            "https://example.test:8443/secure",
+            StatusBucket::S2xx,
+            Some("application/json"),
+        );
+
+        for query in [":8443", "https://"] {
+            let mut panel = MapPanel::new();
+            panel.sub_view = MapSubView::Graph;
+            panel.filter.host_query = query.to_owned();
+            panel.filter.status = StatusFilter::S2xx;
+            panel.filter.content_type = ContentTypeFilter::Json;
+            panel.filter.party = PartyFilter::FirstParty;
+
+            panel.jump_to_host(&map, "example.test");
+
+            assert_eq!(panel.sub_view, MapSubView::Tree);
+            assert_eq!(panel.filter.host_query, query);
+            assert_eq!(panel.filter.status, StatusFilter::S2xx);
+            assert_eq!(panel.filter.content_type, ContentTypeFilter::Json);
+            assert_eq!(panel.filter.party, PartyFilter::FirstParty);
+            assert_eq!(panel.cached_roots.len(), 1);
+            assert_eq!(
+                panel
+                    .cached_roots
+                    .first()
+                    .map(|root| root.key.display_url())
+                    .as_deref(),
+                Some("https://example.test:8443")
+            );
+            let Some(selected) = panel.selected.as_ref() else {
+                unreachable!("matching root should be selected");
+            };
+            assert_eq!(selected.display_url(), "https://example.test:8443");
+            assert_eq!(panel.expanded_overrides.get(selected), Some(&true));
+            assert_eq!(panel.keyboard_scroll_to, Some(0));
+        }
+    }
+
+    #[test]
+    fn jump_to_host_clears_non_matching_host_filter_when_host_exists() {
+        let mut map = UrlMap::new();
+        observe_url(
+            &mut map,
+            "https://example.test:8443/secure",
+            StatusBucket::S2xx,
+            Some("text/html"),
+        );
+        observe_url(
+            &mut map,
+            "https://other.test/page",
+            StatusBucket::S2xx,
+            Some("text/html"),
+        );
+
+        let mut panel = MapPanel::new();
+        panel.sub_view = MapSubView::Graph;
+        panel.filter.host_query = "other.test".to_owned();
+
+        panel.jump_to_host(&map, "example.test");
+
+        assert_eq!(panel.sub_view, MapSubView::Tree);
+        assert_eq!(panel.filter.host_query, "");
+        assert_eq!(
+            panel
+                .selected
+                .as_ref()
+                .map(ViewNodeKey::display_url)
+                .as_deref(),
+            Some("https://example.test:8443")
+        );
+    }
+
+    #[test]
+    fn jump_to_host_clears_only_host_filter_when_other_filters_match() {
+        let mut map = UrlMap::new();
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let Some(first_party) = parse_url("http://localhost:18080/app") else {
+            unreachable!("valid url");
+        };
+        let Some(target_3rd) = parse_url("http://127.0.0.1:18443/secure") else {
+            unreachable!("valid url");
+        };
+        let _ = map.observe(ObservedInput {
+            target: first_party.clone(),
+            method: Method::GET,
+            status: StatusBucket::S2xx,
+            content_type: Some("text/html".to_owned()),
+            bytes: 100,
+            duration: None,
+            started_at: now,
+            referer: None,
+            origin_header: None,
+            redirect_location: None,
+        });
+        let _ = map.observe(ObservedInput {
+            target: target_3rd,
+            method: Method::GET,
+            status: StatusBucket::S2xx,
+            content_type: Some("application/json".to_owned()),
+            bytes: 120,
+            duration: None,
+            started_at: now,
+            referer: Some(first_party),
+            origin_header: None,
+            redirect_location: None,
+        });
+
+        let mut panel = MapPanel::new();
+        panel.sub_view = MapSubView::Graph;
+        panel.filter.host_query = "localhost".to_owned();
+        panel.filter.status = StatusFilter::S2xx;
+        panel.filter.content_type = ContentTypeFilter::Json;
+        panel.filter.party = PartyFilter::ThirdParty;
+
+        panel.jump_to_host(&map, "127.0.0.1");
+
+        assert_eq!(panel.sub_view, MapSubView::Tree);
+        assert_eq!(panel.filter.host_query, "");
+        assert_eq!(panel.filter.status, StatusFilter::S2xx);
+        assert_eq!(panel.filter.content_type, ContentTypeFilter::Json);
+        assert_eq!(panel.filter.party, PartyFilter::ThirdParty);
+        let Some(selected) = panel.selected.as_ref() else {
+            unreachable!("matching root should be selected");
+        };
+        assert_eq!(selected.display_url(), "http://127.0.0.1:18443");
+        assert_eq!(panel.expanded_overrides.get(selected), Some(&true));
+        assert_eq!(panel.keyboard_scroll_to, Some(0));
+    }
+
+    #[test]
+    fn jump_to_host_keeps_active_filters_when_host_is_absent_from_map() {
+        let mut map = UrlMap::new();
+        observe_url(
+            &mut map,
+            "https://example.test:8443/secure",
+            StatusBucket::S2xx,
+            Some("text/html"),
+        );
+
+        let mut panel = MapPanel::new();
+        panel.sub_view = MapSubView::Graph;
+        panel.filter.host_query = ":8443".to_owned();
+        panel.filter.status = StatusFilter::S2xx;
+        panel.filter.content_type = ContentTypeFilter::Html;
+        panel.filter.party = PartyFilter::FirstParty;
+
+        panel.jump_to_host(&map, "missing.test");
+
+        assert_eq!(panel.sub_view, MapSubView::Tree);
+        assert_eq!(panel.filter.host_query, ":8443");
+        assert_eq!(panel.filter.status, StatusFilter::S2xx);
+        assert_eq!(panel.filter.content_type, ContentTypeFilter::Html);
+        assert_eq!(panel.filter.party, PartyFilter::FirstParty);
+        assert!(panel.selected.is_none());
     }
 }
