@@ -400,8 +400,18 @@ fn show_hex(ui: &mut egui::Ui, snapshot: &BodySnapshot) {
         shown.len(),
         bytes.len()
     ));
-    let mut text = hex_dump(shown);
-    egui::ScrollArea::vertical()
+    let dump = hex_dump(shown);
+    let mut text = dump.as_str();
+    let font = egui::TextStyle::Monospace.resolve(ui.style());
+    let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, _: f32| {
+        ui.painter().layout_no_wrap(
+            text.as_str().to_owned(),
+            font.clone(),
+            ui.visuals().text_color(),
+        )
+    };
+    egui::ScrollArea::both()
+        .auto_shrink([false, true])
         .id_salt("image-body-hex")
         .max_height(MAX_DISPLAY_HEIGHT)
         .show(ui, |ui| {
@@ -409,7 +419,7 @@ fn show_hex(ui: &mut egui::Ui, snapshot: &BodySnapshot) {
                 egui::TextEdit::multiline(&mut text)
                     .font(egui::TextStyle::Monospace)
                     .desired_width(f32::INFINITY)
-                    .interactive(false),
+                    .layouter(&mut layouter),
             );
         });
 }
