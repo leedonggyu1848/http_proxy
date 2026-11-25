@@ -16,7 +16,7 @@ use crate::ui::style::theme::Palette;
 /// Wait after the last keystroke before a search starts, so typing a word
 /// does not start a search for every letter.
 const DEBOUNCE: Duration = Duration::from_millis(150);
-/// Wait before retrying when the search queue is full.
+/// Wait before retrying a locked preview or a full search queue.
 const RETRY: Duration = Duration::from_millis(50);
 
 /// What the user asked to search for.
@@ -50,6 +50,20 @@ struct Active {
     query: Arc<Query>,
 }
 
+struct SearchResult {
+    checked: Checked,
+    retry_at: Option<Instant>,
+}
+
+impl SearchResult {
+    fn new(checked: Checked) -> Self {
+        Self {
+            checked,
+            retry_at: checked.retry.then(|| Instant::now() + RETRY),
+        }
+    }
+}
+
 /// Counts shown under the controls.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct Summary {
@@ -77,11 +91,9 @@ pub(crate) struct RequestSearch {
     active: Option<Active>,
     error: Option<String>,
     generation: u64,
-    results: HashMap<RecordId, Checked>,
+    results: HashMap<RecordId, SearchResult>,
     /// Records sent to the worker for the active query and not reported yet.
     queued: HashSet<RecordId>,
-    /// Earliest time to retry previews that were locked during a search.
-    retry_at: Option<Instant>,
     summary: Summary,
     backend: SearchBackend,
 }
@@ -109,7 +121,6 @@ impl RequestSearch {
             generation: 0,
             results: HashMap::new(),
             queued: HashSet::new(),
-            retry_at: None,
             summary: Summary::default(),
             backend,
         }
@@ -203,7 +214,7 @@ impl RequestSearch {
         }
         self.receive();
         self.forget_missing(records);
-        if !self.submit(records) {
+        if !self.submit(records, Instant::now()) {
             context.request_repaint_after(RETRY);
         }
         self.summary = self.summarize(records);
@@ -211,7 +222,11 @@ impl RequestSearch {
 
     /// Reports whether the list shows the record with `id`.
     pub(crate) fn shows(&self, id: RecordId) -> bool {
-        self.active.is_none() || self.results.get(&id).is_some_and(|checked| checked.matched)
+        self.active.is_none()
+            || self
+                .results
+                .get(&id)
+                .is_some_and(|result| result.checked.matched)
     }
 
     /// The query whose matches the detail panel highlights.
@@ -226,7 +241,6 @@ impl RequestSearch {
             worker.supersede(self.generation);
         }
         self.queued.clear();
-        self.retry_at = None;
         self.error = None;
         let previous = self.active.take();
         if settings.text.is_empty() {
@@ -243,7 +257,7 @@ impl RequestSearch {
         };
         if finished && previous.is_some_and(|previous| settings.narrows(&previous.settings)) {
             self.results
-                .retain(|_, checked| checked.settled && !checked.matched);
+                .retain(|_, result| result.checked.settled && !result.checked.matched);
         } else {
             self.results.clear();
         }
@@ -265,10 +279,7 @@ impl RequestSearch {
             }
             for checked in report.checked {
                 self.queued.remove(&checked.id);
-                if checked.retry {
-                    self.retry_at = Some(Instant::now() + RETRY);
-                }
-                self.results.insert(checked.id, checked);
+                self.results.insert(checked.id, SearchResult::new(checked));
             }
         }
     }
@@ -283,27 +294,23 @@ impl RequestSearch {
         self.queued.retain(|id| present.contains(id));
     }
 
-    /// Queues records without a final result. Returns `false` when the
-    /// queue was full and the records must be queued again later.
-    fn submit(&mut self, records: &RecordList<Exchange>) -> bool {
+    /// Queues ready records. Returns `false` if a locked preview or a full
+    /// queue needs a timed retry.
+    fn submit(&mut self, records: &RecordList<Exchange>, now: Instant) -> bool {
         let Some(query) = self.active.as_ref().map(|active| Arc::clone(&active.query)) else {
             return true;
         };
-        let retry_due = self
-            .retry_at
-            .is_none_or(|deadline| Instant::now() >= deadline);
         let mut deferred = false;
         let pending: Vec<Exchange> = records
             .iter()
             .filter(|record| !self.queued.contains(&record.id()))
             .filter(|record| {
-                self.results.get(&record.id()).is_none_or(|checked| {
-                    let ready = !checked.settled && document::is_settled(record);
-                    if ready && checked.retry && !retry_due {
-                        deferred = true;
-                        return false;
+                self.results.get(&record.id()).is_none_or(|result| {
+                    if let Some(deadline) = result.retry_at {
+                        deferred |= now < deadline;
+                        return now >= deadline;
                     }
-                    ready
+                    !result.checked.settled && document::is_settled(record)
                 })
             })
             .cloned()
@@ -323,11 +330,8 @@ impl RequestSearch {
             SearchBackend::Inline { cache, .. } => {
                 for record in &pending {
                     let checked = document::check(record, &query.matcher, query.scope, cache);
-                    if checked.retry {
-                        self.retry_at = Some(Instant::now() + RETRY);
-                        deferred = true;
-                    }
-                    self.results.insert(checked.id, checked);
+                    deferred |= checked.retry;
+                    self.results.insert(checked.id, SearchResult::new(checked));
                 }
             }
         }
@@ -343,9 +347,10 @@ impl RequestSearch {
             return summary;
         }
         for record in records.iter() {
-            let Some(checked) = self.results.get(&record.id()) else {
+            let Some(result) = self.results.get(&record.id()) else {
                 continue;
             };
+            let checked = result.checked;
             if !self.queued.contains(&checked.id) && !checked.retry {
                 summary.checked += 1;
             }
@@ -476,14 +481,17 @@ mod tests {
     }
 
     #[test]
-    fn a_locked_preview_is_rechecked_after_a_delay_without_repeating_immediately()
+    fn a_locked_request_preview_is_rechecked_while_the_response_streams()
     -> Result<(), Box<dyn std::error::Error>> {
         use http::{Method, StatusCode};
         use http_inspector_exchange::{BodyLifecycle, ExchangeBuilder, ResponseFixture};
 
         let record = ExchangeBuilder::http(Method::POST, "http://api.example.test/")?
             .request_body("search needle", BodyLifecycle::Complete)
-            .respond(ResponseFixture::new(StatusCode::OK))?;
+            .respond(
+                ResponseFixture::new(StatusCode::OK).body(Vec::new(), BodyLifecycle::Streaming),
+            )?;
+        assert!(!document::is_settled(&record));
         let id = record.id();
         let preview = record
             .request()
@@ -500,20 +508,33 @@ mod tests {
         let mut query = settings("needle", false, false);
         query.scope = SearchScope::RequestBody;
         search.apply(query);
+        let active_query = search.active_query().ok_or("missing active query")?.clone();
+        let now = Instant::now();
 
         preview.with_locked_prefix_for_test(|| {
-            assert!(!search.submit(&records));
-            assert!(search.results.get(&id).is_some_and(|checked| checked.retry));
-            assert!(!search.submit(&records));
+            assert!(!search.submit(&records, now));
         });
-        search.retry_at = Some(Instant::now());
-        assert!(search.submit(&records));
+        let deadline = search
+            .results
+            .get(&id)
+            .and_then(|result| result.retry_at)
+            .ok_or("missing retry deadline")?;
+        assert!(!search.shows(id));
+        assert!(deadline >= now + RETRY);
+        assert!(!search.submit(&records, now + RETRY / 2));
+        assert!(!search.shows(id));
+        assert!(search.submit(&records, deadline));
         assert!(search.shows(id));
         assert!(
             search
                 .results
                 .get(&id)
-                .is_some_and(|checked| checked.settled)
+                .is_some_and(|result| result.retry_at.is_none() && !result.checked.settled)
+        );
+        assert!(
+            search
+                .active_query()
+                .is_some_and(|query| Arc::ptr_eq(query, &active_query))
         );
         Ok(())
     }
