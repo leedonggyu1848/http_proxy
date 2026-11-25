@@ -30,7 +30,7 @@ HTTP Inspector는 개발 도구다. 디자인 시스템은 정밀 도킹 워크�
 
 - **D10.** 영역은 `borders.structural` 1px 선으로 나눈 도킹 패널이다(S12).
 - **D11.** 패널, 툴바, 표, 분할 영역, 상세 패널의 모서리는 0(`Radius::PANE`)이다. 버튼, 입력, 드롭다운, 팝업, 메뉴는 4pt(`Radius::CONTROL`)다. 단축키 칩과 스크롤바 썸만 2pt(`Radius::MICRO`)다. 양 끝이 반원인 pill 모양은 쓰지 않는다.
-- **D12.** 간격, 모서리, 글자 크기, 치수는 `tokens.rs`의 `Space`, `Radius`, `TypeScale`, `Layout` 값만 쓴다. 토큰 값이 다른 규칙을 어기면 화면 코드에서 우회하지 말고 `tokens.rs`의 값을 고친다. 새 값이 필요하면 `tokens.rs`에 더하고 PR 본문에 이유를 적는다. Clippy의 `disallowed_methods`가 `FontId` 생성자를 검사한다. 화면에서는 테마의 글자 스타일이나 `style::fonts`의 함수를 쓴다.
+- **D12.** 간격, 모서리, 글자 크기, 치수, 선 굵기는 `tokens.rs`의 `Space`, `Radius`, `TypeScale`, `Layout`, `StrokeWidth` 값만 쓴다. 토큰 값이 다른 규칙을 어기면 화면 코드에서 우회하지 말고 `tokens.rs`의 값을 고친다. 새 값이 필요하면 `tokens.rs`에 더하고 PR 본문에 이유를 적는다. Clippy의 `disallowed_methods`가 `FontId` 생성자를 검사한다. 화면에서는 테마의 글자 스타일이나 `style::fonts`의 함수를 쓴다.
 
 ### 글
 

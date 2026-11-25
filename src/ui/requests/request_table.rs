@@ -11,8 +11,8 @@ use crate::ui::AppAction;
 use crate::ui::dialogs::copy_curl;
 use crate::ui::requests::outcome_view::{outcome_summary, outcome_text, status_rank};
 use crate::ui::requests::target_view::{TargetParts, host_fits, middle_ellipsis, shared_host};
-use crate::ui::style::indicator;
-use crate::ui::style::tokens::{Layout, Radius, Space, ThemeTokens, TypeScale};
+use crate::ui::style::tokens::{Layout, Radius, Space, StrokeWidth, ThemeTokens, TypeScale};
+use crate::ui::style::{indicator, theme::Palette};
 use http_inspector_core::recording::SaveFormat;
 
 /// Space before the method, kept free for the selection bar of the row.
@@ -422,7 +422,7 @@ fn paint_header_cell(ui: &egui::Ui, last: bool) {
     painter.hline(
         band.x_range(),
         band.bottom() - 0.5,
-        egui::Stroke::new(1.0, tokens.borders.structural),
+        egui::Stroke::new(StrokeWidth::STRUCTURAL, tokens.borders.structural),
     );
 }
 
@@ -435,7 +435,7 @@ fn paint_row_cell(ui: &egui::Ui, selection_bar: bool, last: bool) {
     painter.hline(
         band.x_range(),
         band.bottom() - 0.5,
-        egui::Stroke::new(1.0, tokens.borders.subtle),
+        egui::Stroke::new(StrokeWidth::STRUCTURAL, tokens.borders.subtle),
     );
     if selection_bar {
         let cell = ui.max_rect();
@@ -657,7 +657,7 @@ fn method_cell(ui: &mut egui::Ui, record: &Exchange, selected: bool, focus: bool
             ui.painter().rect_stroke(
                 response.rect.expand(Space::XXS),
                 Radius::CONTROL,
-                egui::Stroke::new(1.0, ring),
+                egui::Stroke::new(StrokeWidth::FOCUS_RING, ring),
                 egui::StrokeKind::Outside,
             );
         }
@@ -678,8 +678,7 @@ fn method_text(ui: &mut egui::Ui, method: &str) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(galley.size(), egui::Sense::click());
     let elided = galley.elided;
     if ui.is_rect_visible(rect) {
-        ui.painter()
-            .galley(rect.min, galley, ui.visuals().text_color());
+        ui.painter().galley(rect.min, galley, Palette::of(ui).text);
     }
     if elided {
         response.on_hover_text(method)

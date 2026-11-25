@@ -401,7 +401,7 @@ fn split_detail_width(total_width: f32, share: f32) -> f32 {
 }
 
 /// Height left for the request list and details once the controls above and
-/// the status bar below are placed, but never less than [`MIN_MAIN_HEIGHT`].
+/// the status bar below are placed, but never less than [`Layout::MIN_MAIN_HEIGHT`].
 fn main_height(viewport: f32, above: f32, below: f32) -> f32 {
     (viewport - above - below)
         .floor()

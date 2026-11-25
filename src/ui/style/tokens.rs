@@ -233,6 +233,7 @@ pub(crate) struct StrokeWidth;
 
 impl StrokeWidth {
     pub(crate) const STRUCTURAL: f32 = 1.0;
+    pub(crate) const FOCUS_RING: f32 = 1.0;
     pub(crate) const MAP_STATUS: f32 = 0.5;
     pub(crate) const GRAPH_LINK: f32 = 1.6;
     pub(crate) const GRAPH_REDIRECT: f32 = 2.6;
