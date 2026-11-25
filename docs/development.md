@@ -176,6 +176,6 @@ graph TD
 - [초기 네트워크 인스펙터 설계 기록](http-network-inspector-design.md)
 - [요청 상세와 스트리밍 캡처 설계](f12-network-increment-design.md)
 - [HTTPS 복호화 구현 설계](https-inspection-implementation.md)와 [HTTPS 후속 작업](https-future-work.md)
-- UI 변경의 [디자인 정책과 캡처 점검 절차](../.agents/skills/ui-design/SKILL.md)
+- UI 변경의 [디자인 정책과 캡처 점검 절차](../.agents/skills/ui-design/SKILL.md)와 [색 토큰·치수·컴포넌트 규격](../.agents/skills/ui-design/design-system.md)
 
 Git 작업 흐름은 별도 문서 없이 [AGENTS.md](../AGENTS.md)의 Git·커밋·PR 지침에 정리되어 있다.
