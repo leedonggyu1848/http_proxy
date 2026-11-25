@@ -276,6 +276,33 @@ fn truncated_binary_and_compressed_bodies_are_marked() -> TestResult {
 }
 
 #[test]
+fn an_interrupted_compressed_body_is_omitted_even_if_its_bytes_decode() -> TestResult {
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(b"decoded text")?;
+    let record = ExchangeBuilder::http(Method::GET, format!("http://{TEST_HOST}/"))?.respond(
+        ResponseFixture::new(StatusCode::OK)
+            .header(CONTENT_ENCODING, HeaderValue::from_static("gzip"))
+            .body(encoder.finish()?, BodyLifecycle::Interrupted),
+    )?;
+    let options = HarOptions {
+        include_bodies: true,
+        include_sensitive_headers: false,
+    };
+    let har = document(&[record], options, SystemTime::now());
+    let [entry] = entries(&har) else {
+        return Err("expected one entry".into());
+    };
+    let content = &entry["response"]["content"];
+    assert!(content.get("text").is_none());
+    assert!(
+        content["comment"]
+            .as_str()
+            .is_some_and(|note| note.contains("partial compressed body"))
+    );
+    Ok(())
+}
+
+#[test]
 fn failures_tunnels_and_pending_requests_follow_the_documented_mapping() -> TestResult {
     let host = HeaderValue::from_static(TEST_HOST);
     let tunnel = ExchangeBuilder::connect(TEST_HOST)
@@ -355,6 +382,54 @@ fn write_creates_a_private_file_and_never_replaces_one() -> TestResult {
 
 /// Checks the fields and types HAR 1.2 requires, and that `time` is the sum
 /// of the observed timings.
+#[test]
+fn empty_complete_request_differs_from_unavailable_and_incomplete_requests() -> TestResult {
+    let options = HarOptions {
+        include_bodies: true,
+        include_sensitive_headers: false,
+    };
+    for (lifecycle, expected) in [
+        (BodyLifecycle::Complete, None),
+        (BodyLifecycle::Streaming, Some("still streaming")),
+        (BodyLifecycle::Interrupted, Some("sender stopped")),
+        (BodyLifecycle::Cancelled, Some("receiver stopped")),
+    ] {
+        let record = ExchangeBuilder::http(Method::POST, format!("http://{TEST_HOST}/"))?
+            .request_body(Vec::new(), lifecycle)
+            .in_flight()?;
+        let har = document(&[record], options, SystemTime::now());
+        let request = &entries(&har)[0]["request"];
+        assert_eq!(request["bodySize"], 0);
+        match expected {
+            None => assert!(request.get("postData").is_none()),
+            Some(reason) => assert!(
+                request["postData"]["comment"]
+                    .as_str()
+                    .is_some_and(|comment| comment.contains(reason))
+            ),
+        }
+    }
+
+    let record = ExchangeBuilder::http(Method::POST, format!("http://{TEST_HOST}/"))?
+        .request_body(Vec::new(), BodyLifecycle::Complete)
+        .in_flight()?;
+    let preview = record
+        .request()
+        .body()
+        .ok_or("missing request body")?
+        .clone();
+    preview.with_locked_prefix_for_test(|| {
+        let har = document(&[record], options, SystemTime::now());
+        let request = &entries(&har)[0]["request"];
+        assert!(
+            request["postData"]["comment"]
+                .as_str()
+                .is_some_and(|comment| comment.contains("preview was being written"))
+        );
+    });
+    Ok(())
+}
+
 fn assert_har_1_2(har: &Value) {
     let log = &har["log"];
     assert_eq!(log["version"], "1.2");

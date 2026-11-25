@@ -7,7 +7,7 @@ use http_inspector_content::format::{
     self as body_format, BodyFormat, FormatError, Notice, Styled, ViewMode,
     tree::{self, TreeModel},
 };
-use http_inspector_exchange::{BodyLifecycle, BodyRetention, BodySide, MediaType};
+use http_inspector_exchange::{BodyLifecycle, BodyRetention, BodySide, BodySnapshot, MediaType};
 use std::sync::Arc;
 
 /// A captured body preview to show.
@@ -42,14 +42,17 @@ impl Capture {
     /// Reads the capture state of a body snapshot. A preview cut at the
     /// retention limit stays cut whatever happens to the stream, so
     /// truncation wins over the lifecycle.
-    pub(super) const fn of(lifecycle: BodyLifecycle, retention: BodyRetention) -> Self {
-        match (lifecycle, retention) {
-            (_, BodyRetention::Truncated | BodyRetention::Omitted) => Self::Truncated,
-            (BodyLifecycle::Complete, BodyRetention::Prefix) => Self::Whole,
-            (BodyLifecycle::Streaming, BodyRetention::Prefix) => Self::Streaming,
-            (BodyLifecycle::Interrupted | BodyLifecycle::Cancelled, BodyRetention::Prefix) => {
+    pub(super) fn of(snapshot: &BodySnapshot) -> Self {
+        if snapshot.is_complete() {
+            return Self::Whole;
+        }
+        match (snapshot.retention(), snapshot.lifecycle()) {
+            (BodyRetention::Prefix, BodyLifecycle::Streaming) => Self::Streaming,
+            (BodyRetention::Prefix, BodyLifecycle::Interrupted | BodyLifecycle::Cancelled) => {
                 Self::Ended
             }
+            (BodyRetention::Truncated | BodyRetention::Omitted, _)
+            | (BodyRetention::Prefix, BodyLifecycle::Complete) => Self::Truncated,
         }
     }
 
@@ -516,23 +519,29 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_capture_reason_from_lifecycle_and_retention() {
+    fn reads_the_capture_reason_from_the_snapshot() -> Result<(), &'static str> {
         use BodyLifecycle::{Cancelled, Complete, Interrupted, Streaming};
-        for (lifecycle, retention, expected) in [
-            (Complete, BodyRetention::Prefix, Capture::Whole),
-            (Streaming, BodyRetention::Prefix, Capture::Streaming),
-            (Interrupted, BodyRetention::Prefix, Capture::Ended),
-            (Cancelled, BodyRetention::Prefix, Capture::Ended),
-            (Complete, BodyRetention::Truncated, Capture::Truncated),
-            (Streaming, BodyRetention::Truncated, Capture::Truncated),
-            (Interrupted, BodyRetention::Truncated, Capture::Truncated),
+        for (lifecycle, limit, expected) in [
+            (Complete, 3, Capture::Whole),
+            (Streaming, 3, Capture::Streaming),
+            (Interrupted, 3, Capture::Ended),
+            (Cancelled, 3, Capture::Ended),
+            (Complete, 2, Capture::Truncated),
+            (Streaming, 2, Capture::Truncated),
+            (Interrupted, 2, Capture::Truncated),
         ] {
-            assert_eq!(
-                Capture::of(lifecycle, retention),
-                expected,
-                "{lifecycle:?} {retention:?}"
-            );
+            let body = http_inspector_exchange::BodyPreviewWriter::new(limit);
+            body.observe(b"abc");
+            match lifecycle {
+                Complete => body.complete(),
+                Streaming => {}
+                Interrupted => body.interrupt(),
+                Cancelled => body.cancel(),
+            }
+            let snapshot = body.preview().snapshot().ok_or("missing snapshot")?;
+            assert_eq!(Capture::of(&snapshot), expected, "{snapshot:?}");
         }
+        Ok(())
     }
 
     #[test]

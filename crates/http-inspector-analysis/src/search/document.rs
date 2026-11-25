@@ -11,8 +11,7 @@ use super::SearchScope;
 use super::text_search::Matcher;
 use http_inspector_content::decode as body_view;
 use http_inspector_exchange::{
-    BodyLifecycle, BodyPreview, BodyRetention, BodySide, Exchange, HeaderPreview, MediaType,
-    Outcome, RecordId,
+    BodyLifecycle, BodyPreview, BodySide, Exchange, HeaderPreview, MediaType, Outcome, RecordId,
 };
 
 /// Bytes at the start of a decoded body that are checked for NUL when the
@@ -50,6 +49,8 @@ pub struct Checked {
     pub matched: bool,
     /// Nothing searched can change any more, so the result is final.
     pub settled: bool,
+    /// A preview was locked during this check and needs another attempt.
+    pub retry: bool,
     /// Set only for exchanges that did not match.
     pub coverage: Coverage,
 }
@@ -113,14 +114,20 @@ pub fn check(
     cache: &mut BodyCache,
 ) -> Checked {
     let settled = is_settled(record);
+    let mut retry = false;
     let mut coverage = Coverage::default();
     let hit = metadata_matches(record, matcher, scope)
         || [BodySide::Request, BodySide::Response]
             .into_iter()
             .filter(|side| scope.covers_body(*side))
             .any(|side| {
-                let Some(body) = body_text(record, side, settled, cache) else {
-                    return false;
+                let body = match body_text(record, side, settled, cache) {
+                    Ok(Some(body)) => body,
+                    Ok(None) => return false,
+                    Err(()) => {
+                        retry = true;
+                        return false;
+                    }
                 };
                 coverage.add(&body);
                 matches!(&*body, BodyText::Searchable { bytes, .. } if matcher.is_match(bytes))
@@ -128,7 +135,8 @@ pub fn check(
     Checked {
         id: record.id(),
         matched: hit,
-        settled,
+        settled: settled && (hit || !retry),
+        retry: retry && !hit,
         coverage: if hit { Coverage::default() } else { coverage },
     }
 }
@@ -190,40 +198,42 @@ pub fn headers_match(headers: &HeaderPreview, matcher: &Matcher) -> bool {
 }
 
 /// The searchable text of one body, decoded once and cached when settled.
-/// `None` when the body is not available yet.
+/// `Ok(None)` when no body exists, or `Err(())` when the preview is locked.
 fn body_text(
     record: &Exchange,
     side: BodySide,
     settled: bool,
     cache: &mut BodyCache,
-) -> Option<Arc<BodyText>> {
+) -> Result<Option<Arc<BodyText>>, ()> {
     let key = (record.id(), side);
     if let Some(body) = cache.bodies.get(&key) {
-        return Some(Arc::clone(body));
+        return Ok(Some(Arc::clone(body)));
     }
     let (body, headers, media_type) = match (side, record.outcome()) {
         (BodySide::Request, _) => {
             let request = record.request();
-            (request.body()?, request.headers(), request.media_type())
+            let Some(body) = request.body() else {
+                return Ok(None);
+            };
+            (body, request.headers(), request.media_type())
         }
         (BodySide::Response, Outcome::Response(response)) => {
             (response.body(), response.headers(), response.media_type())
         }
-        (BodySide::Response, _) => return None,
+        (BodySide::Response, _) => return Ok(None),
     };
-    let snapshot = body.snapshot()?;
+    let snapshot = body.snapshot().ok_or(())?;
     let encodings: Vec<&str> = headers.get("content-encoding").collect();
     let text = Arc::new(searchable(
         snapshot.bytes(),
         &encodings,
         media_type,
-        snapshot.retention() != BodyRetention::Prefix
-            || snapshot.lifecycle() != BodyLifecycle::Complete,
+        !snapshot.is_complete(),
     ));
     if settled {
         cache.bodies.insert(key, Arc::clone(&text));
     }
-    Some(text)
+    Ok(Some(text))
 }
 
 /// Decodes retained bytes into searchable text. `incomplete` means the
@@ -475,6 +485,31 @@ mod tests {
                 "query={query:?} scope={scope:?} case_sensitive={case_sensitive}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn a_locked_complete_body_can_match_after_the_lock_is_released()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use http::{Method, StatusCode};
+        use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
+
+        let record = ExchangeBuilder::http(Method::POST, "http://api.example.test/")?
+            .request_body("search needle", BodyLifecycle::Complete)
+            .respond(ResponseFixture::new(StatusCode::OK))?;
+        let preview = record.request().body().ok_or("missing request body")?;
+        let matcher = Matcher::new("needle", crate::search::MatchOptions::default())?;
+        let mut cache = BodyCache::default();
+        preview.with_locked_prefix_for_test(|| {
+            let checked = check(&record, &matcher, SearchScope::RequestBody, &mut cache);
+            assert!(!checked.matched);
+            assert!(!checked.settled);
+            assert!(checked.retry);
+        });
+        let checked = check(&record, &matcher, SearchScope::RequestBody, &mut cache);
+        assert!(checked.matched);
+        assert!(checked.settled);
+        assert!(!checked.retry);
         Ok(())
     }
 
