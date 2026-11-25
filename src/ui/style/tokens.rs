@@ -353,7 +353,14 @@ const DARK: ThemeTokens = ThemeTokens {
 };
 
 impl ThemeTokens {
-    pub(crate) fn new_map_node_fill(self, alpha: u8) -> Color32 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "opacity is clamped to [0, 1] before scaling"
+    )]
+    pub(crate) fn new_map_node_fill(self, opacity: f32) -> Color32 {
+        const MAX_ALPHA: f32 = 56.0;
+        let alpha = (opacity.clamp(0.0, 1.0) * MAX_ALPHA).round() as u8;
         Color32::from_rgba_unmultiplied(self.info.r(), self.info.g(), self.info.b(), alpha)
     }
 

@@ -5,7 +5,7 @@
 use crate::ui::detail::highlight;
 #[cfg(test)]
 use crate::ui::style::fonts;
-use crate::ui::style::theme::{Palette, SyntaxPalette, Theme};
+use crate::ui::style::theme::{self, Palette, SyntaxPalette, Theme};
 use crate::ui::style::tokens::Layout;
 use eframe::egui::{self, FontId, text::LayoutJob};
 use http_inspector_content::format::tree::TreeModel;
@@ -132,7 +132,7 @@ impl TreeView {
         let palette = SyntaxPalette::for_theme(theme);
         // The keyed theme's style: after a theme switch this frame's style
         // still belongs to the previous theme.
-        let text_color = ctx.style_of(theme).visuals.text_color();
+        let text_color = theme::text_in_theme(ctx, theme);
         let jobs = self
             .model
             .nodes()

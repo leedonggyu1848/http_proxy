@@ -101,8 +101,8 @@ fn render_row(ui: &mut egui::Ui, row: &VisibleRow, is_selected: bool) -> RowOutc
     if is_selected {
         frame = frame.fill(palette.surfaces.selection);
     } else if fading {
-        let alpha = new_highlight_alpha(age);
-        frame = frame.fill(theme::new_map_node_fill(ui, alpha));
+        let opacity = 1.0 - age.as_secs_f32() / NEW_NODE_HIGHLIGHT.as_secs_f32();
+        frame = frame.fill(theme::new_map_node_fill(ui, opacity));
     }
 
     let mut toggled = false;
@@ -308,16 +308,6 @@ fn method_color(method: &str, palette: &Palette) -> Color32 {
         "DELETE" => palette.error,
         _ => palette.warning,
     }
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "fade alpha clamped to [0, 64]"
-)]
-fn new_highlight_alpha(age: Duration) -> u8 {
-    let ratio = 1.0 - (age.as_secs_f32() / NEW_NODE_HIGHLIGHT.as_secs_f32()).clamp(0.0, 1.0);
-    (ratio * 56.0).round() as u8
 }
 
 #[derive(Clone, Copy)]

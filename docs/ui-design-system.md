@@ -15,7 +15,7 @@ HTTP Inspector는 개발 도구다. 디자인 시스템은 정밀 도킹 워크�
 - `src/ui/style/tokens.rs`의 `LIGHT`·`DARK` 색 값 전체, `ToneFills`, `ToneColors::fill`, `Tone::Neutral`, `Tone::Info`
 - `Radius::CONTROL`(6pt), `Radius::BADGE`, `Radius::CARD`, `TypeScale`의 현재 값
 - `src/ui/style/badge.rs`의 `Badge`와 `BADGE_HEIGHT`
-- `src/ui/requests/request_table.rs`의 `ALERT_EDGE_WIDTH`(3pt 띠)와 pill의 이중 표시, 지역 상수 `ROW_HEIGHT`·`HEADER_HEIGHT`(24pt), `.striped(true)`
+- 요청 표의 `Layout::TABLE_ALERT_WIDTH`(3pt 띠)와 pill의 이중 표시, `Layout::TABLE_ROW_HEIGHT`·`Layout::TABLE_HEADER_HEIGHT`(24pt), `.striped(true)`
 - `src/ui/style/theme.rs`에서 선택 글자를 `accent`로 칠하는 `selection.stroke`, `hyperlink_color = info`, egui 기본 그림자와 `animation_time`(0.2초)
 
 ## 규칙

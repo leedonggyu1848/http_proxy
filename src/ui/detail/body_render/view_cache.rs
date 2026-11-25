@@ -114,7 +114,7 @@ fn layout_text(
     search: Option<&Query>,
 ) -> Content {
     // The frame style still belongs to the previous theme after a theme switch.
-    let text_color = theme::body_text(ctx, style.theme);
+    let text_color = theme::text_in_theme(ctx, style.theme);
     let palette = SyntaxPalette::for_theme(style.theme);
     let job = highlight::layout_job(ctx, styled, &palette, text_color, &style.font);
     let lines = format

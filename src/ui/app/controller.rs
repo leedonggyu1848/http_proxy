@@ -67,7 +67,9 @@ pub(crate) enum AppAction {
 impl InspectorApp {
     pub(super) fn update(&mut self, context: &egui::Context) {
         self.update_capture();
-        self.requests.update_filters(context);
+        if self.layout.main_view == MainView::Requests {
+            self.requests.update_filters(context);
+        }
         self.detail.curl.expire_notice();
         self.dialogs.save.poll();
         self.session.body_saving.poll(context);

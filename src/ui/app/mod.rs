@@ -84,7 +84,7 @@ impl InspectorApp {
 
 impl eframe::App for InspectorApp {
     fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
-        visuals.panel_fill.to_normalized_gamma_f32()
+        theme::clear_color(visuals)
     }
 
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {

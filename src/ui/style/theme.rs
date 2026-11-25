@@ -64,12 +64,16 @@ impl Palette {
 
 /// Resolves the text color of the body's theme even when the context is
 /// still painting with the previous frame's style.
-pub(crate) fn body_text(context: &egui::Context, theme: Theme) -> Color32 {
+pub(crate) fn text_in_theme(context: &egui::Context, theme: Theme) -> Color32 {
     context.style_of(theme).visuals.text_color()
 }
 
-pub(crate) fn new_map_node_fill(ui: &egui::Ui, alpha: u8) -> Color32 {
-    ThemeTokens::for_theme(ui.ctx().theme()).new_map_node_fill(alpha)
+pub(crate) fn new_map_node_fill(ui: &egui::Ui, opacity: f32) -> Color32 {
+    ThemeTokens::for_theme(ui.ctx().theme()).new_map_node_fill(opacity)
+}
+
+pub(crate) fn clear_color(visuals: &egui::Visuals) -> [f32; 4] {
+    visuals.panel_fill.to_normalized_gamma_f32()
 }
 
 pub(crate) fn divider_stroke(ui: &egui::Ui, response: &egui::Response) -> egui::Stroke {
