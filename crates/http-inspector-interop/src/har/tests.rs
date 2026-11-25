@@ -187,6 +187,22 @@ fn opt_in_adds_bodies_and_redacted_header_names_only() -> TestResult {
 }
 
 #[test]
+fn query_string_exports_raw_ordered_pairs_before_the_fragment() {
+    assert_eq!(super::query_string("/p#frag?x=1"), serde_json::json!([]));
+    assert_eq!(
+        super::query_string("/p?a=1&a=2&flag&empty=&q=a+b%2Bc&bad=%ZZ#frag?x=1"),
+        serde_json::json!([
+            {"name": "a", "value": "1"},
+            {"name": "a", "value": "2"},
+            {"name": "flag", "value": ""},
+            {"name": "empty", "value": ""},
+            {"name": "q", "value": "a+b%2Bc"},
+            {"name": "bad", "value": "%ZZ"}
+        ])
+    );
+}
+
+#[test]
 fn truncated_binary_and_compressed_bodies_are_marked() -> TestResult {
     let get = || -> Result<ExchangeBuilder, Box<dyn Error>> {
         Ok(

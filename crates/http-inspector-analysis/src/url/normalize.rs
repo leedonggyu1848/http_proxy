@@ -3,7 +3,9 @@
 
 use std::fmt;
 
+use http_inspector_content::format::form;
 use http_inspector_exchange::CaptureSource;
+use http_inspector_exchange::http_semantics::urlencoded::{self, Plus};
 
 /// Maximum length of a single normalized path segment stored in the map.
 const MAX_SEGMENT_BYTES: usize = 256;
@@ -160,20 +162,16 @@ pub fn parse_exchange_target(target: &str, source: CaptureSource) -> Option<Norm
 /// and query parameter names.
 #[must_use]
 pub fn parse_url(raw: &str) -> Option<NormalizedUrl> {
-    let without_fragment = raw.trim().split('#').next()?.trim();
-    let (scheme, rest) = without_fragment.split_once("://")?;
+    let (base, query_part) = map_target_parts(raw);
+    let (scheme, rest) = base.split_once("://")?;
     if !is_valid_scheme(scheme) {
         return None;
     }
-    let (authority_part, path_and_query) = split_authority_and_rest(rest);
+    let (authority_part, path_part) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
     let authority = strip_userinfo(authority_part);
     let (host, port) = split_authority(authority)?;
     let origin = OriginKey::new(scheme, host, port);
 
-    let (path_part, query_part) = match path_and_query.split_once('?') {
-        Some((path, query)) => (path, Some(query)),
-        None => (path_and_query, None),
-    };
     let segments = normalize_path_segments(path_part);
     let query_param_names = query_part.map_or_else(Vec::new, extract_query_param_names);
 
@@ -215,11 +213,7 @@ pub fn resolve_location(base: &NormalizedUrl, location: &str) -> Option<Normaliz
         let synthetic = format!("{}:{trimmed}", base.origin.scheme());
         return parse_url(&synthetic);
     }
-    let without_fragment = trimmed.split('#').next()?.trim();
-    let (path_part, query_part) = match without_fragment.split_once('?') {
-        Some((path, query)) => (path, Some(query)),
-        None => (without_fragment, None),
-    };
+    let (path_part, query_part) = map_target_parts(trimmed);
     let segments = if path_part.starts_with('/') {
         resolve_dot_segments(path_part)
     } else if path_part.is_empty() {
@@ -252,34 +246,7 @@ pub fn resolve_location(base: &NormalizedUrl, location: &str) -> Option<Normaliz
 /// lossily replaced so display never fails.
 #[must_use]
 pub fn percent_decode_display(raw: &str) -> String {
-    let bytes = raw.as_bytes();
-    if !bytes.contains(&b'%') {
-        return raw.to_owned();
-    }
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while let Some(&byte) = bytes.get(index) {
-        if byte == b'%'
-            && let (Some(&hi), Some(&lo)) = (bytes.get(index + 1), bytes.get(index + 2))
-            && let (Some(h), Some(l)) = (hex_value(hi), hex_value(lo))
-        {
-            decoded.push((h << 4) | l);
-            index += 3;
-            continue;
-        }
-        decoded.push(byte);
-        index += 1;
-    }
-    String::from_utf8_lossy(&decoded).into_owned()
-}
-
-const fn hex_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
+    String::from_utf8_lossy(&urlencoded::decode(raw, Plus::Literal)).into_owned()
 }
 
 fn is_valid_scheme(scheme: &str) -> bool {
@@ -291,13 +258,13 @@ fn is_valid_scheme(scheme: &str) -> bool {
         && chars.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
 }
 
-fn split_authority_and_rest(rest: &str) -> (&str, &str) {
-    for (idx, byte) in rest.bytes().enumerate() {
-        if byte == b'/' || byte == b'?' {
-            return rest.split_at(idx);
-        }
-    }
-    (rest, "")
+/// Map normalization ignores whitespace around the entire pre-fragment target.
+fn map_target_parts(target: &str) -> (&str, Option<&str>) {
+    let parts = urlencoded::split_target(target.trim());
+    parts.query.map_or_else(
+        || (parts.base.trim_end(), None),
+        |query| (parts.base, Some(query.trim_end())),
+    )
 }
 
 fn strip_userinfo(authority: &str) -> &str {
@@ -391,17 +358,14 @@ fn resolve_dot_segments(path: &str) -> Vec<String> {
 
 /// Extracts only parameter names from a raw query string (never retaining values).
 fn extract_query_param_names(query: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    for pair in query.split('&') {
-        if pair.is_empty() {
-            continue;
-        }
-        let name = pair.split('=').next().unwrap_or_default().trim();
-        if !name.is_empty() {
-            names.push(bounded_str(name, MAX_QUERY_NAME_BYTES));
-        }
-    }
-    names
+    urlencoded::raw_pairs(query)
+        .filter_map(|pair| map_query_name(pair.name))
+        .collect()
+}
+
+fn map_query_name(name: &str) -> Option<String> {
+    let name = name.trim();
+    (!name.is_empty()).then(|| bounded_str(name, MAX_QUERY_NAME_BYTES))
 }
 
 /// Calls `visit` with each query parameter name of the absolute or
@@ -411,18 +375,14 @@ fn extract_query_param_names(query: &str) -> Vec<String> {
 /// The value is lent only for the duration of the call so callers can
 /// classify it without keeping it.
 pub fn visit_query_values(target: &str, mut visit: impl FnMut(String, &str)) {
-    let without_fragment = target.split('#').next().unwrap_or_default();
-    let Some((_, query)) = without_fragment.split_once('?') else {
+    let Some(query) = urlencoded::split_target(target).query else {
         return;
     };
-    for pair in query.split('&') {
-        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
-        let name = name.trim();
-        if name.is_empty() {
-            continue;
+    for pair in urlencoded::raw_pairs(query) {
+        if let Some(name) = map_query_name(pair.name) {
+            let value = form::decode(pair.value.unwrap_or_default());
+            visit(name, &value);
         }
-        let value = percent_decode_display(&value.replace('+', " "));
-        visit(bounded_str(name, MAX_QUERY_NAME_BYTES), &value);
     }
 }
 

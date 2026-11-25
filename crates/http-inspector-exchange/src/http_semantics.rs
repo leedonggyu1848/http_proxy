@@ -1,8 +1,8 @@
-//! HTTP rules shared by capture, forwarding, logging, and export: which
-//! fields are hop-by-hop and which carry credentials that are never retained.
+//! HTTP field rules, request-target boundaries, and URL-encoded pair syntax.
 
 mod hop_by_hop;
 mod sensitive;
+pub mod urlencoded;
 
 pub use hop_by_hop::remove_hop_by_hop_headers;
 pub use sensitive::{

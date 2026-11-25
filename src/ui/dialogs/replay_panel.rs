@@ -2,6 +2,7 @@
 use eframe::egui;
 use http_inspector_core::interception::ProxyHandle;
 use http_inspector_core::replay::{ReplayDraft, ReplayError, ReplayField, ReplayTask};
+use http_inspector_exchange::http_semantics::urlencoded::{self, RawPair};
 use http_inspector_exchange::{Exchange, RecordId};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -99,7 +100,7 @@ impl ReplayPanel {
             let cookies = self.draft.headers.iter_mut().filter(|f| is_cookie(f));
             for (index, (field, table)) in cookies.zip(&mut self.cookies).enumerate() {
                 ui.push_id(("cookie", index), |ui| {
-                    table.show(ui, &mut field.value, COOKIE, "Add cookie");
+                    table.show(ui, &mut field.value, PairSyntax::Cookie, "Add cookie");
                 });
             }
             if ui.button("Add Cookie header").clicked() {
@@ -116,22 +117,10 @@ impl ReplayPanel {
     }
     fn query_ui(&mut self, ui: &mut egui::Ui) {
         ui.collapsing("Query parameters (URL-encoded)", |ui| {
-            let (base, query) = self
-                .draft
-                .url
-                .split_once('?')
-                .unwrap_or((self.draft.url.as_str(), ""));
-            let (base, mut query) = (base.to_owned(), query.to_owned());
-            if self
-                .query
-                .show(ui, &mut query, URL_ENCODED, "Add parameter")
-            {
-                self.draft.url = if query.is_empty() {
-                    base
-                } else {
-                    format!("{base}?{query}")
-                };
-            }
+            edit_query(&mut self.draft.url, |query| {
+                self.query
+                    .show(ui, query, PairSyntax::UrlEncoded, "Add parameter")
+            });
         });
     }
 
@@ -157,7 +146,9 @@ impl ReplayPanel {
         if let Some(text) = &mut self.body.text {
             if content_type.starts_with("application/x-www-form-urlencoded") {
                 ui.collapsing("Form fields (URL-encoded)", |ui| {
-                    edited |= self.form.show(ui, text, URL_ENCODED, "Add field");
+                    edited |= self
+                        .form
+                        .show(ui, text, PairSyntax::UrlEncoded, "Add field");
                 });
             }
             edited |= ui
@@ -385,7 +376,6 @@ enum JsonCheck {
     Invalid(String),
 }
 
-/// How a `name=value` list is split and rejoined.
 /// Views derived from the draft body, rebuilt only when the body changes.
 struct BodyView {
     /// Editable text, present for UTF-8 bodies small enough to lay out every frame.
@@ -419,23 +409,43 @@ impl BodyView {
     }
 }
 
-#[derive(Clone, Copy)]
-struct PairSyntax {
-    separator: char,
-    joiner: &'static str,
-    mask_values: bool,
+/// Preserves the complete target until a row changes and keeps the fragment for replay validation.
+fn edit_query(url: &mut String, edit: impl FnOnce(&mut String) -> bool) {
+    let parts = urlencoded::split_target(url);
+    let mut query = parts.query.unwrap_or_default().to_owned();
+    if edit(&mut query) {
+        let delimiter = if query.is_empty() { "" } else { "?" };
+        *url = format!("{}{delimiter}{query}{}", parts.base, parts.fragment);
+    }
 }
 
-const COOKIE: PairSyntax = PairSyntax {
-    separator: ';',
-    joiner: "; ",
-    mask_values: true,
-};
-const URL_ENCODED: PairSyntax = PairSyntax {
-    separator: '&',
-    joiner: "&",
-    mask_values: false,
-};
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PairSyntax {
+    Cookie,
+    UrlEncoded,
+}
+
+impl PairSyntax {
+    const fn joiner(self) -> &'static str {
+        match self {
+            Self::Cookie => "; ",
+            Self::UrlEncoded => "&",
+        }
+    }
+
+    fn rows(self, text: &str) -> Vec<PairRow> {
+        match self {
+            Self::Cookie => text
+                .split(';')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .map(RawPair::parse)
+                .map(PairRow::from)
+                .collect(),
+            Self::UrlEncoded => urlencoded::raw_pairs(text).map(PairRow::from).collect(),
+        }
+    }
+}
 
 /// One row of a pair table. `raw` keeps the original text until the row is edited.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -457,14 +467,14 @@ impl PairTable {
     /// Re-parses only when `text` changed outside the table.
     fn sync(&mut self, text: &str, syntax: PairSyntax) {
         if self.source.as_deref() != Some(text) {
-            self.rows = parse_pairs(text, syntax.separator);
+            self.rows = syntax.rows(text);
             self.source = Some(text.to_owned());
         }
     }
 
     /// Writes the rows back to `text`; call only after an edit.
     fn apply(&mut self, text: &mut String, syntax: PairSyntax) {
-        *text = join_pairs(&self.rows, syntax.joiner);
+        *text = join_pairs(&self.rows, syntax.joiner());
         self.source = Some(text.clone());
     }
 
@@ -477,7 +487,7 @@ impl PairTable {
         add: &str,
     ) -> bool {
         self.sync(text, syntax);
-        let changed = pair_rows(ui, &mut self.rows, syntax.mask_values, add);
+        let changed = pair_rows(ui, &mut self.rows, syntax == PairSyntax::Cookie, add);
         if changed {
             self.apply(text, syntax);
         }
@@ -528,20 +538,15 @@ fn pair_rows(ui: &mut egui::Ui, rows: &mut Vec<PairRow>, mask: bool, add: &str) 
     changed
 }
 
-fn parse_pairs(text: &str, separator: char) -> Vec<PairRow> {
-    text.split(separator)
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .map(|part| {
-            let (name, value) = part.split_once('=').unwrap_or((part, ""));
-            PairRow {
-                enabled: true,
-                name: name.to_owned(),
-                value: value.to_owned(),
-                raw: Some(part.to_owned()),
-            }
-        })
-        .collect()
+impl From<RawPair<'_>> for PairRow {
+    fn from(pair: RawPair<'_>) -> Self {
+        Self {
+            enabled: true,
+            name: pair.name.to_owned(),
+            value: pair.value.unwrap_or_default().to_owned(),
+            raw: Some(pair.raw.to_owned()),
+        }
+    }
 }
 
 fn join_pairs(rows: &[PairRow], joiner: &str) -> String {
@@ -589,24 +594,27 @@ mod tests {
     }
 
     fn joined(text: &str, syntax: PairSyntax) -> String {
-        join_pairs(&parse_pairs(text, syntax.separator), syntax.joiner)
+        join_pairs(&syntax.rows(text), syntax.joiner())
     }
 
     #[test]
     fn preserves_encoded_query_and_cookie_values() {
         assert_eq!(
-            joined("a=x%26y&a=two%20words", URL_ENCODED),
+            joined("a=x%26y&a=two%20words", PairSyntax::UrlEncoded),
             "a=x%26y&a=two%20words"
         );
         assert_eq!(
-            joined("session=a=b; theme=dark", COOKIE),
+            joined("session=a=b; theme=dark", PairSyntax::Cookie),
             "session=a=b; theme=dark"
         );
     }
 
     #[test]
     fn opening_a_table_does_not_change_the_text() {
-        for (text, syntax) in [("flag&a=1&&b=2", URL_ENCODED), ("a=1;flag; b=2 ", COOKIE)] {
+        for (text, syntax) in [
+            ("flag&a=1&&b=2", PairSyntax::UrlEncoded),
+            ("a=1;flag; b=2 ", PairSyntax::Cookie),
+        ] {
             let mut table = PairTable::default();
             table.sync(text, syntax);
             table.sync(text, syntax);
@@ -616,17 +624,58 @@ mod tests {
     }
 
     #[test]
+    fn editing_query_rows_preserves_fragments_for_request_validation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use http_inspector_core::replay::ReplayUrlError;
+        use http_inspector_exchange::{BodyLifecycle, ExchangeBuilder};
+
+        let exchange = ExchangeBuilder::http(http::Method::GET, "http://example.test/p")?
+            .request_body(Vec::new(), BodyLifecycle::Complete)
+            .in_flight()?;
+        let mut draft = ReplayDraft::new(exchange)?;
+        for (original, actual_query) in [
+            ("http://example.test/p#section?x=1", ""),
+            (
+                "http://example.test/p?flag&&empty=#section?x=1",
+                "flag&&empty=",
+            ),
+        ] {
+            draft.url = original.to_owned();
+            edit_query(&mut draft.url, |query| {
+                assert_eq!(query, actual_query);
+                false
+            });
+            assert_eq!(draft.url, original);
+            edit_query(&mut draft.url, |query| {
+                "a=b".clone_into(query);
+                true
+            });
+            assert_eq!(draft.url, "http://example.test/p?a=b#section?x=1");
+            assert!(matches!(
+                draft.request("127.0.0.1:8080".parse()?),
+                Err(ReplayError::Url(ReplayUrlError::CredentialsOrFragment))
+            ));
+            edit_query(&mut draft.url, |query| {
+                query.clear();
+                true
+            });
+            assert_eq!(draft.url, "http://example.test/p#section?x=1");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn disabled_rows_can_be_enabled_again() {
         let mut text = "a=1; b=2".to_owned();
         let mut table = PairTable::default();
-        table.sync(&text, COOKIE);
+        table.sync(&text, PairSyntax::Cookie);
         edit(&mut table, 0, |row| row.enabled = false);
-        table.apply(&mut text, COOKIE);
+        table.apply(&mut text, PairSyntax::Cookie);
         assert_eq!(text, "b=2");
-        table.sync(&text, COOKIE);
+        table.sync(&text, PairSyntax::Cookie);
         assert_eq!(table.rows.len(), 2);
         edit(&mut table, 0, |row| row.enabled = true);
-        table.apply(&mut text, COOKIE);
+        table.apply(&mut text, PairSyntax::Cookie);
         assert_eq!(text, "a=1; b=2");
     }
 
@@ -634,12 +683,12 @@ mod tests {
     fn editing_one_row_keeps_other_rows_verbatim() {
         let mut text = "flag&a=1".to_owned();
         let mut table = PairTable::default();
-        table.sync(&text, URL_ENCODED);
+        table.sync(&text, PairSyntax::UrlEncoded);
         edit(&mut table, 1, |row| {
             row.value = "2".to_owned();
             row.raw = None;
         });
-        table.apply(&mut text, URL_ENCODED);
+        table.apply(&mut text, PairSyntax::UrlEncoded);
         assert_eq!(text, "flag&a=2");
     }
 
@@ -647,14 +696,14 @@ mod tests {
     fn empty_added_rows_are_not_sent() {
         let mut text = "a=1".to_owned();
         let mut table = PairTable::default();
-        table.sync(&text, COOKIE);
+        table.sync(&text, PairSyntax::Cookie);
         table.rows.push(PairRow {
             enabled: true,
             name: String::new(),
             value: String::new(),
             raw: None,
         });
-        table.apply(&mut text, COOKIE);
+        table.apply(&mut text, PairSyntax::Cookie);
         assert_eq!(text, "a=1");
     }
 }

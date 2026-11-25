@@ -1,18 +1,19 @@
 //! `application/x-www-form-urlencoded` bodies and URL query strings.
 
 use super::{Styled, TokenKind};
+use http_inspector_exchange::http_semantics::urlencoded::{self, Plus};
 
 /// Percent-decodes each `key=value` pair of a form body or query string.
 /// Empty pairs are skipped and malformed escapes are kept as written.
 #[must_use]
 pub fn pairs(text: &str) -> Vec<(String, String)> {
-    text.split('&')
-        .filter(|pair| !pair.is_empty())
-        .map(|pair| {
-            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-            (decode(key), decode(value))
-        })
-        .collect()
+    decoded_pairs(text).collect()
+}
+
+/// Iterates over decoded names and values using lossy UTF-8 for display and type inference.
+pub fn decoded_pairs(text: &str) -> impl Iterator<Item = (String, String)> {
+    urlencoded::raw_pairs(text)
+        .map(|pair| (decode(pair.name), decode(pair.value.unwrap_or_default())))
 }
 
 /// Shows one decoded `key = value` pair per line.
@@ -48,32 +49,10 @@ pub fn visible(text: &str) -> String {
         .collect()
 }
 
-fn decode(text: &str) -> String {
-    let mut bytes = Vec::with_capacity(text.len());
-    let mut rest = text.as_bytes();
-    while let Some((&first, tail)) = rest.split_first() {
-        let escaped = match (first, tail) {
-            (b'%', [high, low, ..]) => hex(*high).zip(hex(*low)).map(|(h, l)| h << 4 | l),
-            _ => None,
-        };
-        if let Some(byte) = escaped {
-            bytes.push(byte);
-            rest = tail.get(2..).unwrap_or_default();
-        } else {
-            bytes.push(if first == b'+' { b' ' } else { first });
-            rest = tail;
-        }
-    }
-    String::from_utf8_lossy(&bytes).into_owned()
-}
-
-const fn hex(digit: u8) -> Option<u8> {
-    match digit {
-        b'0'..=b'9' => Some(digit - b'0'),
-        b'a'..=b'f' => Some(digit - b'a' + 10),
-        b'A'..=b'F' => Some(digit - b'A' + 10),
-        _ => None,
-    }
+/// Decodes one form component to text, replacing invalid UTF-8.
+#[must_use]
+pub fn decode(text: &str) -> String {
+    String::from_utf8_lossy(&urlencoded::decode(text, Plus::Space)).into_owned()
 }
 
 #[cfg(test)]
