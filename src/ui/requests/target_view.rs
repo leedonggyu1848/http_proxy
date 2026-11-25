@@ -57,6 +57,13 @@ pub(super) fn shared_host<'a>(mut targets: impl Iterator<Item = &'a str>) -> Opt
     (!host.is_empty() && targets.all(|target| TargetParts::of(target).host == host)).then_some(host)
 }
 
+/// Whether the whole `host` fits after `primary` and a gap of `gap_chars`
+/// within `max_chars`. A cut host such as `127.0.0.1:1…` reads like another
+/// port, so the list shows the host whole or not at all.
+pub(super) fn host_fits(max_chars: usize, primary: &str, gap_chars: usize, host: &str) -> bool {
+    primary.chars().count() + gap_chars + host.chars().count() <= max_chars
+}
+
 /// Shortens `path` to at most `max_chars` characters by eliding its middle,
 /// so that the start of the path and its last segment stay readable, as in
 /// `/api/v1/…/users.json`. A last segment too long to keep, such as a long
@@ -132,6 +139,17 @@ mod tests {
         assert_eq!(shared_host(mixed.into_iter()), None);
         assert_eq!(shared_host(["/origin-form"].into_iter()), None);
         assert_eq!(shared_host(std::iter::empty()), None);
+    }
+
+    #[test]
+    fn shows_a_host_only_when_it_fits_whole() {
+        let host = "127.0.0.1:18931";
+        // 11 + 1 + 15 = 27 characters.
+        assert!(host_fits(27, "/users.json", 1, host));
+        assert!(!host_fits(26, "/users.json", 1, host));
+        // A wider gap leaves less room for the host.
+        assert!(!host_fits(27, "/users.json", 2, host));
+        assert!(host_fits(4, "", 0, "a.b:"));
     }
 
     #[test]

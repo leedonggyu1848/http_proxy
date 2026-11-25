@@ -11,7 +11,7 @@ use crate::ui::dialogs::copy_curl;
 use crate::ui::requests::outcome_view::{
     alert_tone, outcome_summary, outcome_text, outcome_tone, status_rank,
 };
-use crate::ui::requests::target_view::{TargetParts, middle_ellipsis, shared_host};
+use crate::ui::requests::target_view::{TargetParts, host_fits, middle_ellipsis, shared_host};
 use crate::ui::style::badge::Badge;
 use crate::ui::style::tokens::Space;
 
@@ -19,8 +19,6 @@ const ROW_HEIGHT: f32 = 24.0;
 const HEADER_HEIGHT: f32 = 24.0;
 /// Width of the colored edge that marks error and failure rows.
 const ALERT_EDGE_WIDTH: f32 = 3.0;
-/// Fewest host characters worth showing beside a path.
-const MIN_HOST_CHARS: usize = 8;
 
 /// Sortable column of the request list.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -577,18 +575,22 @@ fn target_cell(ui: &mut egui::Ui, record: &Exchange, show_host: bool) {
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "The cell width is nonnegative and UI-sized, and only whole characters fit"
+        reason = "Widths are nonnegative and UI-sized; the cell holds only whole characters and the gap rounds up"
     )]
-    let max_chars = (ui.available_width() / char_width.max(1.0)) as usize;
+    let (max_chars, gap_chars) = {
+        let char_width = char_width.max(1.0);
+        (
+            (ui.available_width() / char_width) as usize,
+            (ui.spacing().item_spacing.x / char_width).ceil() as usize,
+        )
+    };
     let primary = middle_ellipsis(parts.primary(), max_chars);
-    // A host cut down to a few characters says nothing, so it is left out.
-    let room_for_host = max_chars.saturating_sub(primary.chars().count() + 1);
+    let host = parts
+        .secondary()
+        .filter(|&host| show_host && host_fits(max_chars, &primary, gap_chars, host));
     ui.add(egui::Label::new(RichText::new(primary).monospace()).truncate())
         .on_hover_text(target);
-    if show_host
-        && let Some(host) = parts.secondary()
-        && room_for_host >= host.chars().count().min(MIN_HOST_CHARS)
-    {
+    if let Some(host) = host {
         ui.add(egui::Label::new(RichText::new(host).monospace().weak()).truncate())
             .on_hover_text(target);
     }

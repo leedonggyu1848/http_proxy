@@ -76,11 +76,11 @@ pub(crate) fn outcome_tone(outcome: &Outcome) -> Tone {
     }
 }
 
-/// Tone of the edge mark that makes a request stand out in the list: client
-/// errors, server errors, and failed connections or tunnels.
+/// Tone of the edge mark that makes a request stand out in the list: 4xx
+/// client errors, 5xx server errors, and failed connections or tunnels.
 pub(super) fn alert_tone(outcome: &Outcome) -> Option<Tone> {
     match outcome {
-        Outcome::Response(response) if response.status().as_u16() >= 400 => {
+        Outcome::Response(response) if matches!(response.status().as_u16(), 400..=599) => {
             Some(outcome_tone(outcome))
         }
         Outcome::Failed { .. } => Some(Tone::Danger),
@@ -178,6 +178,8 @@ mod tests {
             (301, Tone::Info, None),
             (404, Tone::Warning, Some(Tone::Warning)),
             (503, Tone::Danger, Some(Tone::Danger)),
+            // Nonstandard codes are not errors.
+            (600, Tone::Info, None),
         ] {
             let record = ExchangeBuilder::http(Method::GET, "http://example.test/")?
                 .respond(ResponseFixture::new(StatusCode::from_u16(status)?))?;
