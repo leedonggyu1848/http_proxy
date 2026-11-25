@@ -183,3 +183,40 @@ async fn exports_more_than_ui_retention_without_draining_ui_events() -> Result<(
     proxy.stop()?;
     Ok(())
 }
+
+#[tokio::test]
+async fn records_incomplete_tunnel_end_when_proxy_stops() -> Result<(), TestError> {
+    let directory = tempfile::tempdir()?;
+    let log = FullLog::new()?;
+    let upstream = TcpListener::bind("127.0.0.1:0").await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (_stream, _) = upstream.accept().await?;
+        tokio::time::sleep(TEST_TIMEOUT).await;
+        Ok::<_, io::Error>(())
+    });
+
+    let mut proxy = ProxyHandle::start_recording(ProxyConfig::loopback(0), log.clone())?;
+    let mut client = TcpStream::connect(proxy.local_addr()).await?;
+    let connect = format!("CONNECT {upstream_addr} HTTP/1.1\r\nHost: {upstream_addr}\r\n\r\n");
+    client.write_all(connect.as_bytes()).await?;
+    let response = timeout(TEST_TIMEOUT, common::read_headers(&mut client)).await??;
+    assert!(response.starts_with(b"HTTP/1.1 200 OK"));
+    let record = common::next_record(&mut proxy).await?;
+    let id = record.id().value();
+    let http_inspector_exchange::Outcome::Tunnel(preview) = common::settled(&record).await? else {
+        return Err("expected a tunnel record".into());
+    };
+
+    tokio::task::spawn_blocking(move || proxy.stop()).await??;
+    assert_eq!(
+        preview.snapshot().state(),
+        &http_inspector_exchange::TunnelState::Incomplete
+    );
+
+    let journal = export(&log, &directory.path().join("tunnel-stop.log"))?;
+    assert!(journal.contains(&format!("[{id}] Tunnel ended Incomplete")));
+    assert!(log.error().is_none());
+    upstream_task.abort();
+    Ok(())
+}

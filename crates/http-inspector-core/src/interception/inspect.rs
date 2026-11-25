@@ -1,4 +1,4 @@
-use super::capture_context::CaptureContext;
+use super::capture_context::{CaptureContext, TunnelCapture};
 use super::forward::forward_over_stream;
 use super::handle::{ConnectionPermit, Engine, server_builder};
 use super::upstream::{UpstreamFailure, connect_deadline, connect_within, resolve_within};
@@ -8,7 +8,7 @@ use http::header::{HOST, UPGRADE};
 use http::uri::Authority;
 use http::{Method, Request, Response, StatusCode, Uri};
 use http_body_util::BodyExt;
-use http_inspector_exchange::{CaptureSource, FailureStage, Outcome, RecordId, TunnelWriter};
+use http_inspector_exchange::{CaptureSource, FailureStage, Outcome, RecordId};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
@@ -52,15 +52,12 @@ pub(super) async fn connect_tunnel(
     };
     capture.writer.record_connect(connect_started.elapsed());
 
-    let tunnel = TunnelWriter::new();
-    let preview = tunnel.preview();
-    capture.settle(Outcome::Tunnel(preview.clone()));
+    let tunnel = TunnelCapture::start(capture);
     let on_upgrade = hyper::upgrade::on(request);
     tokio::spawn(async move {
         let _permit = permit;
         let client = async { on_upgrade.await.map(TokioIo::new) };
         tunnel::relay(client, upstream, tunnel).await;
-        capture.tunnel_ended(&preview.snapshot());
     });
 
     empty_response(StatusCode::OK)
@@ -126,11 +123,15 @@ async fn run_inspected_connection(
     let upgraded = match timeout(TLS_TIMEOUT, on_upgrade).await {
         Ok(Ok(upgraded)) => upgraded,
         Ok(Err(error)) => {
-            capture.fail(FailureStage::Upgrade, &error.to_string());
+            if !capture.is_stopped() {
+                capture.fail(FailureStage::Upgrade, &error.to_string());
+            }
             return;
         }
         Err(_) => {
-            capture.fail(FailureStage::Upgrade, "CONNECT upgrade timed out");
+            if !capture.is_stopped() {
+                capture.fail(FailureStage::Upgrade, "CONNECT upgrade timed out");
+            }
             return;
         }
     };
