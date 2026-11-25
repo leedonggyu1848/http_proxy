@@ -217,6 +217,10 @@ impl DetailState {
         Ok(())
     }
 
+    pub(super) const fn replay_is_open(&self) -> bool {
+        self.replay.is_some()
+    }
+
     pub(super) fn update_replay(
         &mut self,
         context: &egui::Context,

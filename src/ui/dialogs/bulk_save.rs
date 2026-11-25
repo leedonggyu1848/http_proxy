@@ -90,6 +90,10 @@ impl BulkControls {
         }
     }
 
+    pub(super) const fn is_open(&self) -> bool {
+        self.dialog.is_some()
+    }
+
     /// Shows the dialog and returns the choice once the user confirms it.
     fn show(&mut self, context: &egui::Context, counts: ScopeCounts) -> Option<BulkChoice> {
         let mut choice = self.dialog?;
@@ -97,7 +101,7 @@ impl BulkControls {
         let viewport = context.content_rect();
         let max_width = (viewport.width() - 48.0).clamp(240.0, 460.0);
         let max_scroll_height = (viewport.height() - 140.0).max(120.0);
-        egui::Modal::new(egui::Id::unique("save-bodies")).show(context, |ui| {
+        let modal = egui::Modal::new(egui::Id::unique("save-bodies")).show(context, |ui| {
             ui.set_max_width(max_width);
             ui.heading("Save bodies");
             egui::ScrollArea::vertical()
@@ -105,6 +109,9 @@ impl BulkControls {
                 .show(ui, |ui| choice_options(ui, &mut choice, counts));
             confirmed = confirm_buttons(ui);
         });
+        if modal.should_close() {
+            confirmed = Some(false);
+        }
         match confirmed {
             Some(true) => {
                 self.dialog = None;

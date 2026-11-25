@@ -68,6 +68,7 @@ impl HarDialog {
         context: &egui::Context,
         counts: ScopeCounts,
         busy: bool,
+        escape_enabled: bool,
     ) -> Option<HarExport> {
         if !self.open {
             return None;
@@ -88,7 +89,7 @@ impl HarDialog {
             .collapsible(false)
             .resizable(false)
             .show(context, |ui| confirmed = self.contents(ui, counts, busy));
-        let escaped = context.input(|input| input.key_pressed(egui::Key::Escape));
+        let escaped = escape_enabled && context.input(|input| input.key_pressed(egui::Key::Escape));
         self.open = self.open && open && confirmed.is_none() && !escaped;
         confirmed
     }

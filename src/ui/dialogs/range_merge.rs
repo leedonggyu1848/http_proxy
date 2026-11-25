@@ -99,7 +99,7 @@ fn dialog(context: &egui::Context, plan: &RangePlan) -> Option<bool> {
     let viewport = context.content_rect();
     let max_width = (viewport.width() - 48.0).clamp(240.0, 460.0);
     let max_scroll_height = (viewport.height() - 140.0).max(120.0);
-    egui::Modal::new(egui::Id::unique("merge-ranges")).show(context, |ui| {
+    let modal = egui::Modal::new(egui::Id::unique("merge-ranges")).show(context, |ui| {
         ui.set_max_width(max_width);
         ui.heading("Merge ranges");
         egui::ScrollArea::vertical()
@@ -138,6 +138,9 @@ fn dialog(context: &egui::Context, plan: &RangePlan) -> Option<bool> {
             }
         });
     });
+    if modal.should_close() {
+        return Some(false);
+    }
     choice
 }
 
@@ -213,14 +216,14 @@ impl InspectorApp {
             TaskPoll::Ready(result) => result,
             TaskPoll::Pending => {
                 let mut cancelled = false;
-                egui::Modal::new(egui::Id::unique("plan-ranges")).show(context, |ui| {
+                let modal = egui::Modal::new(egui::Id::unique("plan-ranges")).show(context, |ui| {
                     ui.horizontal(|ui| {
                         ui.spinner();
                         ui.label("Checking the range responses…");
                     });
                     cancelled = ui.button("Cancel").clicked();
                 });
-                if cancelled {
+                if modal.should_close() || cancelled {
                     // The worker finishes on its own; its result is dropped.
                     self.session.body_saving.merge.planning = None;
                 } else {

@@ -113,6 +113,10 @@ impl BodySaving {
         self.pending.is_some() || self.confirmation.is_some() || self.merge.is_open()
     }
 
+    pub(crate) const fn dialog_is_open(&self) -> bool {
+        self.confirmation.is_some() || self.bulk.is_open() || self.merge.is_open()
+    }
+
     /// Opens the `Save bodies…` dialog.
     pub(crate) fn open_bulk(&mut self) {
         self.bulk.open();
@@ -247,7 +251,7 @@ impl BodySaving {
         };
         let mut choice = None;
         let max_width = (ctx.content_rect().width() - 48.0).clamp(240.0, 420.0);
-        egui::Modal::new(egui::Id::unique("confirm-body-save")).show(ctx, |ui| {
+        let modal = egui::Modal::new(egui::Id::unique("confirm-body-save")).show(ctx, |ui| {
             ui.set_max_width(max_width);
             ui.heading("Save body");
             if let Some(reason) = confirmation.incomplete.as_deref() {
@@ -270,13 +274,13 @@ impl BodySaving {
                 }
             });
         });
-        if choice == Some(true)
+        if modal.should_close() || choice == Some(false) {
+            self.confirmation = None;
+        } else if choice == Some(true)
             && let Some(confirmation) = self.confirmation.take()
         {
             self.privacy_acknowledged |= confirmation.show_privacy;
             self.start(confirmation.request);
-        } else if choice == Some(false) {
-            self.confirmation = None;
         }
     }
 
