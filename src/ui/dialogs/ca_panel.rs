@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::SendError;
 use std::time::Duration;
 
 use crate::ui::style::theme::Palette;
@@ -44,6 +45,8 @@ enum CaRegistrationError {
     Io(#[from] std::io::Error),
     #[error("Could not start CA registration: {0}")]
     Start(std::io::Error),
+    #[error(transparent)]
+    PreparedSend(#[from] SendError<()>),
     #[error("CA registration worker stopped")]
     WorkerStopped,
 }
@@ -289,12 +292,10 @@ impl CaPanel {
 fn registration(
     action: Action,
     directory: &Path,
-    report_prepared: impl FnOnce(CaInfo) -> bool,
+    report_prepared: impl FnOnce(CaInfo) -> Result<(), SendError<()>>,
 ) -> Result<Registration, CaRegistrationError> {
     let info = CaInfo::load_or_create(directory)?;
-    if !report_prepared(info.clone()) {
-        return Err(CaRegistrationError::WorkerStopped);
-    }
+    report_prepared(info.clone())?;
     let store = CaTrustStore::for_current_user()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -327,6 +328,24 @@ fn copyable(ui: &mut egui::Ui, label: &str, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registration_displays_the_prepared_send_error_verbatim() -> std::io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        drop(receiver);
+        let error = registration(Action::Check, &directory.path().join("ca"), |info| {
+            sender
+                .send(Event::Prepared(info))
+                .map_err(|_| SendError(()))
+        })
+        .err();
+        assert_eq!(
+            error.map(|error| error.to_string()),
+            Some(SendError(()).to_string())
+        );
+        Ok(())
+    }
 
     #[test]
     fn badge_offers_one_action_that_fits_the_status() {

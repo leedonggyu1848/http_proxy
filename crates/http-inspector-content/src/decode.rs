@@ -17,6 +17,8 @@ pub enum DecodeError {
         #[source]
         source: io::Error,
     },
+    #[error(transparent)]
+    PrefixDecompress(io::Error),
     #[error("Could not decompress the body ({}): {source}", encodings.join(", "))]
     Decompress {
         encodings: Vec<String>,
@@ -97,13 +99,10 @@ pub fn decode_prefix(bytes: &[u8], encodings: &[&str]) -> Result<DecodedPrefix, 
         bytes.get(..=PREVIEW_BYTES).unwrap_or(bytes).to_vec()
     } else {
         let (decoded, error) = read_decoded(bytes, &encodings, PREVIEW_BYTES, INTERMEDIATE_BYTES)
-            .map_err(|source| DecodeError::Init { source })?;
+            .map_err(DecodeError::PrefixDecompress)?;
         match error {
             Some(source) if decoded.is_empty() => {
-                return Err(DecodeError::Decompress {
-                    encodings: encodings.names().map(str::to_owned).collect(),
-                    source,
-                });
+                return Err(DecodeError::PrefixDecompress(source));
             }
             _ => decoded,
         }
@@ -186,9 +185,9 @@ fn text(bytes: &[u8], prefix: bool) -> String {
 #[cfg(test)]
 mod tests {
     use std::error::Error;
-    use std::io::Write;
+    use std::io::{Read, Write};
 
-    use super::{BodyText, PREVIEW_BYTES, decode, decode_complete};
+    use super::{BodyText, PREVIEW_BYTES, decode, decode_complete, decode_prefix};
 
     const EXPECTED: &[u8] = include_bytes!("../../../tests/fixtures/body-preview.json");
     const BROTLI: &[u8] = include_bytes!("../../../tests/fixtures/body-preview.json.br");
@@ -310,6 +309,20 @@ mod tests {
             BodyText::Unavailable(_)
         ));
         Ok(())
+    }
+
+    #[test]
+    fn decode_prefix_displays_the_decoder_error_verbatim() {
+        let bytes = b"invalid gzip";
+        let decoder_error = flate2::read::MultiGzDecoder::new(bytes.as_slice())
+            .read_to_end(&mut Vec::new())
+            .err();
+        assert!(decoder_error.is_some(), "invalid gzip should fail");
+        let error = decode_prefix(bytes, &["gzip"]).err();
+        assert_eq!(
+            error.map(|error| error.to_string()),
+            decoder_error.map(|error| error.to_string())
+        );
     }
 
     #[test]
