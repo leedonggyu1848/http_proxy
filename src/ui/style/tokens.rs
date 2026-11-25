@@ -80,6 +80,8 @@ pub(crate) struct ThemeTokens {
     pub(crate) muted: Color32,
     /// The single accent, kept for selection, focus, and primary actions.
     pub(crate) accent: Color32,
+    /// Text drawn on an `accent` fill, such as a primary button label.
+    pub(crate) on_accent: Color32,
     pub(crate) success: Color32,
     pub(crate) error: Color32,
     pub(crate) warning: Color32,
@@ -111,6 +113,7 @@ const LIGHT: ThemeTokens = ThemeTokens {
     text: Color32::from_rgb(30, 33, 38),
     muted: Color32::from_rgb(84, 90, 100),
     accent: Color32::from_rgb(20, 85, 190),
+    on_accent: Color32::from_rgb(255, 255, 255),
     success: Color32::from_rgb(0, 90, 40),
     error: Color32::from_rgb(160, 15, 25),
     warning: Color32::from_rgb(110, 65, 0),
@@ -138,6 +141,7 @@ const DARK: ThemeTokens = ThemeTokens {
     text: Color32::from_rgb(226, 229, 234),
     muted: Color32::from_rgb(168, 174, 184),
     accent: Color32::from_rgb(125, 178, 255),
+    on_accent: Color32::from_rgb(16, 18, 21),
     success: Color32::from_rgb(140, 240, 170),
     error: Color32::from_rgb(255, 170, 170),
     warning: Color32::from_rgb(255, 220, 130),
@@ -242,6 +246,15 @@ mod tests {
                 let contrast = contrast_ratio(colors.fg, colors.fill);
                 assert!(contrast >= 4.5, "{theme:?} {tone:?}: {contrast}");
             }
+        }
+    }
+
+    #[test]
+    fn primary_action_text_meets_aa_on_the_accent() {
+        for theme in [Theme::Light, Theme::Dark] {
+            let tokens = ThemeTokens::for_theme(theme);
+            let contrast = contrast_ratio(tokens.on_accent, tokens.accent);
+            assert!(contrast >= 4.5, "{theme:?}: {contrast}");
         }
     }
 

@@ -74,13 +74,70 @@ pub fn visible_records<'a>(
     records
         .iter()
         .filter(|record| record_matches(record, filter))
-        .filter(|record| match scope {
-            None => true,
-            Some(ScopeFilter::Cached(ids)) => ids.contains(&record.id()),
-            Some(ScopeFilter::Live(key)) => key.matches_exchange(record),
-        })
-        .filter(|record| search_shows(record.id()))
+        .filter(|record| in_scope(record, scope) && search_shows(record.id()))
         .collect()
+}
+
+/// Number of records each [`RecordFilter`] would show under the same Map
+/// scope and search predicate.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FilterCounts {
+    all: usize,
+    responses: usize,
+    failures: usize,
+    tunnels: usize,
+}
+
+impl FilterCounts {
+    /// Records `filter` would show.
+    #[must_use]
+    pub const fn get(self, filter: RecordFilter) -> usize {
+        match filter {
+            RecordFilter::All => self.all,
+            RecordFilter::Responses => self.responses,
+            RecordFilter::Failures => self.failures,
+            RecordFilter::Tunnels => self.tunnels,
+        }
+    }
+
+    const fn slot(&mut self, filter: RecordFilter) -> &mut usize {
+        match filter {
+            RecordFilter::All => &mut self.all,
+            RecordFilter::Responses => &mut self.responses,
+            RecordFilter::Failures => &mut self.failures,
+            RecordFilter::Tunnels => &mut self.tunnels,
+        }
+    }
+}
+
+/// Counts the records every outcome filter would show, so that the choice of
+/// filter can display its result before it is picked.
+#[must_use]
+pub fn filter_counts(
+    records: &RecordList<Exchange>,
+    scope: Option<ScopeFilter<'_>>,
+    mut search_shows: impl FnMut(RecordId) -> bool,
+) -> FilterCounts {
+    let mut counts = FilterCounts::default();
+    for record in records
+        .iter()
+        .filter(|record| in_scope(record, scope) && search_shows(record.id()))
+    {
+        for filter in RecordFilter::ALL {
+            if record_matches(record, filter) {
+                *counts.slot(filter) += 1;
+            }
+        }
+    }
+    counts
+}
+
+fn in_scope(record: &Exchange, scope: Option<ScopeFilter<'_>>) -> bool {
+    match scope {
+        None => true,
+        Some(ScopeFilter::Cached(ids)) => ids.contains(&record.id()),
+        Some(ScopeFilter::Live(key)) => key.matches_exchange(record),
+    }
 }
 
 #[cfg(test)]
@@ -188,6 +245,34 @@ mod tests {
         .map(Exchange::id)
         .collect();
         assert_eq!(cached_filtered, vec![u1]);
+        Ok(())
+    }
+
+    #[test]
+    fn filter_counts_match_the_rows_each_filter_shows() -> TestResult {
+        let ok = ExchangeBuilder::http(Method::GET, "http://api.example.test/api/users/1")?
+            .respond(ResponseFixture::new(StatusCode::OK))?;
+        let failed = ExchangeBuilder::http(Method::GET, "http://api.example.test/api/users/2")?
+            .fail(FailureStage::Connect, "refused")?;
+        let tunnel =
+            ExchangeBuilder::connect("api.example.test:443").tunnel(4, 5, TunnelState::Closed)?;
+        let hidden = ExchangeBuilder::http(Method::GET, "http://api.example.test/hidden")?
+            .respond(ResponseFixture::new(StatusCode::OK))?;
+        let hidden_id = hidden.id();
+        let mut list = RecordList::new(8);
+        for record in [ok, failed, tunnel, hidden] {
+            let _ = list.push(record);
+        }
+
+        let counts = filter_counts(&list, None, |id| id != hidden_id);
+        for filter in RecordFilter::ALL {
+            let shown = visible_records(&list, filter, None, |id| id != hidden_id).len();
+            assert_eq!(counts.get(filter), shown, "{filter:?}");
+        }
+        assert_eq!(counts.get(RecordFilter::All), 3);
+        assert_eq!(counts.get(RecordFilter::Responses), 1);
+        assert_eq!(counts.get(RecordFilter::Failures), 1);
+        assert_eq!(counts.get(RecordFilter::Tunnels), 1);
         Ok(())
     }
 }

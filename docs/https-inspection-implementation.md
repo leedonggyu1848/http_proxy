@@ -4,7 +4,7 @@
 
 ## 모드와 CA 신뢰 설정
 
-기본 모드는 TCP 터널이다. 사용자는 프록시를 멈춘 뒤 **Decrypt HTTPS**를 켜고 다시 시작한다. 프록시의 복호화 모드는 시작할 때 정해진다.
+기본 모드는 TCP 터널이다. 사용자는 상단 바 HTTPS 설정 패널의 **Turn on**(프록시가 실행 중이면 **Restart with decryption**)으로 복호화를 켠다. 프록시의 복호화 모드는 시작할 때 정해지므로, 실행 중이면 앱이 프록시를 멈추고 같은 포트로 다시 시작한다.
 
 `http_inspector_core::interception::ProxyConfig::with_https_inspection`에 `http_inspector_core::https::HttpsInspection`을 전달하면 복호화 모드를 사용한다. `HttpsInspection`은 CA 디렉터리와 선택적 업스트림 루트 인증서 경로를 받는다. `ProxyHandle::ca_info`로 공개 인증서 경로와 SHA-256 지문을 읽는다.
 

@@ -4,21 +4,25 @@ use std::time::Duration;
 
 use crate::ui::style::theme::Palette;
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 use http_inspector_core::https::{
     CaInfo, CaTrustError, CaTrustStatus, CaTrustStore, HttpsSetupError,
 };
 
 use super::background_task::{BackgroundTask, TaskPoll};
 
+/// The app CA: whether it exists, its registration in the user's trust
+/// store, and the background task that creates, checks, or changes it.
 #[derive(Default)]
 pub(crate) struct CaPanel {
     info: Option<CaInfo>,
     registration: Option<Registration>,
     pending: Option<BackgroundTask<Event>>,
-    pending_action: Option<Action>,
+    pending_action: Option<CaAction>,
     error: Option<String>,
     notice: Option<&'static str>,
+    /// Whether the CA files exist, cached until [`Self::refresh`].
+    present: Option<bool>,
     checked: bool,
 }
 
@@ -28,8 +32,9 @@ struct Registration {
     status: CaTrustStatus,
 }
 
+/// Work the CA task can do. `Check` also creates a missing CA.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Action {
+pub(crate) enum CaAction {
     Check,
     Install,
     Remove,
@@ -53,174 +58,153 @@ enum CaRegistrationError {
 
 enum Event {
     Prepared(CaInfo),
-    Finished(Action, Result<Registration, CaRegistrationError>),
+    Finished(CaAction, Result<Registration, CaRegistrationError>),
 }
 
-/// Registration state shown as one colored word in the toolbar.
+/// Where the app CA stands, from storage to trust.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Badge {
-    Busy(Action),
+pub(crate) enum CaState {
+    /// No data directory to keep a CA in.
+    StorageUnavailable,
+    /// No CA files yet; `failed` when the last attempt to create one failed.
+    Missing { failed: bool },
+    /// The CA is being created.
+    Creating,
+    /// The CA exists; its trust store registration is described.
+    Present(RegistrationState),
+}
+
+/// Registration of an existing CA in the user's trust store.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RegistrationState {
+    Busy(CaAction),
     Unknown,
     Failed,
     Status(CaTrustStatus),
 }
 
-impl Badge {
-    const fn text(self) -> &'static str {
+impl RegistrationState {
+    /// Short present-tense description, such as `Registering…`.
+    pub(crate) const fn text(self) -> &'static str {
         match self {
-            Self::Busy(Action::Check) => "Checking…",
-            Self::Busy(Action::Install) => "Registering…",
-            Self::Busy(Action::Remove) => "Removing…",
-            Self::Unknown => "● Not checked",
-            Self::Failed => "● Error",
-            Self::Status(CaTrustStatus::NotInstalled) => "● Not registered",
-            Self::Status(CaTrustStatus::Trusted) => "● Trusted",
-            Self::Status(CaTrustStatus::Untrusted) => "● Registered, not trusted",
-        }
-    }
-
-    const fn color(self, palette: &Palette) -> Color32 {
-        match self {
-            Self::Busy(_) | Self::Unknown => palette.muted,
-            Self::Status(CaTrustStatus::Trusted) => palette.success,
-            Self::Status(CaTrustStatus::NotInstalled) => palette.warning,
-            Self::Failed | Self::Status(CaTrustStatus::Untrusted) => palette.error,
-        }
-    }
-
-    /// The one action the summary offers for this state, if any.
-    const fn primary(self) -> Option<Action> {
-        match self {
-            Self::Busy(_) => None,
-            Self::Status(CaTrustStatus::Trusted) => Some(Action::Remove),
-            Self::Unknown | Self::Failed | Self::Status(_) => Some(Action::Install),
+            Self::Busy(CaAction::Check) => "Checking…",
+            Self::Busy(CaAction::Install) => "Registering…",
+            Self::Busy(CaAction::Remove) => "Removing…",
+            Self::Unknown => "Not checked",
+            Self::Failed => "Error",
+            Self::Status(CaTrustStatus::NotInstalled) => "Not registered",
+            Self::Status(CaTrustStatus::Trusted) => "Trusted",
+            Self::Status(CaTrustStatus::Untrusted) => "Registered, not trusted",
         }
     }
 }
 
-const REGISTER_HELP: &str = "Trust the public CA for HTTPS in Chrome/Chromium for your current user. \
+pub(crate) const REGISTER_HELP: &str = "Trust the public CA for HTTPS in Chrome/Chromium for your current user. \
      Other browsers and apps may require separate CA registration.";
 
 #[cfg(target_os = "macos")]
 const KEYCHAIN_HELP: &str = "macOS may request authorization. Approve the keychain dialog; cancellation leaves registration incomplete.";
 
 impl CaPanel {
+    /// Forgets cached CA facts so that they are read again when next needed.
     pub(crate) const fn refresh(&mut self) {
         self.checked = false;
+        self.present = None;
     }
 
-    const fn badge(&self) -> Badge {
-        match (self.pending_action, &self.registration, &self.error) {
-            (Some(action), _, _) => Badge::Busy(action),
-            (None, Some(registration), _) => Badge::Status(registration.status),
-            (None, None, Some(_)) => Badge::Failed,
-            (None, None, None) => Badge::Unknown,
-        }
-    }
-
-    /// Shows the registration badge, the action that fits it, and a
-    /// `CA details` menu, inline in the toolbar.
-    pub(crate) fn summary(&mut self, ui: &mut egui::Ui, directory: Option<&Path>) {
+    /// Receives task results and, when `wanted`, checks the registration of
+    /// an existing CA once. With `create`, a missing CA is created too, as
+    /// turning on decryption does.
+    pub(crate) fn update(
+        &mut self,
+        directory: Option<&Path>,
+        wanted: bool,
+        create: bool,
+        context: &egui::Context,
+    ) {
         self.receive();
-        let palette = Palette::of(ui);
         let Some(directory) = directory else {
-            ui.colored_label(palette.error, "● CA storage unavailable")
-                .on_hover_text("Check HOME and platform storage settings.");
             return;
         };
-        if !self.checked && self.pending_action.is_none() {
-            self.start(Action::Check, directory, ui.ctx());
+        if self.pending.is_some() {
+            context.request_repaint_after(Duration::from_millis(100));
+            return;
+        }
+        let present = *self
+            .present
+            .get_or_insert_with(|| CaInfo::exists(directory));
+        if !self.checked && (create || (wanted && present)) {
+            self.start(CaAction::Check, directory, context);
             self.checked = true;
         }
-
-        let badge = self.badge();
-        ui.label("CA");
-        if matches!(badge, Badge::Busy(_)) {
-            ui.spinner();
-            ui.ctx().request_repaint_after(Duration::from_millis(100));
-        }
-        let badge_button =
-            egui::Button::new(RichText::new(badge.text()).color(badge.color(&palette)))
-                .frame(false);
-        if ui
-            .add_enabled(!matches!(badge, Badge::Busy(_)), badge_button)
-            .on_hover_text("CA registration status. Click to check again.")
-            .clicked()
-        {
-            self.start(Action::Check, directory, ui.ctx());
-        }
-        match badge.primary() {
-            Some(Action::Install) => {
-                if ui
-                    .button("Register CA")
-                    .on_hover_text(REGISTER_HELP)
-                    .clicked()
-                {
-                    self.start(Action::Install, directory, ui.ctx());
-                }
-            }
-            Some(Action::Remove) => {
-                if ui
-                    .small_button("Remove CA")
-                    .on_hover_text("Remove the CA that HTTP Inspector registered.")
-                    .clicked()
-                {
-                    self.start(Action::Remove, directory, ui.ctx());
-                }
-            }
-            Some(Action::Check) | None => {}
-        }
-        ui.menu_button("CA details", |ui| self.details(ui, directory));
     }
 
-    /// Paths, fingerprint, and less frequent actions, shown only on request.
-    fn details(&mut self, ui: &mut egui::Ui, directory: &Path) {
-        let viewport = ui.ctx().content_rect();
-        let max_width = (viewport.width() - 32.0).clamp(240.0, 560.0);
-        let max_height = (viewport.height() - 80.0).max(160.0);
-        ui.set_max_width(max_width);
+    /// The CA state for `directory`, the configured CA directory.
+    pub(crate) const fn state(&self, directory: Option<&Path>) -> CaState {
+        if directory.is_none() {
+            return CaState::StorageUnavailable;
+        }
+        let present = matches!(self.present, Some(true)) || self.info.is_some();
+        match (
+            present,
+            self.pending_action,
+            &self.registration,
+            &self.error,
+        ) {
+            (false, Some(_), _, _) => CaState::Creating,
+            (false, None, _, error) => CaState::Missing {
+                failed: error.is_some(),
+            },
+            (true, Some(action), _, _) => CaState::Present(RegistrationState::Busy(action)),
+            (true, None, Some(registration), _) => {
+                CaState::Present(RegistrationState::Status(registration.status))
+            }
+            (true, None, None, Some(_)) => CaState::Present(RegistrationState::Failed),
+            (true, None, None, None) => CaState::Present(RegistrationState::Unknown),
+        }
+    }
+
+    /// Trust store that registration changes, for example `NSS database`.
+    pub(crate) fn trust_store(&self) -> &'static str {
+        self.registration
+            .as_ref()
+            .map_or(CaTrustStore::DESCRIPTION, |registration| {
+                registration.target
+            })
+    }
+
+    /// Paths and fingerprint of the CA, shown on request in the HTTPS panel.
+    pub(crate) fn details(&self, ui: &mut egui::Ui, directory: &Path) {
         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-            egui::ScrollArea::vertical()
-                .max_height(max_height)
-                .show(ui, |ui| {
-                    copyable(
-                        ui,
-                        "Public CA certificate",
-                        &directory.join("root-ca.pem").display().to_string(),
-                    );
-                    if let Some(info) = &self.info {
-                        copyable(ui, "SHA-256 fingerprint", info.fingerprint_sha256());
-                    }
-                    if let Some(registration) = &self.registration {
-                        copyable(
-                            ui,
-                            &format!("Trust store: {}", registration.target),
-                            &registration.location.display().to_string(),
-                        );
-                    }
-                    ui.separator();
-                    ui.weak(REGISTER_HELP);
-                    #[cfg(target_os = "macos")]
-                    ui.weak(KEYCHAIN_HELP);
-                    ui.add_enabled_ui(self.pending_action.is_none(), |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            if ui.button("Check registration").clicked() {
-                                self.start(Action::Check, directory, ui.ctx());
-                            }
-                            let registered =
-                                self.registration.as_ref().is_some_and(|registration| {
-                                    registration.status != CaTrustStatus::NotInstalled
-                                });
-                            if ui
-                                .add_enabled(registered, egui::Button::new("Remove CA"))
-                                .clicked()
-                            {
-                                self.start(Action::Remove, directory, ui.ctx());
-                            }
-                        });
-                    });
-                });
+            copyable(
+                ui,
+                "Public CA certificate",
+                &directory.join("root-ca.pem").display().to_string(),
+            );
+            if let Some(info) = &self.info {
+                copyable(ui, "SHA-256 fingerprint", info.fingerprint_sha256());
+            }
+            if let Some(registration) = &self.registration {
+                copyable(
+                    ui,
+                    &format!("Trust store: {}", registration.target),
+                    &registration.location.display().to_string(),
+                );
+            }
+            ui.weak(REGISTER_HELP);
+            #[cfg(target_os = "macos")]
+            ui.weak(KEYCHAIN_HELP);
         });
+    }
+
+    /// The last CA error, if the last task failed.
+    pub(crate) fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    /// Follow-up guidance after the last registration change.
+    pub(crate) const fn notice(&self) -> Option<&'static str> {
+        self.notice
     }
 
     /// Errors and follow-up guidance shown right below the toolbar so they
@@ -231,7 +215,10 @@ impl CaPanel {
             ui.colored_label(palette.error, format!("CA: {error}"));
         }
         #[cfg(target_os = "macos")]
-        if matches!(self.pending_action, Some(Action::Install | Action::Remove)) {
+        if matches!(
+            self.pending_action,
+            Some(CaAction::Install | CaAction::Remove)
+        ) {
             ui.colored_label(palette.info, KEYCHAIN_HELP);
         }
         if let Some(notice) = self.notice {
@@ -239,7 +226,7 @@ impl CaPanel {
         }
     }
 
-    fn start(&mut self, action: Action, directory: &Path, context: &egui::Context) {
+    pub(crate) fn start(&mut self, action: CaAction, directory: &Path, context: &egui::Context) {
         if self.pending.is_some() {
             return;
         }
@@ -267,21 +254,25 @@ impl CaPanel {
         let (action, result) = match task.poll() {
             TaskPoll::Ready(Ok(Event::Prepared(info))) => {
                 self.info = Some(info);
+                self.present = Some(true);
                 return true;
             }
             TaskPoll::Ready(Ok(Event::Finished(action, result))) => (action, result),
             TaskPoll::Pending => return false,
-            TaskPoll::Ready(Err(error)) => (Action::Check, Err(CaRegistrationError::Start(error))),
-            TaskPoll::Disconnected => (Action::Check, Err(CaRegistrationError::WorkerStopped)),
+            TaskPoll::Ready(Err(error)) => {
+                (CaAction::Check, Err(CaRegistrationError::Start(error)))
+            }
+            TaskPoll::Disconnected => (CaAction::Check, Err(CaRegistrationError::WorkerStopped)),
         };
         self.pending = None;
         self.pending_action = None;
+        self.present = None;
         match result {
             Ok(registration) => {
                 self.registration = Some(registration);
                 self.notice = match action {
-                    Action::Check => None,
-                    Action::Install | Action::Remove => {
+                    CaAction::Check => None,
+                    CaAction::Install | CaAction::Remove => {
                         Some("Restart Chrome/Chromium after changing CA registration.")
                     }
                 };
@@ -293,7 +284,7 @@ impl CaPanel {
 }
 
 fn registration(
-    action: Action,
+    action: CaAction,
     directory: &Path,
     report_prepared: impl FnOnce(CaInfo) -> Result<(), SendError<()>>,
 ) -> Result<Registration, CaRegistrationError> {
@@ -305,9 +296,9 @@ fn registration(
         .build()?;
     let status = runtime.block_on(async {
         match action {
-            Action::Check => store.status(&info).await,
-            Action::Install => store.install(&info).await,
-            Action::Remove => store.remove(&info).await,
+            CaAction::Check => store.status(&info).await,
+            CaAction::Install => store.install(&info).await,
+            CaAction::Remove => store.remove(&info).await,
         }
     })?;
     Ok(Registration {
@@ -337,7 +328,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let (sender, receiver) = std::sync::mpsc::channel();
         drop(receiver);
-        let error = registration(Action::Check, &directory.path().join("ca"), |info| {
+        let error = registration(CaAction::Check, &directory.path().join("ca"), |info| {
             sender
                 .send(Event::Prepared(info))
                 .map_err(|_| SendError(()))
@@ -351,35 +342,47 @@ mod tests {
     }
 
     #[test]
-    fn badge_offers_one_action_that_fits_the_status() {
-        assert_eq!(Badge::Busy(Action::Check).primary(), None);
-        assert_eq!(Badge::Unknown.primary(), Some(Action::Install));
-        assert_eq!(Badge::Failed.primary(), Some(Action::Install));
-        for (status, action) in [
-            (CaTrustStatus::NotInstalled, Action::Install),
-            (CaTrustStatus::Untrusted, Action::Install),
-            (CaTrustStatus::Trusted, Action::Remove),
-        ] {
-            assert_eq!(Badge::Status(status).primary(), Some(action));
-        }
-    }
-
-    #[test]
-    fn badge_colors_follow_severity() {
-        let palette = Palette::for_theme(crate::ui::style::theme::Theme::Dark);
+    fn state_follows_storage_files_task_and_registration() {
+        let directory = Path::new("/nonexistent/http-inspector-ca");
+        let mut panel = CaPanel::default();
+        assert_eq!(panel.state(None), CaState::StorageUnavailable);
         assert_eq!(
-            Badge::Status(CaTrustStatus::Trusted).color(&palette),
-            palette.success
+            panel.state(Some(directory)),
+            CaState::Missing { failed: false }
         );
+        panel.pending_action = Some(CaAction::Check);
+        assert_eq!(panel.state(Some(directory)), CaState::Creating);
+        panel.pending_action = None;
+        panel.error = Some("unsafe directory".to_owned());
         assert_eq!(
-            Badge::Status(CaTrustStatus::NotInstalled).color(&palette),
-            palette.warning
+            panel.state(Some(directory)),
+            CaState::Missing { failed: true }
         );
+        panel.present = Some(true);
         assert_eq!(
-            Badge::Status(CaTrustStatus::Untrusted).color(&palette),
-            palette.error
+            panel.state(Some(directory)),
+            CaState::Present(RegistrationState::Failed)
         );
-        assert_eq!(Badge::Failed.color(&palette), palette.error);
+        panel.error = None;
+        assert_eq!(
+            panel.state(Some(directory)),
+            CaState::Present(RegistrationState::Unknown)
+        );
+        panel.pending_action = Some(CaAction::Install);
+        assert_eq!(
+            panel.state(Some(directory)),
+            CaState::Present(RegistrationState::Busy(CaAction::Install))
+        );
+        panel.pending_action = None;
+        panel.registration = Some(Registration {
+            target: "NSS database",
+            location: PathBuf::from("/nonexistent/nssdb"),
+            status: CaTrustStatus::Trusted,
+        });
+        assert_eq!(
+            panel.state(Some(directory)),
+            CaState::Present(RegistrationState::Status(CaTrustStatus::Trusted))
+        );
     }
 
     fn collect_text_shapes(shapes: &[egui::Shape], out: &mut Vec<(String, bool)>) {
@@ -396,7 +399,7 @@ mod tests {
 
     #[test]
     fn details_popup_text_is_not_justified_inside_menu_layout() {
-        let mut panel = CaPanel {
+        let panel = CaPanel {
             registration: Some(Registration {
                 target: "NSS database",
                 location: PathBuf::from(

@@ -2,9 +2,8 @@ mod state;
 
 use std::time::Duration;
 
-use self::state::{
-    DetailState, Dialogs, LayoutState, MainView, MapState, RequestsState, SessionState,
-};
+pub(super) use self::state::MainView;
+use self::state::{DetailState, Dialogs, LayoutState, MapState, RequestsState, SessionState};
 use crate::ui::dialogs::har_dialog;
 use crate::ui::map::{MapAction, MapExportFormat, MapSubView};
 use crate::ui::style::fonts;
@@ -182,10 +181,9 @@ impl InspectorApp {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let top = ui.cursor().top();
-                self.toolbar(ui);
+                self.top_bar(ui);
                 self.notices(ui);
                 ui.separator();
-                self.view_switcher(ui);
                 match self.layout.main_view {
                     MainView::Requests => {
                         self.filters(ui);
@@ -228,19 +226,6 @@ impl InspectorApp {
         } else if self.session.proxy.is_some() {
             ui.ctx().request_repaint_after(IDLE_REPAINT);
         }
-    }
-
-    fn view_switcher(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            let req_label = format!("Requests ({})", self.requests.records.len());
-            ui.selectable_value(&mut self.layout.main_view, MainView::Requests, req_label);
-            let map_label = format!(
-                "Map ({} hosts · {} nodes)",
-                self.map.analysis.url_map().origins().len(),
-                self.map.analysis.url_map().node_count()
-            );
-            ui.selectable_value(&mut self.layout.main_view, MainView::Map, map_label);
-        });
     }
 
     fn handle_map_action(&mut self, ctx: &egui::Context, action: MapAction) {
@@ -526,7 +511,7 @@ mod layout_tests {
         MainView, MapState, RequestsState, SessionState, fonts, main_height, split_detail_width,
     };
     use crate::ui::detail::detail_tabs::DetailTab;
-    use crate::ui::dialogs::{body_saving::BodySaving, har_dialog, replay_panel};
+    use crate::ui::dialogs::{body_saving::BodySaving, har_dialog, https_steps, replay_panel};
     use crate::ui::requests::toolbar::PortChoice;
     use eframe::egui;
     use http_inspector_analysis::url_map::UrlMap;
@@ -1277,6 +1262,139 @@ mod layout_tests {
 
         press_key(&mut app, size, &mut time, egui::Key::Escape);
         assert!(!app.dialogs.har.is_open());
+    }
+
+    fn accessible(output: &egui::FullOutput) -> Vec<(egui::Role, String, Option<bool>)> {
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .map_or_else(Vec::new, |tree| {
+                tree.nodes
+                    .iter()
+                    .filter_map(|(_, node)| {
+                        node.label().map(|label| {
+                            (
+                                node.role(),
+                                label.to_owned(),
+                                crate::ui::style::controls::tests::checked(node),
+                            )
+                        })
+                    })
+                    .collect()
+            })
+    }
+
+    #[test]
+    fn top_bar_checklist_and_https_panel_are_named_and_keyboard_safe() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = test_app(context);
+        let mut time = 0.05;
+        let output = run_app_frame(&mut app, DEFAULT_WINDOW, time, Vec::new());
+        let nodes = accessible(&output);
+        for expected in [
+            (egui::Role::Tab, "Requests (0)", Some(true)),
+            (egui::Role::Tab, "Map (0 hosts)", Some(false)),
+            (egui::Role::RadioButton, "All (0)", Some(true)),
+            (egui::Role::RadioButton, "Failures (0)", Some(false)),
+        ] {
+            assert!(
+                nodes.contains(&(expected.0, expected.1.to_owned(), expected.2)),
+                "missing {expected:?} in {nodes:?}"
+            );
+        }
+        let named = |role: egui::Role, label: &str| {
+            nodes.iter().any(|node| node.0 == role && node.1 == label)
+        };
+        assert!(named(egui::Role::Button, "HTTPS off. HTTPS setup"));
+        assert!(named(egui::Role::Button, "Set up HTTPS…"));
+        // The stopped proxy offers Start in the top bar and in the checklist.
+        assert_eq!(
+            nodes
+                .iter()
+                .filter(|node| node.0 == egui::Role::Button && node.1 == "Start")
+                .count(),
+            2
+        );
+        assert!(find_galley(&output.shapes, "Start capturing").is_some());
+
+        // The checklist opens the HTTPS steps; while they are open, list
+        // shortcuts stay off and Escape closes them.
+        egui::Popup::open_id(&app.context, https_steps::panel_id());
+        // A new popup measures itself invisibly in its first frame.
+        let mut output = run_app_frame(&mut app, DEFAULT_WINDOW, time, Vec::new());
+        for _ in 0..2 {
+            time += 0.05;
+            output = run_app_frame(&mut app, DEFAULT_WINDOW, time, Vec::new());
+        }
+        for text in [
+            "HTTPS setup",
+            "Create the CA",
+            "Register the CA",
+            "Turn on decryption",
+        ] {
+            assert!(
+                find_galley(&output.shapes, text).is_some(),
+                "missing {text}"
+            );
+        }
+        assert!(find_galley(&output.shapes, "no app data folder").is_some());
+        assert!(!super::request_shortcuts_allowed(&app.context));
+        press_key(&mut app, DEFAULT_WINDOW, &mut time, egui::Key::Escape);
+        assert!(!egui::Popup::is_id_open(
+            &app.context,
+            https_steps::panel_id()
+        ));
+    }
+
+    #[test]
+    fn turning_decryption_on_while_stopped_keeps_the_proxy_stopped() {
+        let mut app = test_app(egui::Context::default());
+        let context = app.context.clone();
+        app.set_decryption(&context, true);
+        assert!(app.session.https_inspection);
+        assert!(app.session.proxy.is_none());
+        assert_eq!(
+            app.dialogs.authorization_notice,
+            crate::ui::requests::toolbar::AuthorizationNotice::Showing
+        );
+        app.set_decryption(&context, false);
+        assert!(!app.session.https_inspection);
+    }
+
+    #[test]
+    fn restarting_for_decryption_keeps_the_running_port() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut app = test_app(egui::Context::default());
+        let context = app.context.clone();
+        app.session.start_proxy(&context);
+        let port = app
+            .session
+            .proxy
+            .as_ref()
+            .map(|proxy| proxy.local_addr().port())
+            .ok_or("proxy did not start")?;
+        // Without a CA directory decryption cannot start, so the restart
+        // reports why and leaves the proxy stopped.
+        app.set_decryption(&context, true);
+        assert!(app.session.proxy.is_none());
+        assert!(
+            app.session
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("application data directory"))
+        );
+        app.set_decryption(&context, false);
+        app.session.restart_proxy(&context, port);
+        let restarted = app
+            .session
+            .proxy
+            .as_ref()
+            .map(|proxy| proxy.local_addr().port());
+        assert_eq!(restarted, Some(port));
+        app.stop_proxy();
+        Ok(())
     }
 
     #[test]

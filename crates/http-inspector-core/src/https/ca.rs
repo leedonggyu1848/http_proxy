@@ -36,6 +36,14 @@ impl CaInfo {
         CertificateAuthority::load_or_create(directory).map(|ca| ca.info)
     }
 
+    /// Reports whether `directory` already holds CA files, without creating,
+    /// reading, or validating them. A partial pair counts as present so that
+    /// [`Self::load_or_create`] reports it instead of silently replacing it.
+    #[must_use]
+    pub fn exists(directory: &Path) -> bool {
+        directory.join(IDENTITY_FILE).exists() || directory.join(CERTIFICATE_FILE).exists()
+    }
+
     /// Returns the certificate-only PEM path that clients can trust.
     #[must_use]
     pub fn certificate_path(&self) -> &Path {
@@ -370,8 +378,12 @@ mod tests {
     fn rejects_incomplete_ca_identity_without_overwriting() -> Result<(), Box<dyn Error>> {
         let root = tempfile::tempdir()?;
         let ca_dir = root.path().join("ca");
+        assert!(!CaInfo::exists(&ca_dir));
         let first = CaInfo::load_or_create(&ca_dir)?;
+        assert!(CaInfo::exists(&ca_dir));
         fs::remove_file(first.certificate_path())?;
+        // A partial pair still counts, so the UI offers no fresh CA over it.
+        assert!(CaInfo::exists(&ca_dir));
 
         assert!(matches!(
             CaInfo::load_or_create(&ca_dir),

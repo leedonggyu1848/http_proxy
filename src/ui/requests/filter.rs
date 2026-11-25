@@ -3,7 +3,7 @@
 
 use eframe::egui;
 use http_inspector_analysis::filter::{
-    self as analysis_filter, RecordFilter, RecordList, ScopeFilter,
+    self as analysis_filter, FilterCounts, RecordFilter, RecordList, ScopeFilter,
 };
 use http_inspector_analysis::url_map::RequestScope;
 use http_inspector_exchange::Exchange;
@@ -11,20 +11,17 @@ use http_inspector_exchange::Exchange;
 use crate::ui::InspectorApp;
 use crate::ui::detail::search::RequestSearch;
 use crate::ui::map::RecordMatchCache;
+use crate::ui::style::controls::count_chip;
 use crate::ui::style::theme::Palette;
+use crate::ui::style::tokens::Space;
 
 impl InspectorApp {
     /// Filter, list options, and Clear, shown right above the request list.
     pub(crate) fn filters(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             self.requests.search.controls(ui);
-            egui::ComboBox::from_id_salt("record-filter")
-                .selected_text(self.requests.record_filter.label())
-                .show_ui(ui, |ui| {
-                    for filter in RecordFilter::ALL {
-                        ui.selectable_value(&mut self.requests.record_filter, filter, filter.label());
-                    }
-                });
+            ui.add_space(Space::SM);
+            self.outcome_chips(ui);
             self.requests.table.controls(ui);
             if ui
                 .button("Clear")
@@ -38,6 +35,20 @@ impl InspectorApp {
         });
         self.map_filter_banner(ui);
         self.requests.search.status(ui);
+    }
+
+    /// One chip per outcome filter with the number of rows it would show
+    /// under the current search and Map filter.
+    fn outcome_chips(&mut self, ui: &mut egui::Ui) {
+        let counts = self.requests.filter_counts();
+        for filter in RecordFilter::ALL {
+            let selected = self.requests.record_filter == filter;
+            let response = count_chip(ui, selected, filter.label(), counts.get(filter))
+                .on_hover_text(filter_help(filter));
+            if response.clicked() {
+                self.requests.record_filter = filter;
+            }
+        }
     }
 
     fn map_filter_banner(&mut self, ui: &mut egui::Ui) {
@@ -109,16 +120,13 @@ impl InspectorApp {
             requests.map_path_filter.as_ref(),
             Some(&requests.map_filter_cache),
         );
+        if requests.records.is_empty() {
+            self.start_checklist(ui);
+            return;
+        }
         if rows.is_empty() {
-            let message = empty_list_text(
-                requests.records.len(),
-                self.session
-                    .proxy
-                    .as_ref()
-                    .map(http_inspector_core::interception::ProxyHandle::local_addr),
-            );
             ui.centered_and_justified(|ui| {
-                ui.add(egui::Label::new(egui::RichText::new(message).weak()).wrap());
+                ui.add(egui::Label::new(egui::RichText::new(NO_MATCH).weak()).wrap());
             });
             return;
         }
@@ -159,6 +167,18 @@ fn map_retention_label(retained: usize, evicted: u64, approximate: bool) -> Stri
     }
 }
 
+/// What each outcome chip shows.
+const fn filter_help(filter: RecordFilter) -> &'static str {
+    match filter {
+        RecordFilter::All => "Every captured request",
+        RecordFilter::Responses => "Requests that received an HTTP response",
+        RecordFilter::Failures => {
+            "Requests that failed, were cancelled, or stopped before completing"
+        }
+        RecordFilter::Tunnels => "HTTPS CONNECT tunnels and decrypted HTTPS sessions",
+    }
+}
+
 /// Records that match the outcome filter, optional Map node prefix, and search, in arrival order.
 pub(crate) fn visible_records<'a>(
     records: &'a RecordList<Exchange>,
@@ -167,24 +187,34 @@ pub(crate) fn visible_records<'a>(
     map_filter: Option<&RequestScope>,
     map_cache: Option<&RecordMatchCache>,
 ) -> Vec<&'a Exchange> {
-    let scope = map_filter.map(|key| {
-        map_cache
-            .and_then(|cache| cache.fresh_ids(key, records))
-            .map_or(ScopeFilter::Live(key), ScopeFilter::Cached)
-    });
+    let scope = map_filter.map(|key| scope_filter(records, key, map_cache));
     analysis_filter::visible_records(records, filter, scope, |id| search.shows(id))
 }
 
-/// Tells the user what to do next when the list shows no rows.
-fn empty_list_text(captured: usize, proxy: Option<std::net::SocketAddr>) -> String {
-    match proxy {
-        _ if captured > 0 => "No requests match the filter.".to_owned(),
-        Some(address) => format!(
-            "No requests yet.\nSet your client's HTTP proxy to http://{address} or use Open Browser."
-        ),
-        None => "The proxy is stopped. Press Start to capture requests.".to_owned(),
-    }
+/// Rows each outcome filter would show under the same search and Map filter.
+pub(crate) fn outcome_counts(
+    records: &RecordList<Exchange>,
+    search: &RequestSearch,
+    map_filter: Option<&RequestScope>,
+    map_cache: Option<&RecordMatchCache>,
+) -> FilterCounts {
+    let scope = map_filter.map(|key| scope_filter(records, key, map_cache));
+    analysis_filter::filter_counts(records, scope, |id| search.shows(id))
 }
+
+/// The Map scope as a filter, using the cached matches while they are fresh.
+fn scope_filter<'a>(
+    records: &RecordList<Exchange>,
+    key: &'a RequestScope,
+    map_cache: Option<&'a RecordMatchCache>,
+) -> ScopeFilter<'a> {
+    map_cache
+        .and_then(|cache| cache.fresh_ids(key, records))
+        .map_or(ScopeFilter::Live(key), ScopeFilter::Cached)
+}
+
+/// Shown when requests were captured but none matches the filters.
+const NO_MATCH: &str = "No requests match the filter.";
 
 #[cfg(test)]
 mod tests {
@@ -213,14 +243,6 @@ mod tests {
             "(5 retained · 2 older removed)"
         );
         assert_eq!(map_retention_label(5, 0, false), "(5 matching)");
-    }
-
-    #[test]
-    fn empty_list_explains_the_next_step() {
-        let address = std::net::SocketAddr::from(([127, 0, 0, 1], 18080));
-        assert!(empty_list_text(0, Some(address)).contains("http://127.0.0.1:18080"));
-        assert!(empty_list_text(0, None).contains("Start"));
-        assert!(empty_list_text(3, Some(address)).contains("match the filter"));
     }
 
     #[test]

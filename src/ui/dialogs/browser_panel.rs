@@ -2,7 +2,9 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
 
-use eframe::egui;
+use crate::ui::style::controls::primary_button;
+
+use eframe::egui::{self, containers::menu::MenuButton};
 use http_inspector_core::launcher::{Browser, BrowserEvent, BrowserSession};
 
 pub(crate) struct BrowserPanel {
@@ -55,12 +57,13 @@ impl BrowserPanel {
             return changed;
         }
         let Some(address) = proxy else {
-            ui.add_enabled(false, egui::Button::new("Open Browser ▼"))
+            ui.add_enabled(false, primary_button(ui, "Open Browser ▼"))
                 .on_disabled_hover_text("Start the proxy to open an inspection browser.");
             return changed;
         };
-        ui.menu_button("Open Browser ▼", |ui| self.menu(ui, address, ca))
-            .response
+        MenuButton::from_button(primary_button(ui, "Open Browser ▼"))
+            .ui(ui, |ui| self.menu(ui, address, ca))
+            .0
             .on_hover_text(PROFILE_NOTE);
         changed
     }

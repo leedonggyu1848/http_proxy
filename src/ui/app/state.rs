@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use eframe::egui;
-use http_inspector_analysis::filter::{RecordFilter, RecordList};
+use http_inspector_analysis::filter::{FilterCounts, RecordFilter, RecordList};
 use http_inspector_analysis::pipeline::AnalysisPipeline;
 use http_inspector_analysis::url_map::RequestScope;
 use http_inspector_content::format::ViewMode;
@@ -25,6 +25,7 @@ use crate::ui::map::{MapPanel, RecordMatchCache};
 use crate::ui::requests::filter;
 use crate::ui::requests::request_table::RequestTable;
 use crate::ui::requests::toolbar::{self, AuthorizationNotice, PortChoice};
+use crate::ui::requests::top_bar::TopBarSizes;
 use crate::ui::style::theme::ThemeSettings;
 
 use super::{DEFAULT_DETAIL_SHARE, MAX_RECORDS};
@@ -68,6 +69,7 @@ impl SessionState {
         }
     }
 
+    /// Starts the proxy on the typed port and remembers a port the user typed.
     pub(crate) fn start_proxy(&mut self, context: &egui::Context) {
         let port = match settings::port::ProxyPort::parse(&self.port.text) {
             Ok(port) => port,
@@ -76,6 +78,26 @@ impl SessionState {
                 return;
             }
         };
+        if self.launch(context, port) {
+            self.error = self
+                .port
+                .remember(port)
+                .err()
+                .map(|error| error.to_string());
+        }
+    }
+
+    /// Starts the proxy again on `port`, the port it just stopped listening
+    /// on, so that clients keep working after a settings change.
+    pub(crate) fn restart_proxy(&mut self, context: &egui::Context, port: u16) {
+        if self.launch(context, settings::port::ProxyPort::from(port)) {
+            self.error = None;
+        }
+    }
+
+    /// Starts the proxy on `port` with the current settings. Returns whether
+    /// it started; otherwise the error explains why.
+    fn launch(&mut self, context: &egui::Context, port: settings::port::ProxyPort) -> bool {
         let mut config = ProxyConfig::loopback(port.value());
         if self.https_inspection {
             let Some(directory) = self.ca_directory.as_ref() else {
@@ -83,7 +105,7 @@ impl SessionState {
                     "HTTPS inspection requires an application data directory; check HOME and platform storage settings"
                         .to_owned(),
                 );
-                return;
+                return false;
             };
             config = config.with_https_inspection(HttpsInspection::new(directory.clone()));
         }
@@ -99,14 +121,11 @@ impl SessionState {
                 let context = context.clone();
                 let _first_notifier = proxy.notify_on_event(move || context.request_repaint());
                 self.proxy = Some(proxy);
-                self.error = self
-                    .port
-                    .remember(port)
-                    .err()
-                    .map(|error| error.to_string());
+                true
             }
             Err(error) => {
                 self.error = Some(toolbar::start_error_text(&error, port));
+                false
             }
         }
     }
@@ -176,6 +195,16 @@ impl RequestsState {
     pub(crate) fn clear_map_filter(&mut self) {
         self.map_path_filter = None;
         self.map_filter_cache.clear();
+    }
+
+    /// Rows each outcome filter would show under the current search and Map filter.
+    pub(crate) fn filter_counts(&self) -> FilterCounts {
+        filter::outcome_counts(
+            &self.records,
+            &self.search,
+            self.map_path_filter.as_ref(),
+            Some(&self.map_filter_cache),
+        )
     }
 
     pub(crate) fn filtered_records(&self) -> Vec<&Exchange> {
@@ -285,7 +314,7 @@ impl Dialogs {
 
 /// Top-level inspector view switcher (`Requests` list vs `Map` site/relationship map).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(super) enum MainView {
+pub(crate) enum MainView {
     #[default]
     Requests,
     Map,
@@ -293,7 +322,9 @@ pub(super) enum MainView {
 
 pub(crate) struct LayoutState {
     pub(crate) theme: ThemeSettings,
-    pub(super) main_view: MainView,
+    pub(crate) main_view: MainView,
+    /// Top bar zone sizes from the previous frame.
+    pub(crate) top_bar: TopBarSizes,
     /// Height of the status bar in the previous frame, reserved below the
     /// main area so that it fits in the window without scrolling.
     pub(super) status_bar_height: f32,
@@ -308,6 +339,7 @@ impl LayoutState {
         Self {
             theme: ThemeSettings::new(context),
             main_view: MainView::default(),
+            top_bar: TopBarSizes::default(),
             status_bar_height: 0.0,
             detail_share: DEFAULT_DETAIL_SHARE,
         }

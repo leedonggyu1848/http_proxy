@@ -10,12 +10,12 @@ pub(super) const SCOPE_SUMMARY: &str = "Capture scope: only HTTP traffic that a 
 pub(crate) const TUNNEL_NOTE: &str = "CONNECT tunnel forwarded without decryption, as HTTPS uses by default. \
      Only the host, port, byte counts, and duration are recorded. \
      URL paths, headers, and bodies inside the tunnel are not recorded. \
-     Enable Decrypt HTTPS to inspect requests in new connections.";
+     Turn on decryption from the HTTPS button in the top bar to inspect requests in new connections.";
 
 const RECORDED: [&str; 3] = [
     "HTTP requests and responses: method, URL, headers, and bodies.",
-    "HTTPS with Decrypt HTTPS off: one Tunnel row per CONNECT with only the host, port, byte counts, and duration.",
-    "HTTPS with Decrypt HTTPS on: each HTTP/1.1 request inside the connection, after the client trusts the app CA.",
+    "HTTPS with decryption off: one Tunnel row per CONNECT with only the host, port, byte counts, and duration.",
+    "HTTPS with decryption on: each HTTP/1.1 request inside the connection, after the client trusts the app CA.",
 ];
 
 const NOT_RECORDED: [&str; 4] = [

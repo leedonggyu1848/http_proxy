@@ -4,7 +4,7 @@
 
 요청 목록의 기록을 [HAR 1.2](http://www.softwareishard.com/blog/har-12-spec/) 파일로 저장한다. 저장한 파일은 Chrome DevTools **Network** 패널의 **Import HAR file**(위쪽 화살표 아이콘)로 불러올 수 있다.
 
-1. 툴바의 **Save** 메뉴에서 **Export HAR…**를 누른다.
+1. 상단 바의 **Save** 메뉴에서 **Export HAR…**를 누른다.
 2. **Records**에서 범위를 고른다.
    - **All requests in the list**: 마지막 **Clear** 이후 목록에 남아 있는 모든 요청(최대 2,000건)
    - **Requests matching the filter**: 현재 검색어와 종류 필터에 맞는 요청

@@ -5,6 +5,7 @@ pub(super) mod bulk_save;
 pub(super) mod ca_panel;
 pub(super) mod copy_curl;
 pub(super) mod har_dialog;
+pub(super) mod https_steps;
 pub(super) mod range_merge;
 pub(super) mod replay_panel;
 pub(super) mod save;

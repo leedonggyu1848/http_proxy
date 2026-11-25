@@ -1,7 +1,13 @@
-//! Toolbar controls, launch port choice, and clipboard actions.
+//! Proxy status and actions of the top bar, launch port choice, notices,
+//! the status bar, and clipboard actions.
 
+use crate::ui::dialogs::https_steps::AUTHORIZATION_WARNING;
+use crate::ui::style::badge::Badge;
+use crate::ui::style::controls::{chip_button, primary_button};
 use crate::ui::style::theme::Palette;
+use crate::ui::style::tokens::{Space, Tone};
 use crate::ui::{InspectorApp, MAX_RECORDS};
+use eframe::egui::containers::menu::MenuButton;
 use eframe::egui::{self, RichText};
 use http_inspector_core::interception::{ProxyHandle, StartError};
 use http_inspector_core::recording::FullLog;
@@ -65,9 +71,6 @@ pub(crate) fn start_error_text(error: &StartError, port: settings::port::ProxyPo
     }
 }
 
-const AUTHORIZATION_WARNING: &str =
-    "Only enable inspection for traffic that you are authorized to inspect.";
-
 /// Whether the one-time authorization warning for HTTPS inspection shows.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum AuthorizationNotice {
@@ -79,7 +82,7 @@ pub(crate) enum AuthorizationNotice {
 
 impl AuthorizationNotice {
     /// Shows the warning the first time inspection is turned on.
-    const fn inspection_enabled(self) -> Self {
+    pub(crate) const fn inspection_enabled(self) -> Self {
         match self {
             Self::NotShown => Self::Showing,
             Self::Showing | Self::Dismissed => self,
@@ -88,59 +91,27 @@ impl AuthorizationNotice {
 }
 
 impl InspectorApp {
-    /// One toolbar row with the controls used while watching requests.
-    pub(crate) fn toolbar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            self.proxy_controls(ui);
-            ui.separator();
-            self.https_controls(ui);
-            ui.separator();
-            if self.dialogs.browsers.toolbar(
-                ui,
-                self.session.proxy.as_ref().map(ProxyHandle::local_addr),
-                self.session
-                    .ca_directory
-                    .as_deref()
-                    .filter(|_| self.session.https_inspection),
-            ) {
-                self.dialogs.ca_panel.refresh();
-            }
-            match self.dialogs.save.menu(ui, self.session.full_log.as_ref()) {
-                Some(crate::ui::dialogs::save::SaveMenuAction::ExportHar) => {
-                    self.dialogs
-                        .har
-                        .open(self.dialogs.save.suggested_path("har"));
-                }
-                Some(crate::ui::dialogs::save::SaveMenuAction::SaveBodies) => {
-                    self.session.body_saving.open_bulk();
-                }
-                None => {}
-            }
-            ui.menu_button("Settings", |ui| {
-                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                    self.layout.theme.menu(ui);
-                    ui.separator();
-                    self.session.body_saving.settings_menu(ui);
-                });
-            });
-            crate::ui::dialogs::scope_help::button(
-                ui,
-                self.session.proxy.as_ref().map(ProxyHandle::local_addr),
-            );
-        });
-    }
-
-    fn proxy_controls(&mut self, ui: &mut egui::Ui) {
+    /// Left zone of the top bar: a status chip whose menu copies the proxy
+    /// address or stops the proxy, or the port and `Start` while stopped.
+    pub(crate) fn proxy_status(&mut self, ui: &mut egui::Ui) {
         if let Some(proxy) = self.session.proxy.as_ref() {
             let address = proxy.local_addr();
-            ui.label(RichText::new("● Running").color(Palette::of(ui).success));
-            ui.monospace(address.to_string());
-            copy_menu(ui, address);
-            if ui.button("Stop").clicked() {
+            let chip = chip_button(ui, format!("● Proxy {address} ▼"), Tone::Success);
+            let (response, menu) =
+                MenuButton::from_button(chip).ui(ui, |ui| proxy_menu(ui, address));
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::Role::Button,
+                    true,
+                    format!("Proxy running at {address}"),
+                )
+            });
+            if menu.is_some_and(|menu| menu.inner) {
                 self.stop_proxy();
             }
         } else {
-            ui.label(RichText::new("● Stopped").color(Palette::of(ui).error));
+            ui.add(Badge::status("● Proxy stopped", Tone::Danger));
+            ui.add_space(Space::XS);
             ui.label("Port");
             let edited = ui
                 .add(egui::TextEdit::singleline(&mut self.session.port.text).desired_width(56.0))
@@ -151,35 +122,48 @@ impl InspectorApp {
             if edited {
                 self.session.port.origin = settings::port::PortOrigin::User;
             }
-            if ui.button("Start").clicked() {
+            if ui.add(primary_button(ui, "Start")).clicked() {
                 self.session.start_proxy(ui.ctx());
             }
         }
     }
 
-    fn https_controls(&mut self, ui: &mut egui::Ui) {
-        let hover = if self.session.proxy.is_some() {
-            format!("Stop the proxy to change this setting. {AUTHORIZATION_WARNING}")
-        } else {
-            format!("Decrypt HTTPS in new connections with the app CA. {AUTHORIZATION_WARNING}")
-        };
-        let toggled = ui
-            .add_enabled(
-                self.session.proxy.is_none(),
-                egui::Checkbox::new(&mut self.session.https_inspection, "Decrypt HTTPS"),
-            )
-            .on_hover_text(&hover)
-            .on_disabled_hover_text(&hover)
-            .changed();
-        if toggled && self.session.https_inspection {
-            self.dialogs.authorization_notice =
-                self.dialogs.authorization_notice.inspection_enabled();
+    /// Right zone of the top bar: HTTPS status, then the primary
+    /// `Open Browser` and the secondary Save, Settings, and help menus.
+    pub(crate) fn top_bar_actions(&mut self, ui: &mut egui::Ui) {
+        self.https_status(ui);
+        if self.dialogs.browsers.toolbar(
+            ui,
+            self.session.proxy.as_ref().map(ProxyHandle::local_addr),
+            self.session
+                .ca_directory
+                .as_deref()
+                .filter(|_| self.session.https_inspection),
+        ) {
+            self.dialogs.ca_panel.refresh();
         }
-        if self.session.https_inspection {
-            self.dialogs
-                .ca_panel
-                .summary(ui, self.session.ca_directory.as_deref());
+        match self.dialogs.save.menu(ui, self.session.full_log.as_ref()) {
+            Some(crate::ui::dialogs::save::SaveMenuAction::ExportHar) => {
+                self.dialogs
+                    .har
+                    .open(self.dialogs.save.suggested_path("har"));
+            }
+            Some(crate::ui::dialogs::save::SaveMenuAction::SaveBodies) => {
+                self.session.body_saving.open_bulk();
+            }
+            None => {}
         }
+        ui.menu_button("Settings", |ui| {
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                self.layout.theme.menu(ui);
+                ui.separator();
+                self.session.body_saving.settings_menu(ui);
+            });
+        });
+        crate::ui::dialogs::scope_help::button(
+            ui,
+            self.session.proxy.as_ref().map(ProxyHandle::local_addr),
+        );
     }
 
     /// Errors and warnings that need attention, shown right below the toolbar.
@@ -297,16 +281,29 @@ impl CopyTarget {
     }
 }
 
-fn copy_menu(ui: &mut egui::Ui, address: std::net::SocketAddr) {
-    ui.menu_button("Copy ▼", |ui| {
-        for target in CopyTarget::ALL {
-            let text = target.text(address);
-            if ui.button(target.label()).on_hover_text(&text).clicked() {
-                ui.ctx().copy_text(text);
-                ui.close();
-            }
+/// The running proxy's address, copy actions, and `Stop proxy`. Returns
+/// whether `Stop proxy` was pressed.
+fn proxy_menu(ui: &mut egui::Ui, address: std::net::SocketAddr) -> bool {
+    ui.label(RichText::new("Listening on").weak());
+    ui.label(RichText::new(CopyTarget::Address.text(address)).monospace());
+    ui.add_space(Space::XS);
+    ui.label(RichText::new("Copy").strong());
+    for target in CopyTarget::ALL {
+        let text = target.text(address);
+        if ui.button(target.label()).on_hover_text(&text).clicked() {
+            ui.ctx().copy_text(text);
+            ui.close();
         }
-    });
+    }
+    ui.separator();
+    let stop = ui
+        .button(RichText::new("Stop proxy").color(Tone::Danger.colors(ui.ctx().theme()).fg))
+        .on_hover_text("Stop capturing. A browser opened with Open Browser closes.")
+        .clicked();
+    if stop {
+        ui.close();
+    }
+    stop
 }
 
 #[cfg(test)]

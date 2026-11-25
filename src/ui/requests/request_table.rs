@@ -8,6 +8,7 @@ use egui_extras::{Column, TableBuilder};
 use http_inspector_exchange::{ByteSize, Exchange, Outcome, RecordId};
 
 use crate::ui::dialogs::copy_curl;
+use crate::ui::requests::follow::{self, Follow, Scroll};
 use crate::ui::requests::outcome_view::{
     alert_tone, outcome_summary, outcome_text, outcome_tone, status_rank,
 };
@@ -175,7 +176,7 @@ pub(crate) struct RequestTable {
     /// Whether a body save is running, which disables the save menu items.
     pub(super) saving_body: bool,
     sort: Sort,
-    follow_newest: bool,
+    follow: Follow,
     keyboard_row: Option<usize>,
     page_rows: usize,
     last_viewport_width: f32,
@@ -188,7 +189,7 @@ impl RequestTable {
                 field: None,
                 descending: false,
             },
-            follow_newest: true,
+            follow: Follow::new(),
             replay: None,
             copy_curl: None,
             save_body: None,
@@ -201,14 +202,21 @@ impl RequestTable {
 
     /// Shows the list options inline in the filter row.
     pub(super) fn controls(&mut self, ui: &mut egui::Ui) {
-        ui.checkbox(&mut self.follow_newest, "Follow newest")
-            .on_hover_text("Keep the newest request in view while sorted by arrival.");
-        if self.follow_newest {
-            self.keyboard_row = None;
-        }
-        if self.sort.field.is_some() && ui.button("Arrival order").clicked() {
+        if self.sort.field.is_some()
+            && ui
+                .button("Arrival order")
+                .on_hover_text("Sort by arrival again and follow the newest request.")
+                .clicked()
+        {
             self.sort = Self::new().sort;
+            self.resume_following();
         }
+    }
+
+    /// Follows the newest request again from the next frame.
+    const fn resume_following(&mut self) {
+        self.follow.resume();
+        self.keyboard_row = None;
     }
 
     fn sort_rows(&self, rows: &mut [&Exchange]) {
@@ -241,7 +249,7 @@ impl RequestTable {
                 && let Some(index) = keyboard_selection(ui, current, rows.len(), self.page_rows)
                 && let Some(record) = rows.get(index)
             {
-                self.follow_newest = false;
+                self.follow.pause();
                 self.keyboard_row = Some(index);
                 changed = Some(record.id());
                 selected = changed;
@@ -262,7 +270,11 @@ impl RequestTable {
         self.last_viewport_width = viewport_width;
         let row_stride = ROW_HEIGHT + ui.spacing().item_spacing.y;
 
-        let inner_height = egui::ScrollArea::horizontal()
+        let arrival_order = self.sort.field.is_none();
+        if arrival_order && self.follow.take_jump() {
+            scroll_to = rows.len().checked_sub(1);
+        }
+        let output = egui::ScrollArea::horizontal()
             .id_salt("requests-hscroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -276,8 +288,24 @@ impl RequestTable {
                     width_changed,
                     &mut changed,
                 )
-            })
-            .inner;
+            });
+        let area = output.inner_rect;
+        let (inner_height, newest_visible) = output.inner;
+        if arrival_order {
+            self.follow.observe(follow::Frame {
+                newest: rows.last().map(|record| record.id()),
+                newest_visible,
+                scroll: Scroll::of_pointer(ui, area),
+            });
+            let new_rows = self.follow.new_rows(rows.iter().map(|record| record.id()));
+            if !self.follow.following()
+                && let Some(label) = follow::jump_label(new_rows, newest_visible)
+                && follow::jump_button(ui, area, &label)
+            {
+                self.resume_following();
+                ui.ctx().request_repaint();
+            }
+        }
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
@@ -301,14 +329,14 @@ impl RequestTable {
         widths: [f32; 6],
         width_changed: bool,
         changed: &mut Option<RecordId>,
-    ) -> f32 {
+    ) -> (f32, bool) {
         let mut table = TableBuilder::new(ui)
             .id_salt("requests")
             .striped(true)
             .resizable(true)
             .sense(egui::Sense::click())
             .auto_shrink([false, false])
-            .stick_to_bottom(self.follow_newest && self.sort.field.is_none())
+            .stick_to_bottom(self.follow.following() && self.sort.field.is_none())
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
         for (field, width) in Field::ALL.into_iter().zip(widths) {
             table = table.column(field.column(width));
@@ -319,6 +347,7 @@ impl RequestTable {
         if let Some(index) = scroll_to {
             table = table.scroll_to_row(index, None).animate_scrolling(false);
         }
+        let mut newest_visible = false;
         // One shared host moves from every row to the column header.
         let shared_host = shared_host(rows.iter().map(|record| record.request().target()));
         let body = table
@@ -354,23 +383,25 @@ impl RequestTable {
                     let Some(record) = rows.get(row.index()) else {
                         return;
                     };
+                    newest_visible |= row.index() + 1 == rows.len();
                     row.set_selected(selected == Some(record.id()));
                     let selected_row = selected == Some(record.id());
                     let focus_row = scroll_to == Some(row.index());
                     let show_host = shared_host.is_none();
                     if show_cells(&mut row, record, selected_row, focus_row, show_host) {
-                        self.follow_newest = false;
+                        self.follow.pause();
                         self.keyboard_row = None;
                         *changed = Some(record.id());
                     }
                     self.row_menu(&row.response(), record);
                     if row.response().clicked() {
+                        self.follow.pause();
                         self.keyboard_row = None;
                         *changed = Some(record.id());
                     }
                 });
             });
-        body.inner_rect.height()
+        (body.inner_rect.height(), newest_visible)
     }
 }
 
@@ -734,7 +765,7 @@ mod tests {
             });
             output.textures_delta.clear();
             assert_eq!(selected, Some(expected));
-            assert!(!table.follow_newest);
+            assert!(!table.follow.following());
             assert_accessible_requests(&output)?;
         }
         proxy.stop()?;
