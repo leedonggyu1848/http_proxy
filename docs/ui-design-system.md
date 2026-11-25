@@ -8,16 +8,6 @@ HTTP Inspector는 개발 도구다. 디자인 시스템은 정밀 도킹 워크�
 
 규칙이 가리키는 색 값, 글자 크기, 치수, 컴포넌트 규격과 그 Rust 이름은 이 문서 뒤쪽의 [색 토큰](#색-토큰)부터 [egui 설정 대응](#egui-설정-대응)까지에 있다. 스타일 토큰이나 위젯을 만들거나 바꿀 때, 그리고 리뷰에서 값을 대조할 때 읽는다.
 
-## 정리 대상 코드
-
-현재 코드의 다음 항목은 새 시스템과 다른 정리 대상이다. 코드에 있다는 사실은 다시 쓸 근거가 아니다.
-
-- `src/ui/style/tokens.rs`의 `LIGHT`·`DARK` 색 값 전체, `ToneFills`, `ToneColors::fill`, `Tone::Neutral`, `Tone::Info`
-- `Radius::CONTROL`(6pt), `Radius::BADGE`, `Radius::CARD`, `TypeScale`의 현재 값
-- `src/ui/style/badge.rs`의 `Badge`와 `BADGE_HEIGHT`
-- `src/ui/requests/request_table.rs`의 `ALERT_EDGE_WIDTH`(3pt 띠)와 pill의 이중 표시, 지역 상수 `ROW_HEIGHT`·`HEADER_HEIGHT`(24pt), `.striped(true)`
-- `src/ui/style/theme.rs`에서 선택 글자를 `accent`로 칠하는 `selection.stroke`, `hyperlink_color = info`, egui 기본 그림자와 `animation_time`(0.2초)
-
 ## 규칙
 
 ### 색
@@ -28,7 +18,7 @@ HTTP Inspector는 개발 도구다. 디자인 시스템은 정밀 도킹 워크�
 - **D4.** 실패 행은 레프트 틱과 상태 글자색 중 하나만 쓴다(S15). 선택 행과 켜진 토글의 배경과 2px 바 조합(D23, D25)은 한 표시로 센다. 선택은 실패와 다른 정보이므로 함께 써도 되고, 행 왼쪽 끝은 선택 바가 쓰며 레프트 틱은 상태 셀의 글자 앞에 둔다.
 - **D5.** 그림자는 팝업과 드롭다운 메뉴의 경계 그림자만 허용한다. 반투명 색은 `surfaces.hover`, `surfaces.selected`, `surfaces.cross_highlight` 토큰으로만 쓴다.
 - **D6.** 색 값은 `src/ui/style/tokens.rs`에만 정의한다. 화면 코드는 토큰 이름이나 `Tone`으로 의미를 고르고 `Color32::from_rgb`·`from_rgba_unmultiplied`를 직접 쓰지 않는다.
-- **D7.** 색만으로 의미를 전달하지 않는다. 상태는 `404 Not Found`처럼 글자로도 보인다. 글자와 그 글자가 실제로 놓이는 배경의 대비는 라이트·다크 테마 모두 WCAG AA(4.5:1) 이상이다. 도트, 틱, 바, 포커스 링은 인접 배경과 3:1 이상이다. `src/ui/style/theme.rs`의 `status_text_meets_aa_on_all_widget_backgrounds`가 글자 대비를 검사한다. 새 글자색은 그 테스트의 글자색 목록에, 글자가 놓이는 새 배경은 `text_backgrounds()`에 추가한다.
+- **D7.** 색만으로 의미를 전달하지 않는다. 상태는 `404 Not Found`처럼 글자로도 보인다. 글자와 그 글자가 실제로 놓이는 배경의 대비는 라이트·다크 테마 모두 WCAG AA(4.5:1) 이상이다. 도트, 틱, 바, 포커스 링은 인접 배경과 3:1 이상이다. `src/ui/style/theme.rs`의 `status_text_meets_aa_on_all_widget_backgrounds`가 글자 대비를 검사한다. 새 글자색은 그 테스트의 글자색 목록에, 글자가 놓이는 새 배경은 `text_backgrounds()`에 추가한다. D8로 데이터 표면에만 쓰는 글자색은 `data_backgrounds()`로 검사하고, `marks_meet_three_to_one_on_every_surface`가 도트·틱·바 색의 3:1을 검사한다.
 - **D8.** 다음 토큰은 4.5:1에 못 미치는 배경이 있으므로 정한 용도에만 쓴다. 토큰 값을 바꾸지 않고 용도를 줄인다. 계산값은 [대비](#대비)에 있다.
   - `text.muted`: 비활성 아이콘, 키-값 콜론, 줄 번호·오프셋 거터, 라벨이나 툴팁이 따로 있는 입력의 힌트
   - `text.disabled`: 비활성 컨트롤 글자
@@ -326,9 +316,9 @@ UI 글자는 sans, 데이터는 mono로 나눈다. egui의 `FontFamily::Proporti
 | `Visuals::window_corner_radius`, `menu_corner_radius` | `Radius::CONTROL` |
 | `Visuals::striped`, `Grid::striped`, `TableBuilder::striped` | `false` |
 | `Visuals::selection.bg_fill` | `surfaces.selected` |
-| `Visuals::selection.stroke` | `accent.primary`. 글자색으로 쓰지 않는다. |
+| `Visuals::selection.stroke` | `text.primary`. egui는 이 색으로 선택된 글자, 선택된 버튼 글자, 선택된 표 행 글자를 칠하므로 `accent.primary`를 넣으면 D8을 어긴다. 선택의 `accent.primary`는 표가 그리는 2px 선택 바로 보인다. |
 | `Visuals::hyperlink_color` | `text.primary`. 링크는 밑줄로 구분한다. |
-| `Spacing::scroll` | `ScrollStyle::solid()` 기반, `bar_width` 6 |
+| `Spacing::scroll` | `ScrollStyle::solid()` 기반, `bar_width` 6. egui는 썸 색을 `widgets.inactive.bg_fill`(`borders.control`), 썸 모서리를 위젯 모서리(`Radius::CONTROL`)에서 가져오고 트랙을 `extreme_bg_color`(`surfaces.input`)로 칠한다. 썸 2pt와 투명 트랙은 egui 설정으로 바꿀 수 없다. |
 | `Style::animation_time` | 0.08 이하 |
 
 ## 출처

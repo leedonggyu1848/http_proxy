@@ -392,7 +392,7 @@ impl InspectorApp {
 
 /// Fills content panes one surface above the window chrome around them.
 fn paint_pane_surfaces(ui: &egui::Ui, panes: [egui::Rect; 2]) {
-    let fill = ThemeTokens::for_theme(ui.ctx().theme()).surfaces.panel;
+    let fill = ThemeTokens::for_theme(ui.ctx().theme()).surfaces.pane;
     for pane in panes {
         ui.painter().rect_filled(pane, 0.0, fill);
     }
@@ -482,14 +482,14 @@ fn split_panes<R>(
         main.ctx()
             .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
     }
-    let stroke = if handle.dragged() {
-        main.visuals().widgets.active.fg_stroke
-    } else if handle.hovered() {
-        main.visuals().widgets.hovered.fg_stroke
+    let tokens = ThemeTokens::for_theme(main.ctx().theme());
+    let color = if handle.hovered() || handle.dragged() {
+        tokens.accent.secondary
     } else {
-        main.visuals().widgets.noninteractive.bg_stroke
+        tokens.borders.structural
     };
-    main.painter().vline(split_x, rect.y_range(), stroke);
+    main.painter()
+        .vline(split_x, rect.y_range(), egui::Stroke::new(1.0, color));
     result
 }
 

@@ -68,7 +68,7 @@ pub(super) fn show(
             RichText::new(
                 "Structure inferred from captured requests on this exact path: names, types and how often they appeared. Values are never shown.",
             )
-            .color(palette.muted)
+            .color(palette.secondary)
             .small(),
         )
         .wrap(),
@@ -326,7 +326,7 @@ fn render_body_evidence(ui: &mut egui::Ui, group: &BodySchema) {
     let color = if excluded > 0 || (described > 0 && described < FEW_SAMPLES) {
         palette.warning
     } else {
-        palette.muted
+        palette.secondary
     };
     ui.label(RichText::new(parts.join(" · ")).color(color).small());
 }
@@ -441,10 +441,9 @@ fn omitted_note(ui: &mut egui::Ui, omitted: u64, what: &str) {
 
 const fn status_color(key: &ResponseKey, palette: &Palette) -> egui::Color32 {
     match key.status {
-        200..=299 => palette.success,
-        300..=399 => palette.warning,
-        400..=599 => palette.error,
-        _ => palette.muted,
+        400..=499 => palette.warning,
+        500..=599 => palette.error,
+        _ => palette.text,
     }
 }
 

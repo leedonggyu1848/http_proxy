@@ -11,7 +11,8 @@ use http_inspector_analysis::search::document::{self, BodyCache, Checked};
 use http_inspector_analysis::search::{MatchOptions, Matcher, Query, SearchScope, SearchWorker};
 use http_inspector_exchange::{Exchange, RecordId};
 
-use crate::ui::style::theme::Palette;
+use crate::ui::style::indicator;
+use crate::ui::style::tokens::Tone;
 
 /// Wait after the last keystroke before a search starts, so typing a word
 /// does not start a search for every letter.
@@ -152,12 +153,11 @@ impl RequestSearch {
     /// Progress, match count, and what was not searched. Draws nothing
     /// while no search is active.
     pub(crate) fn status(&self, ui: &mut egui::Ui) {
-        let palette = Palette::of(ui);
         if let SearchBackend::Inline { notice, .. } = &self.backend {
-            ui.colored_label(palette.warning, notice);
+            indicator::dot_label(ui, Tone::Warning, notice);
         }
         if let Some(error) = &self.error {
-            ui.colored_label(palette.error, error);
+            indicator::dot_label(ui, Tone::Danger, error);
             return;
         }
         let Some(active) = &self.active else {
@@ -181,7 +181,7 @@ impl RequestSearch {
         if active.settings.scope.covers_bodies()
             && let Some(text) = coverage_text(summary)
         {
-            ui.colored_label(palette.warning, text);
+            indicator::dot_label(ui, Tone::Warning, text);
         }
     }
 

@@ -1,9 +1,7 @@
 //! Shared outcome presentation for the request list, details, and search.
 
-use eframe::egui::Color32;
 use http_inspector_exchange::{Outcome, TunnelPreview, TunnelState};
 
-use crate::ui::style::theme::Palette;
 use crate::ui::style::tokens::Tone;
 
 /// Orders responses by status code, then every other outcome after them.
@@ -19,9 +17,9 @@ pub(super) const fn status_rank(outcome: &Outcome) -> (u8, u16) {
     }
 }
 
-/// Short status text and color for one outcome.
-pub(crate) fn outcome_text(outcome: &Outcome, palette: &Palette) -> (String, Color32) {
-    (short_text(outcome), outcome_color(outcome, palette))
+/// Short status text and the tone of an exceptional outcome.
+pub(crate) fn outcome_text(outcome: &Outcome) -> (String, Option<Tone>) {
+    (short_text(outcome), outcome_tone(outcome))
 }
 
 /// Short status text for one outcome, independent of the theme.
@@ -44,52 +42,25 @@ fn short_text(outcome: &Outcome) -> String {
     }
 }
 
-/// Status color for one outcome in the current theme's palette.
-fn outcome_color(outcome: &Outcome, palette: &Palette) -> Color32 {
-    match outcome_tone(outcome) {
-        Tone::Neutral => palette.muted,
-        Tone::Info => palette.info,
-        Tone::Success => palette.success,
-        Tone::Warning => palette.warning,
-        Tone::Danger => palette.error,
-    }
-}
-
-/// Meaning of one outcome: 2xx success, 1xx and 3xx informational, 4xx a
-/// warning, 5xx and failures danger, and pending or open tunnels neutral.
-pub(crate) fn outcome_tone(outcome: &Outcome) -> Tone {
+/// Tone of an exceptional outcome: 4xx, cancelled, and incomplete
+/// exchanges need attention; 5xx and failed connections or tunnels failed.
+/// Normal outcomes (1xx–3xx, pending, open or closed tunnels) have no tone
+/// and use the default text color.
+pub(crate) fn outcome_tone(outcome: &Outcome) -> Option<Tone> {
     match outcome {
-        Outcome::InFlight | Outcome::InspectionEstablished => Tone::Neutral,
+        Outcome::InFlight | Outcome::InspectionEstablished => None,
         Outcome::Response(response) => match response.status().as_u16() {
-            200..=299 => Tone::Success,
-            400..=499 => Tone::Warning,
-            500..=599 => Tone::Danger,
-            _ => Tone::Info,
+            400..=499 => Some(Tone::Warning),
+            500..=599 => Some(Tone::Danger),
+            _ => None,
         },
         Outcome::Tunnel(tunnel) => match tunnel.snapshot().state() {
-            TunnelState::Open | TunnelState::Closed => Tone::Neutral,
-            TunnelState::Failed { .. } => Tone::Danger,
-            TunnelState::Incomplete => Tone::Warning,
+            TunnelState::Open | TunnelState::Closed => None,
+            TunnelState::Failed { .. } => Some(Tone::Danger),
+            TunnelState::Incomplete => Some(Tone::Warning),
         },
-        Outcome::Failed { .. } => Tone::Danger,
-        Outcome::Cancelled | Outcome::Incomplete => Tone::Warning,
-    }
-}
-
-/// Tone of the edge mark that makes a request stand out in the list: 4xx
-/// client errors, 5xx server errors, and failed connections or tunnels.
-pub(super) fn alert_tone(outcome: &Outcome) -> Option<Tone> {
-    match outcome {
-        Outcome::Response(response) if matches!(response.status().as_u16(), 400..=599) => {
-            Some(outcome_tone(outcome))
-        }
         Outcome::Failed { .. } => Some(Tone::Danger),
-        Outcome::Tunnel(tunnel)
-            if matches!(tunnel.snapshot().state(), TunnelState::Failed { .. }) =>
-        {
-            Some(Tone::Danger)
-        }
-        _ => None,
+        Outcome::Cancelled | Outcome::Incomplete => Some(Tone::Warning),
     }
 }
 
@@ -127,15 +98,17 @@ fn tunnel_summary(tunnel: &TunnelPreview) -> String {
     }
 }
 
-pub(crate) fn detail_text(outcome: &Outcome, palette: &Palette) -> (String, Color32) {
+/// Status sentence for the details panel and the tone of an exceptional
+/// outcome.
+pub(crate) fn detail_text(outcome: &Outcome) -> (String, Option<Tone>) {
     let text = match outcome {
         Outcome::InFlight => "Waiting for the upstream server.",
         Outcome::InspectionEstablished => "HTTPS inspection session established.",
         Outcome::Cancelled => "The client closed the connection before a response arrived.",
         Outcome::Incomplete => "The proxy stopped before a response arrived.",
-        _ => return outcome_text(outcome, palette),
+        _ => return outcome_text(outcome),
     };
-    (text.to_owned(), outcome_text(outcome, palette).1)
+    (text.to_owned(), outcome_tone(outcome))
 }
 
 pub(crate) const fn timing_label(outcome: &Outcome) -> &'static str {
@@ -169,31 +142,29 @@ mod tests {
     }
 
     #[test]
-    fn tones_follow_status_class_and_marks_only_errors() -> Result<(), Box<dyn std::error::Error>> {
+    fn only_exceptions_have_a_tone() -> Result<(), Box<dyn std::error::Error>> {
         use http::{Method, StatusCode};
         use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
 
-        for (status, tone, alert) in [
-            (200, Tone::Success, None),
-            (301, Tone::Info, None),
-            (404, Tone::Warning, Some(Tone::Warning)),
-            (503, Tone::Danger, Some(Tone::Danger)),
+        for (status, tone) in [
+            (200, None),
+            (301, None),
+            (404, Some(Tone::Warning)),
+            (503, Some(Tone::Danger)),
             // Nonstandard codes are not errors.
-            (600, Tone::Info, None),
+            (600, None),
         ] {
             let record = ExchangeBuilder::http(Method::GET, "http://example.test/")?
                 .respond(ResponseFixture::new(StatusCode::from_u16(status)?))?;
             assert_eq!(outcome_tone(record.outcome()), tone, "{status}");
-            assert_eq!(alert_tone(record.outcome()), alert, "{status}");
         }
         let failed = Outcome::Failed {
             stage: FailureStage::Connect,
             message: "refused".to_owned(),
         };
-        assert_eq!(alert_tone(&failed), Some(Tone::Danger));
-        assert_eq!(outcome_tone(&Outcome::InFlight), Tone::Neutral);
-        assert_eq!(alert_tone(&Outcome::InFlight), None);
-        assert_eq!(alert_tone(&Outcome::Cancelled), None);
+        assert_eq!(outcome_tone(&failed), Some(Tone::Danger));
+        assert_eq!(outcome_tone(&Outcome::InFlight), None);
+        assert_eq!(outcome_tone(&Outcome::Cancelled), Some(Tone::Warning));
         Ok(())
     }
 
@@ -209,17 +180,8 @@ mod tests {
             stage: FailureStage::UpstreamTls,
             message: "certificate rejected".to_owned(),
         };
-        for theme in [
-            crate::ui::style::theme::Theme::Light,
-            crate::ui::style::theme::Theme::Dark,
-        ] {
-            let palette = Palette::for_theme(theme);
-            assert_eq!(
-                outcome_text(&outcome, &palette),
-                detail_text(&outcome, &palette)
-            );
-            assert_eq!(outcome_text(&outcome, &palette).1, palette.error);
-        }
+        assert_eq!(outcome_text(&outcome), detail_text(&outcome));
+        assert_eq!(outcome_text(&outcome).1, Some(Tone::Danger));
         let matches = |query: &str| {
             http_inspector_analysis::search::Matcher::new(
                 query,

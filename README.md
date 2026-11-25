@@ -2,7 +2,7 @@
 
 HTTP Inspector는 로컬 HTTP 프록시를 거치는 요청과 응답을 기록하는 Linux와 macOS 데스크톱 앱이다. HTTPS 복호화를 켜면 URL, 헤더와 본문도 확인할 수 있다.
 
-![로컬 테스트 서버로 보낸 요청 17건을 메서드 배지와 상태 표시로 구분한 요청 목록](docs/screenshots/request-list-dark.png)
+![로컬 테스트 서버로 보낸 요청 17건과 404 요청의 상세를 보여 주는 어두운 테마 화면](docs/screenshots/request-list-dark.png)
 
 ## 주요 기능
 
