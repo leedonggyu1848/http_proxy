@@ -8,17 +8,15 @@ use egui_extras::{Column, TableBuilder};
 use http_inspector_exchange::{ByteSize, Exchange, Outcome, RecordId};
 
 use crate::ui::dialogs::copy_curl;
-use crate::ui::requests::outcome_view::{
-    alert_tone, outcome_summary, outcome_text, outcome_tone, status_rank,
-};
+use crate::ui::requests::outcome_view::{outcome_summary, outcome_text, status_rank};
 use crate::ui::requests::target_view::{TargetParts, host_fits, middle_ellipsis, shared_host};
-use crate::ui::style::badge::Badge;
-use crate::ui::style::tokens::Space;
+use crate::ui::style::indicator;
+use crate::ui::style::tokens::{Layout, Radius, Space, ThemeTokens, TypeScale};
 
-const ROW_HEIGHT: f32 = 24.0;
-const HEADER_HEIGHT: f32 = 24.0;
-/// Width of the colored edge that marks error and failure rows.
-const ALERT_EDGE_WIDTH: f32 = 3.0;
+/// Space before the method, kept free for the selection bar of the row.
+const ROW_LEAD: f32 = Layout::SELECTION_BAR_WIDTH + Space::S;
+/// Space before the status text, kept for the failure tick.
+const STATUS_LEAD: f32 = Layout::TICK_WIDTH + Space::S;
 
 /// Sortable column of the request list.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -60,6 +58,20 @@ impl Field {
             Self::Status => 64.0,
             Self::Type => 32.0,
             Self::Duration => 52.0,
+        }
+    }
+
+    /// Numbers line up on the right so that their digits compare.
+    const fn is_numeric(self) -> bool {
+        matches!(self, Self::Size | Self::Duration)
+    }
+
+    /// Text before the title, matching the lead of the column's cells.
+    const fn lead(self) -> f32 {
+        match self {
+            Self::Method => ROW_LEAD,
+            Self::Status => STATUS_LEAD,
+            _ => 0.0,
         }
     }
 
@@ -260,7 +272,6 @@ impl RequestTable {
         let total_width = spacing_x.mul_add(5.0, widths.iter().sum::<f32>()) + scroll_gutter;
         let width_changed = (viewport_width - self.last_viewport_width).abs() > 1.0;
         self.last_viewport_width = viewport_width;
-        let row_stride = ROW_HEIGHT + ui.spacing().item_spacing.y;
 
         let inner_height = egui::ScrollArea::horizontal()
             .id_salt("requests-hscroll")
@@ -283,7 +294,7 @@ impl RequestTable {
             clippy::cast_sign_loss,
             reason = "The viewport height is nonnegative and UI-sized, and a page counts only full rows"
         )]
-        let page_rows = (inner_height / row_stride) as usize;
+        let page_rows = (inner_height / Layout::TABLE_ROW_HEIGHT) as usize;
         self.page_rows = page_rows.max(1);
         changed
     }
@@ -302,9 +313,11 @@ impl RequestTable {
         width_changed: bool,
         changed: &mut Option<RecordId>,
     ) -> f32 {
+        // Rows touch each other; the row line separates them.
+        ui.spacing_mut().item_spacing.y = 0.0;
         let mut table = TableBuilder::new(ui)
             .id_salt("requests")
-            .striped(true)
+            .striped(false)
             .resizable(true)
             .sense(egui::Sense::click())
             .auto_shrink([false, false])
@@ -322,27 +335,13 @@ impl RequestTable {
         // One shared host moves from every row to the column header.
         let shared_host = shared_host(rows.iter().map(|record| record.request().target()));
         let body = table
-            .header(HEADER_HEIGHT, |mut header| {
+            .header(Layout::TABLE_HEADER_HEIGHT, |mut header| {
                 for field in Field::ALL {
                     header.col(|ui| {
-                        let title = format!("{}{}", field.title(), self.sort.arrow(field));
-                        if ui
-                            .add(
-                                egui::Button::new(RichText::new(title).strong())
-                                    .frame(false)
-                                    .truncate(),
-                            )
-                            .clicked()
-                        {
+                        paint_header_cell(ui, field == Field::Duration);
+                        let host = shared_host.filter(|_| field == Field::Target);
+                        if self.header_cell(ui, field, host) {
                             self.sort = self.sort.toggled(field);
-                        }
-                        if field == Field::Target
-                            && let Some(host) = shared_host
-                        {
-                            ui.add(
-                                egui::Label::new(RichText::new(host).monospace().weak()).truncate(),
-                            )
-                            .on_hover_text("Every request in the list goes to this host.");
                         }
                     });
                 }
@@ -350,7 +349,7 @@ impl RequestTable {
             .body(|mut body| {
                 // Let the table cells handle row clicks while labels still show tooltips.
                 body.ui_mut().style_mut().interaction.selectable_labels = false;
-                body.rows(ROW_HEIGHT, rows.len(), |mut row| {
+                body.rows(Layout::TABLE_ROW_HEIGHT, rows.len(), |mut row| {
                     let Some(record) = rows.get(row.index()) else {
                         return;
                     };
@@ -372,6 +371,76 @@ impl RequestTable {
             });
         body.inner_rect.height()
     }
+
+    /// The column title, which sorts by the column when clicked, and the
+    /// host shared by every row. Returns whether the title was clicked.
+    fn header_cell(&self, ui: &mut egui::Ui, field: Field, shared_host: Option<&str>) -> bool {
+        let secondary = ThemeTokens::for_theme(ui.ctx().theme()).text.secondary;
+        let title = RichText::new(format!("{}{}", field.title(), self.sort.arrow(field)))
+            .size(TypeScale::COLUMN_HEADER)
+            .color(secondary);
+        let button = egui::Button::new(title).frame(false).truncate();
+        if field.is_numeric() {
+            return ui
+                .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add(button).clicked()
+                })
+                .inner;
+        }
+        ui.add_space(field.lead());
+        let clicked = ui.add(button).clicked();
+        if let Some(host) = shared_host {
+            ui.add(egui::Label::new(RichText::new(host).monospace().weak()).truncate())
+                .on_hover_text("Every request in the list goes to this host.");
+        }
+        clicked
+    }
+}
+
+/// Horizontal extent of a cell including half the column gap on each side,
+/// so that neighboring bands join. The last band reaches the right edge.
+fn cell_band(ui: &egui::Ui, last: bool) -> egui::Rect {
+    let mut band = ui
+        .max_rect()
+        .expand2(egui::vec2(0.5 * ui.spacing().item_spacing.x, 0.0));
+    if last {
+        band.max.x = band.max.x.max(ui.clip_rect().right());
+    }
+    band
+}
+
+/// Header background on the chrome surface with the structural line below.
+fn paint_header_cell(ui: &egui::Ui, last: bool) {
+    let tokens = ThemeTokens::for_theme(ui.ctx().theme());
+    let band = cell_band(ui, last);
+    let painter = ui.painter();
+    painter.rect_filled(band, Radius::PANE, tokens.surfaces.chrome);
+    painter.hline(
+        band.x_range(),
+        band.bottom() - 0.5,
+        egui::Stroke::new(1.0, tokens.borders.structural),
+    );
+}
+
+/// The subtle line under a row and, in the first cell of the selected row,
+/// the selection bar at its left edge.
+fn paint_row_cell(ui: &egui::Ui, selection_bar: bool, last: bool) {
+    let tokens = ThemeTokens::for_theme(ui.ctx().theme());
+    let band = cell_band(ui, last);
+    let painter = ui.painter();
+    painter.hline(
+        band.x_range(),
+        band.bottom() - 0.5,
+        egui::Stroke::new(1.0, tokens.borders.subtle),
+    );
+    if selection_bar {
+        let cell = ui.max_rect();
+        let bar = egui::Rect::from_min_size(
+            cell.left_top(),
+            egui::vec2(Layout::SELECTION_BAR_WIDTH, cell.height()),
+        );
+        painter.rect_filled(bar, Radius::PANE, tokens.accent.primary);
+    }
 }
 
 /// Computes responsive initial column widths for `viewport_width`.
@@ -380,8 +449,8 @@ impl RequestTable {
 /// that fit cleanly without slicing the next column at the pane border, while
 /// the remaining columns stay reachable via horizontal scrolling.
 fn column_widths(viewport_width: f32, spacing_x: f32, scroll_gutter: f32) -> [f32; 6] {
-    const METHOD: f32 = 78.0;
-    const STATUS_WIDE: f32 = 124.0;
+    const METHOD: f32 = 72.0;
+    const STATUS_WIDE: f32 = 136.0;
     const STATUS_COMPACT: f32 = 104.0;
     const TYPE: f32 = 48.0;
     const SIZE: f32 = 68.0;
@@ -484,7 +553,7 @@ fn save_body_items(
     chosen
 }
 
-/// Fills one row and returns whether its method badge was clicked.
+/// Fills one row and returns whether its method was clicked.
 fn show_cells(
     row: &mut egui_extras::TableRow<'_, '_>,
     record: &Exchange,
@@ -493,47 +562,44 @@ fn show_cells(
     show_host: bool,
 ) -> bool {
     let mut clicked = false;
-    row.col(|ui| clicked = method_cell(ui, record, selected, focus));
-    row.col(|ui| target_cell(ui, record, show_host));
-    row.col(|ui| status_cell(ui, record));
-    row.col(|ui| {
-        ui.add(egui::Label::new(content_type(record).unwrap_or("—")).truncate());
-    });
-    row.col(|ui| {
-        ui.add(
-            egui::Label::new(
-                RichText::new(
-                    record
-                        .received_bytes()
-                        .map_or_else(|| "—".to_owned(), |bytes| ByteSize::new(bytes).to_string()),
-                )
-                .monospace(),
-            )
-            .truncate(),
-        );
-    });
-    row.col(|ui| {
-        ui.add(egui::Label::new(RichText::new(duration_text(record)).monospace()).truncate());
-    });
+    for field in Field::ALL {
+        row.col(|ui| {
+            paint_row_cell(
+                ui,
+                selected && field == Field::Method,
+                field == Field::Duration,
+            );
+            match field {
+                Field::Method => clicked = method_cell(ui, record, selected, focus),
+                Field::Target => target_cell(ui, record, show_host),
+                Field::Status => status_cell(ui, record),
+                Field::Type => data_cell(ui, content_type(record).unwrap_or("—")),
+                Field::Size => numeric_cell(ui, &size_text(record)),
+                Field::Duration => numeric_cell(ui, &duration_text(record)),
+            }
+        });
+    }
     clicked
 }
 
-/// The method badge, which also carries the row's keyboard focus and its
-/// screen reader name, plus the alert edge of error rows.
+/// Monospace data that truncates to the cell.
+fn data_cell(ui: &mut egui::Ui, text: &str) {
+    ui.add(egui::Label::new(RichText::new(text).monospace()).truncate());
+}
+
+/// A number aligned to the right edge of the cell.
+fn numeric_cell(ui: &mut egui::Ui, text: &str) {
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        data_cell(ui, text);
+    });
+}
+
+/// The method, which also carries the row's keyboard focus and its screen
+/// reader name.
 fn method_cell(ui: &mut egui::Ui, record: &Exchange, selected: bool, focus: bool) -> bool {
-    if let Some(tone) = alert_tone(record.outcome()) {
-        let cell = ui.max_rect();
-        let edge =
-            egui::Rect::from_min_size(cell.left_top(), egui::vec2(ALERT_EDGE_WIDTH, cell.height()));
-        ui.painter()
-            .rect_filled(edge, 0.0, tone.colors(ui.ctx().theme()).fg);
-    }
-    ui.add_space(ALERT_EDGE_WIDTH + Space::XS);
+    ui.add_space(ROW_LEAD);
     ui.push_id(record.id(), |ui| {
-        let method = record.request().method().as_str();
-        let response = ui
-            .add(Badge::method(method).sense(egui::Sense::click()))
-            .on_hover_text(method);
+        let response = method_text(ui, record.request().method().as_str());
         response.widget_info(|| {
             egui::WidgetInfo::selected(
                 egui::Role::ListBoxOption,
@@ -554,9 +620,40 @@ fn method_cell(ui: &mut egui::Ui, record: &Exchange, selected: bool, focus: bool
         if focus && !response.has_focus() {
             response.request_focus();
         }
+        if response.has_focus() {
+            let ring = ThemeTokens::for_theme(ui.ctx().theme()).accent.secondary;
+            ui.painter().rect_stroke(
+                response.rect.expand(Space::XXS),
+                Radius::CONTROL,
+                egui::Stroke::new(1.0, ring),
+                egui::StrokeKind::Outside,
+            );
+        }
         response.clicked()
     })
     .inner
+}
+
+/// The method as plain clickable text. An `egui::Label` would underline
+/// itself when focused, which repeats the focus ring.
+fn method_text(ui: &mut egui::Ui, method: &str) -> egui::Response {
+    let galley = egui::WidgetText::from(RichText::new(method).monospace()).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        ui.available_width(),
+        egui::TextStyle::Monospace,
+    );
+    let (rect, response) = ui.allocate_exact_size(galley.size(), egui::Sense::click());
+    let elided = galley.elided;
+    if ui.is_rect_visible(rect) {
+        ui.painter()
+            .galley(rect.min, galley, ui.visuals().text_color());
+    }
+    if elided {
+        response.on_hover_text(method)
+    } else {
+        response
+    }
 }
 
 /// The path, elided in the middle when it does not fit, then the host in
@@ -596,10 +693,14 @@ fn target_cell(ui: &mut egui::Ui, record: &Exchange, show_host: bool) {
     }
 }
 
-/// The status pill, with the status class or tunnel note on hover.
+/// The status text after the failure tick, with the status class or tunnel
+/// note on hover. The tick alone marks exceptions; the text keeps the
+/// default color.
 fn status_cell(ui: &mut egui::Ui, record: &Exchange) {
-    let (text, _) = outcome_text(record.outcome(), &crate::ui::style::theme::Palette::of(ui));
-    let status = ui.add(Badge::status(text, outcome_tone(record.outcome())));
+    let (text, tone) = outcome_text(record.outcome());
+    ui.spacing_mut().item_spacing.x = Space::S;
+    indicator::tick(ui, tone);
+    let status = ui.add(egui::Label::new(RichText::new(text).monospace()).truncate());
     if matches!(record.outcome(), Outcome::Tunnel(_)) {
         status.on_hover_text(crate::ui::dialogs::scope_help::TUNNEL_NOTE);
     } else {
@@ -630,6 +731,12 @@ fn content_type(record: &Exchange) -> Option<&str> {
 /// Total time once nothing more will be observed, for sorting.
 fn duration(record: &Exchange) -> Option<Duration> {
     record.timing().complete()
+}
+
+fn size_text(record: &Exchange) -> String {
+    record
+        .received_bytes()
+        .map_or_else(|| "—".to_owned(), |bytes| ByteSize::new(bytes).to_string())
 }
 
 fn duration_text(record: &Exchange) -> String {

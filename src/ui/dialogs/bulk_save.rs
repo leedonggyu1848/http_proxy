@@ -11,7 +11,6 @@ use http_inspector_exchange::{BodySide, ByteSize, Exchange};
 
 use crate::ui::InspectorApp;
 use crate::ui::dialogs::body_saving::PRIVACY_NOTICE;
-use crate::ui::style::theme::Palette;
 
 /// Which requests a bulk save covers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -180,8 +179,9 @@ impl BulkControls {
             }
             Some(BulkResult::Failed(error)) => {
                 ui.separator();
-                ui.colored_label(
-                    Palette::of(ui).error,
+                crate::ui::style::indicator::dot_label(
+                    ui,
+                    crate::ui::style::tokens::Tone::Danger,
                     format!("Saving bodies failed: {error}"),
                 );
             }

@@ -2,9 +2,10 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::SendError;
 use std::time::Duration;
 
-use crate::ui::style::theme::Palette;
+use crate::ui::style::indicator;
+use crate::ui::style::tokens::Tone;
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 use http_inspector_core::https::{
     CaInfo, CaTrustError, CaTrustStatus, CaTrustStore, HttpsSetupError,
 };
@@ -71,20 +72,22 @@ impl Badge {
             Self::Busy(Action::Check) => "Checking…",
             Self::Busy(Action::Install) => "Registering…",
             Self::Busy(Action::Remove) => "Removing…",
-            Self::Unknown => "● Not checked",
-            Self::Failed => "● Error",
-            Self::Status(CaTrustStatus::NotInstalled) => "● Not registered",
-            Self::Status(CaTrustStatus::Trusted) => "● Trusted",
-            Self::Status(CaTrustStatus::Untrusted) => "● Registered, not trusted",
+            Self::Unknown => "Not checked",
+            Self::Failed => "Error",
+            Self::Status(CaTrustStatus::NotInstalled) => "Not registered",
+            Self::Status(CaTrustStatus::Trusted) => "Trusted",
+            Self::Status(CaTrustStatus::Untrusted) => "Registered, not trusted",
         }
     }
 
-    const fn color(self, palette: &Palette) -> Color32 {
+    /// Tone of the dot before the status; states still being checked have
+    /// none.
+    const fn tone(self) -> Option<Tone> {
         match self {
-            Self::Busy(_) | Self::Unknown => palette.muted,
-            Self::Status(CaTrustStatus::Trusted) => palette.success,
-            Self::Status(CaTrustStatus::NotInstalled) => palette.warning,
-            Self::Failed | Self::Status(CaTrustStatus::Untrusted) => palette.error,
+            Self::Busy(_) | Self::Unknown => None,
+            Self::Status(CaTrustStatus::Trusted) => Some(Tone::Success),
+            Self::Status(CaTrustStatus::NotInstalled) => Some(Tone::Warning),
+            Self::Failed | Self::Status(CaTrustStatus::Untrusted) => Some(Tone::Danger),
         }
     }
 
@@ -122,9 +125,8 @@ impl CaPanel {
     /// `CA details` menu, inline in the toolbar.
     pub(crate) fn summary(&mut self, ui: &mut egui::Ui, directory: Option<&Path>) {
         self.receive();
-        let palette = Palette::of(ui);
         let Some(directory) = directory else {
-            ui.colored_label(palette.error, "● CA storage unavailable")
+            indicator::dot_label(ui, Tone::Danger, "CA storage unavailable")
                 .on_hover_text("Check HOME and platform storage settings.");
             return;
         };
@@ -139,9 +141,10 @@ impl CaPanel {
             ui.spinner();
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
-        let badge_button =
-            egui::Button::new(RichText::new(badge.text()).color(badge.color(&palette)))
-                .frame(false);
+        if let Some(tone) = badge.tone() {
+            indicator::dot(ui, tone);
+        }
+        let badge_button = egui::Button::new(badge.text()).frame(false);
         if ui
             .add_enabled(!matches!(badge, Badge::Busy(_)), badge_button)
             .on_hover_text("CA registration status. Click to check again.")
@@ -226,16 +229,15 @@ impl CaPanel {
     /// Errors and follow-up guidance shown right below the toolbar so they
     /// are never hidden in the details menu.
     pub(crate) fn messages(&self, ui: &mut egui::Ui) {
-        let palette = Palette::of(ui);
         if let Some(error) = &self.error {
-            ui.colored_label(palette.error, format!("CA: {error}"));
+            indicator::dot_label(ui, Tone::Danger, format!("CA: {error}"));
         }
         #[cfg(target_os = "macos")]
         if matches!(self.pending_action, Some(Action::Install | Action::Remove)) {
-            ui.colored_label(palette.info, KEYCHAIN_HELP);
+            ui.label(KEYCHAIN_HELP);
         }
         if let Some(notice) = self.notice {
-            ui.colored_label(palette.info, notice);
+            ui.label(notice);
         }
     }
 
@@ -365,21 +367,21 @@ mod tests {
     }
 
     #[test]
-    fn badge_colors_follow_severity() {
-        let palette = Palette::for_theme(crate::ui::style::theme::Theme::Dark);
+    fn badge_tones_follow_severity() {
         assert_eq!(
-            Badge::Status(CaTrustStatus::Trusted).color(&palette),
-            palette.success
+            Badge::Status(CaTrustStatus::Trusted).tone(),
+            Some(Tone::Success)
         );
         assert_eq!(
-            Badge::Status(CaTrustStatus::NotInstalled).color(&palette),
-            palette.warning
+            Badge::Status(CaTrustStatus::NotInstalled).tone(),
+            Some(Tone::Warning)
         );
         assert_eq!(
-            Badge::Status(CaTrustStatus::Untrusted).color(&palette),
-            palette.error
+            Badge::Status(CaTrustStatus::Untrusted).tone(),
+            Some(Tone::Danger)
         );
-        assert_eq!(Badge::Failed.color(&palette), palette.error);
+        assert_eq!(Badge::Failed.tone(), Some(Tone::Danger));
+        assert_eq!(Badge::Busy(Action::Check).tone(), None);
     }
 
     fn collect_text_shapes(shapes: &[egui::Shape], out: &mut Vec<(String, bool)>) {

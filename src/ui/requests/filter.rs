@@ -11,7 +11,8 @@ use http_inspector_exchange::Exchange;
 use crate::ui::InspectorApp;
 use crate::ui::detail::search::RequestSearch;
 use crate::ui::map::RecordMatchCache;
-use crate::ui::style::theme::Palette;
+use crate::ui::style::indicator;
+use crate::ui::style::tokens::Tone;
 
 impl InspectorApp {
     /// Filter, list options, and Clear, shown right above the request list.
@@ -47,28 +48,21 @@ impl InspectorApp {
         self.requests
             .map_filter_cache
             .sync(&key, &self.requests.records, false);
-        let palette = Palette::of(ui);
         let retained = self.requests.map_filter_cache.matched_count();
         let counted = self.map_scope_total(&key);
         let evicted = counted.saturating_sub(u64::try_from(retained).unwrap_or(u64::MAX));
         let approximate = key.method.is_some() && self.requests.records.evicted() > 0;
         let mut clear = false;
         ui.horizontal_wrapped(|ui| {
-            ui.label(
-                egui::RichText::new(format!("Map filter: {}", key.display()))
-                    .monospace()
-                    .color(palette.info),
-            );
-            let color = if evicted > 0 || approximate {
-                palette.warning
+            ui.label(egui::RichText::new(format!("Map filter: {}", key.display())).monospace());
+            let retention = map_retention_label(retained, evicted, approximate);
+            // The filter row is chrome, where warning text is not readable,
+            // so a dot marks counts that are partial.
+            let count = if evicted > 0 || approximate {
+                indicator::dot_label(ui, Tone::Warning, retention)
             } else {
-                palette.muted
+                ui.label(egui::RichText::new(retention).weak())
             };
-            let count = ui.label(
-                egui::RichText::new(map_retention_label(retained, evicted, approximate))
-                    .color(color)
-                    .small(),
-            );
             if approximate {
                 count.on_hover_text("Estimate based on requests included in endpoint analysis.");
             }
@@ -175,14 +169,13 @@ pub(crate) fn visible_records<'a>(
     analysis_filter::visible_records(records, filter, scope, |id| search.shows(id))
 }
 
-/// Tells the user what to do next when the list shows no rows.
+/// One line for a list without rows: why it is empty and, while capturing,
+/// the proxy address to point a client at.
 fn empty_list_text(captured: usize, proxy: Option<std::net::SocketAddr>) -> String {
     match proxy {
-        _ if captured > 0 => "No requests match the filter.".to_owned(),
-        Some(address) => format!(
-            "No requests yet.\nSet your client's HTTP proxy to http://{address} or use Open Browser."
-        ),
-        None => "The proxy is stopped. Press Start to capture requests.".to_owned(),
+        _ if captured > 0 => "No requests match the filter".to_owned(),
+        Some(address) => format!("No requests yet · proxy http://{address}"),
+        None => "No requests · proxy stopped".to_owned(),
     }
 }
 
@@ -219,7 +212,7 @@ mod tests {
     fn empty_list_explains_the_next_step() {
         let address = std::net::SocketAddr::from(([127, 0, 0, 1], 18080));
         assert!(empty_list_text(0, Some(address)).contains("http://127.0.0.1:18080"));
-        assert!(empty_list_text(0, None).contains("Start"));
+        assert!(empty_list_text(0, None).contains("stopped"));
         assert!(empty_list_text(3, Some(address)).contains("match the filter"));
     }
 

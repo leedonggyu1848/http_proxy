@@ -9,7 +9,8 @@ use http_inspector_interop::curl::{
     curl_unavailable_reason,
 };
 
-use crate::ui::style::theme::Palette;
+use crate::ui::style::indicator;
+use crate::ui::style::tokens::Tone;
 
 /// Label shared by the request-list menu and the details panel.
 pub(super) const COPY_LABEL: &str = "Copy as cURL";
@@ -101,14 +102,15 @@ impl CurlCopy {
             }
             ui.ctx().request_repaint_after(remaining);
         }
-        let palette = Palette::of(ui);
-        let color = match notice.kind {
-            NoticeKind::Copied => palette.success,
-            NoticeKind::CopiedWithRedactions | NoticeKind::Refused => palette.warning,
-        };
         let mut dismissed = false;
         ui.horizontal_wrapped(|ui| {
-            ui.colored_label(color, &notice.text);
+            // A plain copy is the normal outcome; only the others need a mark.
+            match notice.kind {
+                NoticeKind::Copied => ui.label(&notice.text),
+                NoticeKind::CopiedWithRedactions | NoticeKind::Refused => {
+                    indicator::dot_label(ui, Tone::Warning, &notice.text)
+                }
+            };
             dismissed = ui.small_button("Dismiss").clicked();
         });
         if dismissed {
