@@ -19,7 +19,7 @@ alone does not guarantee:
 3. Multi-module crates (`http-inspector-exchange`, `http-inspector-core`) keep
    their internal module dependency direction (`crate::`, `<crate>::`, `self::`,
    `super::` normalized against the file's module path, including inline `mod`
-   blocks, and crate-root aliases rejected).
+   blocks, and crate-root aliases including `extern crate self` rejected).
 4. `Exchange` write handles (`ExchangeWriter`, `BodyPreviewWriter`,
    `TunnelWriter`) may be used in production code only inside
    `http-inspector-exchange` and `http-inspector-core`'s `interception` and
@@ -156,6 +156,15 @@ class Token:
 @dataclass(frozen=True)
 class CrateRef:
     resolved: list[str]
+    raw: str
+    line: int
+    in_test: bool
+
+
+@dataclass(frozen=True)
+class ExternCrateAlias:
+    target: str
+    alias: str | None
     raw: str
     line: int
     in_test: bool
@@ -577,14 +586,64 @@ def _parse_use_tree(
     return results, pos
 
 
+def _strip_raw_ident(ident: str) -> str:
+    return ident.removeprefix("r#")
+
+
+def extract_extern_crate_aliases(
+    tokens: list[Token], crate_ident: str
+) -> list[ExternCrateAlias]:
+    """Find `extern crate self` or `extern crate <crate_ident>` declarations."""
+    aliases: list[ExternCrateAlias] = []
+    n = len(tokens)
+    i = 0
+    while i + 2 < n:
+        tok = tokens[i]
+        if (
+            tok.kind == "IDENT"
+            and tok.text == "extern"
+            and tokens[i + 1].kind == "IDENT"
+            and tokens[i + 1].text == "crate"
+            and tokens[i + 2].kind == "IDENT"
+        ):
+            target = tokens[i + 2].text
+            if target == "self" or _strip_raw_ident(target) == crate_ident:
+                alias: str | None = None
+                raw = f"extern crate {target}"
+                next_i = i + 3
+                if (
+                    i + 4 < n
+                    and tokens[i + 3].kind == "IDENT"
+                    and tokens[i + 3].text == "as"
+                    and tokens[i + 4].kind == "IDENT"
+                ):
+                    alias = tokens[i + 4].text
+                    raw = f"extern crate {target} as {alias}"
+                    next_i = i + 5
+                aliases.append(
+                    ExternCrateAlias(target, alias, raw, tok.line, tok.in_test)
+                )
+                i = next_i
+                continue
+        i += 1
+    return aliases
+
+
 def normalize_crate_path(
-    raw_path: list[str], cur_mod_path: tuple[str, ...], crate_ident: str
+    raw_path: list[str],
+    cur_mod_path: tuple[str, ...],
+    crate_ident: str,
+    crate_aliases: frozenset[str] = frozenset(),
 ) -> list[str] | None:
-    """Resolve `crate::`, `<crate_ident>::`, `self::`, or `super::` paths to crate-root segments."""
+    """Resolve `crate::`, `<crate_ident>::`, crate-root alias, `self::`, or `super::` paths."""
     if not raw_path:
         return None
     head = raw_path[0]
-    if head in ("crate", crate_ident):
+    if (
+        head in ("crate", crate_ident)
+        or head in crate_aliases
+        or _strip_raw_ident(head) in crate_aliases
+    ):
         resolved: list[str] = []
         segments = raw_path[1:]
     elif head in ("self", "super"):
@@ -604,27 +663,45 @@ def normalize_crate_path(
     return resolved
 
 
-def extract_crate_refs(tokens: list[Token], crate_ident: str) -> list[CrateRef]:
+def extract_crate_refs(
+    tokens: list[Token],
+    crate_ident: str,
+    crate_aliases: frozenset[str] = frozenset(),
+) -> list[CrateRef]:
     """Extract and normalize all intra-crate paths from `use` items and inline paths."""
     refs: list[CrateRef] = []
     n = len(tokens)
     i = 0
-    roots = ("crate", crate_ident, "self", "super")
+    roots = frozenset({"crate", crate_ident, "self", "super"}) | crate_aliases
     while i < n:
         tok = tokens[i]
         if tok.kind == "IDENT" and tok.text == "use":
             paths, next_i = _parse_use_tree(tokens, i + 1, [])
             for path, line, in_test, mod_path in paths:
-                resolved = normalize_crate_path(path, mod_path, crate_ident)
+                resolved = normalize_crate_path(
+                    path, mod_path, crate_ident, crate_aliases
+                )
                 if resolved is not None:
                     refs.append(CrateRef(resolved, "::".join(path), line, in_test))
             i = next_i + 1
             continue
 
+        is_path_continuation = (
+            i > 0
+            and tokens[i - 1].text == "::"
+            and i >= 2
+            and (
+                tokens[i - 2].kind == "IDENT"
+                or (
+                    tokens[i - 2].text == ">"
+                    and (i < 3 or tokens[i - 3].text not in ("-", "="))
+                )
+            )
+        )
         if (
             tok.kind == "IDENT"
-            and tok.text in roots
-            and (i == 0 or tokens[i - 1].text != "::")
+            and (tok.text in roots or _strip_raw_ident(tok.text) in crate_aliases)
+            and not is_path_continuation
             and i + 2 < n
             and tokens[i + 1].text == "::"
             and tokens[i + 2].kind == "IDENT"
@@ -634,7 +711,9 @@ def extract_crate_refs(tokens: list[Token], crate_ident: str) -> list[CrateRef]:
             while j + 1 < n and tokens[j].text == "::" and tokens[j + 1].kind == "IDENT":
                 raw.append(tokens[j + 1].text)
                 j += 2
-            resolved = normalize_crate_path(raw, tok.mod_path, crate_ident)
+            resolved = normalize_crate_path(
+                raw, tok.mod_path, crate_ident, crate_aliases
+            )
             if resolved is not None:
                 refs.append(CrateRef(resolved, "::".join(raw), tok.line, tok.in_test))
             i = j
@@ -848,6 +927,26 @@ def check_intra_crate(root: Path, spec: CrateBoundarySpec) -> list[Violation]:
             )
 
     test_files = discover_cfg_test_files(src_dir)
+    crate_root_aliases: set[str] = set()
+
+    lib_rs = src_dir / "lib.rs"
+    if lib_rs.exists():
+        lib_tokens = annotate_scopes(
+            tokenize_rust(lib_rs.read_text()),
+            lib_rs.resolve() in test_files,
+            module_path_for(src_dir, lib_rs),
+        )
+        for ext in extract_extern_crate_aliases(lib_tokens, spec.crate_ident):
+            violations.append(
+                Violation(
+                    lib_rs,
+                    ext.line,
+                    f"forbidden crate-root alias via `{ext.raw}` "
+                    f"in `{spec.crate_ident}`",
+                )
+            )
+            if ext.alias is not None and ext.alias != "_":
+                crate_root_aliases.add(_strip_raw_ident(ext.alias))
 
     for rs_file in sorted(src_dir.rglob("*.rs")):
         whole_file_is_test = rs_file.resolve() in test_files
@@ -867,8 +966,23 @@ def check_intra_crate(root: Path, spec: CrateBoundarySpec) -> list[Violation]:
                 )
             )
 
+        file_aliases = set(crate_root_aliases)
+        for ext in extract_extern_crate_aliases(tokens, spec.crate_ident):
+            violations.append(
+                Violation(
+                    rs_file,
+                    ext.line,
+                    f"forbidden crate-root alias via `{ext.raw}` "
+                    f"in `{spec.crate_ident}::{src_mod}`",
+                )
+            )
+            if ext.alias is not None and ext.alias != "_":
+                file_aliases.add(_strip_raw_ident(ext.alias))
+
         allowed = spec.allowed_deps[src_mod]
-        for ref in extract_crate_refs(tokens, spec.crate_ident):
+        for ref in extract_crate_refs(
+            tokens, spec.crate_ident, frozenset(file_aliases)
+        ):
             if not ref.resolved:
                 violations.append(
                     Violation(
