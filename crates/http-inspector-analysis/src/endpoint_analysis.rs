@@ -40,7 +40,7 @@ impl EndpointAnalysis {
         }
     }
 
-    /// Queues `exchange`, which the URL map placed on `node`. `CONNECT`
+    /// Queues a finished `exchange`, which the URL map placed on `node`. `CONNECT`
     /// tunnels have no path or body structure and are skipped.
     pub fn submit(&mut self, node: NodeId, exchange: &Exchange) {
         if exchange.source() == CaptureSource::Connect {
@@ -52,6 +52,13 @@ impl EndpointAnalysis {
                 method: exchange.request().method().clone(),
             };
             analyzer.submit(key, exchange.clone());
+        }
+    }
+
+    pub(crate) fn note_unwatched(&mut self, node: Option<NodeId>, exchange: &Exchange) {
+        if self.analyzer.is_some() && node.is_some() && exchange.source() != CaptureSource::Connect
+        {
+            self.schemas.note_skipped(1);
         }
     }
 

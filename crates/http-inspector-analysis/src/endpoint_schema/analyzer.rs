@@ -1,18 +1,14 @@
 //! Background thread that describes finished exchanges.
 //!
 //! The UI thread only queues exchanges and merges finished observations.
-//! Waiting for bodies to finish, reading them from the [`BodySource`] and
-//! parsing them all happen on this thread, so neither the UI nor the
-//! forwarding path waits for disk or parsing.
+//! This thread reads completed bodies from the [`BodySource`] and parses
+//! them, so neither the UI nor the forwarding path waits for disk or parsing.
 
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{
-    Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError, sync_channel,
-};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::thread;
-use std::time::Duration;
 
 use super::endpoint::EndpointObservation;
 use super::observe::observe_exchange;
@@ -23,12 +19,6 @@ use http_inspector_exchange::{BodySource, Exchange};
 const JOB_CAPACITY: usize = 4_096;
 /// Finished observations that may wait for the UI thread.
 const RESULT_CAPACITY: usize = 1_024;
-/// Exchanges still in progress that the analysis thread keeps watching;
-/// beyond this the oldest is described as it is, with unfinished bodies
-/// counted as truncated.
-const MAX_WATCHED: usize = 4_096;
-/// How often unfinished exchanges are checked.
-const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 struct Job {
     generation: u64,
@@ -88,7 +78,6 @@ impl SchemaAnalyzer {
                     results: result_sender,
                     generation: worker_generation,
                     bodies,
-                    watched: Vec::new(),
                 }
                 .run(&wake);
             })?;
@@ -100,23 +89,24 @@ impl SchemaAnalyzer {
         })
     }
 
-    /// Queues `exchange` for description without waiting. When the queue is
-    /// full the exchange is counted as skipped instead.
+    /// Queues a finished `exchange` for description without waiting. Counts
+    /// live exchanges and exchanges that cannot be queued as skipped.
     pub fn submit(&mut self, key: EndpointKey, exchange: Exchange) {
-        let job = Job {
-            generation: self.generation.load(Ordering::Acquire),
-            key,
-            exchange,
-        };
-        match self.jobs.try_send(job) {
-            Ok(()) => {}
-            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
-                self.skipped = self.skipped.saturating_add(1);
-            }
+        if exchange.is_live()
+            || self
+                .jobs
+                .try_send(Job {
+                    generation: self.generation.load(Ordering::Acquire),
+                    key,
+                    exchange,
+                })
+                .is_err()
+        {
+            self.skipped = self.skipped.saturating_add(1);
         }
     }
 
-    /// Discards every queued and unfinished exchange, as on `Clear`.
+    /// Discards every queued exchange, as on `Clear`.
     pub fn reset(&mut self) {
         let _previous = self.generation.fetch_add(1, Ordering::AcqRel);
         self.skipped = 0;
@@ -147,74 +137,72 @@ struct Worker {
     results: SyncSender<Finished>,
     generation: Arc<AtomicU64>,
     bodies: Arc<dyn BodySource>,
-    watched: Vec<Job>,
 }
 
 impl Worker {
-    fn run(mut self, wake: &dyn Fn()) {
-        while self.receive() {
-            let current = self.generation.load(Ordering::Acquire);
-            self.watched.retain(|job| job.generation == current);
-            if !self.describe_finished(wake) {
-                return;
-            }
-        }
-    }
-
-    /// Waits for new jobs, or for the next poll while exchanges are being
-    /// watched. Returns `false` once the handle is dropped.
-    fn receive(&mut self) -> bool {
-        let first = if self.watched.is_empty() {
-            match self.jobs.recv() {
-                Ok(job) => Some(job),
-                Err(_) => return false,
-            }
-        } else {
-            match self.jobs.recv_timeout(POLL_INTERVAL) {
-                Ok(job) => Some(job),
-                Err(RecvTimeoutError::Timeout) => None,
-                Err(RecvTimeoutError::Disconnected) => return false,
-            }
-        };
-        self.watched.extend(first);
-        loop {
-            match self.jobs.try_recv() {
-                Ok(job) => self.watched.push(job),
-                Err(TryRecvError::Empty) => return true,
-                Err(TryRecvError::Disconnected) => return false,
-            }
-        }
-    }
-
-    /// Describes every finished exchange, and the oldest unfinished ones
-    /// beyond [`MAX_WATCHED`]. Returns `false` once the handle is dropped.
-    fn describe_finished(&mut self, wake: &dyn Fn()) -> bool {
-        let overflow = self.watched.len().saturating_sub(MAX_WATCHED);
-        let mut ready = Vec::new();
-        let mut index = 0;
-        self.watched.retain(|job| {
-            let take = index < overflow || !job.exchange.is_live();
-            index += 1;
-            if take {
-                ready.push((job.generation, job.key.clone(), job.exchange.clone()));
-            }
-            !take
-        });
-        for (generation, key, exchange) in ready {
+    fn run(self, wake: &dyn Fn()) {
+        while let Ok(Job {
+            generation,
+            key,
+            exchange,
+        }) = self.jobs.recv()
+        {
             if generation != self.generation.load(Ordering::Acquire) {
                 continue;
             }
             let observation = observe_exchange(&exchange, self.bodies.as_ref());
+            drop(exchange);
             let finished = Finished {
                 generation,
                 key,
                 observation,
             };
             if self.results.send(finished).is_err() {
-                return false;
+                return;
             }
             wake();
         }
-        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+
+    use http::{Method, StatusCode};
+    use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
+
+    use super::*;
+    use crate::url_map::UrlMap;
+
+    #[test]
+    fn full_queue_counts_the_exchange_as_skipped() -> Result<(), Box<dyn Error>> {
+        let (jobs, pending) = sync_channel(1);
+        let (_results, results) = sync_channel(1);
+        let mut analyzer = SchemaAnalyzer {
+            jobs,
+            results,
+            generation: Arc::new(AtomicU64::new(0)),
+            skipped: 0,
+        };
+        let exchange = ExchangeBuilder::http(Method::GET, "http://fixture.test/api")?
+            .respond(ResponseFixture::new(StatusCode::NO_CONTENT))?;
+        let node = UrlMap::new()
+            .observe_exchange(&exchange)
+            .ok_or("missing node")?;
+        let key = EndpointKey {
+            node,
+            method: Method::GET,
+        };
+        analyzer.submit(key.clone(), exchange.clone());
+        analyzer.submit(key, exchange);
+
+        let mut schemas = EndpointSchemas::new();
+        assert!(analyzer.drain_into(&mut schemas));
+        assert_eq!(schemas.skipped_requests(), 1);
+        assert!(!analyzer.drain_into(&mut schemas));
+        assert!(pending.try_recv().is_ok());
+        assert!(pending.try_recv().is_err());
+        Ok(())
     }
 }

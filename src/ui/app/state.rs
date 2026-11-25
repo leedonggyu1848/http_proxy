@@ -139,12 +139,15 @@ impl RequestsState {
         }
     }
 
-    pub(super) fn record_added(&mut self, record: Exchange) {
-        if let Some(removed) = self.records.push(record)
-            && self.selected == Some(removed.id())
+    pub(super) fn record_added(&mut self, record: Exchange) -> Option<Exchange> {
+        let removed = self.records.push(record);
+        if removed
+            .as_ref()
+            .is_some_and(|record| self.selected == Some(record.id()))
         {
             self.selected = None;
         }
+        removed
     }
 
     pub(super) fn clear(&mut self, engine_dropped: u64) {
@@ -323,16 +326,16 @@ mod tests {
         let oldest = ExchangeBuilder::http(Method::GET, "http://fixture.test/a")?.in_flight()?;
         let selected = ExchangeBuilder::http(Method::GET, "http://fixture.test/b")?.in_flight()?;
         let selected_id = selected.id();
-        requests.record_added(oldest);
-        requests.record_added(selected);
+        let _evicted = requests.record_added(oldest);
+        let _evicted = requests.record_added(selected);
         requests.selected = Some(selected_id);
 
-        requests.record_added(
+        let _evicted = requests.record_added(
             ExchangeBuilder::http(Method::GET, "http://fixture.test/c")?.in_flight()?,
         );
         assert_eq!(requests.selected, Some(selected_id));
 
-        requests.record_added(
+        let _evicted = requests.record_added(
             ExchangeBuilder::http(Method::GET, "http://fixture.test/d")?.in_flight()?,
         );
         assert_eq!(requests.selected, None);
