@@ -366,6 +366,54 @@ fn write_creates_a_private_file_and_never_replaces_one() -> TestResult {
 
 /// Checks the fields and types HAR 1.2 requires, and that `time` is the sum
 /// of the observed timings.
+#[test]
+fn empty_complete_request_differs_from_unavailable_and_incomplete_requests() -> TestResult {
+    let options = HarOptions {
+        include_bodies: true,
+        include_sensitive_headers: false,
+    };
+    for (lifecycle, expected) in [
+        (BodyLifecycle::Complete, None),
+        (BodyLifecycle::Streaming, Some("still streaming")),
+        (BodyLifecycle::Interrupted, Some("sender stopped")),
+        (BodyLifecycle::Cancelled, Some("receiver stopped")),
+    ] {
+        let record = ExchangeBuilder::http(Method::POST, format!("http://{TEST_HOST}/"))?
+            .request_body(Vec::new(), lifecycle)
+            .in_flight()?;
+        let har = document(&[record], options, SystemTime::now());
+        let request = &entries(&har)[0]["request"];
+        assert_eq!(request["bodySize"], 0);
+        match expected {
+            None => assert!(request.get("postData").is_none()),
+            Some(reason) => assert!(
+                request["postData"]["comment"]
+                    .as_str()
+                    .is_some_and(|comment| comment.contains(reason))
+            ),
+        }
+    }
+
+    let record = ExchangeBuilder::http(Method::POST, format!("http://{TEST_HOST}/"))?
+        .request_body(Vec::new(), BodyLifecycle::Complete)
+        .in_flight()?;
+    let preview = record
+        .request()
+        .body()
+        .ok_or("missing request body")?
+        .clone();
+    preview.with_locked_prefix_for_test(|| {
+        let har = document(&[record], options, SystemTime::now());
+        let request = &entries(&har)[0]["request"];
+        assert!(
+            request["postData"]["comment"]
+                .as_str()
+                .is_some_and(|comment| comment.contains("preview was being written"))
+        );
+    });
+    Ok(())
+}
+
 fn assert_har_1_2(har: &Value) {
     let log = &har["log"];
     assert_eq!(log["version"], "1.2");

@@ -378,6 +378,13 @@ impl BodyPreviewWriter {
 }
 
 impl BodyPreview {
+    /// Runs a test while the retained bytes are locked by another reader.
+    #[cfg(feature = "test-support")]
+    pub fn with_locked_prefix_for_test<T>(&self, test: impl FnOnce() -> T) -> T {
+        let _guard = lock_recovering(&self.inner.prefix);
+        test()
+    }
+
     /// Returns the number of body bytes observed so far without copying the preview.
     #[must_use]
     pub fn observed_bytes(&self) -> u64 {

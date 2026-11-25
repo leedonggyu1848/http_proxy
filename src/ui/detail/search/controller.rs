@@ -80,6 +80,8 @@ pub(crate) struct RequestSearch {
     results: HashMap<RecordId, Checked>,
     /// Records sent to the worker for the active query and not reported yet.
     queued: HashSet<RecordId>,
+    /// Earliest time to retry previews that were locked during a search.
+    retry_at: Option<Instant>,
     summary: Summary,
     backend: SearchBackend,
 }
@@ -107,6 +109,7 @@ impl RequestSearch {
             generation: 0,
             results: HashMap::new(),
             queued: HashSet::new(),
+            retry_at: None,
             summary: Summary::default(),
             backend,
         }
@@ -223,6 +226,7 @@ impl RequestSearch {
             worker.supersede(self.generation);
         }
         self.queued.clear();
+        self.retry_at = None;
         self.error = None;
         let previous = self.active.take();
         if settings.text.is_empty() {
@@ -261,6 +265,9 @@ impl RequestSearch {
             }
             for checked in report.checked {
                 self.queued.remove(&checked.id);
+                if checked.retry {
+                    self.retry_at = Some(Instant::now() + RETRY);
+                }
                 self.results.insert(checked.id, checked);
             }
         }
@@ -282,18 +289,27 @@ impl RequestSearch {
         let Some(query) = self.active.as_ref().map(|active| Arc::clone(&active.query)) else {
             return true;
         };
+        let retry_due = self
+            .retry_at
+            .is_none_or(|deadline| Instant::now() >= deadline);
+        let mut deferred = false;
         let pending: Vec<Exchange> = records
             .iter()
             .filter(|record| !self.queued.contains(&record.id()))
             .filter(|record| {
-                self.results
-                    .get(&record.id())
-                    .is_none_or(|checked| !checked.settled && document::is_settled(record))
+                self.results.get(&record.id()).is_none_or(|checked| {
+                    let ready = !checked.settled && document::is_settled(record);
+                    if ready && checked.retry && !retry_due {
+                        deferred = true;
+                        return false;
+                    }
+                    ready
+                })
             })
             .cloned()
             .collect();
         if pending.is_empty() {
-            return true;
+            return !deferred;
         }
         match &mut self.backend {
             SearchBackend::Worker(worker) => {
@@ -307,11 +323,15 @@ impl RequestSearch {
             SearchBackend::Inline { cache, .. } => {
                 for record in &pending {
                     let checked = document::check(record, &query.matcher, query.scope, cache);
+                    if checked.retry {
+                        self.retry_at = Some(Instant::now() + RETRY);
+                        deferred = true;
+                    }
                     self.results.insert(checked.id, checked);
                 }
             }
         }
-        true
+        !deferred
     }
 
     fn summarize(&self, records: &RecordList<Exchange>) -> Summary {
@@ -326,7 +346,7 @@ impl RequestSearch {
             let Some(checked) = self.results.get(&record.id()) else {
                 continue;
             };
-            if !self.queued.contains(&checked.id) {
+            if !self.queued.contains(&checked.id) && !checked.retry {
                 summary.checked += 1;
             }
             if checked.matched {
@@ -453,5 +473,48 @@ mod tests {
             text.contains("2 only in their first 8 KiB, 1 binary, skipped"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn a_locked_preview_is_rechecked_after_a_delay_without_repeating_immediately()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use http::{Method, StatusCode};
+        use http_inspector_exchange::{BodyLifecycle, ExchangeBuilder, ResponseFixture};
+
+        let record = ExchangeBuilder::http(Method::POST, "http://api.example.test/")?
+            .request_body("search needle", BodyLifecycle::Complete)
+            .respond(ResponseFixture::new(StatusCode::OK))?;
+        let id = record.id();
+        let preview = record
+            .request()
+            .body()
+            .ok_or("missing request body")?
+            .clone();
+        let mut records = RecordList::new(1);
+        let _evicted = records.push(record);
+        let mut search = RequestSearch::new(&egui::Context::default());
+        search.backend = SearchBackend::Inline {
+            notice: String::new(),
+            cache: BodyCache::default(),
+        };
+        let mut query = settings("needle", false, false);
+        query.scope = SearchScope::RequestBody;
+        search.apply(query);
+
+        preview.with_locked_prefix_for_test(|| {
+            assert!(!search.submit(&records));
+            assert!(search.results.get(&id).is_some_and(|checked| checked.retry));
+            assert!(!search.submit(&records));
+        });
+        search.retry_at = Some(Instant::now());
+        assert!(search.submit(&records));
+        assert!(search.shows(id));
+        assert!(
+            search
+                .results
+                .get(&id)
+                .is_some_and(|checked| checked.settled)
+        );
+        Ok(())
     }
 }

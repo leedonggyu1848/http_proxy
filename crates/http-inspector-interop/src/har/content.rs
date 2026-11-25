@@ -89,17 +89,23 @@ pub(super) fn response_content(
     Value::Object(content)
 }
 
-/// Builds the request `postData`, or `None` when the export leaves bodies
-/// out or the request had no body bytes.
+/// Builds the request `postData`, or `None` when body export is disabled,
+/// no body exists, or a complete request has an empty body.
 pub(super) fn post_data(
     body: Option<&BodyPreview>,
     headers: &HeaderPreview,
     include_body: bool,
 ) -> Option<Value> {
-    let body = body.filter(|body| include_body && body.observed_bytes() > 0)?;
+    let body = body.filter(|_| include_body)?;
+    let snapshot = body.snapshot();
+    if snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.is_complete() && snapshot.bytes().is_empty())
+    {
+        return None;
+    }
     let mut data = Map::new();
     let _ = data.insert("mimeType".into(), json!(mime_type(headers)));
-    let snapshot = body.snapshot();
     match body_text(snapshot.as_ref(), &encodings(headers)) {
         BodyText::Text {
             text,
