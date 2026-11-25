@@ -1,5 +1,5 @@
 use std::io;
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, SendError, Sender, TryRecvError};
 use std::thread;
 
 use eframe::egui;
@@ -61,7 +61,7 @@ impl<T: Send + 'static> TaskStarter<T> {
         self,
         name: &str,
         context: &egui::Context,
-        work: impl FnOnce(&dyn Fn(T) -> bool) -> io::Result<T> + Send + 'static,
+        work: impl FnOnce(&dyn Fn(T) -> Result<(), SendError<()>>) -> io::Result<T> + Send + 'static,
     ) {
         self.start_with(context, work, |worker| {
             thread::Builder::new().name(name.to_owned()).spawn(worker)?;
@@ -72,13 +72,13 @@ impl<T: Send + 'static> TaskStarter<T> {
     fn start_with(
         self,
         context: &egui::Context,
-        work: impl FnOnce(&dyn Fn(T) -> bool) -> io::Result<T> + Send + 'static,
+        work: impl FnOnce(&dyn Fn(T) -> Result<(), SendError<()>>) -> io::Result<T> + Send + 'static,
         spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> io::Result<()>,
     ) {
         let sender = self.0.clone();
         let worker_context = context.clone();
         if let Err(error) = spawn(Box::new(move || {
-            let result = work(&|value| sender.send(Ok(value)).is_ok());
+            let result = work(&|value| sender.send(Ok(value)).map_err(|_| SendError(())));
             let _receiver_closed = sender.send(result);
             worker_context.request_repaint();
         })) {
