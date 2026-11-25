@@ -16,8 +16,8 @@ use http_inspector_content::detect;
 use http_inspector_content::format::{BodyFormat, ViewMode, form};
 use http_inspector_exchange::http_semantics::urlencoded;
 use http_inspector_exchange::{
-    BodyLifecycle, BodyPreview, BodyRetention, BodySide, BodySnapshot, CapturedRequest, Exchange,
-    HeaderPreview, MediaType, Outcome, RecordId, TunnelPreview,
+    BodyLifecycle, BodyPreview, BodyRetention, BodySide, BodySnapshot, Exchange, HeaderPreview,
+    ImageFormat, MediaType, Outcome, RecordId, TunnelPreview,
 };
 use std::time::Duration;
 
@@ -91,19 +91,18 @@ impl InspectorApp {
                             request.headers(),
                             body.headers_search(),
                         );
+                        ui.separator();
+                        render_outcome(ui, record, &mut body, None);
                     }
-                    DetailTab::Body => {
-                        let has_tree = has_tree(request.media_type())
-                            || matches!(record.outcome(),
-                            Outcome::Response(response) if has_tree(response.media_type()));
-                        body.mode = view_mode_bar(ui, &mut detail.body_mode, has_tree);
-                        body_saving.menus(ui, record, &self.dialogs.save);
-                        ui.strong("Request body");
-                        render_optional_body(ui, request, &mut body);
-                    }
+                    DetailTab::Body => render_body_tab(
+                        ui,
+                        record,
+                        &mut body,
+                        &mut detail.body_mode,
+                        &mut detail.image,
+                        |ui| body_saving.menus(ui, record, &self.dialogs.save),
+                    ),
                 }
-                ui.separator();
-                render_outcome(ui, record, detail.tab, &mut body, &mut detail.image);
             });
     }
 }
@@ -305,27 +304,90 @@ fn render_headers(ui: &mut egui::Ui, id: &str, headers: &HeaderPreview, search: 
     }
 }
 
-fn render_optional_body(ui: &mut egui::Ui, request: &CapturedRequest, panel: &mut BodyPanel<'_>) {
-    match request.body() {
-        Some(body) => {
-            let message = (request.headers(), request.media_type());
-            render_body(ui, body, message, (panel, BodySide::Request), None);
+fn render_body_tab(
+    ui: &mut egui::Ui,
+    record: &Exchange,
+    panel: &mut BodyPanel<'_>,
+    mode: &mut ViewMode,
+    image: &mut image_view::ImagePanel,
+    show_save_menus: impl FnOnce(&mut egui::Ui),
+) {
+    let request = record.request();
+    let mut request_body = request
+        .body()
+        .map(|body| BodyDetail::new(body, request.headers(), request.media_type(), None));
+    let mut response_body = match record.outcome() {
+        Outcome::Response(response) => {
+            let media_type = response.media_type();
+            let image = media_type
+                .and_then(ImageFormat::from_media_type)
+                .map(|format| (image, format));
+            Some(BodyDetail::new(
+                response.body(),
+                response.headers(),
+                media_type,
+                image,
+            ))
         }
-        None => {
-            ui.weak("Body was not observed.");
+        _ => None,
+    };
+    let mode_bodies = [request_body.as_ref(), response_body.as_ref()]
+        .map(|body| body.filter(|body| body.uses_view_mode()));
+    if mode_bodies.iter().any(Option::is_some) {
+        let has_tree = mode_bodies
+            .into_iter()
+            .flatten()
+            .any(|body| has_tree(body.media_type));
+        panel.mode = view_mode_bar(ui, mode, has_tree);
+    }
+    show_save_menus(ui);
+    ui.strong("Request body");
+    if let Some(request_body) = request_body.as_mut() {
+        render_body(ui, request_body, panel, BodySide::Request);
+    } else {
+        ui.weak("Body was not observed.");
+    }
+    ui.separator();
+    render_outcome(ui, record, panel, response_body.as_mut());
+}
+
+struct BodyDetail<'a> {
+    snapshot: Option<BodySnapshot>,
+    headers: &'a HeaderPreview,
+    media_type: Option<&'a MediaType>,
+    image: Option<(&'a mut image_view::ImagePanel, ImageFormat)>,
+}
+
+impl<'a> BodyDetail<'a> {
+    fn new(
+        body: &BodyPreview,
+        headers: &'a HeaderPreview,
+        media_type: Option<&'a MediaType>,
+        image: Option<(&'a mut image_view::ImagePanel, ImageFormat)>,
+    ) -> Self {
+        Self {
+            snapshot: body.snapshot(),
+            headers,
+            media_type,
+            image,
         }
+    }
+
+    fn uses_view_mode(&self) -> bool {
+        self.image.is_none()
+            && self.snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot.retention() != BodyRetention::Omitted && !snapshot.bytes().is_empty()
+            })
     }
 }
 
-/// Draws a body preview; `image` draws image bodies of that record as images.
 fn render_body(
     ui: &mut egui::Ui,
-    body: &BodyPreview,
-    (headers, media_type): (&HeaderPreview, Option<&MediaType>),
-    (panel, side): (&mut BodyPanel<'_>, BodySide),
-    image: Option<&mut image_view::ImagePanel>,
+    body: &mut BodyDetail<'_>,
+    panel: &mut BodyPanel<'_>,
+    side: BodySide,
 ) {
-    let Some(snapshot) = body.snapshot() else {
+    let Some(snapshot) = body.snapshot.as_ref() else {
         ui.weak("Preview is updating.");
         return;
     };
@@ -333,7 +395,7 @@ fn render_body(
         "{} bytes observed · {} · {}",
         snapshot.observed_bytes(),
         lifecycle_text(snapshot.lifecycle()),
-        retention_text(&snapshot)
+        retention_text(snapshot)
     ));
     if snapshot.retention() == BodyRetention::Omitted {
         ui.colored_label(
@@ -346,12 +408,9 @@ fn render_body(
         ui.weak("Empty body.");
         return;
     }
-    let encodings = headers.get("content-encoding").collect::<Vec<_>>();
-    if let Some(image) = image
-        && let Some(format) =
-            media_type.and_then(http_inspector_exchange::ImageFormat::from_media_type)
-    {
-        image.show(ui, panel.record, &snapshot, &encodings, format);
+    let encodings = body.headers.get("content-encoding").collect::<Vec<_>>();
+    if let Some((image, format)) = body.image.as_mut() {
+        image.show(ui, panel.record, snapshot, &encodings, *format);
         return;
     }
     let source = BodySource {
@@ -359,8 +418,8 @@ fn render_body(
         side,
         bytes: snapshot.bytes(),
         encodings: &encodings,
-        media_type,
-        capture: Capture::of(&snapshot),
+        media_type: body.media_type,
+        capture: Capture::of(snapshot),
         search: panel.search.filter(|query| query.scope.covers_body(side)),
     };
     panel.cache.show(ui, &source, panel.mode);
@@ -387,13 +446,12 @@ fn retention_text(snapshot: &BodySnapshot) -> &'static str {
 fn render_outcome(
     ui: &mut egui::Ui,
     record: &Exchange,
-    tab: DetailTab,
     body: &mut BodyPanel<'_>,
-    image: &mut image_view::ImagePanel,
+    response_body: Option<&mut BodyDetail<'_>>,
 ) {
     match record.outcome() {
-        Outcome::Response(response) => match tab {
-            DetailTab::Headers => {
+        Outcome::Response(response) => match response_body {
+            None => {
                 ui.strong(format!(
                     "Response headers · {} {} ({}) · {:?}",
                     response.status().as_str(),
@@ -404,15 +462,9 @@ fn render_outcome(
                 let search = body.headers_search();
                 render_headers(ui, "response-headers", response.headers(), search);
             }
-            DetailTab::Body => {
+            Some(response_body) => {
                 ui.strong("Response body");
-                render_body(
-                    ui,
-                    response.body(),
-                    (response.headers(), response.media_type()),
-                    (body, BodySide::Response),
-                    Some(image),
-                );
+                render_body(ui, response_body, body, BodySide::Response);
             }
         },
         Outcome::Tunnel(tunnel) => {
