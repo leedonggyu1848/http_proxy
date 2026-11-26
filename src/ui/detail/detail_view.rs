@@ -122,7 +122,7 @@ fn header(
 ) {
     let actions_in_header = chrome::pane_header(ui, "details-header", |ui| {
         detail_tabs::show(ui, tab);
-        let fits = ui.available_width() >= header_actions_width(ui) + Space::LG;
+        let fits = ui.available_width() >= header_actions_width(ui, record) + Space::LG;
         if fits {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 header_actions(ui, record, actions);
@@ -145,9 +145,11 @@ fn header(
     );
 }
 
-/// Edit and Resend and Copy as cURL, laid out right to left in the pane
-/// header, or left to right under the request line when the header is too
-/// narrow.
+const HLS_MEDIA_LABEL: &str = "HLS media…";
+
+/// Edit and Resend, Copy as cURL, and (for HLS playlists) HLS media, laid out
+/// right to left in the pane header, or left to right under the request line
+/// when the header is too narrow.
 fn header_actions(ui: &mut egui::Ui, record: &Exchange, actions: &mut Vec<AppAction>) {
     controls::ghost_style(ui);
     let resend = |ui: &mut egui::Ui, actions: &mut Vec<AppAction>| {
@@ -164,21 +166,36 @@ fn header_actions(ui: &mut egui::Ui, record: &Exchange, actions: &mut Vec<AppAct
             actions.push(AppAction::CopyCurl(record.id()));
         }
     };
+    let hls = |ui: &mut egui::Ui, actions: &mut Vec<AppAction>| {
+        if http_inspector_core::hls::is_hls_playlist_record(record)
+            && ui
+                .add(controls::ghost(HLS_MEDIA_LABEL, Layout::PANE_BUTTON_HEIGHT))
+                .clicked()
+        {
+            actions.push(AppAction::OpenHls(record.id()));
+        }
+    };
     if ui.layout().prefer_right_to_left() {
+        hls(ui, actions);
         copy(ui, actions);
         resend(ui, actions);
     } else {
         resend(ui, actions);
         copy(ui, actions);
+        hls(ui, actions);
     }
 }
 
 /// Width the header actions need, so the header can tell whether they fit.
-fn header_actions_width(ui: &egui::Ui) -> f32 {
-    [ShellText::EditAndResend.text(), copy_curl::COPY_LABEL]
+fn header_actions_width(ui: &egui::Ui, record: &Exchange) -> f32 {
+    let mut width: f32 = [ShellText::EditAndResend.text(), copy_curl::COPY_LABEL]
         .iter()
         .map(|label| controls::button_width(ui, label) + ui.spacing().item_spacing.x)
-        .sum()
+        .sum();
+    if http_inspector_core::hls::is_hls_playlist_record(record) {
+        width += controls::button_width(ui, HLS_MEDIA_LABEL) + ui.spacing().item_spacing.x;
+    }
+    width
 }
 
 /// The outcome and, for a resent request, a link to the original. Holds the

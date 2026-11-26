@@ -225,7 +225,7 @@ fn url_file_name(target: &str) -> Option<String> {
 /// Directory parts, control characters and characters that other systems
 /// reject are removed, leading and trailing dots and spaces are trimmed so
 /// `.`, `..` and hidden names cannot result, and the name is shortened.
-fn sanitize(name: &str) -> Option<String> {
+pub(super) fn sanitize(name: &str) -> Option<String> {
     let last = name.rsplit(['/', '\\']).next().unwrap_or_default();
     let cleaned: String = last
         .chars()

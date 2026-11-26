@@ -236,7 +236,7 @@ impl<W: Write> Write for HashingWriter<W> {
     }
 }
 
-fn write_body(copy: CopyPlan, output: &mut impl Write) -> io::Result<u64> {
+pub(super) fn write_body(copy: CopyPlan, output: &mut impl Write) -> io::Result<u64> {
     let CopyPlan {
         data,
         segments,
@@ -352,7 +352,7 @@ fn read_decoded_bounded(
 
 /// Moves the finished file to `name`, or `name (1)`, `name (2)`, …, never
 /// replacing an existing file.
-fn persist_unique(
+pub(super) fn persist_unique(
     mut file: NamedTempFile,
     directory: &Path,
     name: &str,

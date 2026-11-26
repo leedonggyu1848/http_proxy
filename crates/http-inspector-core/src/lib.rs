@@ -7,6 +7,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod hls;
 pub mod https;
 pub mod interception;
 pub mod launcher;

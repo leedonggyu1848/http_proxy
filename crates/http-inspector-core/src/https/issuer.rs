@@ -189,7 +189,7 @@ impl PreparedInspection {
     }
 }
 
-fn build_upstream_connector(
+pub(crate) fn build_upstream_connector(
     additional_root: Option<&Path>,
 ) -> Result<TlsConnector, HttpsSetupError> {
     let native = rustls_native_certs::load_native_certs();
