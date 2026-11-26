@@ -4,52 +4,7 @@ use std::borrow::Cow;
 
 const ELLIPSIS: char = '…';
 
-/// The host and path of a request target, without the scheme.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct TargetParts<'a> {
-    /// `host[:port]`, empty for origin-form targets such as `/path` or `*`.
-    pub(super) host: &'a str,
-    /// Path and query starting at `/`, empty for authority-form `CONNECT`
-    /// targets such as `example.com:443`.
-    pub(super) path: &'a str,
-}
-
-impl<'a> TargetParts<'a> {
-    pub(super) fn of(target: &'a str) -> Self {
-        let rest = target
-            .strip_prefix("http://")
-            .or_else(|| target.strip_prefix("https://"))
-            .unwrap_or(target);
-        if rest.starts_with('/') || rest == "*" {
-            return Self {
-                host: "",
-                path: rest,
-            };
-        }
-        let split = rest.find(['/', '?']).unwrap_or(rest.len());
-        let (host, path) = rest.split_at(split);
-        Self { host, path }
-    }
-
-    /// The text that identifies the request: the path, or the host when
-    /// the target has no path.
-    pub(super) const fn primary(self) -> &'a str {
-        if self.path.is_empty() {
-            self.host
-        } else {
-            self.path
-        }
-    }
-
-    /// The host shown beside the path, if it is not already the primary text.
-    pub(super) const fn secondary(self) -> Option<&'a str> {
-        if self.path.is_empty() || self.host.is_empty() {
-            None
-        } else {
-            Some(self.host)
-        }
-    }
-}
+use http_inspector_analysis::filter::TargetParts;
 
 /// The host every target shares, or `None` when they differ or are empty.
 pub(super) fn shared_host<'a>(mut targets: impl Iterator<Item = &'a str>) -> Option<&'a str> {

@@ -9,12 +9,13 @@ use crate::ui::detail::search::Query;
 use crate::ui::detail::search::highlight;
 use crate::ui::dialogs::scope_help;
 use crate::ui::dialogs::{body_saving::BodySaving, copy_curl};
-use crate::ui::requests::outcome_view;
+use crate::ui::requests::{filter_menu, outcome_view};
 use crate::ui::style::theme::MatchColors;
 use crate::ui::style::theme::Palette;
 use crate::ui::style::tokens::{Layout, Space, StrokeWidth};
 use crate::ui::workbench::{chrome, controls};
 use eframe::egui;
+use http_inspector_analysis::filter::FilterKey;
 use http_inspector_content::detect;
 use http_inspector_content::format::{BodyFormat, ViewMode, form};
 use http_inspector_exchange::http_semantics::urlencoded;
@@ -35,6 +36,7 @@ pub(crate) struct DetailView<'a> {
     pub(crate) search: Option<&'a Query>,
     pub(crate) tab: DetailTab,
     pub(crate) body_mode: ViewMode,
+    pub(crate) field_menu_enabled: bool,
     pub(crate) body_saving: &'a BodySaving,
 }
 
@@ -68,7 +70,7 @@ impl DetailView<'_> {
         }
         let mut body_mode = self.body_mode;
 
-        let copied = egui::ScrollArea::vertical()
+        let (copied, filter) = egui::ScrollArea::vertical()
             .id_salt(("details-scroll", tab))
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -82,17 +84,20 @@ impl DetailView<'_> {
                             mode: self.body_mode,
                             cache: &mut widgets.body,
                             copied: None,
+                            filter: None,
+                            field_menu_enabled: self.field_menu_enabled,
                             search,
                         };
                         match tab {
                             DetailTab::Headers => {
                                 render_query(ui, request.target());
                                 ui.strong("Request headers");
-                                render_headers(
+                                body.filter = render_headers(
                                     ui,
-                                    "request-headers",
+                                    BodySide::Request,
                                     request.headers(),
                                     body.headers_search(),
+                                    body.field_menu_enabled,
                                 );
                                 ui.separator();
                                 render_outcome(ui, record, &mut body, None);
@@ -106,12 +111,13 @@ impl DetailView<'_> {
                                 |ui| actions.extend(self.body_saving.menus(ui, record)),
                             ),
                         }
-                        body.copied
+                        (body.copied, body.filter)
                     })
                     .inner
             })
             .inner;
         actions.extend(copied.map(AppAction::CopyText));
+        actions.extend(filter);
         if body_mode != self.body_mode {
             actions.push(AppAction::BodyMode(body_mode));
         }
@@ -218,6 +224,8 @@ struct BodyPanel<'a> {
     mode: ViewMode,
     cache: &'a mut BodyViewCache,
     copied: Option<String>,
+    filter: Option<AppAction>,
+    field_menu_enabled: bool,
     /// The active search, whose matches are marked.
     search: Option<&'a Query>,
 }
@@ -237,7 +245,7 @@ fn render_title(ui: &mut egui::Ui, record: &Exchange, search: Option<&Query>) {
             let font = egui::TextStyle::Monospace.resolve(ui.style());
             let color = Palette::of(ui).text;
             let colors = MatchColors::for_theme(ui.ctx().theme());
-            let mut job = highlight::plain(&title, &query.matcher, font, color, colors);
+            let mut job = highlight::plain(&title, &query.terms, font, color, colors);
             job.wrap.max_width = ui.available_width();
             egui::Label::new(job)
         }
@@ -312,7 +320,7 @@ fn wrapped_highlight(
     colors: MatchColors,
     max_width: f32,
 ) -> egui::text::LayoutJob {
-    let mut job = highlight::plain(text, &query.matcher, font, color, colors);
+    let mut job = highlight::plain(text, &query.terms, font, color, colors);
     job.wrap.max_width = max_width;
     job
 }
@@ -355,51 +363,68 @@ fn render_query(ui: &mut egui::Ui, target: &str) {
 
 /// Header names in secondary text so that the values, which matter more,
 /// stand out; the `:` after each name keeps them apart without color.
-fn render_headers(ui: &mut egui::Ui, id: &str, headers: &HeaderPreview, search: Option<&Query>) {
+fn render_headers(
+    ui: &mut egui::Ui,
+    side: BodySide,
+    headers: &HeaderPreview,
+    search: Option<&Query>,
+    field_menu_enabled: bool,
+) -> Option<AppAction> {
     let name_color = Palette::of(ui).secondary;
     let font = egui::TextStyle::Monospace.resolve(ui.style());
     let text_color = Palette::of(ui).text;
     let colors = MatchColors::for_theme(ui.ctx().theme());
     let bounds = GridBounds::from_ui(ui);
-    egui::Grid::new(id)
+    let key = match side {
+        BodySide::Request => FilterKey::RequestHeader,
+        BodySide::Response => FilterKey::ResponseHeader,
+    };
+    let mut action = None;
+    egui::Grid::new(("headers", side))
         .num_columns(2)
         .max_col_width(bounds.available)
         .show(ui, |ui| {
             for header in headers.entries() {
                 let name = format!("{}:", header.name());
-                if let Some(query) = search {
-                    let name_job = wrapped_highlight(
-                        &name,
-                        query,
-                        font.clone(),
-                        name_color,
-                        colors,
-                        bounds.key_max,
-                    );
-                    wrapped_cell(ui, bounds.key_max, name_job);
-                    let value_max = bounds.value_max(ui);
-                    let value_job = wrapped_highlight(
-                        header.value(),
-                        query,
-                        font.clone(),
-                        text_color,
-                        colors,
-                        value_max,
-                    );
-                    wrapped_cell(ui, value_max, value_job);
-                } else {
-                    wrapped_cell(
-                        ui,
-                        bounds.key_max,
-                        egui::RichText::new(name).monospace().color(name_color),
-                    );
-                    let value_max = bounds.value_max(ui);
-                    wrapped_cell(
-                        ui,
-                        value_max,
-                        egui::RichText::new(header.value()).monospace(),
-                    );
-                }
+                let name_label = search.map_or_else(
+                    || {
+                        egui::WidgetText::from(
+                            egui::RichText::new(&name).monospace().color(name_color),
+                        )
+                    },
+                    |query| {
+                        wrapped_highlight(
+                            &name,
+                            query,
+                            font.clone(),
+                            name_color,
+                            colors,
+                            bounds.key_max,
+                        )
+                        .into()
+                    },
+                );
+                let name_response = header_cell(ui, bounds.key_max, name_label);
+                let value_max = bounds.value_max(ui);
+                let value_label = search.map_or_else(
+                    || egui::WidgetText::from(egui::RichText::new(header.value()).monospace()),
+                    |query| {
+                        wrapped_highlight(
+                            header.value(),
+                            query,
+                            font.clone(),
+                            text_color,
+                            colors,
+                            value_max,
+                        )
+                        .into()
+                    },
+                );
+                let value_response = header_cell(ui, value_max, value_label);
+                name_response.union(value_response).context_menu(|ui| {
+                    let value = format!("{}={}", header.name(), header.value());
+                    action = filter_menu::items(ui, key, &value, field_menu_enabled);
+                });
                 ui.end_row();
             }
         });
@@ -409,6 +434,15 @@ fn render_headers(ui: &mut egui::Ui, id: &str, headers: &HeaderPreview, search: 
     if headers.omitted() {
         ui.colored_label(Palette::of(ui).warning, "Additional headers were omitted.");
     }
+    action
+}
+
+fn header_cell(ui: &mut egui::Ui, max_width: f32, text: egui::WidgetText) -> egui::Response {
+    ui.scope(|ui| {
+        ui.set_max_width(max_width);
+        ui.add(egui::Label::new(text).wrap().sense(egui::Sense::click()))
+    })
+    .inner
 }
 
 fn render_body_tab(
@@ -569,7 +603,15 @@ fn render_outcome(
                     response.version()
                 ));
                 let search = body.headers_search();
-                render_headers(ui, "response-headers", response.headers(), search);
+                if let Some(action) = render_headers(
+                    ui,
+                    BodySide::Response,
+                    response.headers(),
+                    search,
+                    body.field_menu_enabled,
+                ) {
+                    body.filter = Some(action);
+                }
             }
             Some(response_body) => {
                 ui.strong("Response body");

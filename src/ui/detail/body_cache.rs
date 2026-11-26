@@ -302,7 +302,10 @@ mod tests {
         let body = source(1, b"abc");
         let query = Query {
             generation: 1,
-            matcher: Matcher::new("abc", MatchOptions::default())?,
+            terms: http_inspector_analysis::search::TextTerms::single(Matcher::new(
+                "abc",
+                MatchOptions::default(),
+            )?),
             scope: SearchScope::All,
         };
         let longer = BodySource {

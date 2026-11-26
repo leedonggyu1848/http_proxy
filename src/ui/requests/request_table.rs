@@ -1,19 +1,28 @@
 //! Network-panel style request list that lays out only the visible rows.
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::time::Duration;
 
 use eframe::egui::{self, Key, RichText};
 use egui_extras::{Column, TableBuilder};
+use http_inspector_analysis::filter::{FilterKey, TargetParts, content_type};
 use http_inspector_exchange::{ByteSize, Exchange, Outcome, RecordId};
 
 use crate::ui::AppAction;
 use crate::ui::dialogs::copy_curl;
+use crate::ui::requests::filter_menu;
 use crate::ui::requests::outcome_view::{outcome_summary, outcome_text, status_rank};
-use crate::ui::requests::target_view::{TargetParts, host_fits, middle_ellipsis, shared_host};
+use crate::ui::requests::target_view::{host_fits, middle_ellipsis, shared_host};
 use crate::ui::style::tokens::{Layout, Radius, Space, StrokeWidth, ThemeTokens, TypeScale};
 use crate::ui::style::{indicator, theme::Palette};
 use http_inspector_core::recording::SaveFormat;
+
+#[derive(Clone, Copy, Default)]
+pub(super) struct TableMenus {
+    pub(super) saving_body: bool,
+    pub(super) filter_enabled: bool,
+}
 
 /// Space before the method, kept free for the selection bar of the row.
 const ROW_LEAD: f32 = Layout::SELECTION_BAR_WIDTH + Space::S;
@@ -257,7 +266,7 @@ impl RequestTable {
         mut rows: Vec<&Exchange>,
         mut selected: Option<RecordId>,
         shortcuts_allowed: bool,
-        saving_body: bool,
+        menus: TableMenus,
     ) -> TableResult {
         self.sort_rows(&mut rows);
         let mut result = TableResult::default();
@@ -301,7 +310,7 @@ impl RequestTable {
                     widths,
                     width_changed,
                     &mut result,
-                    saving_body,
+                    menus,
                 )
             })
             .inner;
@@ -328,7 +337,7 @@ impl RequestTable {
         widths: [f32; 6],
         width_changed: bool,
         result: &mut TableResult,
-        saving_body: bool,
+        menus: TableMenus,
     ) -> f32 {
         // Rows touch each other; the row line separates them.
         ui.spacing_mut().item_spacing.y = 0.0;
@@ -357,7 +366,7 @@ impl RequestTable {
                     header.col(|ui| {
                         paint_header_cell(ui, field == Field::Duration);
                         let host = shared_host.filter(|_| field == Field::Target);
-                        if self.header_cell(ui, field, host) {
+                        if self.header_cell(ui, field, host, menus.filter_enabled, result) {
                             self.sort = self.sort.toggled(field);
                         }
                     });
@@ -374,12 +383,14 @@ impl RequestTable {
                     let selected_row = selected == Some(record.id());
                     let focus_row = scroll_to == Some(row.index());
                     let show_host = shared_host.is_none();
-                    if show_cells(&mut row, record, selected_row, focus_row, show_host) {
+                    let (method_clicked, action) =
+                        show_cells(&mut row, record, selected_row, focus_row, show_host, menus);
+                    if method_clicked {
                         self.follow_newest = false;
                         self.keyboard_row = None;
                         result.selected = Some(record.id());
                     }
-                    if let Some(action) = row_menu(&row.response(), record, saving_body) {
+                    if let Some(action) = action {
                         result.action = Some(action);
                     }
                     if row.response().clicked() {
@@ -393,7 +404,14 @@ impl RequestTable {
 
     /// The column title, which sorts by the column when clicked, and the
     /// host shared by every row. Returns whether the title was clicked.
-    fn header_cell(&self, ui: &mut egui::Ui, field: Field, shared_host: Option<&str>) -> bool {
+    fn header_cell(
+        &self,
+        ui: &mut egui::Ui,
+        field: Field,
+        shared_host: Option<&str>,
+        filter_enabled: bool,
+        result: &mut TableResult,
+    ) -> bool {
         let secondary = ThemeTokens::for_theme(ui.ctx().theme()).text.secondary;
         let title = RichText::new(format!("{}{}", field.title(), self.sort.arrow(field)))
             .size(TypeScale::COLUMN_HEADER)
@@ -409,8 +427,18 @@ impl RequestTable {
         ui.add_space(field.lead());
         let clicked = ui.add(button).clicked();
         if let Some(host) = shared_host {
-            ui.add(egui::Label::new(RichText::new(host).monospace().weak()).truncate())
-                .on_hover_text("Every request in the list goes to this host.");
+            let label = egui::Label::new(RichText::new(host).monospace().weak())
+                .truncate()
+                .sense(egui::Sense::click());
+            ui.add(label)
+                .on_hover_text("Every request in the list goes to this host")
+                .context_menu(|ui| {
+                    if let Some(action) =
+                        filter_menu::items(ui, FilterKey::Host, host, filter_enabled)
+                    {
+                        result.action = Some(action);
+                    }
+                });
         }
         clicked
     }
@@ -538,9 +566,18 @@ fn column_widths(viewport_width: f32, spacing_x: f32, scroll_gutter: f32) -> [f3
 }
 
 /// Offers resending, copying, or saving a body of the row's request on right click.
-fn row_menu(response: &egui::Response, record: &Exchange, saving_body: bool) -> Option<AppAction> {
+fn row_menu(
+    response: &egui::Response,
+    record: &Exchange,
+    menus: TableMenus,
+    field: Field,
+) -> Option<AppAction> {
     let mut action = None;
     response.context_menu(|ui| {
+        if let Some((key, value)) = field_filter(field, record) {
+            action = filter_menu::items(ui, key, &value, menus.filter_enabled);
+            ui.separator();
+        }
         if ui
             .add_enabled(
                 record.source() != http_inspector_exchange::CaptureSource::Connect,
@@ -556,7 +593,7 @@ fn row_menu(response: &egui::Response, record: &Exchange, saving_body: bool) -> 
             ui.close();
         }
         ui.separator();
-        if let Some(side) = save_body_items(ui, record, !saving_body) {
+        if let Some(side) = save_body_items(ui, record, !menus.saving_body) {
             action = Some(AppAction::SaveBody(record.id(), side, SaveFormat::Decoded));
             ui.close();
         }
@@ -600,24 +637,27 @@ fn save_body_items(
     chosen
 }
 
-/// Fills one row and returns whether its method was clicked.
+/// Fills a row and reports selection and context actions.
 fn show_cells(
     row: &mut egui_extras::TableRow<'_, '_>,
     record: &Exchange,
     selected: bool,
     focus: bool,
     show_host: bool,
-) -> bool {
+    menus: TableMenus,
+) -> (bool, Option<AppAction>) {
     let mut clicked = false;
+    let mut action = None;
     for field in Field::ALL {
-        row.col(|ui| {
+        let mut method_response = None;
+        let (_, cell) = row.col(|ui| {
             paint_row_cell(
                 ui,
                 selected && field == Field::Method,
                 field == Field::Duration,
             );
             match field {
-                Field::Method => clicked = method_cell(ui, record, selected, focus),
+                Field::Method => method_response = Some(method_cell(ui, record, selected, focus)),
                 Field::Target => target_cell(ui, record, show_host),
                 Field::Status => status_cell(ui, record),
                 Field::Type => data_cell(ui, content_type(record).unwrap_or("—")),
@@ -625,8 +665,37 @@ fn show_cells(
                 Field::Duration => numeric_cell(ui, &duration_text(record)),
             }
         });
+        let cell = if let Some(method) = method_response {
+            clicked = method.clicked();
+            cell.union(method)
+        } else {
+            cell
+        };
+        if let Some(selected_action) = row_menu(&cell, record, menus, field) {
+            action = Some(selected_action);
+        }
     }
-    clicked
+    (clicked, action)
+}
+
+fn field_filter(field: Field, record: &Exchange) -> Option<(FilterKey, Cow<'_, str>)> {
+    match field {
+        Field::Method => Some((
+            FilterKey::Method,
+            Cow::Borrowed(record.request().method().as_str()),
+        )),
+        Field::Target => {
+            let host = TargetParts::of(record.request().target()).host;
+            (!host.is_empty()).then_some((FilterKey::Host, Cow::Borrowed(host)))
+        }
+        Field::Status => match record.outcome() {
+            Outcome::Response(response) => {
+                Some((FilterKey::Status, Cow::Owned(response.status().to_string())))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Monospace data that truncates to the cell.
@@ -643,7 +712,12 @@ fn numeric_cell(ui: &mut egui::Ui, text: &str) {
 
 /// The method, which also carries the row's keyboard focus and its screen
 /// reader name.
-fn method_cell(ui: &mut egui::Ui, record: &Exchange, selected: bool, focus: bool) -> bool {
+fn method_cell(
+    ui: &mut egui::Ui,
+    record: &Exchange,
+    selected: bool,
+    focus: bool,
+) -> egui::Response {
     ui.add_space(ROW_LEAD);
     ui.push_id(record.id(), |ui| {
         let response = method_text(ui, record.request().method().as_str());
@@ -676,7 +750,7 @@ fn method_cell(ui: &mut egui::Ui, record: &Exchange, selected: bool, focus: bool
                 egui::StrokeKind::Outside,
             );
         }
-        response.clicked()
+        response
     })
     .inner
 }
@@ -761,17 +835,6 @@ fn target_text(record: &Exchange) -> &str {
         .strip_prefix("http://")
         .or_else(|| target.strip_prefix("https://"))
         .unwrap_or(target)
-}
-
-/// Short media type such as `json` or `html`, from the response `Content-Type`.
-fn content_type(record: &Exchange) -> Option<&str> {
-    let Outcome::Response(response) = record.outcome() else {
-        return None;
-    };
-    let media_type = response.media_type()?;
-    let subtype = media_type.subtype();
-    let subtype = subtype.rsplit('+').next().unwrap_or(subtype);
-    Some(subtype.strip_prefix("x-").unwrap_or(subtype))
 }
 
 /// Total time once nothing more will be observed, for sorting.
@@ -882,7 +945,7 @@ mod tests {
                     .collect();
                 let shortcuts_allowed = crate::ui::request_shortcuts_allowed(ui.ctx());
                 if let Some(id) = table
-                    .show(ui, rows, selected, shortcuts_allowed, false)
+                    .show(ui, rows, selected, shortcuts_allowed, TableMenus::default())
                     .selected
                 {
                     selected = Some(id);
@@ -993,7 +1056,7 @@ mod tests {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
                     .show(ui, |ui| {
-                        let _ = table.show(ui, Vec::new(), None, false, false);
+                        let _ = table.show(ui, Vec::new(), None, false, TableMenus::default());
                     });
             });
             output.textures_delta.clear();

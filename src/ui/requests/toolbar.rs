@@ -81,7 +81,12 @@ impl InspectorApp {
     /// request filter, the Save and Settings menus, and the one primary
     /// action. Windows narrower than [`Layout::TOOLBAR_ONE_ROW_MIN_WIDTH`]
     /// move the view switch and the filter to a second row.
-    pub(crate) fn toolbar(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+    pub(crate) fn toolbar(
+        &self,
+        ui: &mut egui::Ui,
+        dialog_open: bool,
+        actions: &mut Vec<AppAction>,
+    ) {
         let one_row = ui.available_width() >= Layout::TOOLBAR_ONE_ROW_MIN_WIDTH;
         let rows = if one_row { 1.0 } else { 2.0 };
         let rect = chrome::allocate(ui, Layout::TOOLBAR_HEIGHT * rows);
@@ -114,7 +119,12 @@ impl InspectorApp {
             if one_row {
                 let switch_width = view_switch_width(ui);
                 let room = 2.0f32.mul_add(-Space::LG, ui.available_width() - switch_width);
-                self.filter_input(ui, Layout::TOOLBAR_FILTER_WIDTH.fit(room), actions);
+                self.filter_input(
+                    ui,
+                    Layout::TOOLBAR_FILTER_WIDTH.fit(room),
+                    dialog_open,
+                    actions,
+                );
                 let free = ui.available_rect_before_wrap();
                 let centered = egui::Rect::from_center_size(
                     egui::pos2(
@@ -136,7 +146,7 @@ impl InspectorApp {
             row.spacing_mut().item_spacing.x = Space::MD;
             self.view_switch(&mut row, actions);
             let width = row.available_width();
-            self.filter_input(&mut row, width, actions);
+            self.filter_input(&mut row, width, dialog_open, actions);
         }
     }
 
@@ -156,12 +166,18 @@ impl InspectorApp {
     /// The request filter. It only filters the request list, so the Map
     /// view leaves its place empty instead of offering a control that does
     /// nothing there.
-    fn filter_input(&self, ui: &mut egui::Ui, width: f32, actions: &mut Vec<AppAction>) {
+    fn filter_input(
+        &self,
+        ui: &mut egui::Ui,
+        width: f32,
+        dialog_open: bool,
+        actions: &mut Vec<AppAction>,
+    ) {
         if self.layout.main_view == MainView::Requests {
             actions.extend(
                 self.requests
                     .search
-                    .controls(ui, width)
+                    .controls(ui, width, &self.requests.records, dialog_open)
                     .map(AppAction::Search),
             );
         } else {

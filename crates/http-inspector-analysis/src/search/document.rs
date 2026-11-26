@@ -51,7 +51,7 @@ pub struct Checked {
     pub settled: bool,
     /// A preview was locked during this check and needs another attempt.
     pub retry: bool,
-    /// Set only for exchanges that did not match.
+    /// Set when a term was absent from the searched fields.
     pub coverage: Coverage,
 }
 

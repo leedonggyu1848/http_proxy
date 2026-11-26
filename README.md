@@ -120,6 +120,26 @@ http_proxy=http://127.0.0.1:8080 https_proxy=http://127.0.0.1:8080 curl http://e
 
 HTTPS 복호화를 끈 상태에서는 호스트, 포트, 전송 바이트 수와 연결 시간을 `Tunnel` 행에 기록한다. [프록시 포트와 캡처 범위](docs/guide/proxy-and-capture.md)
 
+## 요청 필터
+
+툴바의 필터에서 `method:POST url:/api/users status:4xx`를 입력하면 세 조건을 모두 만족하는 요청만 남는다. 공백은 AND, 같은 키 안의 쉼표는 OR로 읽는다. 조건 앞에 `-`를 붙이면 제외한다. 공백이나 쉼표를 포함한 값은 큰따옴표로 감싼다. 키 없는 단어는 선택한 검색 범위에서 찾는다.
+
+| 키 | 검색 대상 | 예시 |
+| --- | --- | --- |
+| `method` | 요청 메서드 | `method:GET,POST` |
+| `url` | 전체 요청 대상 | `url:/api/users` |
+| `host`, `domain` | 호스트와 포트 | `host:*.example.com` |
+| `path` | 경로와 쿼리 | `-path:/static/` |
+| `status` | 응답 상태 코드 | `status:4xx,>=500` |
+| `type` | Type 열의 응답 형식 | `type:json` |
+| `header` | 양쪽 헤더의 이름 또는 이름과 값 | `header:"content-type=application/json"` |
+| `req-header`, `res-header` | 요청 헤더 또는 응답 헤더 | `req-header:authorization` |
+| `size` | 관측한 응답 본문 크기 | `size:>10kb` |
+| `duration`, `time` | 완료까지 걸린 시간 | `duration:>500ms` |
+| `is` | 결과 또는 요청 종류 | `is:failed,pending,tunnel,replay,https` |
+
+Ctrl+F(macOS에서는 Cmd+F)로 필터를 연다. 요청 목록의 메서드, 호스트, 상태나 상세의 헤더를 우클릭하면 해당 값의 필터를 추가할 수 있다. [요청 검색 문법과 옵션](docs/guide/search.md)
+
 ## HTTPS 복호화
 
 HTTPS 복호화는 기본으로 꺼져 있으며, 사용 권한이 있는 트래픽에만 사용한다.

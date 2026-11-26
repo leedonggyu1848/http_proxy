@@ -132,7 +132,7 @@ fn layout_text(
         };
     };
     let matches = BodyMatches::find(
-        &query.matcher,
+        &query.terms,
         &job,
         lines.as_deref(),
         MatchColors::for_theme(style.theme),

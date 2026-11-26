@@ -4,7 +4,7 @@
 use std::ops::Range;
 
 use eframe::egui::{self, text::LayoutJob};
-use http_inspector_analysis::search::Matcher;
+use http_inspector_analysis::search::TextTerms;
 
 use crate::ui::detail::search::highlight;
 use crate::ui::style::theme::MatchColors;
@@ -32,7 +32,7 @@ impl BodyMatches {
     /// `job` otherwise. Matches across line ends are not marked in a line
     /// view.
     pub(super) fn find(
-        matcher: &Matcher,
+        matcher: &TextTerms,
         job: &LayoutJob,
         lines: Option<&[LayoutJob]>,
         colors: MatchColors,
@@ -153,7 +153,7 @@ impl BodyMatches {
     }
 }
 
-fn hits_in(line: usize, matcher: &Matcher, text: &str) -> Vec<Hit> {
+fn hits_in(line: usize, matcher: &TextTerms, text: &str) -> Vec<Hit> {
     highlight::ranges(matcher, text)
         .into_iter()
         .map(|range| Hit { line, range })
@@ -165,7 +165,7 @@ mod tests {
     use super::*;
     use crate::ui::style::theme::Theme;
     use eframe::egui::text::TextFormat;
-    use http_inspector_analysis::search::MatchOptions;
+    use http_inspector_analysis::search::{MatchOptions, Matcher};
 
     fn job(text: &str) -> LayoutJob {
         let mut job = LayoutJob::default();
@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn moves_between_matches_across_lines() -> Result<(), Box<dyn std::error::Error>> {
-        let query = Matcher::new("id", MatchOptions::default())?;
+        let query = TextTerms::single(Matcher::new("id", MatchOptions::default())?);
         let colors = MatchColors::for_theme(Theme::Light);
         let lines = [job("id id"), job("none"), job("ID")];
         let mut matches = BodyMatches::find(&query, &job(""), Some(&lines), colors);
@@ -217,7 +217,7 @@ mod tests {
 
     #[test]
     fn marks_text_shown_without_line_numbers() -> Result<(), Box<dyn std::error::Error>> {
-        let query = Matcher::new("b", MatchOptions::default())?;
+        let query = TextTerms::single(Matcher::new("b", MatchOptions::default())?);
         let colors = MatchColors::for_theme(Theme::Dark);
         let text = job("abcb");
         let matches = BodyMatches::find(&query, &text, None, colors);

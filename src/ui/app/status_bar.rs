@@ -17,7 +17,12 @@ use crate::ui::workbench::chrome;
 use crate::ui::workbench::text;
 
 impl InspectorApp {
-    pub(super) fn status_bar(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+    pub(super) fn status_bar(
+        &self,
+        ui: &mut egui::Ui,
+        shown: Option<usize>,
+        actions: &mut Vec<AppAction>,
+    ) {
         chrome::band(
             ui,
             "status-bar",
@@ -26,7 +31,7 @@ impl InspectorApp {
             chrome::Inset::BAR,
             |ui| {
                 chrome::status_text(ui);
-                self.counts(ui);
+                self.counts(ui, shown);
                 self.limits(ui);
                 self.dialogs.save.status(ui);
                 if self.session.body_saving.status(ui) {
@@ -38,11 +43,11 @@ impl InspectorApp {
     }
 
     /// Requests and failures, or hosts and nodes in the Map view.
-    fn counts(&self, ui: &mut egui::Ui) {
+    fn counts(&self, ui: &mut egui::Ui, shown: Option<usize>) {
         let records = &self.requests.records;
         match self.layout.main_view {
             MainView::Requests => {
-                let shown = self.requests.filtered_records().len();
+                let shown = shown.unwrap_or(records.len());
                 ui.label(text::request_count(shown, records.len()));
                 let failed = records
                     .iter()
