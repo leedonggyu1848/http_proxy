@@ -311,6 +311,8 @@ impl StrokeWidth {
     pub(crate) const FOCUS_RING: f32 = 1.0;
     /// Line icons.
     pub(crate) const ICON: f32 = 1.5;
+    /// Inactive edges of the relationship graph and their legend samples.
+    pub(crate) const GRAPH_EDGE: f32 = 1.25;
     /// Chart lines and the active path of the relationship graph (D19).
     pub(crate) const GRAPH_ACTIVE: f32 = 1.5;
 }
