@@ -2,6 +2,9 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
 
+use crate::ui::style::tokens::Layout;
+use crate::ui::workbench::controls;
+use crate::ui::workbench::text::ShellText;
 use eframe::egui;
 use http_inspector_core::launcher::{Browser, BrowserEvent, BrowserSession};
 
@@ -29,44 +32,39 @@ impl Default for BrowserPanel {
     }
 }
 
-const PROFILE_NOTE: &str = "Opens a separate private profile. Inspector logs are still recorded. \
-     Stopping the proxy closes this browser.";
+const PROFILE_NOTE: &str = "Opens a separate private profile that closes when the proxy stops.";
 
 impl BrowserPanel {
-    /// Shows the available browsers or controls for the current session.
-    pub(crate) fn toolbar(
-        &self,
-        ui: &mut egui::Ui,
-        proxy_running: bool,
-        decrypt: bool,
-    ) -> Option<BrowserAction> {
+    /// The toolbar's primary action while the proxy runs: the Open Browser
+    /// menu, or the open session and its Close button. Laid out right to
+    /// left, so the button comes first.
+    pub(crate) fn toolbar(&self, ui: &mut egui::Ui, decrypt: bool) -> Option<BrowserAction> {
         if self.session.is_some() {
-            if self.opened {
-                ui.label("Browser open");
-            } else {
-                ui.spinner();
-                ui.label("Opening browser…");
-            }
             ui.ctx().request_repaint_after(Duration::from_millis(100));
-            return ui
-                .button("Close browser")
+            let close = controls::ghost_scope(ui, |ui| {
+                ui.add(controls::ghost(
+                    ShellText::CloseBrowser.text(),
+                    Layout::TOOLBAR_BUTTON_HEIGHT,
+                ))
                 .on_hover_text(PROFILE_NOTE)
                 .clicked()
-                .then_some(BrowserAction::Close);
+            });
+            if self.opened {
+                ui.label(ShellText::BrowserOpen.text());
+            } else {
+                ui.label("Opening browser…");
+                ui.spinner();
+            }
+            return close.then_some(BrowserAction::Close);
         }
-        if !proxy_running {
-            ui.add_enabled(false, egui::Button::new("Open Browser ▼"))
-                .on_disabled_hover_text("Start the proxy to open an inspection browser.");
-            return None;
-        }
-        let menu = ui.menu_button("Open Browser ▼", |ui| self.menu(ui, decrypt));
+        let menu = controls::primary_menu(ui, "Open Browser ▼", |ui| self.menu(ui, decrypt));
         menu.response.on_hover_text(PROFILE_NOTE);
         menu.inner.flatten()
     }
 
     fn menu(&self, ui: &mut egui::Ui, decrypt: bool) -> Option<BrowserAction> {
         if self.installed.is_empty() {
-            ui.weak("No supported browser found on PATH. Install Firefox or Google Chrome, then refresh.");
+            ui.weak("No Firefox or Chrome found on PATH.");
         }
         let mut action = None;
         for browser in &self.installed {
@@ -140,7 +138,7 @@ const fn ca_note(browser: &Browser, decrypt: bool) -> &'static str {
     if !decrypt {
         PROFILE_NOTE
     } else if browser.uses_shared_ca_store() {
-        "Registers the CA in your user's shared Chrome/Chromium store. Remove it with Remove CA."
+        "Registers the CA in your user's shared Chrome/Chromium store until you remove it in CA details."
     } else {
         "Firefox trusts the CA only in the temporary inspection profile."
     }

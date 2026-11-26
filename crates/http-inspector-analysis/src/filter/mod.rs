@@ -1,10 +1,14 @@
 //! Request filtering by outcome kind, Map scope, and search predicate, plus the
 //! bounded [`RecordList`] of displayed records.
 
+mod fields;
+mod query;
 mod records;
 
 use std::collections::HashSet;
 
+pub use fields::{TargetParts, content_type};
+pub use query::{FilterDiagnostic, FilterKey, FilterQuery, TextTerm};
 pub use records::RecordList;
 
 use crate::url_map::RequestScope;
@@ -69,7 +73,7 @@ pub fn visible_records<'a>(
     records: &'a RecordList<Exchange>,
     filter: RecordFilter,
     scope: Option<ScopeFilter<'_>>,
-    mut search_shows: impl FnMut(RecordId) -> bool,
+    mut search_shows: impl FnMut(&Exchange) -> bool,
 ) -> Vec<&'a Exchange> {
     records
         .iter()
@@ -79,7 +83,7 @@ pub fn visible_records<'a>(
             Some(ScopeFilter::Cached(ids)) => ids.contains(&record.id()),
             Some(ScopeFilter::Live(key)) => key.matches_exchange(record),
         })
-        .filter(|record| search_shows(record.id()))
+        .filter(|record| search_shows(record))
         .collect()
 }
 
@@ -182,7 +186,7 @@ mod tests {
             &list,
             RecordFilter::Responses,
             Some(ScopeFilter::Cached(&cached)),
-            |id| id != o1,
+            |record| record.id() != o1,
         )
         .into_iter()
         .map(Exchange::id)

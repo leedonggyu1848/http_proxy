@@ -10,6 +10,8 @@ use http_inspector_content::format::{
 use http_inspector_exchange::{BodyLifecycle, BodyRetention, BodySide, BodySnapshot, MediaType};
 use std::sync::Arc;
 
+use crate::ui::workbench::text;
+
 /// A captured body preview to show.
 pub(super) struct BodySource<'a> {
     /// [`http_inspector_exchange::RecordId::value`] of the exchange the body belongs to.
@@ -64,18 +66,11 @@ impl Capture {
     fn notice(self) -> Option<Notice> {
         let text = match self {
             Self::Whole => return None,
-            Self::Truncated => format!(
-                "Only part of the body was captured (at most {} KiB is kept); the view ends where the capture ends.",
-                http_inspector_exchange::capture::BODY_PREVIEW_BYTES / 1024
-            ),
-            Self::Streaming => {
-                "The body is still being received; the view shows what has arrived so far."
-                    .to_owned()
+            Self::Truncated => {
+                text::body_truncated(http_inspector_exchange::capture::BODY_PREVIEW_BYTES / 1024)
             }
-            Self::Ended => {
-                "The body ended early (interrupted or cancelled); the view shows what was received."
-                    .to_owned()
-            }
+            Self::Streaming => text::BODY_STREAMING.to_owned(),
+            Self::Ended => text::BODY_ENDED.to_owned(),
         };
         Some(Notice::warning(text))
     }
@@ -255,9 +250,7 @@ pub(super) mod fixtures {
     use super::*;
 
     pub(in crate::ui::detail) fn partial_capture() -> Notice {
-        Notice::warning(
-            "Only part of the body was captured (at most 8 KiB is kept); the view ends where the capture ends.",
-        )
+        Notice::warning("Showing the first 8 KiB captured")
     }
 
     /// Parses a test media type that lives for the whole test run.
@@ -302,7 +295,10 @@ mod tests {
         let body = source(1, b"abc");
         let query = Query {
             generation: 1,
-            matcher: Matcher::new("abc", MatchOptions::default())?,
+            terms: http_inspector_analysis::search::TextTerms::single(Matcher::new(
+                "abc",
+                MatchOptions::default(),
+            )?),
             scope: SearchScope::All,
         };
         let longer = BodySource {
@@ -553,16 +549,12 @@ mod tests {
             (
                 3,
                 Capture::Streaming,
-                Some(Notice::warning(
-                    "The body is still being received; the view shows what has arrived so far.",
-                )),
+                Some(Notice::warning("Still receiving; showing what arrived")),
             ),
             (
                 4,
                 Capture::Ended,
-                Some(Notice::warning(
-                    "The body ended early (interrupted or cancelled); the view shows what was received.",
-                )),
+                Some(Notice::warning("Ended early; showing what arrived")),
             ),
         ] {
             let body = BodySource {

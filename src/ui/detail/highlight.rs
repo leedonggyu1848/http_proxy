@@ -2,6 +2,7 @@
 //! egui [`LayoutJob`].
 
 use crate::ui::style::theme::SyntaxPalette;
+use crate::ui::style::tokens::TypeScale;
 use eframe::egui::{self, Color32, FontId, TextFormat, text::LayoutJob};
 use http_inspector_content::format::{LineIndent, Styled, TokenKind};
 use std::collections::HashMap;
@@ -62,6 +63,7 @@ pub(super) fn layout_job(
             font_id: font_id.clone(),
             color: palette.color(kind, text_color),
             italics: kind == TokenKind::Comment,
+            line_height: Some(TypeScale::DATA_LINE_HEIGHT),
             ..TextFormat::default()
         };
         let mut cursor = range.start;
@@ -122,6 +124,7 @@ pub(super) fn line_jobs(
             font_id: font_id.clone(),
             color: palette.color(kind, text_color),
             italics: kind == TokenKind::Comment,
+            line_height: Some(TypeScale::DATA_LINE_HEIGHT),
             ..TextFormat::default()
         };
         let mut pos = range.start;

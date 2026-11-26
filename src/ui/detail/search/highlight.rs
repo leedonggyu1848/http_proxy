@@ -3,13 +3,14 @@
 use std::ops::Range;
 
 use eframe::egui::text::{ByteIndex, LayoutJob, LayoutSection, TextFormat};
-use eframe::egui::{Color32, FontId};
-use http_inspector_analysis::search::Matcher;
+use eframe::egui::{Color32, FontId, Stroke};
+use http_inspector_analysis::search::TextTerms;
 
 use crate::ui::style::theme::MatchColors;
+use crate::ui::style::tokens::StrokeWidth;
 
 /// Byte ranges of the matches in `text`, on character boundaries.
-pub(crate) fn ranges(matcher: &Matcher, text: &str) -> Vec<Range<usize>> {
+pub(crate) fn ranges(matcher: &TextTerms, text: &str) -> Vec<Range<usize>> {
     matcher
         .find_all(text.as_bytes())
         .into_iter()
@@ -17,8 +18,9 @@ pub(crate) fn ranges(matcher: &Matcher, text: &str) -> Vec<Range<usize>> {
         .collect()
 }
 
-/// Gives the bytes of `ranges` in `job` a background; the range at index
-/// `current` gets the stronger one. `ranges` must be sorted and disjoint.
+/// Puts the bytes of `ranges` in `job` on the match background in the
+/// match text color; the range at index `current` is also underlined.
+/// `ranges` must be sorted and disjoint.
 pub(crate) fn mark(
     job: &mut LayoutJob,
     ranges: &[Range<usize>],
@@ -51,11 +53,11 @@ pub(crate) fn mark(
             let to = range.end.min(end);
             push(start..from, section.format.clone());
             let mut format = section.format.clone();
-            format.background = if current == Some(next) {
-                colors.current
-            } else {
-                colors.other
-            };
+            format.background = colors.background;
+            format.color = colors.text;
+            if current == Some(next) {
+                format.underline = Stroke::new(StrokeWidth::FOCUS_RING, colors.current);
+            }
             push(from..to, format);
             start = to;
             if range.end > end {
@@ -71,7 +73,7 @@ pub(crate) fn mark(
 /// One line of plain text with its matches marked.
 pub(crate) fn plain(
     text: &str,
-    matcher: &Matcher,
+    matcher: &TextTerms,
     font: FontId,
     color: Color32,
     colors: MatchColors,
@@ -88,7 +90,7 @@ mod tests {
         fonts,
         theme::{Palette, Theme},
     };
-    use http_inspector_analysis::search::MatchOptions;
+    use http_inspector_analysis::search::{MatchOptions, Matcher};
 
     fn sections(job: &LayoutJob) -> Vec<(&str, bool)> {
         job.sections
@@ -110,7 +112,7 @@ mod tests {
         reason = "distinct fixture colors exercise split sections"
     )]
     fn marks_matches_that_cross_styled_sections() -> Result<(), Box<dyn std::error::Error>> {
-        let matcher = Matcher::new("ab", MatchOptions::default())?;
+        let matcher = TextTerms::single(Matcher::new("ab", MatchOptions::default())?);
         let mut job = LayoutJob::default();
         // Different colors keep the pieces in separate sections.
         for (piece, gray) in [("xa", 10), ("by", 20), ("AB", 30)] {
@@ -134,16 +136,29 @@ mod tests {
                 ("AB", true)
             ]
         );
+        let last = job.sections.last().map(|section| &section.format);
         assert_eq!(
-            job.sections.last().map(|section| section.format.background),
-            Some(colors.current)
+            last.map(|format| format.background),
+            Some(colors.background)
+        );
+        assert_eq!(last.map(|format| format.color), Some(colors.text));
+        assert_eq!(
+            last.map(|format| format.underline.color),
+            Some(colors.current),
+            "the match the user moved to is underlined"
+        );
+        assert!(
+            job.sections
+                .get(1)
+                .is_some_and(|section| section.format.underline == Stroke::NONE),
+            "other matches have the background only"
         );
         Ok(())
     }
 
     #[test]
     fn plain_text_keeps_non_ascii_boundaries() -> Result<(), Box<dyn std::error::Error>> {
-        let matcher = Matcher::new("주문", MatchOptions::default())?;
+        let matcher = TextTerms::single(Matcher::new("주문", MatchOptions::default())?);
         let job = plain(
             "새 주문",
             &matcher,

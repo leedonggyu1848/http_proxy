@@ -11,27 +11,18 @@ pub(crate) use super::tokens::{MatchColors, SyntaxPalette};
 use http_inspector_content::format::TokenKind;
 
 impl SyntaxPalette {
-    pub(crate) const fn for_theme(theme: Theme) -> Self {
-        ThemeTokens::for_theme(theme).syntax
-    }
-
     pub(crate) const fn color(&self, kind: TokenKind, text: Color32) -> Color32 {
         match kind {
             TokenKind::Text => text,
-            TokenKind::Key | TokenKind::AttributeName => self.key,
+            TokenKind::Key => self.key,
             TokenKind::String | TokenKind::AttributeValue | TokenKind::CData => self.string,
             TokenKind::Number | TokenKind::Entity => self.number,
-            TokenKind::Literal | TokenKind::Namespace => self.literal,
+            // Attribute names differ from the tag they sit in.
+            TokenKind::Literal | TokenKind::Namespace | TokenKind::AttributeName => self.literal,
             TokenKind::Punctuation => self.punctuation,
             TokenKind::Tag => self.tag,
             TokenKind::Comment | TokenKind::Instruction => self.comment,
         }
-    }
-}
-
-impl MatchColors {
-    pub(crate) const fn for_theme(theme: Theme) -> Self {
-        ThemeTokens::for_theme(theme).search
     }
 }
 
@@ -99,10 +90,6 @@ pub(crate) fn divider_stroke(ui: &egui::Ui, response: &egui::Response) -> egui::
     egui::Stroke::new(StrokeWidth::STRUCTURAL, color)
 }
 
-pub(crate) fn structural_stroke(ui: &egui::Ui) -> egui::Stroke {
-    ui.visuals().widgets.noninteractive.bg_stroke
-}
-
 pub(crate) fn image_border(ui: &egui::Ui) -> egui::Stroke {
     ui.visuals().window_stroke
 }
@@ -168,12 +155,15 @@ fn apply_widgets(widgets: &mut egui::style::Widgets, tokens: &ThemeTokens) {
     widgets.noninteractive.weak_bg_fill = surfaces.pane;
     widgets.noninteractive.bg_stroke =
         egui::Stroke::new(StrokeWidth::STRUCTURAL, borders.structural);
-    // Resting controls are outline buttons; `bg_fill` also colors scrollbar
-    // thumbs and checkbox boxes.
+    // Resting controls are outline buttons. `bg_fill` colors scrollbar
+    // thumbs and checkbox and radio boxes. It is opaque in every state, so
+    // the thumb never vanishes under the pointer: `borders.control` at rest
+    // and `text.muted`, the inactive icon color, under the pointer or while
+    // pressed, which is the hover feedback of thumbs and boxes.
     widgets.inactive.weak_bg_fill = surfaces.elevated;
     widgets.inactive.bg_fill = borders.control;
     for widget in [&mut widgets.hovered, &mut widgets.active, &mut widgets.open] {
-        widget.bg_fill = surfaces.hover;
+        widget.bg_fill = tokens.text.muted;
         widget.weak_bg_fill = surfaces.hover;
     }
     for widget in [
@@ -211,10 +201,7 @@ fn apply_scales(style: &mut egui::Style) {
     spacing.menu_margin = egui::Margin::from(Space::SM);
     spacing.window_margin = egui::Margin::from(Space::MD);
     spacing.indent = Space::LG;
-    spacing.scroll = egui::style::ScrollStyle {
-        bar_width: Layout::SCROLLBAR_WIDTH,
-        ..egui::style::ScrollStyle::solid()
-    };
+    spacing.scroll = scroll_style();
     style.animation_time = Motion::STATE;
     for (text_style, size, family) in [
         (
@@ -238,6 +225,28 @@ fn apply_scales(style: &mut egui::Style) {
         style
             .text_styles
             .insert(text_style, FontId::new(size, family));
+    }
+}
+
+/// Floating 6pt scrollbars: a transparent track and a thumb that is always
+/// fully opaque, over a 6pt strip reserved beside the content so the thumb
+/// never covers text.
+fn scroll_style() -> egui::style::ScrollStyle {
+    egui::style::ScrollStyle {
+        floating: true,
+        bar_width: Layout::SCROLLBAR_WIDTH,
+        floating_width: Layout::SCROLLBAR_WIDTH,
+        floating_allocated_width: Layout::SCROLLBAR_WIDTH,
+        bar_inner_margin: 0.0,
+        bar_outer_margin: 0.0,
+        foreground_color: false,
+        dormant_background_opacity: 0.0,
+        active_background_opacity: 0.0,
+        interact_background_opacity: 0.0,
+        dormant_handle_opacity: 1.0,
+        active_handle_opacity: 1.0,
+        interact_handle_opacity: 1.0,
+        ..egui::style::ScrollStyle::solid()
     }
 }
 
@@ -320,6 +329,11 @@ impl ThemeSettings {
             .map(|error| format!("Could not save theme: {error}"));
     }
 
+    /// Whether a theme save error waits in the status bar.
+    pub(crate) const fn has_error(&self) -> bool {
+        self.error.is_some()
+    }
+
     /// Shows a theme save error in the status bar.
     pub(crate) fn status(&self, ui: &mut egui::Ui) {
         if let Some(error) = &self.error {
@@ -399,7 +413,7 @@ fn data_backgrounds(theme: Theme) -> Vec<Color32> {
         visuals.faint_bg_color,
         visuals.window_fill,
         visuals.extreme_bg_color,
-        pane.blend(visuals.widgets.hovered.bg_fill),
+        pane.blend(visuals.widgets.hovered.weak_bg_fill),
         pane.blend(visuals.selection.bg_fill),
     ]
 }
@@ -462,6 +476,108 @@ mod tests {
             ] {
                 assert_contrast(theme, mark, &text_backgrounds(theme), 3.0);
             }
+        }
+    }
+
+    #[test]
+    fn workbench_shell_combinations_meet_contrast() {
+        use super::super::tokens::contrast_ratio;
+        for theme in [Theme::Light, Theme::Dark] {
+            let tokens = ThemeTokens::for_theme(theme);
+            let surfaces = tokens.surfaces;
+            // The filter magnifier is an inactive icon in `text.muted`
+            // (non-text, 3:1) on the input surface.
+            let icon = contrast_ratio(tokens.text.muted, surfaces.input);
+            assert!(icon >= 3.0, "{theme:?}: magnifier {icon}");
+            // The short error at the right end of an input is text.
+            let error = contrast_ratio(tokens.status.error, surfaces.input);
+            assert!(error >= 4.5, "{theme:?}: input error {error}");
+            // Tab and toggle bars on chrome, and on the selected segment.
+            for background in [surfaces.chrome, surfaces.chrome.blend(surfaces.selected)] {
+                let bar = contrast_ratio(tokens.accent.primary, background);
+                assert!(bar >= 3.0, "{theme:?}: active bar {bar}");
+            }
+            // Focus rings around inputs, tabs, and segments.
+            for background in [surfaces.chrome, surfaces.input, surfaces.pane] {
+                let ring = contrast_ratio(tokens.accent.secondary, background);
+                assert!(ring >= 3.0, "{theme:?}: focus ring {ring}");
+            }
+            // Text on the selected and hovered segments and Ghost buttons.
+            for background in [
+                surfaces.chrome.blend(surfaces.selected),
+                surfaces.chrome.blend(surfaces.hover),
+            ] {
+                for text in [tokens.text.primary, tokens.text.secondary] {
+                    let ratio = contrast_ratio(text, background);
+                    assert!(
+                        ratio >= 4.5,
+                        "{theme:?}: {text:?} on {background:?}: {ratio}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn inspector_combinations_meet_contrast() {
+        use super::super::tokens::contrast_ratio;
+        for theme in [Theme::Light, Theme::Dark] {
+            let tokens = ThemeTokens::for_theme(theme);
+            let pane = tokens.surfaces.pane;
+            let matched = pane.blend(tokens.surfaces.cross_highlight);
+            let colors = MatchColors::for_theme(theme);
+            // Search matches: text on the cross-highlight background, and
+            // the underline of the current match (non-text, 3:1).
+            let text = contrast_ratio(colors.text, matched);
+            assert!(text >= 4.5, "{theme:?}: match text {text}");
+            let underline = contrast_ratio(colors.current, matched);
+            assert!(underline >= 3.0, "{theme:?}: current match {underline}");
+            // Line numbers and chevrons in `text.muted` on the pane, the
+            // uses D8 allows it.
+            let muted = contrast_ratio(tokens.text.muted, pane);
+            assert!(muted >= 3.0, "{theme:?}: gutter {muted}");
+            // The active path of the relationship graph.
+            let active = contrast_ratio(tokens.accent.primary, pane);
+            assert!(active >= 3.0, "{theme:?}: active path {active}");
+            // Syntax colors are picked from the category and text tokens.
+            let syntax = SyntaxPalette::for_theme(theme);
+            assert_eq!(syntax.key, tokens.category(Category::BlueSlate));
+            assert_eq!(syntax.string, tokens.category(Category::Indigo));
+            assert_eq!(syntax.number, tokens.category(Category::Ochre));
+            assert_eq!(syntax.punctuation, tokens.text.secondary);
+        }
+    }
+
+    #[test]
+    fn scrollbars_float_with_an_opaque_thumb_and_no_track() {
+        let scroll = scroll_style();
+        assert!(scroll.floating);
+        assert!((scroll.bar_width - Layout::SCROLLBAR_WIDTH).abs() < f32::EPSILON);
+        assert!((scroll.floating_width - Layout::SCROLLBAR_WIDTH).abs() < f32::EPSILON);
+        assert!(scroll.dormant_background_opacity.abs() < f32::EPSILON);
+        assert!(scroll.interact_background_opacity.abs() < f32::EPSILON);
+        assert!((scroll.dormant_handle_opacity - 1.0).abs() < f32::EPSILON);
+        assert!((scroll.interact_handle_opacity - 1.0).abs() < f32::EPSILON);
+        // The thumb and checkbox boxes are opaque in every state and change
+        // under the pointer.
+        for theme in [Theme::Light, Theme::Dark] {
+            let widgets = visuals(theme).widgets;
+            let tokens = ThemeTokens::for_theme(theme);
+            assert_eq!(widgets.inactive.bg_fill, tokens.borders.control);
+            for state in [widgets.hovered, widgets.active] {
+                assert_eq!(state.bg_fill, tokens.text.muted, "{theme:?}");
+                assert_eq!(state.bg_fill.a(), u8::MAX);
+            }
+            // The thumb under the pointer, and the check mark on a hovered
+            // box, stay visible (non-text 3:1).
+            let pane = tokens.surfaces.pane;
+            let thumb = super::super::tokens::contrast_ratio(tokens.text.muted, pane);
+            assert!(thumb >= 3.0, "{theme:?}: hovered thumb {thumb}");
+            let mark = super::super::tokens::contrast_ratio(
+                widgets.hovered.fg_stroke.color,
+                tokens.text.muted,
+            );
+            assert!(mark >= 3.0, "{theme:?}: check mark on hover {mark}");
         }
     }
 

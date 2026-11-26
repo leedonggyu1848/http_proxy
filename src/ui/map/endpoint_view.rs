@@ -5,7 +5,9 @@
 //! counts from [`EndpointSchema`]. The schema holds no query, header,
 //! cookie, credential or body value, so none can appear here.
 
-use crate::ui::style::tokens::Space;
+use crate::ui::style::tokens::{Layout, Space};
+use crate::ui::workbench::text::{self, ShellText};
+use crate::ui::workbench::tree;
 use std::fmt::Write as _;
 
 use eframe::egui::{self, RichText};
@@ -18,9 +20,6 @@ use http_inspector_analysis::url_map::{NodeId, RequestScope, ViewNode, ViewNodeK
 
 use super::MapAction;
 use crate::ui::style::theme::Palette;
-
-/// Below this many described bodies the structure is flagged as tentative.
-const FEW_SAMPLES: u64 = 3;
 
 /// Per-method endpoint aggregates merged for the selected node, rebuilt only
 /// when the node, its folded raw nodes, or the aggregates change.
@@ -55,7 +54,7 @@ impl EndpointCache {
     }
 }
 
-/// Renders the endpoint section and returns a `Show in Requests` action.
+/// Renders the endpoint group and returns a `Show in Requests` action.
 pub(super) fn show(
     ui: &mut egui::Ui,
     node: &ViewNode,
@@ -63,43 +62,40 @@ pub(super) fn show(
     skipped: u64,
 ) -> Option<MapAction> {
     let palette = Palette::of(ui);
-    ui.label(RichText::new("Endpoints").strong());
-    ui.add(
-        egui::Label::new(
-            RichText::new(
-                "Structure inferred from captured requests on this exact path: names, types and how often they appeared. Values are never shown.",
-            )
-            .color(palette.secondary)
-            .small(),
-        )
-        .wrap(),
-    );
-    if skipped > 0 {
-        ui.label(
-            RichText::new(format!(
-                "Endpoint analysis skipped {skipped} request(s) this session."
-            ))
-            .color(palette.warning)
-            .small(),
-        );
-    }
-    if endpoints.is_empty() {
-        ui.weak("No finished requests on this exact path yet.");
-        return None;
-    }
     let mut action = None;
-    for (index, (method, schema)) in endpoints.iter().enumerate() {
-        let salt = format!("{}#{method}", node.key.display_url());
-        let title = format!("{method} · {} request(s)", schema.requests());
-        egui::CollapsingHeader::new(RichText::new(title).monospace().strong())
-            .id_salt(&salt)
-            .default_open(index == 0)
-            .show(ui, |ui| {
-                if let Some(clicked) = render_endpoint(ui, node, method, schema, &salt) {
-                    action = Some(clicked);
-                }
-            });
-    }
+    tree::group(
+        ui,
+        "map-endpoints",
+        ShellText::Endpoints.text(),
+        Some(endpoints.len()),
+        |ui| {
+            egui::Frame::new()
+                .inner_margin(Layout::GROUP_BODY_MARGIN)
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = Space::XS;
+                    if skipped > 0 {
+                        ui.label(
+                            RichText::new(text::analysis_skipped(skipped)).color(palette.warning),
+                        );
+                    }
+                    for (index, (method, schema)) in endpoints.iter().enumerate() {
+                        let salt = format!("{}#{method}", node.key.display_url());
+                        let title = format!("{method} · {} request(s)", schema.requests());
+                        egui::CollapsingHeader::new(RichText::new(title).monospace().strong())
+                            .id_salt(&salt)
+                            .default_open(index == 0)
+                            .show(ui, |ui| {
+                                if let Some(clicked) =
+                                    render_endpoint(ui, node, method, schema, &salt)
+                                {
+                                    action = Some(clicked);
+                                }
+                            });
+                    }
+                });
+        },
+    )
+    .on_hover_text(ShellText::EndpointsHint.text());
     action
 }
 
@@ -147,14 +143,7 @@ fn render_evidence(ui: &mut egui::Ui, schema: &EndpointSchema) {
     if schema.missing_responses() > 0 {
         parts.push(format!("{} without response", schema.missing_responses()));
     }
-    ui.label(RichText::new(format!("Evidence: {}", parts.join(" · "))).small());
-    if schema.requests() < FEW_SAMPLES {
-        ui.label(
-            RichText::new("Few samples: fields seen once may be optional or vary.")
-                .color(palette.warning)
-                .small(),
-        );
-    }
+    ui.label(RichText::new(format!("Evidence: {}", parts.join(" · "))).color(palette.secondary));
 }
 
 fn render_path_params(ui: &mut egui::Ui, key: &ViewNodeKey, schema: &EndpointSchema) {
@@ -324,7 +313,7 @@ fn render_body_evidence(ui: &mut egui::Ui, group: &BodySchema) {
             .collect();
         parts.push(format!("{excluded} excluded ({})", reasons.join(", ")));
     }
-    let color = if excluded > 0 || (described > 0 && described < FEW_SAMPLES) {
+    let color = if excluded > 0 {
         palette.warning
     } else {
         palette.secondary

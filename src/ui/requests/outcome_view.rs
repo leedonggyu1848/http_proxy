@@ -98,17 +98,22 @@ fn tunnel_summary(tunnel: &TunnelPreview) -> String {
     }
 }
 
-/// Status sentence for the details panel and the tone of an exceptional
-/// outcome.
-pub(crate) fn detail_text(outcome: &Outcome) -> (String, Option<Tone>) {
-    let text = match outcome {
-        Outcome::InFlight => "Waiting for the upstream server.",
-        Outcome::InspectionEstablished => "HTTPS inspection session established.",
-        Outcome::Cancelled => "The client closed the connection before a response arrived.",
-        Outcome::Incomplete => "The proxy stopped before a response arrived.",
-        _ => return outcome_text(outcome),
-    };
-    (text.to_owned(), outcome_tone(outcome))
+/// Status text of the inspector's result line and the tone of an
+/// exceptional outcome. A response shows the reason phrase as the server
+/// sent it and the HTTP version it answered with; other outcomes show the
+/// same text as the request list.
+pub(crate) fn detail_status(outcome: &Outcome) -> (String, Option<Tone>) {
+    match outcome {
+        Outcome::Response(response) => (
+            crate::ui::workbench::text::response_line(
+                response.status().as_u16(),
+                response.reason(),
+                &format!("{:?}", response.version()),
+            ),
+            outcome_tone(outcome),
+        ),
+        _ => outcome_text(outcome),
+    }
 }
 
 pub(crate) const fn timing_label(outcome: &Outcome) -> &'static str {
@@ -180,8 +185,13 @@ mod tests {
             stage: FailureStage::UpstreamTls,
             message: "certificate rejected".to_owned(),
         };
-        assert_eq!(outcome_text(&outcome), detail_text(&outcome));
-        assert_eq!(outcome_text(&outcome).1, Some(Tone::Danger));
+        assert_eq!(
+            outcome_text(&outcome),
+            (
+                "Upstream TLS handshake: certificate rejected".to_owned(),
+                Some(Tone::Danger)
+            )
+        );
         let matches = |query: &str| {
             http_inspector_analysis::search::Matcher::new(
                 query,
@@ -194,5 +204,45 @@ mod tests {
         assert!(matches("upstream tls handshake"));
         assert!(matches("certificate rejected"));
         assert!(!matches("response timeout"));
+    }
+
+    #[test]
+    fn inspector_shows_the_reason_and_version_the_server_sent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use http::{Method, StatusCode, Version};
+        use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
+
+        let answered = |fixture: ResponseFixture| {
+            ExchangeBuilder::http(Method::GET, "http://localhost:8080/api")?.respond(fixture)
+        };
+        let gateway = answered(
+            ResponseFixture::new(StatusCode::BAD_GATEWAY).reason("Upstream Took Too Long"),
+        )?;
+        assert_eq!(
+            detail_status(gateway.outcome()),
+            (
+                "502 Upstream Took Too Long · HTTP/1.1".to_owned(),
+                Some(Tone::Danger)
+            ),
+            "a nonstandard reason phrase is shown as sent"
+        );
+        let custom =
+            answered(ResponseFixture::new(StatusCode::from_u16(599)?).reason("Net Timeout"))?;
+        assert_eq!(
+            detail_status(custom.outcome()).0,
+            "599 Net Timeout · HTTP/1.1",
+            "a nonstandard code keeps its phrase instead of `Unknown status`"
+        );
+        let old = answered(ResponseFixture::new(StatusCode::OK).version(Version::HTTP_10))?;
+        assert_eq!(
+            detail_status(old.outcome()),
+            ("200 OK · HTTP/1.0".to_owned(), None)
+        );
+        // Other outcomes keep the request list's text.
+        assert_eq!(
+            detail_status(&Outcome::Cancelled),
+            outcome_text(&Outcome::Cancelled)
+        );
+        Ok(())
     }
 }

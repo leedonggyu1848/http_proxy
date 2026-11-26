@@ -231,10 +231,7 @@ pub(crate) enum MainView {
 
 pub(crate) struct LayoutState {
     pub(crate) theme: ThemeSettings,
-    pub(super) main_view: MainView,
-    /// Height of the status bar in the previous frame, reserved below the
-    /// main area so that it fits in the window without scrolling.
-    pub(super) status_bar_height: f32,
+    pub(crate) main_view: MainView,
     /// Fraction of the main area given to the details pane before clamping.
     /// Updated only when the user drags the divider, so shrinking the window
     /// and widening it again restores the split instead of staying narrow.
@@ -246,7 +243,6 @@ impl LayoutState {
         Self {
             theme: ThemeSettings::new(context),
             main_view: MainView::default(),
-            status_bar_height: 0.0,
             detail_share: Layout::DEFAULT_DETAIL_SHARE,
         }
     }

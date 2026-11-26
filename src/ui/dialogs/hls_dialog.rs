@@ -816,7 +816,7 @@ fn render_progress_row(ui: &mut egui::Ui, progress: &HlsDownloadProgress) {
     let tokens = ThemeTokens::for_theme(ui.ctx().theme());
     ui.horizontal_wrapped(|ui| {
         ui.spinner();
-        let radius = egui::CornerRadius::same(Radius::STATUS_BAR);
+        let radius = egui::CornerRadius::same(Radius::MICRO);
         let resp = ui
             .scope(|ui| {
                 ui.visuals_mut().extreme_bg_color = tokens.surfaces.chrome;

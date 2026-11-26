@@ -402,11 +402,13 @@ fn preserves_multiline_alignment_with_active_search_highlights() -> Result<(), S
     let mut cache = BodyViewCache::default();
     let query = Query {
         generation: 1,
-        matcher: http_inspector_analysis::search::Matcher::new(
-            "line",
-            http_inspector_analysis::search::MatchOptions::default(),
-        )
-        .map_err(|e| e.to_string())?,
+        terms: http_inspector_analysis::search::TextTerms::single(
+            http_inspector_analysis::search::Matcher::new(
+                "line",
+                http_inspector_analysis::search::MatchOptions::default(),
+            )
+            .map_err(|e| e.to_string())?,
+        ),
         scope: http_inspector_analysis::search::SearchScope::All,
     };
     let xml = BodySource {

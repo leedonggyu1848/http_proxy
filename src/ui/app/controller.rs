@@ -36,6 +36,7 @@ pub(crate) enum AppAction {
     SetPort(String),
     SetHttpsInspection(bool),
     DismissAuthorization,
+    DismissCaNotice,
     SaveMenu(SaveMenuAction),
     SetTheme(egui::ThemePreference),
     SetBodyStorageLimit(u64),
@@ -64,6 +65,7 @@ pub(crate) enum AppAction {
     PlanRanges(RecordId),
     Range(RangeAction),
     Search(SearchSettings),
+    AppendFilter(String),
     Map(MapAction),
 }
 
@@ -122,6 +124,7 @@ impl InspectorApp {
             AppAction::DismissAuthorization => {
                 self.dialogs.authorization_notice = AuthorizationNotice::Dismissed;
             }
+            AppAction::DismissCaNotice => self.dialogs.ca_panel.dismiss_notice(),
             AppAction::SaveMenu(action) => self.apply_save_menu(context, action),
             AppAction::SetTheme(preference) => {
                 self.layout.theme.set_preference(context, preference);
@@ -147,16 +150,11 @@ impl InspectorApp {
             AppAction::ClearMapFilter => self.requests.clear_map_filter(),
             AppAction::Filter(filter) => self.requests.record_filter = filter,
             AppAction::Search(settings) => self.requests.search.set_settings(settings),
+            AppAction::AppendFilter(term) => self.requests.search.append_filter(&term),
             AppAction::SelectRecord(id) => self.requests.selected = Some(id),
             AppAction::DetailTab(tab) => self.detail.tab = tab,
             AppAction::BodyMode(mode) => self.detail.body_mode = mode,
-            AppAction::OpenReplay(id) => {
-                if let Some(record) = self.record(id).cloned()
-                    && let Err(error) = self.detail.open_replay(record)
-                {
-                    self.report_error(error.to_string());
-                }
-            }
+            AppAction::OpenReplay(id) => self.open_replay(id),
             AppAction::OpenHls(id) => self.open_hls(context, id),
             AppAction::Hls(action) => self.apply_hls_action(context, action),
             AppAction::CopyText(text) => context.copy_text(text),
@@ -167,16 +165,7 @@ impl InspectorApp {
             }
             AppAction::SetCurlRedactions(redactions) => self.detail.curl.set_redactions(redactions),
             AppAction::DismissCurlNotice => self.detail.curl.dismiss_notice(),
-            AppAction::SaveBody(id, side, format) => {
-                if let Some(record) = self.record(id).cloned() {
-                    self.session.body_saving.request(
-                        &record,
-                        side,
-                        format,
-                        self.dialogs.save.directory(),
-                    );
-                }
-            }
+            AppAction::SaveBody(id, side, format) => self.save_body(id, side, format),
             AppAction::PlanRanges(id) => {
                 if let Some(record) = self.record(id).cloned() {
                     self.start_range_plan(&record);
@@ -184,6 +173,22 @@ impl InspectorApp {
             }
             AppAction::Range(action) => self.apply_range_action(action),
             AppAction::Map(action) => self.handle_map_action(context, action),
+        }
+    }
+
+    fn open_replay(&mut self, id: RecordId) {
+        if let Some(record) = self.record(id).cloned()
+            && let Err(error) = self.detail.open_replay(record)
+        {
+            self.report_error(error.to_string());
+        }
+    }
+
+    fn save_body(&mut self, id: RecordId, side: BodySide, format: SaveFormat) {
+        if let Some(record) = self.record(id).cloned() {
+            self.session
+                .body_saving
+                .request(&record, side, format, self.dialogs.save.directory());
         }
     }
 

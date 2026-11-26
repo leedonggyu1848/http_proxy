@@ -41,15 +41,8 @@ impl Radius {
     pub(crate) const PANE: u8 = 0;
     /// Buttons, inputs, drop-downs, popups, menus, and dialogs.
     pub(crate) const CONTROL: u8 = 4;
-    /// Shortcut chips and scrollbar thumbs.
-    #[expect(
-        dead_code,
-        reason = "Shortcut chips arrive with the toolbar and pane header step of the redesign"
-    )]
+    /// Shortcut chips, scrollbar thumbs, and compact progress bars.
     pub(crate) const MICRO: u8 = 2;
-    pub(crate) const GRAPH_CANVAS: u8 = 4;
-    pub(crate) const GRAPH_LABEL: u8 = 2;
-    pub(crate) const STATUS_BAR: u8 = 2;
 }
 
 /// Text sizes in points. UI text uses the proportional (sans) font and data
@@ -60,10 +53,6 @@ impl TypeScale {
     /// Panel and toolbar titles.
     pub(crate) const PANEL_TITLE: f32 = 12.0;
     /// Letter spacing of panel titles: 0.01 em of [`Self::PANEL_TITLE`].
-    #[expect(
-        dead_code,
-        reason = "Panel headers arrive with the toolbar and pane header step of the redesign"
-    )]
     pub(crate) const PANEL_TITLE_TRACKING: f32 = 0.12;
     /// Controls, buttons, and tabs.
     pub(crate) const CONTROL: f32 = 12.0;
@@ -73,6 +62,8 @@ impl TypeScale {
     pub(crate) const BODY: f32 = 12.5;
     /// Monospace data cells, numbers, and code.
     pub(crate) const DATA: f32 = 12.0;
+    /// Line height of multi-line data, such as the raw viewer.
+    pub(crate) const DATA_LINE_HEIGHT: f32 = 18.0;
     /// Key figures that the user compares or judges.
     #[expect(
         dead_code,
@@ -150,6 +141,8 @@ impl Layout {
     pub(crate) const TABLE_HEADER_HEIGHT: f32 = 28.0;
     /// Width of the scrollbar.
     pub(crate) const SCROLLBAR_WIDTH: f32 = 6.0;
+    /// Room for the dot or spinner before a status bar entry.
+    pub(crate) const STATUS_MARK_WIDTH: f32 = 10.0;
     /// Diameter of a status or category dot.
     pub(crate) const DOT_SIZE: f32 = 6.0;
     /// Width of the left tick that marks a failed status.
@@ -158,21 +151,64 @@ impl Layout {
     pub(crate) const TICK_HEIGHT: f32 = 12.0;
     /// Width of the bar at the left edge of a selected row.
     pub(crate) const SELECTION_BAR_WIDTH: f32 = 2.0;
+    /// Height of the toolbar row at the top of the window.
+    pub(crate) const TOOLBAR_HEIGHT: f32 = 42.0;
+    /// Height of the header at the top of each split pane.
+    pub(crate) const PANE_HEADER_HEIGHT: f32 = 28.0;
+    /// Height of the status bar at the bottom of the window.
+    pub(crate) const STATUS_BAR_HEIGHT: f32 = 24.0;
+    /// Width of the pointer target around a 1px splitter line.
+    pub(crate) const SPLITTER_HIT: f32 = 5.0;
+    /// Height of buttons on the toolbar.
+    pub(crate) const TOOLBAR_BUTTON_HEIGHT: f32 = 28.0;
+    /// Height of buttons inside a pane, including pane headers.
+    pub(crate) const PANE_BUTTON_HEIGHT: f32 = 24.0;
+    /// Height of text inputs.
+    pub(crate) const INPUT_HEIGHT: f32 = 28.0;
+    /// Small line icon, such as the magnifier in the filter input.
+    pub(crate) const ICON_SMALL: f32 = 14.0;
+    /// Height of the vertical line between toolbar groups.
+    pub(crate) const TOOLBAR_SEPARATOR_HEIGHT: f32 = 20.0;
+    /// Default share of the window width given to the primary pane (the
+    /// request list or the URL tree).
+    pub(crate) const PRIMARY_PANE_FRACTION: f32 = 0.62;
+    /// Narrowest window that fits the toolbar on one row. Narrower windows
+    /// move the view switch and the filter to a second toolbar row.
+    pub(crate) const TOOLBAR_ONE_ROW_MIN_WIDTH: f32 = 960.0;
+    /// Padding of a one-line row inside a pane, such as the Map filter row.
+    pub(crate) const PANE_ROW_MARGIN: egui::Margin = egui::Margin::symmetric(12, 4);
+    /// Padding around the request line at the top of the inspector.
+    pub(crate) const REQUEST_LINE_MARGIN: egui::Margin = egui::Margin::symmetric(12, 8);
+    /// Width of the time column of the Timing tab, enough for `99999.9 ms…`.
+    pub(crate) const TIMING_VALUE_WIDTH: f32 = 96.0;
+    /// Padding of a one-line notice under the toolbar.
+    pub(crate) const NOTICE_MARGIN: egui::Margin = egui::Margin::symmetric(12, 2);
+    /// Width of the request filter input on the toolbar.
+    pub(crate) const TOOLBAR_FILTER_WIDTH: SizeLimit = SizeLimit::new(0.0, 120.0, 460.0);
     pub(crate) const WINDOW: [f32; 2] = [1_280.0, 820.0];
     pub(crate) const MIN_WINDOW: [f32; 2] = [640.0, 420.0];
     pub(crate) const MIN_MAIN_HEIGHT: f32 = 280.0;
     pub(crate) const MIN_TABLE_WIDTH: f32 = 320.0;
     pub(crate) const MIN_DETAIL_WIDTH: f32 = 280.0;
-    pub(crate) const DEFAULT_DETAIL_SHARE: f32 = 0.4;
-    pub(crate) const SPLIT_HANDLE_HALF_WIDTH: f32 = 3.0;
-    pub(crate) const SPLIT_GUTTER_HALF_WIDTH: f32 = 1.0;
-    pub(crate) const TREE_INDENT: f32 = Space::MD;
-    pub(crate) const TREE_LEAF_PREFIX: f32 = 20.0;
-    pub(crate) const MAP_TREE_ROW_HEIGHT: f32 = 22.0;
-    pub(crate) const MAP_TREE_ROW_MARGIN: egui::Margin = egui::Margin::symmetric(4, 1);
-    pub(crate) const MAP_STATUS_WIDTH: f32 = 44.0;
-    pub(crate) const MAP_STATUS_HEIGHT: f32 = Space::SM;
-    pub(crate) const MAP_STATUS_MIN_SEGMENT: f32 = Space::XXS;
+    /// Share of the split given to the inspector pane by default.
+    pub(crate) const DEFAULT_DETAIL_SHARE: f32 = 1.0 - Self::PRIMARY_PANE_FRACTION;
+    /// Height of a tree or key-value row whose value fits on one line.
+    pub(crate) const TREE_ROW_HEIGHT: f32 = 24.0;
+    /// Indentation of each tree level.
+    pub(crate) const TREE_INDENT: f32 = Space::LG;
+    /// Expand and collapse chevrons.
+    pub(crate) const CHEVRON_SIZE: f32 = 12.0;
+    /// Padding of free-form content under a tree group: it starts where the
+    /// group's depth-1 rows start their content (`Space::SM` + one indent +
+    /// chevron + `Space::XS`).
+    pub(crate) const GROUP_BODY_MARGIN: egui::Margin = egui::Margin {
+        left: 40,
+        right: 12,
+        top: 0,
+        bottom: 4,
+    };
+    /// Width of a right-aligned count column in a URL map tree row.
+    pub(crate) const MAP_COUNT_WIDTH: f32 = 64.0;
     pub(crate) const GRAPH_CANVAS_MIN: f32 = 120.0;
     pub(crate) const GRAPH_CANVAS_PADDING: f32 = 56.0;
     pub(crate) const GRAPH_AXIS_MIN: f32 = 20.0;
@@ -185,7 +221,12 @@ impl Layout {
     pub(crate) const GRAPH_EDGE_CLEARANCE: f32 = 6.0;
     pub(crate) const GRAPH_EDGE_SEPARATION: f32 = 9.0;
     pub(crate) const GRAPH_ARROW_TIP_PADDING: f32 = 3.0;
-    pub(crate) const GRAPH_DASH_LENGTH: f32 = 6.0;
+    /// Dash and gap of a secondary graph path (D19).
+    pub(crate) const GRAPH_DASH: f32 = 3.0;
+    /// Width of a line sample in the graph legend.
+    pub(crate) const LEGEND_SAMPLE_WIDTH: f32 = 24.0;
+    /// Size of a node outline sample in the graph legend.
+    pub(crate) const LEGEND_NODE_SIZE: f32 = 12.0;
     pub(crate) const GRAPH_LABEL_PADDING: egui::Vec2 = egui::vec2(3.0, 1.0);
     pub(crate) const BODY_MIN_WRAP_TEXT: f32 = 80.0;
     pub(crate) const BODY_LINE_VIEW_HEIGHT: f32 = 480.0;
@@ -248,9 +289,10 @@ impl Layout {
     pub(crate) const BODY_SETTINGS_WIDTH: SizeLimit = SizeLimit::new(48.0, 220.0, 380.0);
     pub(crate) const MAP_SEARCH_WIDTH: SizeLimit = SizeLimit::new(0.0, 90.0, 150.0);
     pub(crate) const TREE_SEARCH_WIDTH: SizeLimit = SizeLimit::new(0.0, 100.0, 180.0);
-    pub(crate) const REQUEST_SEARCH_WIDTH: SizeLimit = SizeLimit::new(0.0, 120.0, 260.0);
-    pub(crate) const DETAIL_KEY_WIDTH: SizeLimit = SizeLimit::new(0.0, 72.0, 220.0);
-    pub(crate) const DETAIL_ROW_MIN_WIDTH: f32 = 120.0;
+    pub(crate) const DETAIL_KEY_WIDTH: SizeLimit = SizeLimit::new(0.0, 72.0, 180.0);
+    /// Narrowest value column of a key-value row before it wraps under a
+    /// very long key.
+    pub(crate) const DETAIL_VALUE_MIN_WIDTH: f32 = 48.0;
     pub(crate) const REPLAY_DIALOG: egui::Vec2 = egui::vec2(650.0, 600.0);
 }
 
@@ -267,21 +309,19 @@ pub(crate) struct StrokeWidth;
 impl StrokeWidth {
     pub(crate) const STRUCTURAL: f32 = 1.0;
     pub(crate) const FOCUS_RING: f32 = 1.0;
-    pub(crate) const MAP_STATUS: f32 = 0.5;
-    pub(crate) const GRAPH_LINK: f32 = 1.6;
-    pub(crate) const GRAPH_REDIRECT: f32 = 2.6;
-    pub(crate) const GRAPH_NODE_PENDING: f32 = 2.5;
-    pub(crate) const GRAPH_NODE: f32 = 2.0;
-    pub(crate) const GRAPH_NODE_HOVERED: f32 = 3.0;
+    /// Line icons.
+    pub(crate) const ICON: f32 = 1.5;
+    /// Chart lines and the active path of the relationship graph (D19).
+    pub(crate) const GRAPH_ACTIVE: f32 = 1.5;
 }
 
-/// Syntax colors that keep at least 4.5:1 contrast on the panel, text field,
-/// stripe, hover, and selection backgrounds of their theme. Color only adds
-/// to cues already in the text: keys end with `:` or `=`, strings and
-/// attribute values keep their quotes, tags keep their angle brackets,
-/// namespace prefixes end with `:`, entities keep `&` and `;`, `CDATA` and
-/// instructions keep their `<![CDATA[` and `<?` delimiters, and comments are
-/// also italic.
+/// Syntax colors of a body view, picked from the category and text tokens
+/// so that no screen defines its own hue (D6, D9). Each one keeps 4.5:1 on
+/// the data surfaces (D7, D8). Color only adds to cues already in the text:
+/// keys end with `:` or `=`, strings and attribute values keep their quotes,
+/// tags keep their angle brackets, namespace prefixes end with `:`, entities
+/// keep `&` and `;`, `CDATA` and instructions keep their `<![CDATA[` and `<?`
+/// delimiters, and comments are also italic.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SyntaxPalette {
     pub(crate) key: Color32,
@@ -293,11 +333,45 @@ pub(crate) struct SyntaxPalette {
     pub(crate) comment: Color32,
 }
 
-/// Background of every match, and of the match the user moved to.
+impl SyntaxPalette {
+    /// Keys and tags in Cat-1, strings in Cat-3, numbers and literals in
+    /// Cat-4, as in the approved workbench concept; punctuation and comments
+    /// in `text.secondary` because `text.muted` is not a text color (D8).
+    pub(crate) const fn for_theme(theme: Theme) -> Self {
+        let tokens = ThemeTokens::for_theme(theme);
+        Self {
+            key: tokens.category(Category::BlueSlate),
+            string: tokens.category(Category::Indigo),
+            number: tokens.category(Category::Ochre),
+            literal: tokens.category(Category::Ochre),
+            punctuation: tokens.text.secondary,
+            tag: tokens.category(Category::BlueSlate),
+            comment: tokens.text.secondary,
+        }
+    }
+}
+
+/// How search matches look in laid-out text: every match on the
+/// `surfaces.cross_highlight` background with no border (D24), its text in
+/// `text.primary` because category and status colors are not read on that
+/// background (D8), and the match the user moved to underlined in
+/// `accent.secondary`, the focus color (D3).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MatchColors {
-    pub(crate) other: Color32,
+    pub(crate) background: Color32,
+    pub(crate) text: Color32,
     pub(crate) current: Color32,
+}
+
+impl MatchColors {
+    pub(crate) const fn for_theme(theme: Theme) -> Self {
+        let tokens = ThemeTokens::for_theme(theme);
+        Self {
+            background: tokens.surfaces.cross_highlight,
+            text: tokens.text.primary,
+            current: tokens.accent.secondary,
+        }
+    }
 }
 
 /// Surface colors from the base canvas up to popups.
@@ -350,15 +424,11 @@ pub(crate) struct TextColors {
     pub(crate) secondary: Color32,
     /// Below 4.5:1 on some surfaces: inactive icons, key-value colons, line
     /// number gutters, and hints of inputs that have their own label.
-    #[expect(
-        dead_code,
-        reason = "Line number gutters and key-value colons are restyled with the details panel"
-    )]
     pub(crate) muted: Color32,
     /// Text of disabled controls.
     #[expect(
         dead_code,
-        reason = "Disabled control text is restyled with the toolbar controls"
+        reason = "egui dims disabled controls itself; the token is kept for custom widgets"
     )]
     pub(crate) disabled: Color32,
 }
@@ -394,8 +464,6 @@ pub(crate) struct PrimaryAction {
 /// Every raw color of one theme.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ThemeTokens {
-    pub(crate) syntax: SyntaxPalette,
-    pub(crate) search: MatchColors,
     pub(crate) surfaces: Surfaces,
     pub(crate) borders: Borders,
     pub(crate) text: TextColors,
@@ -407,19 +475,6 @@ pub(crate) struct ThemeTokens {
 }
 
 const DARK: ThemeTokens = ThemeTokens {
-    syntax: SyntaxPalette {
-        key: Color32::from_rgb(230, 175, 255),
-        string: Color32::from_rgb(150, 230, 160),
-        number: Color32::from_rgb(150, 205, 255),
-        literal: Color32::from_rgb(255, 195, 135),
-        punctuation: Color32::from_gray(190),
-        tag: Color32::from_rgb(255, 165, 185),
-        comment: Color32::from_gray(175),
-    },
-    search: MatchColors {
-        other: Color32::from_rgb(92, 72, 0),
-        current: Color32::from_rgb(150, 82, 0),
-    },
     surfaces: Surfaces {
         base: Color32::from_rgb(0x0B, 0x10, 0x17),
         pane: Color32::from_rgb(0x0F, 0x16, 0x20),
@@ -467,19 +522,6 @@ const DARK: ThemeTokens = ThemeTokens {
 };
 
 const LIGHT: ThemeTokens = ThemeTokens {
-    syntax: SyntaxPalette {
-        key: Color32::from_rgb(120, 30, 125),
-        string: Color32::from_rgb(0, 95, 35),
-        number: Color32::from_rgb(0, 70, 160),
-        literal: Color32::from_rgb(150, 45, 0),
-        punctuation: Color32::from_gray(75),
-        tag: Color32::from_rgb(140, 20, 55),
-        comment: Color32::from_gray(80),
-    },
-    search: MatchColors {
-        other: Color32::from_rgb(255, 236, 150),
-        current: Color32::from_rgb(255, 196, 110),
-    },
     surfaces: Surfaces {
         base: Color32::from_rgb(0xF4, 0xF6, 0xF9),
         pane: Color32::from_rgb(0xFF, 0xFF, 0xFF),
@@ -551,14 +593,14 @@ impl ThemeTokens {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Category {
     BlueSlate,
-    Teal,
     #[cfg_attr(
         not(test),
         expect(
             dead_code,
-            reason = "No screen shows a fourth category until the details panel step"
+            reason = "Syntax colors use Cat-1, Cat-3, and Cat-4; Cat-2 stays a specified category"
         )
     )]
+    Teal,
     Indigo,
     Ochre,
     #[cfg_attr(

@@ -3,31 +3,24 @@
 use crate::ui::style::tokens::{Layout, Space};
 use eframe::egui;
 
-/// One-line scope at the top of the capture help.
-pub(super) const SCOPE_SUMMARY: &str = "Capture scope: only HTTP traffic that a client sends through this proxy. \
-     Other traffic on this computer is not recorded.";
-
-/// Explains what a CONNECT tunnel row does and does not contain.
-pub(crate) const TUNNEL_NOTE: &str = "CONNECT tunnel forwarded without decryption, as HTTPS uses by default. \
-     Only the host, port, byte counts, and duration are recorded. \
-     URL paths, headers, and bodies inside the tunnel are not recorded. \
-     Enable Decrypt HTTPS to inspect requests in new connections.";
-
+/// Traffic the proxy records, as short labels (S1, D13). The explanation
+/// is in `docs/guide/proxy-and-capture.md`.
 const RECORDED: [&str; 3] = [
-    "HTTP requests and responses: method, URL, headers, and bodies.",
-    "HTTPS with Decrypt HTTPS off: one Tunnel row per CONNECT with only the host, port, byte counts, and duration.",
-    "HTTPS with Decrypt HTTPS on: each HTTP/1.1 request inside the connection, after the client trusts the app CA.",
+    "HTTP: method, URL, headers, bodies",
+    "HTTPS, Decrypt off: one Tunnel row per CONNECT",
+    "HTTPS, Decrypt on: each HTTP/1.1 request",
 ];
 
+/// Traffic the proxy cannot see, as short labels.
 const NOT_RECORDED: [&str; 4] = [
-    "Programs that ignore proxy settings or open their own connections.",
-    "Hosts excluded by NO_PROXY or a proxy bypass list, which often includes localhost.",
-    "HTTP/3 (QUIC) over UDP. Browsers may switch to it after the first visit.",
-    "Traffic sent through a VPN tunnel or another proxy instead of this one.",
+    "Apps that ignore proxy settings",
+    "NO_PROXY and bypass-list hosts",
+    "HTTP/3 (QUIC) over UDP",
+    "Traffic through a VPN or another proxy",
 ];
 
-const QUIC_HINT: &str = "Browsers opened with Open Browser already disable QUIC. \
-     For a Chrome profile you start yourself, add --disable-quic so it uses HTTP/1.1 or HTTP/2 over TCP.";
+/// Label of the Chrome command that keeps a self-started profile off QUIC.
+const QUIC_COMMAND: &str = "Chrome without QUIC";
 
 fn disable_quic_example(address: std::net::SocketAddr) -> String {
     format!(
@@ -35,11 +28,14 @@ fn disable_quic_example(address: std::net::SocketAddr) -> String {
     )
 }
 
-/// Shows the `?` button whose popup explains the capture scope.
-pub(crate) fn button(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>) {
-    ui.menu_button("?", |ui| contents(ui, address))
-        .response
-        .on_hover_text("What is captured?");
+/// Shows the Capture scope submenu that explains which traffic is recorded.
+pub(crate) fn submenu(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>) {
+    ui.menu_button(
+        crate::ui::workbench::text::ShellText::CaptureScope.text(),
+        |ui| contents(ui, address),
+    )
+    .response
+    .on_hover_text("What is captured?");
 }
 
 fn contents(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>) {
@@ -51,23 +47,18 @@ fn contents(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>) {
         egui::ScrollArea::vertical()
             .max_height(max_height)
             .show(ui, |ui| {
-                ui.label(SCOPE_SUMMARY);
-                ui.add_space(Space::XS);
-                ui.strong("Recorded");
-                for line in RECORDED {
-                    ui.label(format!("• {line}"));
+                for (title, lines) in [
+                    ("Recorded", &RECORDED[..]),
+                    ("Not recorded", &NOT_RECORDED[..]),
+                ] {
+                    ui.strong(title);
+                    for line in lines {
+                        ui.label(*line);
+                    }
+                    ui.add_space(Space::XS);
                 }
-                ui.add_space(Space::XS);
-                ui.strong("Not recorded");
-                for line in NOT_RECORDED {
-                    ui.colored_label(
-                        crate::ui::style::theme::Palette::of(ui).warning,
-                        format!("• {line}"),
-                    );
-                }
-                ui.add_space(Space::XS);
-                ui.label(QUIC_HINT);
                 if let Some(address) = address {
+                    ui.strong(QUIC_COMMAND);
                     ui.add(
                         egui::Label::new(
                             egui::RichText::new(disable_quic_example(address)).monospace(),
@@ -107,9 +98,10 @@ mod tests {
     }
 
     #[test]
-    fn tunnel_note_says_contents_are_not_recorded() {
-        assert!(TUNNEL_NOTE.contains("without decryption"));
-        assert!(TUNNEL_NOTE.contains("bodies inside the tunnel are not recorded"));
+    fn labels_are_not_sentences() {
+        for line in RECORDED.iter().chain(NOT_RECORDED.iter()) {
+            assert!(!line.ends_with('.'), "{line}");
+        }
     }
 
     #[test]

@@ -215,13 +215,13 @@ UI 글자는 sans, 데이터는 mono로 나눈다. egui의 `FontFamily::Proporti
 
 ## 레이아웃 치수
 
-원문이 범위로 준 값은 원문 템플릿 값이나 범위 안의 한 값으로 고정했다. 모든 값은 `tokens.rs`의 `Layout`에 둔다.
+원문이 범위로 준 값은 원문 템플릿 값이나 범위 안의 한 값으로 고정했다. 모든 값은 `tokens.rs`의 `Layout`에 둔다. 주 패널 기본 폭은 처음 0.6으로 정했다가, 사용자가 승인한 워크벤치 컨셉 화면의 62%에 맞춰 범위 안의 0.62로 바꿨다.
 
 | 요소 | 원문 | 값 | Rust 이름 |
 | --- | --- | --- | --- |
 | 툴바 높이 | 40~44 | 42 | `Layout::TOOLBAR_HEIGHT` |
 | 보조 스트립 높이 | 110~140 | 120 | `Layout::AUX_STRIP_HEIGHT` |
-| 주 패널 기본 폭 | 60~65% | 0.6 | `Layout::PRIMARY_PANE_FRACTION` |
+| 주 패널 기본 폭 | 60~65% | 0.62 | `Layout::PRIMARY_PANE_FRACTION` |
 | 상태 바 높이 | 24~26 | 24 | `Layout::STATUS_BAR_HEIGHT` |
 | 패널 헤더 높이 | 28~30 | 28 | `Layout::PANE_HEADER_HEIGHT` |
 | 스플리터 히트 영역 | 5 | 5 | `Layout::SPLITTER_HIT` |
@@ -238,6 +238,9 @@ UI 글자는 sans, 데이터는 mono로 나눈다. egui의 `FontFamily::Proporti
 | 레프트 틱 | 2×12 | 2×12 | `Layout::TICK_WIDTH`, `Layout::TICK_HEIGHT` |
 | 선택 바 폭 | 2 | 2 | `Layout::SELECTION_BAR_WIDTH` |
 | 쉐브론 | 12 | 12 | `Layout::CHEVRON_SIZE` |
+| 원시 뷰어 행간 | 12/18 | 18 | `TypeScale::DATA_LINE_HEIGHT` |
+| 관계도 보조 경로 대시·간격 | 3-3 | 3 | `Layout::GRAPH_DASH` |
+| 관계도 활성 경로·차트 선 굵기 | 1.5 | 1.5 | `StrokeWidth::GRAPH_ACTIVE` |
 | 아이콘 | 14, 16 | 14, 16 | `Layout::ICON_SMALL`, `Layout::ICON` |
 
 화면은 위에서부터 다음 슬롯으로 나눈다. 슬롯 사이는 `borders.structural` 1px 선이다.
@@ -286,14 +289,39 @@ UI 글자는 sans, 데이터는 mono로 나눈다. egui의 `FontFamily::Proporti
 
 깊이마다 16 들여쓰고 깊이마다 왼쪽에 1px `borders.subtle` 가이드를 그린다. 행 높이는 24, 왼쪽에 12px 쉐브론(▸, ▾)을 둔다. 키는 `text.secondary`, 콜론은 `text.muted`, 값은 mono `text.primary`다.
 
+`ui::workbench::tree`가 행, 묶음 행, 키-값 칸을 그린다. 인스펙터 Headers 탭, 본문 JSON·XML 트리, URL 맵 트리와 맵 상세가 같은 행을 쓴다. 다음은 원문 명세에 없어 이 구현에서 정한 값이다.
+
+- 묶음 행 제목은 11pt(`TypeScale::COLUMN_HEADER`) `text.secondary`, 개수는 mono `text.secondary`다. 승인된 컨셉은 개수를 `text.muted`로 그렸지만 개수는 글자이므로 D8에 따라 `text.secondary`로 쓴다.
+- 마스킹한 헤더 값(`[REDACTED]`)은 데이터가 아닌 자리표시이므로 `text.secondary`로 값과 구분한다. 컨셉의 `text.muted`는 같은 이유(D8)로 쓰지 않는다.
+- 키 열 너비는 패널 너비의 30%를 72~180pt(`Layout::DETAIL_KEY_WIDTH`)로 묶는다. 값은 공백 없는 URL·토큰도 패널 안에서 줄을 넘긴다.
+- 행 오른쪽 숫자 열(URL 맵의 오류 수·요청 수)은 64pt(`Layout::MAP_COUNT_WIDTH`) 오른쪽 정렬이다.
+- 선택 행은 표의 선택 행과 같다(D23). 검색 일치 행은 `surfaces.cross_highlight` 배경이다(D21).
+
 ### 원시 뷰어
 
 배경은 `surfaces.pane`이다. 줄 번호나 오프셋 열은 `text.muted`이고 오른쪽에 1px `borders.subtle` 경계를 둔다. 범위 강조는 `surfaces.cross_highlight` 배경이고 테두리를 두지 않는다.
+
+구현: 줄 번호 열은 최소 두 자리 폭에 왼쪽 12pt·오른쪽 8pt 여백을 둔다. 접혀 넘어간 줄에는 번호를 붙이지 않는다. 본문 행간은 `TypeScale::DATA_LINE_HEIGHT`(18)다. 검색 일치는 모두 `surfaces.cross_highlight` 배경에 `text.primary` 글자로 쓰고(D8, 범주·상태 글자색은 교차 강조 위에서 읽지 않는다), 현재 일치에만 1px `accent.secondary` 밑줄을 더한다. 밑줄은 포커스와 같은 의미의 표시이며 범위를 두르는 테두리가 아니다.
+
+#### 구문 색
+
+구문 색은 기존 토큰에서 고른다(D6, D9). 형식마다 색은 글자 자체의 구분(`:`, 따옴표, 꺾쇠괄호, 주석 기울임)을 보조할 뿐이다.
+
+| 토큰 종류 | 색 |
+| --- | --- |
+| 키, 태그 | Cat-1 `Category::BlueSlate` |
+| 문자열, 속성 값, `CDATA` | Cat-3 `Category::Indigo` |
+| 숫자, 엔티티, `true`·`false`·`null`, 네임스페이스, 속성 이름 | Cat-4 `Category::Ochre` |
+| 구두점, 주석, 처리 명령 | `text.secondary` |
+| 그 밖의 글자 | `text.primary` |
+
+컨셉은 구두점을 `text.muted`로 그렸지만 구두점은 글자이므로 `text.secondary`로 쓴다(D8). 모든 구문 색은 데이터 표면에서 4.5:1 이상이다(`status_text_meets_aa_on_all_widget_backgrounds`).
 
 ### 시각화
 
 - 선 차트: 격자는 최소한의 1px 점선 `borders.subtle`, 데이터 선은 1.5px `accent.primary` 단색이다. 선 아래 면을 채우지 않는다.
 - 관계도: 비활성 노드와 선은 `borders.control`과 `text.muted`로 누른다. 선택·활성 경로만 1.5px `accent.primary` 실선이고 대기·보조 경로는 3-3 점선이다.
+  - 구현: 마우스를 올린 도메인과 Tree에서 고른 노드의 도메인이 활성이다. 비활성 노드 이름과 요청 수는 글자이므로 `text.muted` 대신 `text.secondary`로 쓴다(D8). 간선 종류는 비활성일 때 Referer 1px 실선, Origin(CORS) 3-3 점선, Redirect 1.5-3 점선으로 구분하고, 견본은 패널 머리줄의 **Edges ▼** 메뉴에 둔다. 3rd-party 도메인은 점선 테두리다.
 
 ### 아이콘
 
@@ -318,7 +346,8 @@ UI 글자는 sans, 데이터는 mono로 나눈다. egui의 `FontFamily::Proporti
 | `Visuals::selection.bg_fill` | `surfaces.selected` |
 | `Visuals::selection.stroke` | `text.primary`. egui는 이 색으로 선택된 글자, 선택된 버튼 글자, 선택된 표 행 글자를 칠하므로 `accent.primary`를 넣으면 D8을 어긴다. 선택의 `accent.primary`는 표가 그리는 2px 선택 바로 보인다. |
 | `Visuals::hyperlink_color` | `text.primary`. 링크는 밑줄로 구분한다. |
-| `Spacing::scroll` | `ScrollStyle::solid()` 기반, `bar_width` 6. egui는 썸 색을 `widgets.inactive.bg_fill`(`borders.control`), 썸 모서리를 위젯 모서리(`Radius::CONTROL`)에서 가져오고 트랙을 `extreme_bg_color`(`surfaces.input`)로 칠한다. 썸 2pt와 투명 트랙은 egui 설정으로 바꿀 수 없다. |
+| `Spacing::scroll` | `floating: true`, `bar_width`·`floating_width`·`floating_allocated_width` 6, 배경 불투명도 0, 손잡이 불투명도 1. 내용 옆 6pt를 비워 썸이 글자를 가리지 않고, 트랙은 투명하다. egui는 썸 색을 `widgets.*.bg_fill`에서 가져온다. 체크박스·라디오 상자도 같은 값을 쓰므로 `inactive`는 `borders.control`, `hovered`·`active`·`open`은 불투명한 `text.muted`(비활성 아이콘 색)로 두어 썸과 상자가 포인터 아래에서 사라지지 않고 밝아지게 한다. 반투명 호버 채움은 썸을 지우므로 쓰지 않는다. 썸 모서리는 위젯 모서리(`Radius::CONTROL`)를 따르므로 2pt로 바꿀 수 없다. |
+| 포커스된 입력 | egui는 포커스된 `TextEdit` 테두리를 `selection.stroke`(`text.primary`)로 그린다. 그래서 툴바 필터, 포트, 저장 경로, 맵 호스트 필터, 본문 트리 검색, HAR 경로, 재전송 편집기의 URL·헤더·본문 입력은 `ui::workbench::field`가 테두리 없는 `TextEdit` 둘레에 직접 테두리를 그린다. 평소 `borders.control`, 포커스 때 `accent.secondary`와 바깥 1px 선, 잘못된 값일 때 `status.error`와 오른쪽 끝 11pt 글자다. |
 | `Style::animation_time` | 0.08 이하 |
 
 ## 출처

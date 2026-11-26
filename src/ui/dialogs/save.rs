@@ -1,4 +1,7 @@
 use crate::ui::style::tokens::Layout;
+use crate::ui::workbench::controls;
+use crate::ui::workbench::field::{self, Field};
+use crate::ui::workbench::text::ShellText;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -42,18 +45,24 @@ impl SaveControls {
         }
     }
 
-    /// Shows the save controls and returns any edits or requested operations.
+    /// Shows the Save menu on the toolbar, with a spinner beside it while a
+    /// save runs. Laid out right to left, so the menu comes first.
     pub(crate) fn menu(&self, ui: &mut egui::Ui, log_available: bool) -> Vec<SaveMenuAction> {
+        let actions = ui
+            .add_enabled_ui(self.pending.is_none(), |ui| {
+                let label = format!("{} ▼", ShellText::Save.text());
+                controls::ghost_menu(ui, label, Layout::TOOLBAR_BUTTON_HEIGHT, |ui| {
+                    self.menu_items(ui, log_available)
+                })
+                .inner
+                .unwrap_or_default()
+            })
+            .inner;
         if self.pending.is_some() {
             ui.spinner();
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
-        ui.add_enabled_ui(self.pending.is_none(), |ui| {
-            ui.menu_button("Save ▼", |ui| self.menu_items(ui, log_available))
-                .inner
-                .unwrap_or_default()
-        })
-        .inner
+        actions
     }
 
     pub(crate) fn set_directory(&mut self, directory: String) {
@@ -122,14 +131,8 @@ impl SaveControls {
         ui.label("Save directory");
         let input_width = Layout::SAVE_DIRECTORY_WIDTH.fit(ui.ctx().content_rect().width());
         let mut directory = self.directory.clone();
-        if ui
-            .add(
-                egui::TextEdit::singleline(&mut directory)
-                    .desired_width(input_width)
-                    .hint_text("Existing directory"),
-            )
-            .changed()
-        {
+        let field = Field::new(input_width).hint("Existing directory");
+        if field::single_line(ui, &mut directory, field, |_| {}).changed() {
             actions.push(SaveMenuAction::Directory(directory));
         }
         if ui
@@ -151,7 +154,7 @@ impl SaveControls {
         if ui
             .button("Export HAR…")
             .on_hover_text(
-                "Save the requests in the list as a HAR 1.2 file. Bodies and sensitive headers are left out unless you include them.",
+                "Save the listed requests as a HAR 1.2 file, without bodies or sensitive headers unless you include them.",
             )
             .clicked()
         {
@@ -172,10 +175,17 @@ impl SaveControls {
     }
 
     /// Shows the result of the last save in the status bar.
+    /// Whether [`Self::status`] has a save result to show.
+    pub(crate) const fn has_status(&self) -> bool {
+        self.status.is_some()
+    }
+
     pub(crate) fn status(&self, ui: &mut egui::Ui) {
         match &self.status {
             Some(Ok(path)) => {
-                ui.label(format!("Saved: {}", path.display()));
+                let saved = format!("Saved: {}", path.display());
+                ui.add(egui::Label::new(saved.as_str()).truncate())
+                    .on_hover_text(saved);
             }
             Some(Err(error)) => {
                 crate::ui::style::indicator::dot_label(

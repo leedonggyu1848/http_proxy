@@ -2,6 +2,7 @@ pub(super) mod capture;
 mod controller;
 mod dialogs;
 pub(super) mod state;
+mod status_bar;
 
 pub(super) use controller::AppAction;
 
@@ -13,7 +14,7 @@ use crate::ui::map::{MapAction, MapSubView};
 use crate::ui::requests::{filter::ListView, request_table::RequestTable};
 use crate::ui::style::fonts;
 use crate::ui::style::theme::{self, Palette};
-use crate::ui::style::tokens::{Layout, Radius, Space};
+use crate::ui::style::tokens::{Layout, Radius, Space, StrokeWidth};
 
 use eframe::egui;
 use http_inspector_analysis::pipeline::AnalysisPipeline;
@@ -121,62 +122,33 @@ impl InspectorApp {
             .id_salt("window-scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                // Bands and panes meet at their 1px lines, with no gaps.
+                ui.spacing_mut().item_spacing.y = 0.0;
                 let top = ui.cursor().top();
-                self.toolbar(ui, &mut actions);
+                self.toolbar(ui, dialog_open, &mut actions);
                 self.notices(ui, &mut actions);
-                ui.separator();
-                self.view_switcher(ui, &mut actions);
-                match self.layout.main_view {
-                    MainView::Requests => {
-                        self.request_area(
-                            ui,
-                            viewport_height,
-                            top,
-                            shortcuts_allowed,
-                            &mut actions,
-                        );
-                    }
+                let shown = match self.layout.main_view {
+                    MainView::Requests => Some(self.request_area(
+                        ui,
+                        viewport_height,
+                        top,
+                        shortcuts_allowed,
+                        &mut actions,
+                    )),
                     MainView::Map => {
-                        if let Some(action) = self.map.panel.controls(
-                            ui,
-                            self.map.analysis.url_map(),
-                            self.dialogs.save.is_busy(),
-                        ) {
-                            pending_map_action = Some(action);
-                        }
-                        let used = ui.cursor().top() - top + ui.spacing().item_spacing.y;
-                        let height =
-                            main_height(viewport_height, used, self.layout.status_bar_height);
+                        let used = ui.cursor().top() - top;
+                        let height = main_height(viewport_height, used, Layout::STATUS_BAR_HEIGHT);
                         if let Some(action) = self.map_area(ui, height, shortcuts_allowed) {
                             pending_map_action = Some(action);
                         }
+                        None
                     }
-                }
-                let status_top = ui.cursor().top();
-                ui.separator();
-                self.status_bar(ui, &mut actions);
-                self.layout.status_bar_height = ui.min_rect().bottom() - status_top;
+                };
+                self.status_bar(ui, shown, &mut actions);
             });
 
         actions.extend(pending_map_action.map(AppAction::Map));
         actions
-    }
-
-    fn view_switcher(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
-        ui.horizontal_wrapped(|ui| {
-            let req_label = format!("Requests ({})", self.requests.records.len());
-            let mut view = self.layout.main_view;
-            ui.selectable_value(&mut view, MainView::Requests, req_label);
-            let map_label = format!(
-                "Map ({} hosts · {} nodes)",
-                self.map.analysis.url_map().origins().len(),
-                self.map.analysis.url_map().node_count()
-            );
-            ui.selectable_value(&mut view, MainView::Map, map_label);
-            if view != self.layout.main_view {
-                actions.push(AppAction::SwitchView(view));
-            }
-        });
     }
 
     /// Requests and details are clipped to disjoint panes.
@@ -187,7 +159,9 @@ impl InspectorApp {
         top: f32,
         shortcuts_allowed: bool,
         actions: &mut Vec<AppAction>,
-    ) {
+    ) -> usize {
+        let rows = self.requests.filtered_records();
+        let shown = rows.len();
         let requests = ListView {
             requests: &self.requests,
             analysis: &self.map.analysis,
@@ -199,17 +173,23 @@ impl InspectorApp {
                 .map(ProxyHandle::local_addr),
             saving_body: self.session.body_saving.is_busy(),
         };
-        requests.filters(ui, &mut self.request_table, actions);
-        let used = ui.cursor().top() - top + ui.spacing().item_spacing.y;
-        let height = main_height(viewport_height, used, self.layout.status_bar_height);
+        let used = ui.cursor().top() - top;
+        let height = main_height(viewport_height, used, Layout::STATUS_BAR_HEIGHT);
         split_panes(
             ui,
             height,
             &mut self.layout.detail_share,
             ("main-area", "main-split", "requests-pane", "details-pane"),
             |left_ui, right_ui| {
+                requests.header(left_ui, &mut self.request_table, actions);
                 let selected = requests
-                    .table(left_ui, &mut self.request_table, shortcuts_allowed, actions)
+                    .table(
+                        left_ui,
+                        &mut self.request_table,
+                        rows,
+                        shortcuts_allowed,
+                        actions,
+                    )
                     .or(self.requests.selected);
                 let record = selected.and_then(|id| {
                     self.requests
@@ -222,8 +202,8 @@ impl InspectorApp {
                     search: self.requests.search.active_query().map(AsRef::as_ref),
                     tab: self.detail.tab,
                     body_mode: self.detail.body_mode,
-                    curl: &self.detail.curl,
                     body_saving: &self.session.body_saving,
+                    field_menu_enabled: self.requests.search.field_menu_enabled(),
                 };
                 detail.show(
                     right_ui,
@@ -233,16 +213,19 @@ impl InspectorApp {
                 );
             },
         );
+        shown
     }
 
     /// Map main area: split tree + detail panes in Tree sub-view, or full-width
-    /// relationship graph canvas in Graph sub-view.
+    /// relationship graph canvas in Graph sub-view. The pane header of the
+    /// tree, or of the graph, holds the view tabs and the map actions.
     fn map_area(
         &mut self,
         ui: &mut egui::Ui,
         height: f32,
         shortcuts_allowed: bool,
     ) -> Option<MapAction> {
+        let save_busy = self.dialogs.save.is_busy();
         if self.map.panel.sub_view == MapSubView::Graph {
             let size = egui::vec2(ui.available_width(), height);
             let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
@@ -253,10 +236,15 @@ impl InspectorApp {
                     .layout(egui::Layout::top_down(egui::Align::Min)),
             );
             main.shrink_clip_rect(rect);
+            paint_pane_surfaces(&main, [rect, egui::Rect::NOTHING]);
+            let action = self
+                .map
+                .panel
+                .header(&mut main, self.map.analysis.url_map(), save_busy);
             self.map
                 .panel
                 .show_graph_pane(&mut main, self.map.analysis.url_map());
-            return None;
+            return action;
         }
 
         let mut share = self.layout.detail_share;
@@ -271,17 +259,23 @@ impl InspectorApp {
                 "map-detail-pane",
             ),
             |left_ui, right_ui| {
+                let header = self
+                    .map
+                    .panel
+                    .header(left_ui, self.map.analysis.url_map(), save_busy);
+                self.map.panel.tree_filters(left_ui);
                 self.map.panel.show_tree_pane(
                     left_ui,
                     self.map.analysis.url_map(),
                     shortcuts_allowed,
                 );
-                self.map.panel.show_detail_pane(
+                let detail = self.map.panel.show_detail_pane(
                     right_ui,
                     self.map.analysis.url_map(),
                     &self.requests.records,
                     self.map.analysis.endpoint_schemas(),
-                )
+                );
+                detail.or(header)
             },
         );
         self.layout.detail_share = share;
@@ -330,26 +324,14 @@ fn split_panes<R>(
     let split_x = (rect.right() - detail_width)
         .round()
         .clamp(rect.left(), rect.right());
-    let left_rect = egui::Rect::from_min_max(
-        rect.min,
+    // The 1px splitter line occupies [split_x, split_x + 1).
+    let left_rect = egui::Rect::from_min_max(rect.min, egui::pos2(split_x, rect.max.y));
+    let right_rect = egui::Rect::from_min_max(
         egui::pos2(
-            (split_x - Layout::SPLIT_GUTTER_HALF_WIDTH).max(rect.left()),
-            rect.max.y,
-        ),
-    );
-    let right_outer = egui::Rect::from_min_max(
-        egui::pos2(
-            (split_x + Layout::SPLIT_GUTTER_HALF_WIDTH).min(rect.right()),
+            (split_x + StrokeWidth::STRUCTURAL).min(rect.right()),
             rect.min.y,
         ),
         rect.max,
-    );
-    let right_rect = egui::Rect::from_min_max(
-        egui::pos2(
-            (right_outer.left() + Space::SM).min(right_outer.right()),
-            right_outer.top(),
-        ),
-        right_outer.max,
     );
 
     let mut left_ui = main.new_child(
@@ -367,12 +349,16 @@ fn split_panes<R>(
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
     right_ui.shrink_clip_rect(right_rect);
-    paint_pane_surfaces(&main, [left_rect, right_outer]);
+    for pane in [&mut left_ui, &mut right_ui] {
+        pane.spacing_mut().item_spacing.y = Space::XS;
+    }
+    paint_pane_surfaces(&main, [left_rect, right_rect]);
     let result = render(&mut left_ui, &mut right_ui);
 
+    let line_x = split_x + StrokeWidth::STRUCTURAL / 2.0;
     let handle_rect = egui::Rect::from_x_y_ranges(
-        (split_x - Layout::SPLIT_HANDLE_HALF_WIDTH).max(rect.left())
-            ..=(split_x + Layout::SPLIT_HANDLE_HALF_WIDTH).min(rect.right()),
+        (line_x - Layout::SPLITTER_HIT / 2.0).max(rect.left())
+            ..=(line_x + Layout::SPLITTER_HIT / 2.0).min(rect.right()),
         rect.y_range(),
     );
     let handle = main.interact(handle_rect, split_id, egui::Sense::drag());
@@ -385,7 +371,7 @@ fn split_panes<R>(
             .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
     }
     let stroke = theme::divider_stroke(&main, &handle);
-    main.painter().vline(split_x, rect.y_range(), stroke);
+    main.painter().vline(line_x, rect.y_range(), stroke);
     result
 }
 
