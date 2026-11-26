@@ -1549,7 +1549,11 @@ fn shell_tabs_are_announced_as_tab_lists() -> Result<(), Box<dyn std::error::Err
     );
     assert_eq!(
         tabs_of("Request details").ok_or("missing Request details tab list")?,
-        vec![selected("Headers", true), selected("Body", false)]
+        vec![
+            selected("Headers", true),
+            selected("Body", false),
+            selected("Timing", false),
+        ]
     );
     Ok(())
 }
@@ -1767,4 +1771,135 @@ fn standalone_field_completion_accepts_enter_and_tab_after_a_phrase() {
         assert!(drawn.iter().any(|item| item.text == input), "{input}");
         assert!(!drawn.iter().any(|item| item.text == "status:2xx"));
     }
+}
+
+/// Top of the first painted text equal to `label`.
+fn text_top(drawn: &[DrawnText], label: &str) -> Result<f32, String> {
+    drawn
+        .iter()
+        .find(|item| item.text == label)
+        .map(|item| item.rect.top())
+        .ok_or_else(|| format!("missing {label:?}"))
+}
+
+#[tokio::test]
+async fn inspector_rows_follow_the_tree_grid_in_every_tab() -> Result<(), Box<dyn std::error::Error>>
+{
+    let exchanges = timeout(Duration::from_secs(5), capture_sample_exchanges()).await??;
+    let mut app = test_app(egui::Context::default());
+    for exchange in exchanges {
+        app.requests.selected = Some(exchange.id());
+        let _evicted = app.requests.records.push(exchange);
+    }
+
+    app.detail.tab = DetailTab::Headers;
+    let drawn = render_settled(&mut app, Layout::WINDOW);
+    for group in ["Query", "Request", "Response"] {
+        text_top(&drawn, group)?;
+    }
+    // Query parameters are one-line key-value rows, one tree row apart.
+    // One-line key-value rows are one tree row apart, and their colons
+    // line up in one column after the keys.
+    let colons: Vec<egui::Rect> = drawn
+        .iter()
+        .filter(|item| item.text == ":")
+        .map(|item| item.rect)
+        .take(4)
+        .collect();
+    assert_eq!(colons.len(), 4, "query parameter rows");
+    for pair in colons.windows(2) {
+        if let [a, b] = pair {
+            assert!(
+                (b.top() - a.top() - Layout::TREE_ROW_HEIGHT).abs() < 0.5,
+                "rows {a:?} and {b:?} are not {} apart",
+                Layout::TREE_ROW_HEIGHT
+            );
+            assert!((a.left() - b.left()).abs() < 0.5);
+        }
+    }
+
+    app.detail.tab = DetailTab::Timing;
+    let drawn = render_settled(&mut app, Layout::WINDOW);
+    let connect = text_top(&drawn, "Connect")?;
+    let total = text_top(&drawn, "Total")?;
+    assert!(
+        5.0f32
+            .mul_add(-Layout::TREE_ROW_HEIGHT, total - connect)
+            .abs()
+            < 1.5,
+        "six timing rows: {connect} to {total}"
+    );
+    // Times are right-aligned in one column of the inspector (the request
+    // list left of it has its own Duration column).
+    let connect_left = text_left(&drawn, "Connect")?;
+    let rights: Vec<f32> = drawn
+        .iter()
+        .filter(|item| item.text.ends_with(" ms") && item.rect.left() > connect_left)
+        .map(|item| item.rect.right())
+        .collect();
+    assert_eq!(rights.len(), 6, "times: {rights:?}");
+    assert!(
+        rights.windows(2).all(|pair| match pair {
+            [a, b] => (a - b).abs() < 0.5,
+            _ => true,
+        }),
+        "times are not right-aligned: {rights:?}"
+    );
+
+    app.detail.tab = DetailTab::Body;
+    let drawn = render_settled(&mut app, Layout::WINDOW);
+    for label in ["Request body", "Response body", "Pretty", "Raw", "Tree"] {
+        text_top(&drawn, label)?;
+    }
+    // The raw viewer numbers its lines.
+    assert!(drawn.iter().any(|item| item.text == "1"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn map_panes_have_headers_and_tree_rows() -> Result<(), Box<dyn std::error::Error>> {
+    let exchanges = timeout(Duration::from_secs(5), capture_sample_exchanges()).await??;
+    let mut app = test_app(egui::Context::default());
+    load_synthetic_map(&mut app, exchanges)?;
+    app.layout.main_view = MainView::Map;
+    app.map.panel.sub_view = super::MapSubView::Tree;
+    let drawn = render_settled(&mut app, Layout::WINDOW);
+    let tree = text_top(&drawn, "Tree")?;
+    let graph = text_top(&drawn, "Graph")?;
+    assert!(
+        (tree - graph).abs() < 2.0,
+        "Tree and Graph share the header"
+    );
+    assert!(
+        tree < Layout::TOOLBAR_HEIGHT + Layout::PANE_HEADER_HEIGHT,
+        "the tabs sit in the pane header under the toolbar"
+    );
+    text_top(&drawn, "No node selected")?;
+    // Origin rows are tree rows: consecutive roots after a collapsed one are
+    // one tree row apart.
+    let mut roots: Vec<f32> = drawn
+        .iter()
+        .filter(|item| item.text.starts_with("http://") || item.text.starts_with("https://"))
+        .map(|item| item.rect.top())
+        .collect();
+    roots.sort_by(f32::total_cmp);
+    assert_ne!(roots, Vec::<f32>::new());
+    for pair in roots.windows(2) {
+        if let [a, b] = pair {
+            let gap = b - a;
+            let rows = (gap / Layout::TREE_ROW_HEIGHT).round();
+            assert!(
+                rows.mul_add(-Layout::TREE_ROW_HEIGHT, gap).abs() < 1.0,
+                "roots {a} and {b} are not on the {} grid",
+                Layout::TREE_ROW_HEIGHT
+            );
+        }
+    }
+
+    app.map.panel.sub_view = super::MapSubView::Graph;
+    let drawn = render_settled(&mut app, Layout::WINDOW);
+    for label in ["Edges ▼", "Relayout", "Export ▼"] {
+        text_top(&drawn, label)?;
+    }
+    Ok(())
 }

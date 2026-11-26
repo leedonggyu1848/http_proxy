@@ -98,19 +98,6 @@ fn tunnel_summary(tunnel: &TunnelPreview) -> String {
     }
 }
 
-/// Status sentence for the details panel and the tone of an exceptional
-/// outcome.
-pub(crate) fn detail_text(outcome: &Outcome) -> (String, Option<Tone>) {
-    let text = match outcome {
-        Outcome::InFlight => "Waiting for the upstream server.",
-        Outcome::InspectionEstablished => "HTTPS inspection session established.",
-        Outcome::Cancelled => "The client closed the connection before a response arrived.",
-        Outcome::Incomplete => "The proxy stopped before a response arrived.",
-        _ => return outcome_text(outcome),
-    };
-    (text.to_owned(), outcome_tone(outcome))
-}
-
 pub(crate) const fn timing_label(outcome: &Outcome) -> &'static str {
     match outcome {
         Outcome::InFlight => "Waiting",
@@ -180,8 +167,13 @@ mod tests {
             stage: FailureStage::UpstreamTls,
             message: "certificate rejected".to_owned(),
         };
-        assert_eq!(outcome_text(&outcome), detail_text(&outcome));
-        assert_eq!(outcome_text(&outcome).1, Some(Tone::Danger));
+        assert_eq!(
+            outcome_text(&outcome),
+            (
+                "Upstream TLS handshake: certificate rejected".to_owned(),
+                Some(Tone::Danger)
+            )
+        );
         let matches = |query: &str| {
             http_inspector_analysis::search::Matcher::new(
                 query,

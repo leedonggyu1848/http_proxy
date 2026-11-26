@@ -190,10 +190,10 @@ fn keyboard_selection(
     selected.filter(|&index| Some(index) != current)
 }
 
-/// Sort state and scrolling preference of the request list.
 pub(super) const FOLLOW_NEWEST: &str = "Follow newest";
 pub(super) const ARRIVAL_ORDER: &str = "Arrival order";
 
+/// Sort state and scrolling preference of the request list.
 pub(crate) struct RequestTable {
     sort: Sort,
     follow_newest: bool,
@@ -431,7 +431,7 @@ impl RequestTable {
                 .truncate()
                 .sense(egui::Sense::click());
             ui.add(label)
-                .on_hover_text("Every request in the list goes to this host")
+                .on_hover_text(crate::ui::workbench::text::ShellText::SharedHost.text())
                 .context_menu(|ui| {
                     if let Some(action) =
                         filter_menu::items(ui, FilterKey::Host, host, filter_enabled)
@@ -823,7 +823,7 @@ fn status_cell(ui: &mut egui::Ui, record: &Exchange) {
     indicator::tick(ui, tone);
     let status = ui.add(egui::Label::new(RichText::new(text).monospace()).truncate());
     if matches!(record.outcome(), Outcome::Tunnel(_)) {
-        status.on_hover_text(crate::ui::dialogs::scope_help::TUNNEL_NOTE);
+        status.on_hover_text(crate::ui::workbench::text::ShellText::TunnelHint.text());
     } else {
         status.on_hover_text(outcome_summary(record.outcome()));
     }

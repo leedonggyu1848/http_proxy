@@ -7,7 +7,11 @@ use eframe::egui::{self, text::LayoutJob};
 use http_inspector_analysis::search::TextTerms;
 
 use crate::ui::detail::search::highlight;
+use crate::ui::style::fonts;
 use crate::ui::style::theme::MatchColors;
+use crate::ui::style::tokens::Layout;
+use crate::ui::workbench::controls;
+use crate::ui::workbench::text::{self, ShellText};
 
 /// One match: the line it is on (0 for text shown without line numbers)
 /// and its byte range in that line or text.
@@ -117,25 +121,23 @@ impl BodyMatches {
     pub(super) fn controls(&mut self, ui: &mut egui::Ui) -> bool {
         let count = self.hits.len();
         if count == 0 {
-            ui.weak("No search matches in the shown text.");
+            ui.weak(ShellText::NoMatches.text());
             return false;
         }
         let mut step = None;
-        ui.horizontal_wrapped(|ui| {
-            ui.label(format!("Match {} of {count}", self.current + 1));
-            if ui
-                .small_button("◀ Previous")
-                .on_hover_text("Previous match")
-                .clicked()
-            {
-                step = Some(count - 1);
-            }
-            if ui
-                .small_button("Next ▶")
-                .on_hover_text("Next match")
-                .clicked()
-            {
-                step = Some(1);
+        ui.horizontal(|ui| {
+            controls::ghost_style(ui);
+            ui.label(
+                egui::RichText::new(text::match_position(self.current + 1, count))
+                    .font(fonts::data()),
+            );
+            for (label, offset) in [(ShellText::Previous, count - 1), (ShellText::Next, 1)] {
+                if ui
+                    .add(controls::ghost(label.text(), Layout::PANE_BUTTON_HEIGHT))
+                    .clicked()
+                {
+                    step = Some(offset);
+                }
             }
         });
         let Some(step) = step else {
@@ -173,11 +175,13 @@ mod tests {
         job
     }
 
-    fn backgrounds(job: &LayoutJob) -> Vec<egui::Color32> {
+    /// Whether each marked section is the current match, which alone is
+    /// underlined.
+    fn marks(job: &LayoutJob) -> Vec<bool> {
         job.sections
             .iter()
-            .map(|section| section.format.background)
-            .filter(|color| *color != egui::Color32::TRANSPARENT)
+            .filter(|section| section.format.background != egui::Color32::TRANSPARENT)
+            .map(|section| section.format.underline != egui::Stroke::NONE)
             .collect()
     }
 
@@ -203,12 +207,8 @@ mod tests {
         let (_, marked) = matches.mark(&job(""), Some(&lines));
         let marked = marked.unwrap_or_default();
         assert_eq!(
-            marked.iter().map(backgrounds).collect::<Vec<_>>(),
-            [
-                vec![colors.other, colors.other],
-                vec![],
-                vec![colors.current],
-            ]
+            marked.iter().map(marks).collect::<Vec<_>>(),
+            [vec![false, false], vec![], vec![true]]
         );
         matches.step();
         assert_eq!(matches.take_scroll().map(|hit| hit.range), Some(0..2));
@@ -223,7 +223,7 @@ mod tests {
         let matches = BodyMatches::find(&query, &text, None, colors);
         let (marked, lines) = matches.mark(&text, None);
         assert!(lines.is_none());
-        assert_eq!(backgrounds(&marked), [colors.current, colors.other]);
+        assert_eq!(marks(&marked), [true, false]);
         Ok(())
     }
 }

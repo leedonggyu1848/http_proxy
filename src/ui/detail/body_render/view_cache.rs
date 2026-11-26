@@ -19,6 +19,16 @@ pub(super) struct RenderStyle {
     pub(super) font: egui::FontId,
 }
 
+impl RenderStyle {
+    /// The theme and monospace font `ui` draws with this frame.
+    pub(super) fn of(ui: &egui::Ui) -> Self {
+        Self {
+            theme: ui.ctx().theme(),
+            font: egui::TextStyle::Monospace.resolve(ui.style()),
+        }
+    }
+}
+
 pub(super) enum Content {
     Unavailable(String),
     Tree {

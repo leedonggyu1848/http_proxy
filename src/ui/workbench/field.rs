@@ -22,6 +22,7 @@ pub(crate) struct Field<'a> {
     hint: &'a str,
     search_icon: bool,
     monospace: bool,
+    password: bool,
     error: Option<&'a str>,
 }
 
@@ -32,6 +33,7 @@ impl<'a> Field<'a> {
             hint: "",
             search_icon: false,
             monospace: false,
+            password: false,
             error: None,
         }
     }
@@ -51,6 +53,12 @@ impl<'a> Field<'a> {
     /// Edits data, such as a port or a pattern, in the monospace font.
     pub(crate) const fn monospace(mut self) -> Self {
         self.monospace = true;
+        self
+    }
+
+    /// Hides the value, such as a credential, while `hidden` is true.
+    pub(crate) const fn password(mut self, hidden: bool) -> Self {
+        self.password = hidden;
         self
     }
 
@@ -126,6 +134,7 @@ pub(crate) fn single_line_with<'a>(
         .frame(egui::Frame::NONE)
         .font(font)
         .hint_text(field.hint)
+        .password(field.password)
         .align(egui::Align2::LEFT_CENTER)
         .min_size(egui::vec2(0.0, content.height()))
         .desired_width(child.available_width());
@@ -134,6 +143,28 @@ pub(crate) fn single_line_with<'a>(
     }
     let response = show(&mut child, edit);
     paint_border(ui, rect, response.has_focus(), field.error.is_some());
+    response
+}
+
+/// A multi-line monospace text area of `rows` rows across the available
+/// width, with the same frame and focus border as [`single_line`].
+pub(crate) fn multi_line(ui: &mut egui::Ui, text: &mut String, rows: usize) -> egui::Response {
+    let palette = Palette::of(ui);
+    let frame = egui::Frame::new()
+        .fill(palette.surfaces.input)
+        .corner_radius(Radius::CONTROL)
+        .inner_margin(egui::Margin::symmetric(8, 4))
+        .show(ui, |ui| {
+            ui.add(
+                egui::TextEdit::multiline(text)
+                    .frame(egui::Frame::NONE)
+                    .font(fonts::data())
+                    .desired_rows(rows)
+                    .desired_width(f32::INFINITY),
+            )
+        });
+    let response = frame.inner;
+    paint_border(ui, frame.response.rect, response.has_focus(), false);
     response
 }
 

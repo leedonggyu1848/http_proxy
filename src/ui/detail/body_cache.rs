@@ -65,17 +65,11 @@ impl Capture {
         let text = match self {
             Self::Whole => return None,
             Self::Truncated => format!(
-                "Only part of the body was captured (at most {} KiB is kept); the view ends where the capture ends.",
+                "Showing the first {} KiB captured",
                 http_inspector_exchange::capture::BODY_PREVIEW_BYTES / 1024
             ),
-            Self::Streaming => {
-                "The body is still being received; the view shows what has arrived so far."
-                    .to_owned()
-            }
-            Self::Ended => {
-                "The body ended early (interrupted or cancelled); the view shows what was received."
-                    .to_owned()
-            }
+            Self::Streaming => "Still receiving; showing what arrived".to_owned(),
+            Self::Ended => "Ended early; showing what arrived".to_owned(),
         };
         Some(Notice::warning(text))
     }
@@ -255,9 +249,7 @@ pub(super) mod fixtures {
     use super::*;
 
     pub(in crate::ui::detail) fn partial_capture() -> Notice {
-        Notice::warning(
-            "Only part of the body was captured (at most 8 KiB is kept); the view ends where the capture ends.",
-        )
+        Notice::warning("Showing the first 8 KiB captured")
     }
 
     /// Parses a test media type that lives for the whole test run.
@@ -556,16 +548,12 @@ mod tests {
             (
                 3,
                 Capture::Streaming,
-                Some(Notice::warning(
-                    "The body is still being received; the view shows what has arrived so far.",
-                )),
+                Some(Notice::warning("Still receiving; showing what arrived")),
             ),
             (
                 4,
                 Capture::Ended,
-                Some(Notice::warning(
-                    "The body ended early (interrupted or cancelled); the view shows what was received.",
-                )),
+                Some(Notice::warning("Ended early; showing what arrived")),
             ),
         ] {
             let body = BodySource {

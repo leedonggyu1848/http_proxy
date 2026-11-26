@@ -228,6 +228,15 @@ pub(crate) const fn data() -> egui::FontId {
     egui::FontId::monospace(TypeScale::DATA)
 }
 
+/// Table column headers and group titles (`TypeScale::COLUMN_HEADER`).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "column header typography comes from the type scale"
+)]
+pub(crate) const fn column_header() -> egui::FontId {
+    egui::FontId::proportional(TypeScale::COLUMN_HEADER)
+}
+
 /// The one-line error at the right end of an input (`TypeScale::STATUS`).
 #[expect(
     clippy::disallowed_methods,

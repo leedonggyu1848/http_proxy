@@ -3,18 +3,18 @@
 //! every row can be searched and its path or value copied.
 
 use crate::ui::detail::highlight;
-#[cfg(test)]
 use crate::ui::style::fonts;
 use crate::ui::style::theme::{self, Palette, SyntaxPalette, Theme};
 use crate::ui::style::tokens::Layout;
+use crate::ui::workbench::field::{self, Field};
+use crate::ui::workbench::text::ShellText;
+use crate::ui::workbench::{controls, tree};
 use eframe::egui::{self, FontId, text::LayoutJob};
 use http_inspector_content::format::tree::TreeModel;
 use std::sync::Arc;
 
 /// Levels open when a tree is first shown.
 const OPEN_LEVELS: usize = 2;
-/// Deepest level that still adds indentation, so rows stay on screen.
-const MAX_INDENT: usize = 64;
 
 /// Row layouts for one theme and font.
 struct Labels {
@@ -161,36 +161,16 @@ impl TreeView {
         theme: Theme,
         font: &FontId,
     ) -> Option<String> {
-        ui.weak("Right-click a node to copy its path or value.");
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Expand all").clicked() {
-                self.set_all(true);
-            }
-            if ui.button("Collapse all").clicked() {
-                self.set_all(false);
-            }
-            ui.label("Search:");
-            let mut query = self.query.clone();
-            let search_width = Layout::TREE_SEARCH_WIDTH.fit(ui.available_width());
-            if ui
-                .add(egui::TextEdit::singleline(&mut query).desired_width(search_width))
-                .changed()
-            {
-                self.search(&query);
-            }
-        });
+        self.controls(ui);
         self.prepare_labels(ui.ctx(), theme, font);
         let visible = self.visible();
-        let height = ui
-            .spacing()
-            .interact_size
-            .y
-            .max(ui.text_style_height(&egui::TextStyle::Monospace));
         let mut copied = None;
         egui::ScrollArea::both()
             .id_salt("tree_rows")
             .max_height(Layout::DETAIL_TREE_HEIGHT)
-            .show_rows(ui, height, visible.len(), |ui, range| {
+            .auto_shrink([false, true])
+            .show_rows(ui, Layout::TREE_ROW_HEIGHT, visible.len(), |ui, range| {
+                ui.spacing_mut().item_spacing.y = 0.0;
                 for row in range {
                     if let Some(&index) = visible.get(row)
                         && let Some(text) = self.row(ui, index)
@@ -202,81 +182,93 @@ impl TreeView {
         copied
     }
 
+    /// Expand all, Collapse all, and the key filter, in one pane row.
+    fn controls(&mut self, ui: &mut egui::Ui) {
+        egui::Frame::new()
+            .inner_margin(Layout::PANE_ROW_MARGIN)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    controls::ghost_style(ui);
+                    let mut query = self.query.clone();
+                    let width = Layout::TREE_SEARCH_WIDTH.fit(ui.available_width());
+                    let field = Field::new(width)
+                        .hint(ShellText::FilterKeys.text())
+                        .search_icon();
+                    if field::single_line(ui, &mut query, field, |_| {}).changed() {
+                        self.search(&query);
+                    }
+                    for (label, open) in [
+                        (ShellText::ExpandAll, true),
+                        (ShellText::CollapseAll, false),
+                    ] {
+                        if ui
+                            .add(controls::ghost(label.text(), Layout::PANE_BUTTON_HEIGHT))
+                            .clicked()
+                        {
+                            self.set_all(open);
+                        }
+                    }
+                });
+            });
+    }
+
     fn row(&mut self, ui: &mut egui::Ui, index: usize) -> Option<String> {
         let node = self.model.node(index)?;
-        let job = self.labels.as_ref()?.jobs.get(index)?;
-        let expandable = self.expandable(index);
+        let job = Arc::clone(self.labels.as_ref()?.jobs.get(index)?);
         let open = self.is_open(index);
-        let matched = self.matched.get(index).copied().unwrap_or_default();
-        let mut toggled = false;
-        let mut copied = None;
-        ui.horizontal(|ui| {
-            toggled = tree_row_prefix(ui, node.depth, expandable, open);
-            let job = if matched {
-                Arc::new(highlighted(job, Palette::of(ui).surfaces.selected))
-            } else {
-                Arc::clone(job)
-            };
-            let response = ui
-                .add(
+        let mark = if self.matched.get(index).copied().unwrap_or_default() {
+            tree::Mark::Highlighted
+        } else {
+            tree::Mark::None
+        };
+        let summary = (self.expandable(index) && !open)
+            .then_some(node.summary.as_deref())
+            .flatten();
+        let shown = tree::row(
+            ui,
+            tree::TreeRow::new(node.depth, &node.name)
+                .disclosure(tree::Disclosure::new(self.expandable(index), open))
+                .mark(mark)
+                .clickable(),
+            |ui| {
+                ui.add(
                     egui::Label::new(egui::WidgetText::LayoutJob(job))
                         .wrap_mode(egui::TextWrapMode::Extend)
-                        .sense(egui::Sense::click()),
-                )
-                .on_hover_text(&node.value);
-            if expandable
-                && !open
-                && let Some(summary) = &node.summary
-            {
-                ui.weak(summary.as_str());
-            }
-            let copy = self.model.copy;
-            response.context_menu(|ui| {
-                if let Some(path) = &node.path {
-                    ui.weak(path.as_str());
-                    if ui.button(copy.path).clicked() {
-                        copied = Some(path.clone());
-                        ui.close();
-                    }
+                        .selectable(false),
+                );
+                if let Some(summary) = summary {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(summary)
+                                .font(fonts::data())
+                                .color(Palette::of(ui).secondary),
+                        )
+                        .selectable(false),
+                    );
                 }
-                if ui.button(copy.value).clicked() {
-                    copied = Some(node.value.clone());
+            },
+        );
+        let mut copied = None;
+        let copy = self.model.copy;
+        let response = shown.response.on_hover_text(&node.value);
+        response.context_menu(|ui| {
+            if let Some(path) = &node.path {
+                ui.weak(path.as_str());
+                if ui.button(copy.path).clicked() {
+                    copied = Some(path.clone());
                     ui.close();
                 }
-            });
+            }
+            if ui.button(copy.value).clicked() {
+                copied = Some(node.value.clone());
+                ui.close();
+            }
         });
-        if toggled {
+        if self.expandable(index) && (response.clicked() || shown.toggled) {
             self.toggle(index);
         }
         copied
     }
-}
-
-/// Draws indentation and the expand/collapse disclosure control shared by
-/// body trees and the URL map tree. Returns `true` when the toggle was clicked.
-pub(crate) fn tree_row_prefix(
-    ui: &mut egui::Ui,
-    depth: usize,
-    expandable: bool,
-    open: bool,
-) -> bool {
-    let clamped = u16::try_from(depth.min(MAX_INDENT)).unwrap_or(0);
-    ui.add_space(f32::from(clamped) * Layout::TREE_INDENT);
-    if expandable {
-        ui.small_button(if open { "▼" } else { "▶" }).clicked()
-    } else {
-        ui.add_space(Layout::TREE_LEAF_PREFIX);
-        false
-    }
-}
-
-/// `job` with every section drawn on `background`, for search matches.
-fn highlighted(job: &LayoutJob, background: egui::Color32) -> LayoutJob {
-    let mut job = job.clone();
-    for section in &mut job.sections {
-        section.format.background = background;
-    }
-    job
 }
 
 #[cfg(test)]
