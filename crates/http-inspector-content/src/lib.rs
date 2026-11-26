@@ -5,4 +5,7 @@
 pub mod decode;
 pub mod detect;
 pub mod format;
+pub mod hex;
 pub mod image;
+pub mod image_file;
+pub mod view;

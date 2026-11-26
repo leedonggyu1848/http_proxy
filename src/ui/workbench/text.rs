@@ -354,28 +354,6 @@ pub(crate) fn focus_filter(shortcut: &str) -> String {
     format!("Focus filter ({shortcut})")
 }
 
-/// A response as the server sent it: status code, reason phrase as sent,
-/// and HTTP version, such as `502 Bad Gateway · HTTP/1.1`. A response
-/// without a reason phrase shows the code and version only.
-pub(crate) fn response_line(code: u16, reason: &str, version: &str) -> String {
-    if reason.is_empty() {
-        format!("{code} · {version}")
-    } else {
-        format!("{code} {reason} · {version}")
-    }
-}
-
-/// Body notice: the preview kept only the first `kib` KiB.
-pub(crate) fn body_truncated(kib: usize) -> String {
-    format!("Showing the first {kib} KiB captured")
-}
-
-/// Body notice: the body is still arriving.
-pub(crate) const BODY_STREAMING: &str = "Still receiving; showing what arrived";
-
-/// Body notice: the body stopped before its end.
-pub(crate) const BODY_ENDED: &str = "Ended early; showing what arrived";
-
 /// Tooltip of the dropped-records entry of the status bar.
 pub(crate) const DROPPED_HINT: &str =
     "The capture queue was full, so these exchanges were forwarded but not shown.";
@@ -543,11 +521,6 @@ mod tests {
         assert_eq!(map_count(3, 17), "3 hosts · 17 nodes");
         assert_eq!(search_progress(4, 9), "Searching… 4/9");
         assert_eq!(match_position(1, 3), "1/3");
-        assert_eq!(
-            response_line(502, "Bad Gateway", "HTTP/1.1"),
-            "502 Bad Gateway · HTTP/1.1"
-        );
-        assert_eq!(response_line(200, "", "HTTP/2.0"), "200 · HTTP/2.0");
         assert_eq!(milliseconds(52.64), "52.6 ms");
         assert_eq!(milliseconds_running(1204.4), "1204 ms…");
     }

@@ -13,8 +13,8 @@
 ## 목록 검색과 본문 표시
 
 - `RequestsState::update_filters`가 목록에 남은 레코드를 검색 상태에 알려 준다. `RequestSearch`는 검색어와 옵션을 관리하고, `SearchWorker`는 레코드 메타데이터와 본문 미리보기를 백그라운드에서 검색한다. 본문 수신이 끝난 레코드는 검색에서 다시 검사할 수 있다. [요청 필터](../../src/ui/requests/filter.rs) · [검색 상태](../../src/ui/detail/search/controller.rs) · [검색 워커](../../crates/http-inspector-analysis/src/search/worker.rs)
-- 결과 종류, 검색 일치 여부, URL 맵에서 선택한 범위가 화면에 표시할 행을 결정한다. 범위를 바꿔도 레코드는 보관 목록에 남는다. [목록 필터](../../crates/http-inspector-analysis/src/filter/mod.rs)
-- 상세 화면에서는 `body_cache.rs`가 본문 스냅샷에서 표시할 데이터를 준비하고 `body_render.rs`가 egui 위젯을 그린다. 압축, 형식 감지, 포맷이나 이미지 디코딩 규칙이 문제라면 `http-inspector-content`를 확인한다. 검색 결과와 Pretty 보기의 강조가 다르면 목록 검색 텍스트와 화면에 정리한 텍스트를 각각 확인한다. [본문 준비](../../src/ui/detail/body_cache.rs) · [본문 렌더링](../../src/ui/detail/body_render.rs) · [본문 처리 크레이트](../../crates/http-inspector-content/src/)
+- 필터 입력의 필드 조건과 자유 텍스트는 `RequestQuery`가 같은 규칙으로 해석하므로 명령줄 필터도 같은 레코드를 고른다. 결과 종류, 검색 일치 여부, URL 맵에서 선택한 범위가 화면에 표시할 행을 결정한다. 범위를 바꿔도 레코드는 보관 목록에 남는다. [목록 필터](../../crates/http-inspector-analysis/src/filter/mod.rs)
+- 상세 화면에서는 `body_cache.rs`가 본문 스냅샷에서 표시할 데이터를 준비하고 `body_render.rs`가 egui 위젯을 그린다. 압축 해제, 형식 판정, 보기 방식별 정리와 안내 문구는 egui와 무관한 `http_inspector_content::view`가 맡으므로 화면과 명령줄이 같은 본문 결과를 낸다. 압축, 형식 감지, 포맷이나 이미지 디코딩 규칙이 문제라면 `http-inspector-content`를 확인한다. 검색 결과와 Pretty 보기의 강조가 다르면 목록 검색 텍스트와 화면에 정리한 텍스트를 각각 확인한다. [본문 준비](../../src/ui/detail/body_cache.rs) · [본문 렌더링](../../src/ui/detail/body_render.rs) · [본문 처리 크레이트](../../crates/http-inspector-content/src/)
 
 ## URL 맵과 엔드포인트 분석
 

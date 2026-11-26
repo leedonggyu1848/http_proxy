@@ -133,8 +133,8 @@ Actions의 [파일 권한 제한](https://github.com/actions/upload-artifact/tre
 | --- | --- | --- | --- | --- |
 | `http-inspector-encoding` | `crates/http-inspector-encoding/` | `Content-Encoding` 목록 파싱, 역순 스트리밍 디코더, 계층 수와 zstd 윈도 제한 | 없음 | 없음 |
 | `http-inspector-exchange` | `crates/http-inspector-exchange/` | `exchange` 공유 캡처 모델(`RecordId`, `Exchange`, `Outcome`, `MediaType`, `BodySource` 포트), `http_semantics`(hop-by-hop 제거·민감 헤더 마스킹), `capture`(순수 캡처 규칙), `APP_NAME`, `test-support` 픽스처(`ExchangeBuilder`, `MemoryBodySource`) | 없음 | 없음 |
-| `http-inspector-content` | `crates/http-inspector-content/` | `decode`, `detect`, `format`, `image` (`Content-Encoding` 해제, 본문 형식 감지·포맷 토큰화, 이미지 디코딩) | 없음 | 없음 |
-| `http-inspector-analysis` | `crates/http-inspector-analysis/` | `pipeline`, `url`, `url_map`, `endpoint_schema`, `endpoint_analysis`, `search`, `filter` | 없음 | 없음 |
+| `http-inspector-content` | `crates/http-inspector-content/` | `decode`, `detect`, `format`, `image`, `image_file`, `hex`, `view` (`Content-Encoding` 해제, 본문 형식 감지·포맷 토큰화, 이미지 디코딩과 이미지 정보 문구, hex 덤프, 화면과 명령줄이 함께 쓰는 본문 보기 준비) | 없음 | 없음 |
+| `http-inspector-analysis` | `crates/http-inspector-analysis/` | `pipeline`, `url`, `url_map`, `endpoint_schema`, `endpoint_analysis`, `search`, `filter`(`RequestQuery`: 화면과 명령줄이 함께 쓰는 요청 필터), `outcome`(결과 문구) | 없음 | 없음 |
 | `http-inspector-interop` | `crates/http-inspector-interop/` | `har`, `curl`, `map_export` (HAR 1.2, cURL, URL 맵 Text/JSON/Mermaid/DOT) | 없음 | 없음 |
 | `http-inspector-file` | `crates/http-inspector-file/` | 내보내기·설정의 임시 파일 작성과 발행 | 없음 | 없음 |
 | `http-inspector-core` | `crates/http-inspector-core/` | `interception`, `https`, `recording`, `hls`, `replay`, `launcher`, `settings`, `DEFAULT_PORT` | 사용 | 없음 |

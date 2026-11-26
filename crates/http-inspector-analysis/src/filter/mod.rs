@@ -4,12 +4,14 @@
 mod fields;
 mod query;
 mod records;
+mod request_query;
 
 use std::collections::HashSet;
 
 pub use fields::{TargetParts, content_type};
 pub use query::{FilterDiagnostic, FilterKey, FilterQuery, TextTerm};
 pub use records::RecordList;
+pub use request_query::{RequestQuery, text_terms};
 
 use crate::url_map::RequestScope;
 use http_inspector_exchange::{Exchange, Outcome, RecordId};
