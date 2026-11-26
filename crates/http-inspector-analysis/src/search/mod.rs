@@ -6,12 +6,14 @@
 
 pub mod document;
 pub mod text_search;
+mod text_terms;
 pub mod worker;
 
 pub use document::{
     BodyCache, Checked, Coverage, check, headers_match, is_settled, outcome_matches,
 };
 pub use text_search::{MatchOptions, Matcher, MatcherError};
+pub use text_terms::TextTerms;
 pub use worker::{Query, Report, SearchWorker};
 
 use http_inspector_exchange::BodySide;

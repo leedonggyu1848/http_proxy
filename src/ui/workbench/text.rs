@@ -28,6 +28,8 @@ pub(crate) enum ShellText {
     Filter,
     /// Short error at the right end of the filter input.
     InvalidFilter,
+    /// Short error for a malformed field condition.
+    InvalidCondition,
     /// Accessible name of the outcome tabs above the request list.
     RequestOutcome,
     Searching,
@@ -50,8 +52,9 @@ impl ShellText {
             Self::Save => "Save",
             Self::Settings => "Settings",
             Self::CaptureScope => "Capture scope",
-            Self::Filter => "Filter",
+            Self::Filter => "method:POST url:/api status:4xx",
             Self::InvalidFilter => "Invalid pattern",
+            Self::InvalidCondition => "Invalid condition",
             Self::RequestOutcome => "Request outcome",
             Self::Searching => "Searching…",
         }

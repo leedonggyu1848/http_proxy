@@ -63,6 +63,7 @@ pub(crate) enum AppAction {
     PlanRanges(RecordId),
     Range(RangeAction),
     Search(SearchSettings),
+    AppendFilter(String),
     Map(MapAction),
 }
 
@@ -146,6 +147,7 @@ impl InspectorApp {
             AppAction::ClearMapFilter => self.requests.clear_map_filter(),
             AppAction::Filter(filter) => self.requests.record_filter = filter,
             AppAction::Search(settings) => self.requests.search.set_settings(settings),
+            AppAction::AppendFilter(term) => self.requests.search.append_filter(&term),
             AppAction::SelectRecord(id) => self.requests.selected = Some(id),
             AppAction::DetailTab(tab) => self.detail.tab = tab,
             AppAction::BodyMode(mode) => self.detail.body_mode = mode,

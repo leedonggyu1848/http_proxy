@@ -167,7 +167,7 @@ impl Layout {
     /// Padding of a one-line notice under the toolbar.
     pub(crate) const NOTICE_MARGIN: egui::Margin = egui::Margin::symmetric(12, 2);
     /// Width of the request filter input on the toolbar.
-    pub(crate) const TOOLBAR_FILTER_WIDTH: SizeLimit = SizeLimit::new(0.0, 120.0, 280.0);
+    pub(crate) const TOOLBAR_FILTER_WIDTH: SizeLimit = SizeLimit::new(0.0, 120.0, 460.0);
     pub(crate) const WINDOW: [f32; 2] = [1_280.0, 820.0];
     pub(crate) const MIN_WINDOW: [f32; 2] = [640.0, 420.0];
     pub(crate) const MIN_MAIN_HEIGHT: f32 = 280.0;

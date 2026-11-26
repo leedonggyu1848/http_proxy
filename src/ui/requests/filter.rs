@@ -10,7 +10,7 @@ use http_inspector_analysis::url_map::RequestScope;
 use http_inspector_exchange::{Exchange, RecordId};
 use std::net::SocketAddr;
 
-use super::request_table::RequestTable;
+use super::request_table::{RequestTable, TableMenus};
 use crate::ui::AppAction;
 use crate::ui::app::state::RequestsState;
 use crate::ui::detail::search::RequestSearch;
@@ -124,17 +124,11 @@ impl ListView<'_> {
         &self,
         ui: &mut egui::Ui,
         table: &mut RequestTable,
+        rows: Vec<&Exchange>,
         shortcuts_allowed: bool,
         actions: &mut Vec<AppAction>,
     ) -> Option<RecordId> {
         let requests = self.requests;
-        let rows = visible_records(
-            &requests.records,
-            requests.record_filter,
-            &requests.search,
-            requests.map_path_filter.as_ref(),
-            Some(&requests.map_filter_cache),
-        );
         if rows.is_empty() {
             let message = empty_list_text(requests.records.len(), self.proxy);
             ui.centered_and_justified(|ui| {
@@ -147,7 +141,10 @@ impl ListView<'_> {
             rows,
             requests.selected,
             shortcuts_allowed,
-            self.saving_body,
+            TableMenus {
+                saving_body: self.saving_body,
+                filter_enabled: self.requests.search.field_menu_enabled(),
+            },
         );
         actions.extend(result.selected.map(AppAction::SelectRecord));
         actions.extend(result.action);
@@ -209,7 +206,7 @@ pub(crate) fn visible_records<'a>(
             .and_then(|cache| cache.fresh_ids(key, records))
             .map_or(ScopeFilter::Live(key), ScopeFilter::Cached)
     });
-    analysis_filter::visible_records(records, filter, scope, |id| search.shows(id))
+    analysis_filter::visible_records(records, filter, scope, |record| search.matches(record))
 }
 
 /// One line for a list without rows: why it is empty and, while capturing,

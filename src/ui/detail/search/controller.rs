@@ -1,22 +1,19 @@
 //! The search controls above the request list and the state that decides
 //! which records the list shows.
 
-use crate::ui::style::tokens::Layout;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use http_inspector_analysis::filter::RecordList;
+use http_inspector_analysis::filter::{FilterQuery, RecordList, TextTerm};
 use http_inspector_analysis::search::document::{self, BodyCache, Checked};
-use http_inspector_analysis::search::{MatchOptions, Matcher, Query, SearchScope, SearchWorker};
+use http_inspector_analysis::search::{MatchOptions, Query, SearchScope, SearchWorker, TextTerms};
 use http_inspector_exchange::{Exchange, RecordId};
 
 use crate::ui::style::indicator;
-use crate::ui::style::tokens::{Space, Tone};
-use crate::ui::workbench::controls;
-use crate::ui::workbench::field::{self, Field};
-use crate::ui::workbench::text::{self, ShellText};
+use crate::ui::style::tokens::Tone;
+use crate::ui::workbench::text;
 
 /// Wait after the last keystroke before a search starts, so typing a word
 /// does not start a search for every letter.
@@ -27,31 +24,47 @@ const RETRY: Duration = Duration::from_millis(50);
 /// What the user asked to search for.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct SearchSettings {
-    text: String,
-    scope: SearchScope,
-    options: MatchOptions,
+    pub(super) text: String,
+    pub(super) scope: SearchScope,
+    pub(super) options: MatchOptions,
 }
 
 impl SearchSettings {
     /// Reports whether every record matching `self` also matches
     /// `previous`, as when letters are added to a word. Records that
     /// `previous` ruled out then need no new check.
-    fn narrows(&self, previous: &Self) -> bool {
-        if self.options.regex || self.options != previous.options || self.scope != previous.scope {
+    fn narrows(&self, terms: &[TextTerm], previous: &Active) -> bool {
+        if self.options.regex
+            || self.options != previous.settings.options
+            || self.scope != previous.settings.scope
+        {
             return false;
         }
-        if self.options.case_sensitive {
-            self.text.contains(&previous.text)
-        } else {
-            self.text
-                .to_lowercase()
-                .contains(&previous.text.to_lowercase())
-        }
+        previous.terms.iter().all(|old| {
+            terms.iter().any(|new| {
+                old == new
+                    || (!old.excluded
+                        && !new.excluded
+                        && if self.options.case_sensitive {
+                            new.text.contains(&old.text)
+                        } else {
+                            // Changing between the ASCII and Unicode matchers
+                            // need not preserve the old match set.
+                            old.text.is_ascii()
+                                && new.text.is_ascii()
+                                && new
+                                    .text
+                                    .to_ascii_lowercase()
+                                    .contains(&old.text.to_ascii_lowercase())
+                        })
+            })
+        })
     }
 }
 
 struct Active {
     settings: SearchSettings,
+    terms: Vec<TextTerm>,
     query: Arc<Query>,
 }
 
@@ -74,7 +87,6 @@ impl SearchResult {
 struct Summary {
     total: usize,
     checked: usize,
-    matched: usize,
     partial: usize,
     binary: usize,
     undecodable: usize,
@@ -87,11 +99,8 @@ enum SearchBackend {
 }
 
 pub(crate) struct RequestSearch {
-    text: String,
-    scope: SearchScope,
-    options: MatchOptions,
-    /// Settings seen last frame, to notice edits.
-    seen: SearchSettings,
+    settings: SearchSettings,
+    parsed: FilterQuery,
     changed_at: Option<Instant>,
     active: Option<Active>,
     error: Option<String>,
@@ -116,10 +125,8 @@ impl RequestSearch {
             },
         };
         Self {
-            text: String::new(),
-            scope: SearchScope::All,
-            options: MatchOptions::default(),
-            seen: SearchSettings::default(),
+            settings: SearchSettings::default(),
+            parsed: FilterQuery::default(),
             changed_at: None,
             active: None,
             error: None,
@@ -131,58 +138,60 @@ impl RequestSearch {
         }
     }
 
-    /// The filter input with its scope and match options inside the right
-    /// end. An invalid pattern turns the border red and shows a short note;
-    /// the full parser message is its tooltip.
-    pub(crate) fn controls(&self, ui: &mut egui::Ui, width: f32) -> Option<SearchSettings> {
-        let mut settings = self.settings();
-        let field = Field::new(width)
-            .hint(ShellText::Filter.text())
-            .search_icon()
-            .error(
-                self.error
-                    .is_some()
-                    .then_some(ShellText::InvalidFilter.text()),
-            );
-        let SearchSettings {
-            text,
-            scope,
-            options: match_options,
-        } = &mut settings;
-        let response = field::single_line(ui, text, field, |ui| {
-            options(ui, scope, match_options);
-        });
-        match &self.error {
-            Some(error) => {
-                response.on_hover_text(error);
-            }
-            None => {
-                response.on_hover_text(scope_hint(settings.scope));
-            }
-        }
-        (settings.text != self.text
-            || settings.scope != self.scope
-            || settings.options != self.options)
-            .then_some(settings)
+    pub(super) const fn settings(&self) -> &SearchSettings {
+        &self.settings
+    }
+
+    pub(super) fn regex_error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    pub(super) const fn parsed(&self) -> &FilterQuery {
+        &self.parsed
+    }
+
+    pub(crate) const fn field_menu_enabled(&self) -> bool {
+        !self.settings.options.regex
     }
 
     pub(crate) fn set_settings(&mut self, settings: SearchSettings) {
-        self.text = settings.text;
-        self.scope = settings.scope;
-        self.options = settings.options;
-    }
-
-    fn settings(&self) -> SearchSettings {
-        SearchSettings {
-            text: self.text.clone(),
-            scope: self.scope,
-            options: self.options,
+        if self.settings == settings {
+            return;
+        }
+        if self.settings.text != settings.text
+            || self.settings.options.regex != settings.options.regex
+        {
+            self.parsed = if settings.options.regex {
+                FilterQuery::default()
+            } else {
+                FilterQuery::parse(&settings.text)
+            };
+        }
+        self.settings = settings;
+        if self.parsed.text.is_empty()
+            && (!self.settings.options.regex || self.settings.text.is_empty())
+        {
+            self.apply();
+        } else {
+            self.changed_at = Some(Instant::now());
         }
     }
 
-    /// Search progress and what was not searched, for the status bar.
-    /// Matches are counted there with the rest of the list; parser errors
-    /// show in the filter input. Draws nothing while no search is active.
+    pub(crate) fn append_filter(&mut self, term: &str) {
+        let mut settings = self.settings.clone();
+        if let Some(start) = self.parsed.unclosed_term_start() {
+            // A later term would become part of the open quote.
+            settings.text.insert_str(start, &format!("{term} "));
+        } else {
+            if !settings.text.is_empty() && !settings.text.ends_with(char::is_whitespace) {
+                settings.text.push(' ');
+            }
+            settings.text.push_str(term);
+        }
+        self.set_settings(settings);
+    }
+
+    /// Search progress and preview coverage for the status bar.
     pub(crate) fn status(&self, ui: &mut egui::Ui) {
         if let SearchBackend::Inline { notice, .. } = &self.backend {
             indicator::dot_label(ui, Tone::Warning, "Search on UI thread").on_hover_text(notice);
@@ -205,24 +214,12 @@ impl RequestSearch {
     /// Applies edits after the debounce, collects results, and queues new
     /// or newly settled records. Call once per frame before [`Self::shows`].
     pub(crate) fn update(&mut self, records: &RecordList<Exchange>, context: &egui::Context) {
-        let settings = self.settings();
-        let now = Instant::now();
-        if settings != self.seen {
-            self.seen = settings.clone();
-            self.changed_at = Some(now);
-        }
         if let Some(changed_at) = self.changed_at {
-            let wait = if settings.text.is_empty() {
-                Duration::ZERO
+            let elapsed = changed_at.elapsed();
+            if elapsed >= DEBOUNCE {
+                self.apply();
             } else {
-                DEBOUNCE
-            };
-            let elapsed = now.duration_since(changed_at);
-            if elapsed >= wait {
-                self.changed_at = None;
-                self.apply(settings);
-            } else {
-                context.request_repaint_after(wait.saturating_sub(elapsed));
+                context.request_repaint_after(DEBOUNCE.saturating_sub(elapsed));
             }
         }
         self.receive();
@@ -247,7 +244,12 @@ impl RequestSearch {
         self.active.as_ref().map(|active| &active.query)
     }
 
-    fn apply(&mut self, settings: SearchSettings) {
+    pub(crate) fn matches(&self, record: &Exchange) -> bool {
+        self.parsed.matches(record) && self.shows(record.id())
+    }
+
+    fn apply(&mut self) {
+        self.changed_at = None;
         let finished = self.queued.is_empty();
         self.generation += 1;
         if let SearchBackend::Worker(worker) = &self.backend {
@@ -256,19 +258,28 @@ impl RequestSearch {
         self.queued.clear();
         self.error = None;
         let previous = self.active.take();
-        if settings.text.is_empty() {
+        let settings = self.settings.clone();
+        let terms = if settings.options.regex && !settings.text.is_empty() {
+            vec![TextTerm {
+                text: settings.text.clone(),
+                excluded: false,
+            }]
+        } else {
+            self.parsed.text.clone()
+        };
+        if terms.is_empty() {
             self.results.clear();
             return;
         }
-        let matcher = match Matcher::new(&settings.text, settings.options) {
-            Ok(matcher) => matcher,
+        let compiled = match TextTerms::compile(&terms, settings.options) {
+            Ok(compiled) => compiled,
             Err(error) => {
                 self.error = Some(capitalized(&error.to_string()));
                 self.results.clear();
                 return;
             }
         };
-        if finished && previous.is_some_and(|previous| settings.narrows(&previous.settings)) {
+        if finished && previous.is_some_and(|previous| settings.narrows(&terms, &previous)) {
             self.results
                 .retain(|_, result| result.checked.settled && !result.checked.matched);
         } else {
@@ -276,10 +287,14 @@ impl RequestSearch {
         }
         let query = Arc::new(Query {
             generation: self.generation,
-            matcher,
+            terms: compiled,
             scope: settings.scope,
         });
-        self.active = Some(Active { settings, query });
+        self.active = Some(Active {
+            settings,
+            terms,
+            query,
+        });
     }
 
     fn receive(&mut self) {
@@ -342,7 +357,7 @@ impl RequestSearch {
             }
             SearchBackend::Inline { cache, .. } => {
                 for record in &pending {
-                    let checked = document::check(record, &query.matcher, query.scope, cache);
+                    let checked = query.terms.check(record, query.scope, cache);
                     deferred |= checked.retry;
                     self.results.insert(checked.id, SearchResult::new(checked));
                 }
@@ -367,9 +382,7 @@ impl RequestSearch {
             if !self.queued.contains(&checked.id) && !checked.retry {
                 summary.checked += 1;
             }
-            if checked.matched {
-                summary.matched += 1;
-            } else {
+            if checked.coverage != document::Coverage::default() && self.parsed.matches(record) {
                 summary.partial += usize::from(checked.coverage.partial);
                 summary.binary += usize::from(checked.coverage.binary);
                 summary.undecodable += usize::from(checked.coverage.undecodable);
@@ -392,12 +405,13 @@ impl RequestSearch {
         records: &RecordList<Exchange>,
         context: &egui::Context,
     ) {
-        text.clone_into(&mut self.text);
-        self.scope = scope;
-        self.options = options;
+        self.set_settings(SearchSettings {
+            text: text.to_owned(),
+            scope,
+            options,
+        });
+        self.apply();
         self.update(records, context);
-        self.changed_at = None;
-        self.apply(self.seen.clone());
         let deadline = Instant::now() + Duration::from_secs(5);
         while self.active.is_some()
             && (self.summary.checked < self.summary.total || !self.queued.is_empty())
@@ -409,7 +423,7 @@ impl RequestSearch {
     }
 }
 
-/// Bodies of non-matching requests that were not fully searched: a short
+/// Bodies that were not fully searched: a short
 /// count for the status bar and the breakdown for its tooltip.
 struct Coverage {
     short: String,
@@ -441,60 +455,6 @@ fn coverage_text(summary: Summary) -> Option<Coverage> {
     })
 }
 
-/// Search options inside the right end of the filter input: scope, case,
-/// and regular expression.
-fn options(ui: &mut egui::Ui, scope: &mut SearchScope, match_options: &mut MatchOptions) {
-    controls::ghost_scope(ui, |ui| {
-        let height = 2.0f32.mul_add(-Space::XS, Layout::INPUT_HEIGHT);
-        toggle(
-            ui,
-            &mut match_options.regex,
-            ".*",
-            "Use a regular expression",
-            height,
-        );
-        toggle(
-            ui,
-            &mut match_options.case_sensitive,
-            "Aa",
-            "Match case",
-            height,
-        );
-        egui::containers::menu::MenuButton::from_button(controls::ghost(
-            format!("{} ▼", scope.label()),
-            height,
-        ))
-        .ui(ui, |ui| {
-            for option in SearchScope::ALL {
-                if ui.selectable_value(scope, option, option.label()).clicked() {
-                    ui.close();
-                }
-            }
-        })
-        .0
-        .on_hover_text("Where the filter text is looked for");
-    });
-}
-
-fn toggle(ui: &mut egui::Ui, value: &mut bool, label: &str, hover: &str, height: f32) {
-    if controls::ghost_toggle(ui, *value, label, height)
-        .on_hover_text(hover)
-        .clicked()
-    {
-        *value = !*value;
-    }
-}
-
-const fn scope_hint(scope: SearchScope) -> &'static str {
-    match scope {
-        SearchScope::All => "Filter: method, URL, status, header, or body",
-        SearchScope::Url => "Filter: URL",
-        SearchScope::Headers => "Filter: header name or value",
-        SearchScope::RequestBody => "Filter: request body",
-        SearchScope::ResponseBody => "Filter: response body",
-    }
-}
-
 fn capitalized(text: &str) -> String {
     let mut characters = text.chars();
     characters.next().map_or_else(String::new, |first| {
@@ -518,35 +478,98 @@ mod tests {
     }
 
     #[test]
-    fn adding_letters_narrows_but_removing_them_does_not() {
-        let previous = settings("Ord", false, false);
-        assert!(settings("xorder", false, false).narrows(&previous));
-        assert!(!settings("Or", false, false).narrows(&previous));
-        assert!(!settings("order", true, false).narrows(&previous));
-        assert!(!settings("Order", false, true).narrows(&settings("Ord", false, true)));
-        assert!(!settings("order", true, false).narrows(&settings("Ord", true, false)));
+    fn adding_letters_narrows_but_removing_them_does_not() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let previous_settings = settings("Ord", false, false);
+        let previous_terms = FilterQuery::parse(&previous_settings.text).text;
+        let terms = TextTerms::compile(&previous_terms, previous_settings.options)?;
+        let previous = Active {
+            settings: previous_settings,
+            terms: previous_terms,
+            query: Arc::new(Query {
+                generation: 0,
+                terms,
+                scope: SearchScope::All,
+            }),
+        };
+        let narrows =
+            |next: &SearchSettings| next.narrows(&FilterQuery::parse(&next.text).text, &previous);
+        assert!(narrows(&settings("xorder", false, false)));
+        assert!(!narrows(&settings("Or", false, false)));
+        assert!(!narrows(&settings("order", true, false)));
+        assert!(!narrows(&settings("Order", false, true)));
+        assert!(!narrows(&settings("-Order", false, false)));
+        assert!(!narrows(&settings("Or der", false, false)));
         let mut other_scope = settings("Order", false, false);
         other_scope.scope = SearchScope::Url;
-        assert!(!other_scope.narrows(&previous));
+        assert!(!narrows(&other_scope));
+        Ok(())
     }
 
     #[test]
-    fn coverage_lists_only_what_was_not_fully_searched() -> Result<(), &'static str> {
+    fn adds_cell_filters_before_an_unclosed_term() -> Result<(), Box<dyn std::error::Error>> {
+        use http::{Method, StatusCode};
+        use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
+
+        let captured = |status| {
+            ExchangeBuilder::http(Method::POST, "http://localhost:8080/api")?
+                .respond(ResponseFixture::new(status))
+        };
+        let forbidden = captured(StatusCode::FORBIDDEN)?;
+        let not_found = captured(StatusCode::NOT_FOUND)?;
+        // Start after a multi-byte separator so the insertion offset is a byte index.
+        let original = "method:POST\u{2003}\"unfinished text";
+        let context = egui::Context::default();
+        let mut search = RequestSearch::new(&context);
+        for (term, keeps_forbidden) in [("status:403", true), ("-status:403", false)] {
+            search.set_settings(settings(original, false, false));
+            search.append_filter(term);
+            assert_eq!(
+                (search.matches(&forbidden), search.matches(&not_found)),
+                (keeps_forbidden, !keeps_forbidden),
+                "{term}"
+            );
+            let input = &search.settings().text;
+            assert_eq!(
+                input,
+                &format!("method:POST\u{2003}{term} \"unfinished text")
+            );
+            let warnings: Vec<_> = search
+                .parsed()
+                .diagnostics
+                .iter()
+                .filter_map(|warning| input.get(warning.span.clone()))
+                .collect();
+            assert_eq!(warnings, ["\"unfinished text"]);
+        }
+        for text in [
+            "method:POST",
+            "method:POST \"finished text\"",
+            "status:abc ",
+        ] {
+            search.set_settings(settings(text, false, false));
+            search.append_filter("status:403");
+            assert_eq!(
+                search.settings().text,
+                format!("{} status:403", text.trim_end())
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn coverage_lists_only_what_was_not_fully_searched() {
         assert!(coverage_text(Summary::default()).is_none());
         let text = coverage_text(Summary {
             partial: 2,
             binary: 1,
             ..Summary::default()
         })
-        .ok_or("expected a coverage note")?;
-        assert_eq!(text.short, "3 bodies partly searched");
+        .map_or_default(|text| text.detail);
         assert!(
-            text.detail
-                .contains("2 only in their first 8 KiB, 1 binary, skipped"),
-            "{}",
-            text.detail
+            text.contains("2 only in their first 8 KiB, 1 binary, skipped"),
+            "{text}"
         );
-        Ok(())
     }
 
     #[test]
@@ -576,7 +599,8 @@ mod tests {
         };
         let mut query = settings("needle", false, false);
         query.scope = SearchScope::RequestBody;
-        search.apply(query);
+        search.set_settings(query);
+        search.apply();
         let active_query = search.active_query().ok_or("missing active query")?.clone();
         let now = Instant::now();
 

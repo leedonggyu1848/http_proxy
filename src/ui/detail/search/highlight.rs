@@ -4,12 +4,12 @@ use std::ops::Range;
 
 use eframe::egui::text::{ByteIndex, LayoutJob, LayoutSection, TextFormat};
 use eframe::egui::{Color32, FontId};
-use http_inspector_analysis::search::Matcher;
+use http_inspector_analysis::search::TextTerms;
 
 use crate::ui::style::theme::MatchColors;
 
 /// Byte ranges of the matches in `text`, on character boundaries.
-pub(crate) fn ranges(matcher: &Matcher, text: &str) -> Vec<Range<usize>> {
+pub(crate) fn ranges(matcher: &TextTerms, text: &str) -> Vec<Range<usize>> {
     matcher
         .find_all(text.as_bytes())
         .into_iter()
@@ -71,7 +71,7 @@ pub(crate) fn mark(
 /// One line of plain text with its matches marked.
 pub(crate) fn plain(
     text: &str,
-    matcher: &Matcher,
+    matcher: &TextTerms,
     font: FontId,
     color: Color32,
     colors: MatchColors,
@@ -88,7 +88,7 @@ mod tests {
         fonts,
         theme::{Palette, Theme},
     };
-    use http_inspector_analysis::search::MatchOptions;
+    use http_inspector_analysis::search::{MatchOptions, Matcher};
 
     fn sections(job: &LayoutJob) -> Vec<(&str, bool)> {
         job.sections
@@ -110,7 +110,7 @@ mod tests {
         reason = "distinct fixture colors exercise split sections"
     )]
     fn marks_matches_that_cross_styled_sections() -> Result<(), Box<dyn std::error::Error>> {
-        let matcher = Matcher::new("ab", MatchOptions::default())?;
+        let matcher = TextTerms::single(Matcher::new("ab", MatchOptions::default())?);
         let mut job = LayoutJob::default();
         // Different colors keep the pieces in separate sections.
         for (piece, gray) in [("xa", 10), ("by", 20), ("AB", 30)] {
@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn plain_text_keeps_non_ascii_boundaries() -> Result<(), Box<dyn std::error::Error>> {
-        let matcher = Matcher::new("주문", MatchOptions::default())?;
+        let matcher = TextTerms::single(Matcher::new("주문", MatchOptions::default())?);
         let job = plain(
             "새 주문",
             &matcher,

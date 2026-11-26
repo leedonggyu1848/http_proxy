@@ -124,18 +124,16 @@ impl InspectorApp {
                 // Bands and panes meet at their 1px lines, with no gaps.
                 ui.spacing_mut().item_spacing.y = 0.0;
                 let top = ui.cursor().top();
-                self.toolbar(ui, &mut actions);
+                self.toolbar(ui, dialog_open, &mut actions);
                 self.notices(ui, &mut actions);
-                match self.layout.main_view {
-                    MainView::Requests => {
-                        self.request_area(
-                            ui,
-                            viewport_height,
-                            top,
-                            shortcuts_allowed,
-                            &mut actions,
-                        );
-                    }
+                let shown = match self.layout.main_view {
+                    MainView::Requests => Some(self.request_area(
+                        ui,
+                        viewport_height,
+                        top,
+                        shortcuts_allowed,
+                        &mut actions,
+                    )),
                     MainView::Map => {
                         let controls = chrome::strip(ui, "map-controls", |ui| {
                             self.map.panel.controls(
@@ -152,9 +150,10 @@ impl InspectorApp {
                         if let Some(action) = self.map_area(ui, height, shortcuts_allowed) {
                             pending_map_action = Some(action);
                         }
+                        None
                     }
-                }
-                self.status_bar(ui, &mut actions);
+                };
+                self.status_bar(ui, shown, &mut actions);
             });
 
         actions.extend(pending_map_action.map(AppAction::Map));
@@ -169,7 +168,9 @@ impl InspectorApp {
         top: f32,
         shortcuts_allowed: bool,
         actions: &mut Vec<AppAction>,
-    ) {
+    ) -> usize {
+        let rows = self.requests.filtered_records();
+        let shown = rows.len();
         let requests = ListView {
             requests: &self.requests,
             analysis: &self.map.analysis,
@@ -191,7 +192,13 @@ impl InspectorApp {
             |left_ui, right_ui| {
                 requests.header(left_ui, &mut self.request_table, actions);
                 let selected = requests
-                    .table(left_ui, &mut self.request_table, shortcuts_allowed, actions)
+                    .table(
+                        left_ui,
+                        &mut self.request_table,
+                        rows,
+                        shortcuts_allowed,
+                        actions,
+                    )
                     .or(self.requests.selected);
                 let record = selected.and_then(|id| {
                     self.requests
@@ -205,6 +212,7 @@ impl InspectorApp {
                     tab: self.detail.tab,
                     body_mode: self.detail.body_mode,
                     body_saving: &self.session.body_saving,
+                    field_menu_enabled: self.requests.search.field_menu_enabled(),
                 };
                 detail.show(
                     right_ui,
@@ -214,6 +222,7 @@ impl InspectorApp {
                 );
             },
         );
+        shown
     }
 
     /// Map main area: split tree + detail panes in Tree sub-view, or full-width

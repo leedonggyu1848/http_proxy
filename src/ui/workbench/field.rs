@@ -7,6 +7,8 @@
 //! `status.error` with a short note at the right end while its value is
 //! invalid.
 
+use std::sync::Arc;
+
 use eframe::egui;
 
 use crate::ui::style::fonts;
@@ -68,6 +70,21 @@ pub(crate) fn single_line(
     field: Field<'_>,
     trailing: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
+    single_line_with(ui, text, field, trailing, None, egui::Ui::add)
+}
+
+pub(crate) type Layouter<'a> =
+    dyn FnMut(&egui::Ui, &dyn egui::TextBuffer, f32) -> Arc<egui::Galley> + 'a;
+
+/// Adapts the text edit while keeping the standard workbench frame and controls.
+pub(crate) fn single_line_with<'a>(
+    ui: &mut egui::Ui,
+    text: &'a mut String,
+    field: Field<'_>,
+    trailing: impl FnOnce(&mut egui::Ui),
+    layouter: Option<&'a mut Layouter<'a>>,
+    show: impl FnOnce(&mut egui::Ui, egui::TextEdit<'a>) -> egui::Response,
+) -> egui::Response {
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(field.width, Layout::INPUT_HEIGHT),
         egui::Sense::hover(),
@@ -105,15 +122,17 @@ pub(crate) fn single_line(
     } else {
         fonts::control()
     };
-    let response = child.add(
-        egui::TextEdit::singleline(text)
-            .frame(egui::Frame::NONE)
-            .font(font)
-            .hint_text(field.hint)
-            .align(egui::Align2::LEFT_CENTER)
-            .min_size(egui::vec2(0.0, content.height()))
-            .desired_width(child.available_width()),
-    );
+    let mut edit = egui::TextEdit::singleline(text)
+        .frame(egui::Frame::NONE)
+        .font(font)
+        .hint_text(field.hint)
+        .align(egui::Align2::LEFT_CENTER)
+        .min_size(egui::vec2(0.0, content.height()))
+        .desired_width(child.available_width());
+    if let Some(layouter) = layouter {
+        edit = edit.layouter(layouter);
+    }
+    let response = show(&mut child, edit);
     paint_border(ui, rect, response.has_focus(), field.error.is_some());
     response
 }

@@ -2,6 +2,7 @@
 //! [`http_inspector_analysis::search`].
 
 mod controller;
+mod controls;
 pub(super) mod highlight;
 
 pub(crate) use controller::{RequestSearch, SearchSettings};

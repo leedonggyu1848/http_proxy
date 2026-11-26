@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 
 use super::SearchScope;
-use super::document::{self, BodyCache, Checked};
-use super::text_search::Matcher;
+use super::TextTerms;
+use super::document::{BodyCache, Checked};
 use http_inspector_exchange::{Exchange, RecordId};
 
 /// Exchanges checked before results are sent, so progress shows while a
@@ -25,8 +25,8 @@ const CACHE_PRUNE_LEN: usize = 4_096;
 pub struct Query {
     /// Monotonic identifier of this query revision.
     pub generation: u64,
-    /// Compiled byte matcher.
-    pub matcher: Matcher,
+    /// Compiled text conditions.
+    pub terms: TextTerms,
     /// Which exchange fields this query searches.
     pub scope: SearchScope,
 }
@@ -120,9 +120,7 @@ fn run(jobs: &Receiver<Job>, reports: &SyncSender<Report>, latest: &AtomicU64, w
             }
             let checked = batch
                 .iter()
-                .map(|record| {
-                    document::check(record, &job.query.matcher, job.query.scope, &mut cache)
-                })
+                .map(|record| job.query.terms.check(record, job.query.scope, &mut cache))
                 .collect();
             if reports
                 .send(Report {

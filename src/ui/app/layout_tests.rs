@@ -1445,7 +1445,10 @@ fn narrow_toolbar_moves_the_view_switch_and_filter_to_a_second_row() {
     let drawn = render_settled(&mut app, Layout::MIN_WINDOW);
     let margin = 8.0;
     let first_row = margin + Layout::TOOLBAR_HEIGHT;
-    for label in ["Requests", "Filter"] {
+    for label in [
+        "Requests",
+        crate::ui::workbench::text::ShellText::Filter.text(),
+    ] {
         let y = text_center_y(&drawn, label).unwrap_or_default();
         assert!(
             y > first_row && y < first_row + Layout::TOOLBAR_HEIGHT,
@@ -1549,4 +1552,219 @@ fn shell_tabs_are_announced_as_tab_lists() -> Result<(), Box<dyn std::error::Err
         vec![selected("Headers", true), selected("Body", false)]
     );
     Ok(())
+}
+
+#[test]
+fn structured_filter_displays_the_actual_combined_count_and_diagnostic()
+-> Result<(), Box<dyn std::error::Error>> {
+    use http::{Method, StatusCode};
+    use http_inspector_analysis::filter::RecordFilter;
+    use http_inspector_analysis::search::{MatchOptions, SearchScope};
+    use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
+
+    let mut app = test_app(egui::Context::default());
+    for (method, path, status) in [
+        (Method::POST, "/api/users", StatusCode::NOT_FOUND),
+        (Method::POST, "/api/orders", StatusCode::NOT_FOUND),
+        (Method::GET, "/api/users", StatusCode::NOT_FOUND),
+    ] {
+        let record = ExchangeBuilder::http(method, format!("http://localhost:8080{path}"))?
+            .respond(ResponseFixture::new(status))?;
+        let _evicted = app.requests.records.push(record);
+    }
+    let context = app.context.clone();
+    app.requests.search.search_now(
+        (
+            "method:POST url:/api/users status:abc localhost:8080",
+            SearchScope::All,
+            MatchOptions::default(),
+        ),
+        &app.requests.records,
+        &context,
+    );
+    app.requests.record_filter = RecordFilter::Responses;
+    let filtered = app.requests.filtered_records();
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(
+        filtered.first().map(|record| record.request().method()),
+        Some(&Method::POST)
+    );
+
+    for size in [Layout::WINDOW, Layout::MIN_WINDOW] {
+        let drawn = render_settled(&mut app, size);
+        assert!(drawn.iter().any(|item| item.text == "1 of 3 requests"));
+        assert!(drawn.iter().any(|item| item.text == "Invalid condition"));
+        assert!(!drawn.iter().any(|item| item.text == "3 requests"));
+    }
+    app.requests.record_filter = RecordFilter::Failures;
+    assert!(app.requests.filtered_records().is_empty());
+    Ok(())
+}
+
+#[test]
+#[ignore = "manual performance measurement; run in release mode with --ignored --nocapture"]
+#[allow(clippy::print_stderr, reason = "manual performance measurement output")]
+fn measure_structured_filter_at_scale() -> Result<(), Box<dyn std::error::Error>> {
+    use http::header::{CONTENT_TYPE, HeaderValue};
+    use http::{Method, StatusCode};
+    use http_inspector_analysis::search::{MatchOptions, SearchScope};
+    use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    let mut app = test_app(egui::Context::default());
+    for id in 0..MAX_RECORDS {
+        let method = if id % 4 == 0 {
+            Method::GET
+        } else {
+            Method::POST
+        };
+        let status = if id % 2 == 0 {
+            StatusCode::OK
+        } else {
+            StatusCode::NOT_FOUND
+        };
+        let route = if id % 4 == 3 {
+            "static/users"
+        } else {
+            "api/users"
+        };
+        let record =
+            ExchangeBuilder::http(method, format!("http://api.example.test/{route}/{id}"))?
+                .respond(
+                    ResponseFixture::new(status)
+                        .header(CONTENT_TYPE, HeaderValue::from_static("application/json")),
+                )?;
+        let _evicted = app.requests.records.push(record);
+    }
+    let context = app.context.clone();
+    app.requests.search.search_now(
+        (
+            "method:POST url:/users status:4xx -path:/static/ res-header:content-type=json",
+            SearchScope::All,
+            MatchOptions::default(),
+        ),
+        &app.requests.records,
+        &context,
+    );
+    let expected = MAX_RECORDS / 4;
+    assert_eq!(app.requests.records.len(), MAX_RECORDS);
+    assert_eq!(app.requests.filtered_records().len(), expected);
+    let mut filter = Vec::new();
+    for _ in 0..60 {
+        let start = Instant::now();
+        let rows = black_box(app.requests.filtered_records());
+        filter.push(start.elapsed());
+        assert_eq!(rows.len(), expected);
+    }
+    filter.sort_unstable();
+
+    let expected_count = format!("{expected} of {MAX_RECORDS} requests");
+    assert!(
+        render_settled(&mut app, Layout::WINDOW)
+            .iter()
+            .any(|item| item.text == expected_count)
+    );
+    let frame = measure_frames(&mut app, &mut 0.0, 60);
+    for (label, samples) in [("filter", filter), ("egui frame", frame)] {
+        let ms = |duration: Option<&Duration>| {
+            duration.map_or(f64::NAN, |duration| duration.as_secs_f64() * 1_000.0)
+        };
+        eprintln!(
+            "{label}: 60 samples, min={:.3} ms median={:.3} ms p95={:.3} ms max={:.3} ms",
+            ms(samples.first()),
+            ms(samples.get(30)),
+            ms(samples.get(57)),
+            ms(samples.last())
+        );
+        assert!(
+            samples
+                .get(30)
+                .is_some_and(|time| *time < Duration::from_millis(16))
+        );
+    }
+    Ok(())
+}
+
+fn filter_key_event(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    }
+}
+
+fn type_request_filter(app: &mut InspectorApp, text: &str) {
+    let _ = render_frame(
+        app,
+        Layout::WINDOW,
+        vec![
+            filter_key_event(egui::Key::F, egui::Modifiers::COMMAND),
+            egui::Event::Text(text.to_owned()),
+        ],
+    );
+}
+
+#[test]
+fn filter_completion_leaves_tab_to_focus_navigation_inside_a_quote() {
+    let mut app = test_app(egui::Context::default());
+    let _ = render_settled(&mut app, Layout::WINDOW);
+    let phrase = r#""connection status:""#;
+    type_request_filter(&mut app, phrase);
+    let _ = render_settled(&mut app, Layout::WINDOW);
+    let filter_focus = app.context.memory(egui::Memory::focused);
+    assert!(filter_focus.is_some());
+
+    let (drawn, _) = render_frame(
+        &mut app,
+        Layout::WINDOW,
+        vec![filter_key_event(
+            egui::Key::ArrowLeft,
+            egui::Modifiers::NONE,
+        )],
+    );
+    assert!(drawn.iter().any(|item| item.text == phrase));
+    assert!(
+        !drawn.iter().any(|item| item.text == "status:2xx"),
+        "field suggestions appeared inside the quoted phrase"
+    );
+    for key in [egui::Key::ArrowDown, egui::Key::Tab] {
+        let _ = render_frame(
+            &mut app,
+            Layout::WINDOW,
+            vec![filter_key_event(key, egui::Modifiers::NONE)],
+        );
+    }
+    let drawn = render_settled(&mut app, Layout::WINDOW);
+    assert!(drawn.iter().any(|item| item.text == phrase));
+    assert_ne!(app.context.memory(egui::Memory::focused), filter_focus);
+}
+
+#[test]
+fn standalone_field_completion_accepts_enter_and_tab_after_a_phrase() {
+    for (arrow, accept, expected) in [
+        (egui::Key::ArrowDown, egui::Key::Enter, "4xx"),
+        (egui::Key::ArrowUp, egui::Key::Tab, "5xx"),
+    ] {
+        let mut app = test_app(egui::Context::default());
+        let _ = render_settled(&mut app, Layout::WINDOW);
+        let phrase = r#""한글 status:""#;
+        type_request_filter(&mut app, &format!("{phrase} status:"));
+        let drawn = render_settled(&mut app, Layout::WINDOW);
+        assert!(drawn.iter().any(|item| item.text == "status:2xx"));
+
+        for key in [arrow, accept] {
+            let _ = render_frame(
+                &mut app,
+                Layout::WINDOW,
+                vec![filter_key_event(key, egui::Modifiers::NONE)],
+            );
+        }
+        let drawn = render_settled(&mut app, Layout::WINDOW);
+        let input = format!("{phrase} status:{expected}");
+        assert!(drawn.iter().any(|item| item.text == input), "{input}");
+        assert!(!drawn.iter().any(|item| item.text == "status:2xx"));
+    }
 }
