@@ -19,8 +19,8 @@ pub use exchange::{
     AuthScheme, BodyLifecycle, BodyPreview, BodyPreviewWriter, BodyRetention, BodySide,
     BodySnapshot, BodySource, ByteSize, CaptureSource, CapturedHeader, CapturedRequest,
     CapturedResponse, ExactByteSize, Exchange, ExchangeWriter, FailureStage, HeaderPreview,
-    ImageFormat, MediaType, Outcome, ReadBodyOutcome, RecordId, SessionId, Timing, TunnelPreview,
-    TunnelSnapshot, TunnelState, TunnelWriter,
+    ImageFormat, MediaType, Outcome, PhaseSpan, ReadBodyOutcome, RecordId, SessionId, Timing,
+    TunnelPreview, TunnelSnapshot, TunnelState, TunnelWriter,
 };
 #[cfg(feature = "test-support")]
 pub use exchange_builder::{

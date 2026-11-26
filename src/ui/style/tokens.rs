@@ -107,12 +107,14 @@ pub(crate) struct RequestColumns {
     pub(crate) kind: f32,
     pub(crate) size: f32,
     pub(crate) duration: f32,
+    pub(crate) waterfall: f32,
     pub(crate) method_min: f32,
     pub(crate) path_resize_min: f32,
     pub(crate) status_min: f32,
     pub(crate) kind_min: f32,
     pub(crate) size_min: f32,
     pub(crate) duration_min: f32,
+    pub(crate) waterfall_min: f32,
 }
 
 /// Fixed and minimum widths of the HLS variant table columns in points.
@@ -235,6 +237,20 @@ impl Layout {
     pub(crate) const IMAGE_DISPLAY_HEIGHT: f32 = 480.0;
     pub(crate) const IMAGE_CHECKER_TILE: f32 = Space::MD;
     pub(crate) const BULK_PROGRESS_WIDTH: f32 = 120.0;
+    /// Height of primary waterfall bars (Wait and Receive).
+    pub(crate) const WATERFALL_BAR_HEIGHT: f32 = 8.0;
+    /// Height of the hollow Connect phase bar in the waterfall column.
+    pub(crate) const WATERFALL_HOLLOW_HEIGHT: f32 = 6.0;
+    /// Height of the compact Send phase bar in the waterfall column.
+    pub(crate) const WATERFALL_THIN_HEIGHT: f32 = 4.0;
+    /// Height of the start and end ticks drawn for unobserved waterfall ranges.
+    pub(crate) const WATERFALL_TICK_HEIGHT: f32 = 6.0;
+    /// Narrowest painted width for an observed non-zero phase so sub-pixel phases stay visible.
+    pub(crate) const WATERFALL_MIN_BAR_WIDTH: f32 = 2.0;
+    /// Width of one phase bar sample inside the waterfall hover table.
+    pub(crate) const WATERFALL_LEGEND_WIDTH: f32 = 12.0;
+    /// Minimum Waterfall header width needed before showing the total timeline scale beside the title.
+    pub(crate) const WATERFALL_HEADER_SCALE_MIN: f32 = 112.0;
     pub(crate) const REQUEST_COLUMNS: RequestColumns = RequestColumns {
         method: 72.0,
         path_min: 140.0,
@@ -244,12 +260,14 @@ impl Layout {
         kind: 48.0,
         size: 68.0,
         duration: 68.0,
+        waterfall: 120.0,
         method_min: 40.0,
         path_resize_min: 60.0,
         status_min: 64.0,
         kind_min: 32.0,
         size_min: 40.0,
         duration_min: 52.0,
+        waterfall_min: 72.0,
     };
     pub(crate) const HLS_DIALOG_WIDTH: SizeLimit = SizeLimit::new(32.0, 360.0, 680.0);
     pub(crate) const HLS_DIALOG_HEIGHT: SizeLimit = SizeLimit::new(48.0, 260.0, 640.0);

@@ -29,8 +29,8 @@ pub use media_type::MediaType;
 #[cfg(feature = "test-support")]
 pub use memory_body_source::MemoryBodySource;
 pub use record::{
-    CaptureSource, CapturedRequest, CapturedResponse, Exchange, ExchangeWriter, Outcome, SessionId,
-    Timing,
+    CaptureSource, CapturedRequest, CapturedResponse, Exchange, ExchangeWriter, Outcome, PhaseSpan,
+    SessionId, Timing,
 };
 pub use tunnel::{TunnelPreview, TunnelSnapshot, TunnelState, TunnelWriter};
 

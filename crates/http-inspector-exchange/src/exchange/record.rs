@@ -255,18 +255,51 @@ impl std::fmt::Display for Outcome {
     }
 }
 
-/// Observed durations of an exchange. A phase the proxy did not observe, or
-/// that has not finished yet, is `None`, never zero.
+/// Observed start offset and duration of one phase relative to request start.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PhaseSpan {
+    start: Duration,
+    duration: Duration,
+}
+
+impl PhaseSpan {
+    /// Creates an observed phase span starting at `start` after request arrival.
+    #[must_use]
+    pub const fn new(start: Duration, duration: Duration) -> Self {
+        Self { start, duration }
+    }
+
+    /// Returns when this phase started relative to request start.
+    #[must_use]
+    pub const fn start(&self) -> Duration {
+        self.start
+    }
+
+    /// Returns how long this phase lasted.
+    #[must_use]
+    pub const fn duration(&self) -> Duration {
+        self.duration
+    }
+
+    /// Returns when this phase ended relative to request start.
+    #[must_use]
+    pub const fn end(&self) -> Duration {
+        self.start.saturating_add(self.duration)
+    }
+}
+
+/// Observed durations and phase spans of an exchange. A phase the proxy did
+/// not observe, or that has not finished yet, is `None`, never zero.
 ///
 /// For a response the phases follow each other: `connect`, then `send`
 /// until the client's request body was fully forwarded, then `wait` until
 /// response headers arrived, then `receive` until the response body ended.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Timing {
-    connect: Option<Duration>,
-    send: Option<Duration>,
-    wait: Option<Duration>,
-    receive: Option<Duration>,
+    connect: Option<PhaseSpan>,
+    send: Option<PhaseSpan>,
+    wait: Option<PhaseSpan>,
+    receive: Option<PhaseSpan>,
     settled: Option<Duration>,
     complete: Option<Duration>,
 }
@@ -276,6 +309,15 @@ impl Timing {
     /// server, including the TLS handshake for inspected HTTPS.
     #[must_use]
     pub const fn connect(&self) -> Option<Duration> {
+        match self.connect {
+            Some(span) => Some(span.duration),
+            None => None,
+        }
+    }
+
+    /// Returns the observed start offset and duration of the `connect` phase.
+    #[must_use]
+    pub const fn connect_span(&self) -> Option<PhaseSpan> {
         self.connect
     }
 
@@ -283,6 +325,15 @@ impl Timing {
     /// until the request body ended.
     #[must_use]
     pub const fn send(&self) -> Option<Duration> {
+        match self.send {
+            Some(span) => Some(span.duration),
+            None => None,
+        }
+    }
+
+    /// Returns the observed start offset and duration of the `send` phase.
+    #[must_use]
+    pub const fn send_span(&self) -> Option<PhaseSpan> {
         self.send
     }
 
@@ -291,6 +342,15 @@ impl Timing {
     /// before the request body ended.
     #[must_use]
     pub const fn wait(&self) -> Option<Duration> {
+        match self.wait {
+            Some(span) => Some(span.duration),
+            None => None,
+        }
+    }
+
+    /// Returns the observed start offset and duration of the `wait` phase.
+    #[must_use]
+    pub const fn wait_span(&self) -> Option<PhaseSpan> {
         self.wait
     }
 
@@ -298,6 +358,15 @@ impl Timing {
     /// whether it completed, was interrupted, or was cancelled.
     #[must_use]
     pub const fn receive(&self) -> Option<Duration> {
+        match self.receive {
+            Some(span) => Some(span.duration),
+            None => None,
+        }
+    }
+
+    /// Returns the observed start offset and duration of the `receive` phase.
+    #[must_use]
+    pub const fn receive_span(&self) -> Option<PhaseSpan> {
         self.receive
     }
 
@@ -477,6 +546,12 @@ impl Exchange {
         self.inner.started_at
     }
 
+    /// Returns the monotonic timestamp at which the request arrived.
+    #[must_use]
+    pub fn started(&self) -> Instant {
+        self.inner.started
+    }
+
     #[must_use]
     pub fn request(&self) -> &CapturedRequest {
         &self.inner.request
@@ -518,7 +593,7 @@ impl Exchange {
         }
     }
 
-    /// Returns the observed durations so far.
+    /// Returns the observed durations and phase spans so far.
     #[must_use]
     pub fn timing(&self) -> Timing {
         let since_start = |instant: Instant| instant.saturating_duration_since(self.inner.started);
@@ -539,10 +614,15 @@ impl Exchange {
             .and_then(|response| response.body().ended_at())
             .map(since_start);
         Timing {
-            connect: self.inner.connect.get().copied(),
-            send: between(send_started, request_ended),
-            wait: between(request_ended, headers),
-            receive: between(headers, response_ended),
+            connect: self
+                .inner
+                .connect
+                .get()
+                .copied()
+                .map(|duration| PhaseSpan::new(Duration::ZERO, duration)),
+            send: span_between(send_started, request_ended),
+            wait: span_between(request_ended, headers),
+            receive: span_between(headers, response_ended),
             settled,
             complete: if response.is_some() {
                 response_ended
@@ -582,9 +662,12 @@ impl Exchange {
     }
 }
 
-/// Returns `end - start` when both were observed and `end` is not earlier.
-fn between(start: Option<Duration>, end: Option<Duration>) -> Option<Duration> {
-    end?.checked_sub(start?)
+/// Returns the observed span `[start, end]` when both were observed and `end`
+/// is not earlier than `start`.
+fn span_between(start: Option<Duration>, end: Option<Duration>) -> Option<PhaseSpan> {
+    let start = start?;
+    let duration = end?.checked_sub(start)?;
+    Some(PhaseSpan::new(start, duration))
 }
 
 #[cfg(test)]
@@ -767,17 +850,33 @@ mod tests {
         writer.record_connect(Duration::from_millis(1));
         writer.attach_request_body(request_body.preview());
         assert_eq!(exchange.timing().send(), None);
+        assert_eq!(exchange.timing().send_span(), None);
         request_body.complete();
         assert!(writer.settle(response(&response_body.preview())));
 
         let streaming = exchange.timing();
+        assert_eq!(
+            streaming.connect_span(),
+            Some(PhaseSpan::new(Duration::ZERO, Duration::from_millis(1)))
+        );
         assert!(streaming.send().is_some());
         assert!(streaming.wait().is_some());
         assert_eq!(streaming.receive(), None);
+        assert_eq!(streaming.receive_span(), None);
         assert_eq!(streaming.complete(), None);
 
         response_body.interrupt();
         let ended = exchange.timing();
+        let send = ended.send_span();
+        let wait = ended.wait_span();
+        let receive = ended.receive_span();
+        assert_eq!(send.map(|span| span.duration()), ended.send());
+        assert_eq!(wait.map(|span| span.duration()), ended.wait());
+        assert_eq!(receive.map(|span| span.duration()), ended.receive());
+        assert_eq!(send.map(|span| span.end()), wait.map(|span| span.start()));
+        assert_eq!(wait.map(|span| span.end()), ended.settled());
+        assert_eq!(receive.map(|span| span.start()), ended.settled());
+        assert_eq!(receive.map(|span| span.end()), ended.complete());
         let receive = ended.receive().unwrap_or_default();
         let settled = ended.settled().unwrap_or_default();
         assert_eq!(ended.complete(), Some(settled + receive));
@@ -793,7 +892,9 @@ mod tests {
         request_body.cancel();
         let timing = exchange.timing();
         assert!(timing.send().is_some());
+        assert!(timing.send_span().is_some());
         assert_eq!(timing.wait(), None);
+        assert_eq!(timing.wait_span(), None);
     }
 
     #[test]
@@ -807,8 +908,13 @@ mod tests {
         let timing = exchange.timing();
         assert_eq!(timing.complete(), timing.settled());
         assert_eq!(
-            (timing.send(), timing.wait(), timing.receive()),
-            (None, None, None)
+            (
+                timing.connect_span(),
+                timing.send_span(),
+                timing.wait_span(),
+                timing.receive_span()
+            ),
+            (None, None, None, None)
         );
     }
 

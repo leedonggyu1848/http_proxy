@@ -31,6 +31,7 @@ pub(crate) enum Text {
     ColPath,
     ColType,
     ColSize,
+    ColWaterfall,
     CtxCopyAsCurl,
 
     // Detail body notices & image notes
@@ -69,6 +70,7 @@ impl Text {
             Self::ColPath => lang.pick("Path", "경로"),
             Self::ColType => lang.pick("Type", "형식"),
             Self::ColSize => lang.pick("Size", "크기"),
+            Self::ColWaterfall => lang.pick("Waterfall", "워터폴"),
             Self::CtxCopyAsCurl => lang.pick("Copy as cURL", "cURL로 복사"),
 
             Self::DetailBodyNoticeFirst8KiBRetained => lang.pick(
@@ -106,7 +108,7 @@ impl Text {
 mod tests {
     use super::*;
 
-    const ALL_TEXTS: [Text; 28] = [
+    const ALL_TEXTS: [Text; 29] = [
         Text::OptionSystem,
         Text::ThemeHeading,
         Text::ThemeLight,
@@ -127,6 +129,7 @@ mod tests {
         Text::ColPath,
         Text::ColType,
         Text::ColSize,
+        Text::ColWaterfall,
         Text::CtxCopyAsCurl,
         Text::DetailBodyNoticeFirst8KiBRetained,
         Text::DetailBodyNoticeFirst8KiBDecoded,

@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Key, RichText};
 use egui_extras::{Column, TableBuilder};
@@ -15,6 +15,7 @@ use crate::ui::i18n::{Language, Text};
 use crate::ui::requests::filter_menu;
 use crate::ui::requests::outcome_view::{outcome_summary, outcome_text, status_rank};
 use crate::ui::requests::target_view::{host_fits, middle_ellipsis, shared_host};
+use crate::ui::requests::waterfall::{self, TimelineWindow};
 use crate::ui::style::tokens::{Layout, Radius, Space, StrokeWidth, ThemeTokens, TypeScale};
 use crate::ui::style::{indicator, theme::Palette};
 use crate::ui::workbench::text::ShellText;
@@ -41,16 +42,18 @@ enum Field {
     Type,
     Size,
     Duration,
+    Waterfall,
 }
 
 impl Field {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Method,
         Self::Target,
         Self::Status,
         Self::Type,
         Self::Size,
         Self::Duration,
+        Self::Waterfall,
     ];
 
     const fn title(self, lang: Language) -> &'static str {
@@ -61,6 +64,7 @@ impl Field {
             Self::Type => lang.text(Text::ColType),
             Self::Size => lang.text(Text::ColSize),
             Self::Duration => lang.pick("Duration", "시간"),
+            Self::Waterfall => lang.text(Text::ColWaterfall),
         }
     }
 
@@ -74,6 +78,7 @@ impl Field {
             Self::Type => widths.kind_min,
             Self::Size => widths.size_min,
             Self::Duration => widths.duration_min,
+            Self::Waterfall => widths.waterfall_min,
         }
     }
 
@@ -87,6 +92,7 @@ impl Field {
         match self {
             Self::Method => ROW_LEAD,
             Self::Status => STATUS_LEAD,
+            Self::Waterfall => Space::XS,
             _ => 0.0,
         }
     }
@@ -109,6 +115,10 @@ impl Field {
             Self::Type => content_type(left).cmp(&content_type(right)),
             Self::Size => left.received_bytes().cmp(&right.received_bytes()),
             Self::Duration => duration(left).cmp(&duration(right)),
+            Self::Waterfall => left
+                .started()
+                .cmp(&right.started())
+                .then_with(|| left.id().value().cmp(&right.id().value())),
         }
     }
 }
@@ -304,7 +314,7 @@ impl RequestTable {
         let spacing_x = ui.spacing().item_spacing.x;
         let scroll_gutter = ui.spacing().scroll.allocated_width();
         let widths = column_widths(viewport_width, spacing_x, scroll_gutter);
-        let total_width = spacing_x.mul_add(5.0, widths.iter().sum::<f32>()) + scroll_gutter;
+        let total_width = spacing_x.mul_add(6.0, widths.iter().sum::<f32>()) + scroll_gutter;
         let width_changed = (viewport_width - self.last_viewport_width).abs() > 1.0;
         self.last_viewport_width = viewport_width;
 
@@ -345,7 +355,7 @@ impl RequestTable {
         rows: &[&Exchange],
         selected: Option<RecordId>,
         scroll_to: Option<usize>,
-        widths: [f32; 6],
+        widths: [f32; 7],
         width_changed: bool,
         result: &mut TableResult,
         menus: TableMenus,
@@ -371,13 +381,21 @@ impl RequestTable {
         }
         // One shared host moves from every row to the column header.
         let shared_host = shared_host(rows.iter().map(|record| record.request().target()));
+        let now = Instant::now();
+        let timeline = TimelineWindow::from_exchanges(rows, now);
+        let scale_label = timeline.and_then(TimelineWindow::scale_label);
         let body = table
             .header(Layout::TABLE_HEADER_HEIGHT, |mut header| {
                 for field in Field::ALL {
                     header.col(|ui| {
-                        paint_header_cell(ui, field == Field::Duration);
-                        let host = shared_host.filter(|_| field == Field::Target);
-                        if self.header_cell(ui, field, host, menus, result) {
+                        paint_header_cell(ui, field == Field::Waterfall);
+                        let meta = HeaderMeta {
+                            shared_host: shared_host.filter(|_| field == Field::Target),
+                            waterfall_scale: scale_label
+                                .as_deref()
+                                .filter(|_| field == Field::Waterfall),
+                        };
+                        if self.header_cell(ui, field, meta, menus, result) {
                             self.sort = self.sort.toggled(field);
                         }
                     });
@@ -391,11 +409,15 @@ impl RequestTable {
                         return;
                     };
                     row.set_selected(selected == Some(record.id()));
-                    let selected_row = selected == Some(record.id());
-                    let focus_row = scroll_to == Some(row.index());
-                    let show_host = shared_host.is_none();
-                    let (method_clicked, action) =
-                        show_cells(&mut row, record, selected_row, focus_row, show_host, menus);
+                    let context = RowContext {
+                        selected: selected == Some(record.id()),
+                        focus: scroll_to == Some(row.index()),
+                        show_host: shared_host.is_none(),
+                        timeline,
+                        now,
+                        menus,
+                    };
+                    let (method_clicked, action) = show_cells(&mut row, record, context);
                     if method_clicked {
                         self.follow_newest = false;
                         self.keyboard_row = None;
@@ -413,13 +435,14 @@ impl RequestTable {
         body.inner_rect.height()
     }
 
-    /// The column title, which sorts by the column when clicked, and the
-    /// host shared by every row. Returns whether the title was clicked.
+    /// The column title, which sorts by the column when clicked, and optional
+    /// header metadata (shared host on Path, timeline scale on Waterfall).
+    /// Returns whether the title was clicked.
     fn header_cell(
         &self,
         ui: &mut egui::Ui,
         field: Field,
-        shared_host: Option<&str>,
+        meta: HeaderMeta<'_>,
         menus: TableMenus,
         result: &mut TableResult,
     ) -> bool {
@@ -436,9 +459,10 @@ impl RequestTable {
                 })
                 .inner;
         }
+        let cell_width = ui.available_width();
         ui.add_space(field.lead());
         let clicked = ui.add(button).clicked();
-        if let Some(host) = shared_host {
+        if let Some(host) = meta.shared_host {
             let label = egui::Label::new(RichText::new(host).monospace().weak())
                 .truncate()
                 .sense(egui::Sense::click());
@@ -452,8 +476,41 @@ impl RequestTable {
                     }
                 });
         }
+        if let Some(scale) = meta.waterfall_scale
+            && cell_width >= Layout::WATERFALL_HEADER_SCALE_MIN
+            && ui.available_width() >= Layout::REQUEST_COLUMNS.duration_min
+        {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(Space::XS);
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(scale)
+                            .monospace()
+                            .size(TypeScale::STATUS)
+                            .color(secondary),
+                    )
+                    .truncate(),
+                );
+            });
+        }
         clicked
     }
+}
+
+#[derive(Clone, Copy)]
+struct HeaderMeta<'a> {
+    shared_host: Option<&'a str>,
+    waterfall_scale: Option<&'a str>,
+}
+
+#[derive(Clone, Copy)]
+struct RowContext {
+    selected: bool,
+    focus: bool,
+    show_host: bool,
+    timeline: Option<TimelineWindow>,
+    now: Instant,
+    menus: TableMenus,
 }
 
 /// Horizontal extent of a cell including half the column gap on each side,
@@ -503,78 +560,60 @@ fn paint_row_cell(ui: &egui::Ui, selection_bar: bool, last: bool) {
 }
 
 /// Computes responsive initial column widths for `viewport_width`.
-/// When all six columns fit, `Path` takes the spare width. When the
+/// When all seven columns fit, `Path` takes the spare width. When the
 /// table is narrower, `Path` fills the space beside the leading columns
 /// that fit cleanly without slicing the next column at the pane border, while
 /// the remaining columns stay reachable via horizontal scrolling.
-fn column_widths(viewport_width: f32, spacing_x: f32, scroll_gutter: f32) -> [f32; 6] {
-    let widths = Layout::REQUEST_COLUMNS;
+fn column_widths(viewport_width: f32, spacing_x: f32, scroll_gutter: f32) -> [f32; 7] {
+    let w = Layout::REQUEST_COLUMNS;
+    let pack = |method, target, status| {
+        [
+            method,
+            target,
+            status,
+            w.kind,
+            w.size,
+            w.duration,
+            w.waterfall,
+        ]
+    };
 
     let usable = (viewport_width - scroll_gutter).max(0.0);
-    let fixed_wide =
-        widths.method + widths.status_wide + widths.kind + widths.size + widths.duration;
-    let all_spacing = spacing_x * 5.0;
-    if usable >= fixed_wide + all_spacing + widths.path_min {
-        let target = (usable - fixed_wide - all_spacing).floor();
-        return [
-            widths.method,
-            target,
-            widths.status_wide,
-            widths.kind,
-            widths.size,
-            widths.duration,
-        ];
+    let fixed_wide = w.method + w.status_wide + w.kind + w.size + w.duration + w.waterfall;
+    let all_spacing = spacing_x * 6.0;
+    if usable >= fixed_wide + all_spacing + w.path_min {
+        return pack(
+            w.method,
+            (usable - fixed_wide - all_spacing).floor(),
+            w.status_wide,
+        );
     }
 
     let visible = viewport_width.max(0.0);
-    let fixed_five = spacing_x.mul_add(
-        4.0,
-        widths.method + widths.status_compact + widths.kind + widths.size,
-    ) + Space::XS;
-    if visible >= fixed_five + widths.path_min {
-        let target = (visible - fixed_five).floor();
-        return [
-            widths.method,
-            target,
-            widths.status_compact,
-            widths.kind,
-            widths.size,
-            widths.duration,
-        ];
+    for (gaps, fixed_non_path) in [
+        (
+            5.0,
+            w.method + w.status_compact + w.kind + w.size + w.duration,
+        ),
+        (4.0, w.method + w.status_compact + w.kind + w.size),
+        (3.0, w.method + w.status_compact + w.kind),
+    ] {
+        let fixed = spacing_x.mul_add(gaps, fixed_non_path) + Space::XS;
+        if visible >= fixed + w.path_min {
+            return pack(w.method, (visible - fixed).floor(), w.status_compact);
+        }
     }
 
-    let fixed_four =
-        spacing_x.mul_add(3.0, widths.method + widths.status_compact + widths.kind) + Space::XS;
-    if visible >= fixed_four + widths.path_min {
-        let target = (visible - fixed_four).floor();
-        return [
-            widths.method,
-            target,
-            widths.status_compact,
-            widths.kind,
-            widths.size,
-            widths.duration,
-        ];
-    }
-
-    let method = widths
+    let method = w
         .method
         .min((visible * 0.22).floor().max(Field::Method.min_width()));
-    let status = widths
+    let status = w
         .status_compact
         .min((visible * 0.30).floor().max(Field::Status.min_width()));
     let target = spacing_x
         .mul_add(-2.0, visible - method - status - Space::XS)
         .floor();
-    let target = widths.path_compact.fit(target);
-    [
-        method,
-        target,
-        status,
-        widths.kind,
-        widths.size,
-        widths.duration,
-    ]
+    pack(method, w.path_compact.fit(target), status)
 }
 
 /// Offers resending, copying, or saving a body of the row's request on right click.
@@ -659,12 +698,9 @@ fn save_body_items(
 fn show_cells(
     row: &mut egui_extras::TableRow<'_, '_>,
     record: &Exchange,
-    selected: bool,
-    focus: bool,
-    show_host: bool,
-    menus: TableMenus,
+    context: RowContext,
 ) -> (bool, Option<AppAction>) {
-    let lang = menus.lang;
+    let lang = context.menus.lang;
     let mut clicked = false;
     let mut action = None;
     for field in Field::ALL {
@@ -672,27 +708,38 @@ fn show_cells(
         let (_, cell) = row.col(|ui| {
             paint_row_cell(
                 ui,
-                selected && field == Field::Method,
-                field == Field::Duration,
+                context.selected && field == Field::Method,
+                field == Field::Waterfall,
             );
             match field {
                 Field::Method => {
-                    method_response = Some(method_cell(ui, record, selected, focus, lang));
+                    method_response = Some(method_cell(
+                        ui,
+                        record,
+                        context.selected,
+                        context.focus,
+                        lang,
+                    ));
                 }
-                Field::Target => target_cell(ui, record, show_host, lang),
+                Field::Target => target_cell(ui, record, context.show_host, lang),
                 Field::Status => status_cell(ui, record, lang),
                 Field::Type => data_cell(ui, content_type(record).unwrap_or("—")),
                 Field::Size => numeric_cell(ui, &size_text(record)),
                 Field::Duration => numeric_cell(ui, &duration_text(record)),
+                Field::Waterfall => {
+                    waterfall::paint_cell_ui(ui, record, context.timeline, context.now);
+                }
             }
         });
-        let cell = if let Some(method) = method_response {
+        let cell = if field == Field::Waterfall {
+            waterfall::attach_hover(cell, record, context.timeline, context.now, lang)
+        } else if let Some(method) = method_response {
             clicked = method.clicked();
             cell.union(method)
         } else {
             cell
         };
-        if let Some(selected_action) = row_menu(&cell, record, menus, field) {
+        if let Some(selected_action) = row_menu(&cell, record, context.menus, field) {
             action = Some(selected_action);
         }
     }
@@ -1049,7 +1096,7 @@ mod tests {
         let spacing = 8.0;
         let gutter = 14.0;
 
-        // Minimum-width table pane (~360px): Method, Host/Path, Status fit cleanly inside.
+        // Minimum-width table pane (~360px): Method, Path, Status fit cleanly inside.
         let narrow = column_widths(360.0, spacing, gutter);
         assert!(narrow[0] >= Field::Method.min_width());
         assert!(narrow[1] >= 84.0);
@@ -1060,12 +1107,51 @@ mod tests {
         let medium = column_widths(415.0, spacing, gutter);
         assert!(spacing.mul_add(3.0, medium[0] + medium[1] + medium[2] + medium[3]) <= 415.0);
 
-        // Wide table pane (~740px): all 6 columns fit and Host/Path takes spare space.
+        // Wide table pane (~740px): all 7 columns (including Waterfall) fit cleanly.
         let wide = column_widths(740.0, spacing, gutter);
-        let wide_total = spacing.mul_add(5.0, wide.iter().sum::<f32>()) + gutter;
+        let wide_total = spacing.mul_add(6.0, wide.iter().sum::<f32>()) + gutter;
         assert!(wide_total <= 740.0);
         assert!(wide[1] > narrow[1]);
-        assert!(wide[1] >= 250.0);
+        assert!(wide[1] >= Layout::REQUEST_COLUMNS.path_min);
+        assert!(wide[6] >= Field::Waterfall.min_width());
+
+        // Extra-wide table pane (~860px): Path expands to take spare space.
+        let extra_wide = column_widths(860.0, spacing, gutter);
+        let extra_total = spacing.mul_add(6.0, extra_wide.iter().sum::<f32>()) + gutter;
+        assert!(extra_total <= 860.0);
+        assert!(extra_wide[1] >= 250.0);
+    }
+
+    #[test]
+    fn waterfall_sort_orders_by_start_time_and_arrival_id() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use http::{Method, StatusCode};
+        use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
+
+        let first = ExchangeBuilder::http(Method::GET, "http://fixture.test/first")?
+            .respond(ResponseFixture::new(StatusCode::OK))?;
+        let second = ExchangeBuilder::http(Method::GET, "http://fixture.test/second")?
+            .respond(ResponseFixture::new(StatusCode::OK))?;
+
+        let mut table = RequestTable::new();
+        table.sort = table.sort.toggled(Field::Waterfall);
+        assert_eq!(table.sort.field, Some(Field::Waterfall));
+        assert!(!table.sort.descending);
+
+        let mut rows = vec![&second, &first];
+        table.sort_rows(&mut rows);
+        assert_eq!(
+            rows.iter().map(|record| record.id()).collect::<Vec<_>>(),
+            vec![first.id(), second.id()]
+        );
+
+        table.sort = table.sort.toggled(Field::Waterfall);
+        table.sort_rows(&mut rows);
+        assert_eq!(
+            rows.iter().map(|record| record.id()).collect::<Vec<_>>(),
+            vec![second.id(), first.id()]
+        );
+        Ok(())
     }
 
     fn header_left(shapes: &[egui::epaint::ClippedShape], label: &str) -> Option<f32> {
@@ -1153,6 +1239,92 @@ mod tests {
         let next_target =
             header_left(&next, "Path").ok_or("missing Path header on subsequent frame")?;
         assert!((next_target - after_target).abs() < 1.0);
+        Ok(())
+    }
+
+    fn has_text(shapes: &[egui::epaint::ClippedShape], needle: &str) -> bool {
+        fn find(shape: &egui::Shape, needle: &str) -> bool {
+            match shape {
+                egui::Shape::Text(text) => text.galley.text().contains(needle),
+                egui::Shape::Vec(items) => items.iter().any(|item| find(item, needle)),
+                _ => false,
+            }
+        }
+        shapes.iter().any(|clipped| find(&clipped.shape, needle))
+    }
+
+    #[test]
+    fn waterfall_cell_hover_shows_timing_breakdown_and_click_selects_row()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use http::{Method, StatusCode};
+        use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
+
+        let record = ExchangeBuilder::http(Method::GET, "http://fixture.test/waterfall")?
+            .connect_time(Duration::from_millis(12))
+            .respond(ResponseFixture::new(StatusCode::OK))?;
+
+        let ctx = egui::Context::default();
+        let mut table = RequestTable::new();
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(780.0, 200.0));
+        let mut run = |time: f64, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(viewport),
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut selected = None;
+            let mut output = ctx.run_ui(input, |ui| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(ui, |ui| {
+                        selected = table
+                            .show(ui, vec![&record], None, false, TableMenus::default())
+                            .selected;
+                    });
+            });
+            output.textures_delta.clear();
+            (output.shapes, selected)
+        };
+
+        let mut shapes = Vec::new();
+        for step in 0..3 {
+            shapes = run(f64::from(step) * 0.1, Vec::new()).0;
+        }
+        let waterfall_x =
+            header_left(&shapes, "Waterfall").ok_or("missing Waterfall header")? + 24.0;
+        let row_y = Layout::TABLE_ROW_HEIGHT.mul_add(0.5, Layout::TABLE_HEADER_HEIGHT);
+        let pointer = egui::pos2(waterfall_x, row_y);
+
+        // Hover across egui's tooltip delay and run the repaint frame after sizing.
+        let _ = run(1.0, vec![egui::Event::PointerMoved(pointer)]);
+        let _ = run(2.0, Vec::new());
+        let (hovered_shapes, _) = run(2.05, Vec::new());
+        assert!(has_text(&hovered_shapes, "Started"));
+        assert!(has_text(&hovered_shapes, "Connect"));
+        assert!(has_text(&hovered_shapes, "Wait (TTFB)"));
+        assert!(has_text(&hovered_shapes, "Total"));
+
+        // Clicking inside the Waterfall cell selects the row.
+        let _ = run(
+            2.1,
+            vec![egui::Event::PointerButton {
+                pos: pointer,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        let (_, selected) = run(
+            2.2,
+            vec![egui::Event::PointerButton {
+                pos: pointer,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert_eq!(selected, Some(record.id()));
         Ok(())
     }
 }
