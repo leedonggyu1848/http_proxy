@@ -1,16 +1,16 @@
 //! Prepares captured text for display and checks which body changes need a rebuild.
 
 use http_inspector_analysis::search::Query;
-use http_inspector_content::decode::{self, BodyText};
-use http_inspector_content::detect;
 use http_inspector_content::format::{
-    self as body_format, BodyFormat, FormatError, Notice, Styled, ViewMode,
+    BodyFormat, FormatError, Notice, Styled, ViewMode,
     tree::{self, TreeModel},
 };
-use http_inspector_exchange::{BodyLifecycle, BodyRetention, BodySide, BodySnapshot, MediaType};
+use http_inspector_content::view::{self, BodyInput};
+use http_inspector_exchange::{BodySide, MediaType};
 use std::sync::Arc;
 
-use crate::ui::workbench::text;
+/// How much of a body the retained bytes cover; shared with the command line.
+pub(super) use http_inspector_content::view::BodyCapture as Capture;
 
 /// A captured body preview to show.
 pub(super) struct BodySource<'a> {
@@ -26,53 +26,14 @@ pub(super) struct BodySource<'a> {
     pub(super) search: Option<&'a Query>,
 }
 
-/// How much of a body the retained bytes cover, and why not all of it.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(super) enum Capture {
-    /// The retained bytes are the whole body.
-    Whole,
-    /// The body was longer than the preview keeps.
-    Truncated,
-    /// More of the body may still arrive.
-    Streaming,
-    /// The body stopped before its end: the sender interrupted it or the
-    /// receiver cancelled it.
-    Ended,
-}
-
-impl Capture {
-    /// Reads the capture state of a body snapshot. A preview cut at the
-    /// retention limit stays cut whatever happens to the stream, so
-    /// truncation wins over the lifecycle.
-    pub(super) fn of(snapshot: &BodySnapshot) -> Self {
-        if snapshot.is_complete() {
-            return Self::Whole;
+impl BodySource<'_> {
+    const fn input(&self) -> BodyInput<'_> {
+        BodyInput {
+            bytes: self.bytes,
+            encodings: self.encodings,
+            media_type: self.media_type,
+            capture: self.capture,
         }
-        match (snapshot.retention(), snapshot.lifecycle()) {
-            (BodyRetention::Prefix, BodyLifecycle::Streaming) => Self::Streaming,
-            (BodyRetention::Prefix, BodyLifecycle::Interrupted | BodyLifecycle::Cancelled) => {
-                Self::Ended
-            }
-            (BodyRetention::Truncated | BodyRetention::Omitted, _)
-            | (BodyRetention::Prefix, BodyLifecycle::Complete) => Self::Truncated,
-        }
-    }
-
-    const fn is_whole(self) -> bool {
-        matches!(self, Self::Whole)
-    }
-
-    /// Why the view ends before the body does; `None` for a whole body.
-    fn notice(self) -> Option<Notice> {
-        let text = match self {
-            Self::Whole => return None,
-            Self::Truncated => {
-                text::body_truncated(http_inspector_exchange::capture::BODY_PREVIEW_BYTES / 1024)
-            }
-            Self::Streaming => text::BODY_STREAMING.to_owned(),
-            Self::Ended => text::BODY_ENDED.to_owned(),
-        };
-        Some(Notice::warning(text))
     }
 }
 
@@ -178,41 +139,37 @@ impl<S: Clone + PartialEq> BodyCache<S> {
     }
 
     fn prepare(&mut self, source: &BodySource<'_>, key: BodyKey, mode: ViewMode) -> PreparedBody {
-        let (text, decoding) =
-            match decode::decode(source.bytes, source.encodings, source.capture.is_whole()) {
-                BodyText::Ready { text, notice } => (text, notice),
-                BodyText::Unavailable(message) => return PreparedBody::Unavailable(message),
-            };
-        let format = detect::settle(source.media_type, text.as_bytes());
-        let mut notices = capture_notices(decoding, source.capture);
+        let mut decoded = match view::decode_body(&source.input()) {
+            Ok(decoded) => decoded,
+            Err(message) => return PreparedBody::Unavailable(message),
+        };
         if mode == ViewMode::Tree {
-            match self.tree(key, format, &text) {
+            match self.tree(key, decoded.format, &decoded.text) {
                 Some(Ok(model)) => {
+                    let mut notices = decoded.notices;
                     notices.extend(model.incomplete.as_deref().map(Notice::warning));
                     if source.search.is_some() {
                         notices.push(Notice::info("Search matches are marked in Pretty and Raw."));
                     }
                     return PreparedBody::Tree {
-                        format,
+                        format: decoded.format,
                         notices,
                         model: Arc::clone(model),
                     };
                 }
-                Some(Err(reason)) => notices.push(Notice::warning(format!(
-                    "Showing Pretty: could not read a tree: {reason}."
-                ))),
-                None => notices.push(Notice::warning(format!(
-                    "Tree view is not available for {}; showing Pretty.",
-                    format.label()
-                ))),
+                Some(Err(reason)) => decoded
+                    .notices
+                    .push(view::tree_fallback_notice(decoded.format, Some(reason))),
+                None => decoded
+                    .notices
+                    .push(view::tree_fallback_notice(decoded.format, None)),
             }
         }
-        let formatted = body_format::format(format, mode, &text);
-        notices.extend(formatted.notices);
+        let shown = view::text_view(decoded, mode);
         PreparedBody::Text {
-            format,
-            notices,
-            styled: formatted.styled,
+            format: shown.format,
+            notices: shown.notices,
+            styled: shown.styled,
         }
     }
 
@@ -233,16 +190,6 @@ impl<S: Clone + PartialEq> BodyCache<S> {
         }
         Some(self.tree.as_ref()?.model.as_ref())
     }
-}
-
-/// What every format says about how the body was captured: the decoding
-/// used, and why the view ends early when only part of the body was kept.
-fn capture_notices(decoding: Option<String>, capture: Capture) -> Vec<Notice> {
-    decoding
-        .map(Notice::info)
-        .into_iter()
-        .chain(capture.notice())
-        .collect()
 }
 
 #[cfg(test)]
@@ -515,32 +462,6 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_capture_reason_from_the_snapshot() -> Result<(), &'static str> {
-        use BodyLifecycle::{Cancelled, Complete, Interrupted, Streaming};
-        for (lifecycle, limit, expected) in [
-            (Complete, 3, Capture::Whole),
-            (Streaming, 3, Capture::Streaming),
-            (Interrupted, 3, Capture::Ended),
-            (Cancelled, 3, Capture::Ended),
-            (Complete, 2, Capture::Truncated),
-            (Streaming, 2, Capture::Truncated),
-            (Interrupted, 2, Capture::Truncated),
-        ] {
-            let body = http_inspector_exchange::BodyPreviewWriter::new(limit);
-            body.observe(b"abc");
-            match lifecycle {
-                Complete => body.complete(),
-                Streaming => {}
-                Interrupted => body.interrupt(),
-                Cancelled => body.cancel(),
-            }
-            let snapshot = body.preview().snapshot().ok_or("missing snapshot")?;
-            assert_eq!(Capture::of(&snapshot), expected, "{snapshot:?}");
-        }
-        Ok(())
-    }
-
-    #[test]
     fn names_why_the_view_ends_early() {
         let mut cache = BodyCache::<()>::default();
         for (record, capture, expected) in [
@@ -567,5 +488,89 @@ mod tests {
                 "{capture:?}"
             );
         }
+    }
+
+    fn as_shared(content: PreparedBody) -> Result<view::BodyView, String> {
+        Ok(match content {
+            PreparedBody::Unavailable(message) => view::BodyView::Unavailable(message),
+            PreparedBody::Text {
+                format,
+                notices,
+                styled,
+            } => view::BodyView::Text(view::TextView {
+                format,
+                notices,
+                styled,
+            }),
+            PreparedBody::Tree {
+                format,
+                notices,
+                model,
+            } => view::BodyView::Tree {
+                format,
+                notices,
+                model: Arc::try_unwrap(model).map_err(|_| "the tree is still shared")?,
+            },
+        })
+    }
+
+    /// The body tab shows the same text and notices as the shared
+    /// [`view::prepare`] used by the command line.
+    #[test]
+    fn body_tab_matches_the_shared_body_view() -> Result<(), String> {
+        let fixtures: [(&[u8], &[&str], &str, Capture); 6] = [
+            (
+                br#"{"items":[{"id":7,"name":"a"}]}"#,
+                &[],
+                "application/json",
+                Capture::Whole,
+            ),
+            (
+                br#"{"items":[1,"#,
+                &[],
+                "application/json",
+                Capture::Streaming,
+            ),
+            (
+                b"<rss><channel><item>x</item></channel></rss>",
+                &[],
+                "application/xml",
+                Capture::Whole,
+            ),
+            (
+                b"a=1&b=two%20words",
+                &[],
+                "application/x-www-form-urlencoded",
+                Capture::Truncated,
+            ),
+            (b"plain text body", &[], "text/plain", Capture::Ended),
+            (b"abc", &["compress"], "text/plain", Capture::Whole),
+        ];
+        for (record, (bytes, encodings, media_type, capture)) in (1..).zip(fixtures) {
+            for mode in ViewMode::ALL {
+                let source = BodySource {
+                    record,
+                    side: BodySide::Response,
+                    bytes,
+                    encodings,
+                    media_type: media(media_type),
+                    capture,
+                    search: None,
+                };
+                let mut cache = BodyCache::<()>::default();
+                let update = cache
+                    .update(&source, mode, &())
+                    .ok_or("the first update always builds")?;
+                drop(cache);
+                let shown = as_shared(update.content)?;
+                let shared = view::prepare(&source.input(), mode);
+                assert_eq!(
+                    format!("{shown:?}"),
+                    format!("{shared:?}"),
+                    "{media_type} {mode:?}"
+                );
+            }
+        }
+        Ok(())
     }
 }

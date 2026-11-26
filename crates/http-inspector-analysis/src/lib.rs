@@ -2,7 +2,8 @@
 //!
 //! It covers the capture event pipeline that feeds every analyzer, URL
 //! normalization and ID folding, the real-time URL map, per-endpoint schema
-//! inference, text search, and record filtering.
+//! inference, text search, record filtering, and the words used for an
+//! exchange's outcome.
 //!
 //! Privacy invariant: query parameter values, header values, cookies,
 //! credentials, and body field values are never retained in URL map or
@@ -15,6 +16,7 @@
 pub mod endpoint_analysis;
 pub mod endpoint_schema;
 pub mod filter;
+pub mod outcome;
 pub mod pipeline;
 pub mod search;
 pub mod url;

@@ -62,7 +62,7 @@ fn phases(record: &Exchange) -> [Phase; 6] {
             running: false,
         },
         Phase {
-            label: outcome_view::timing_label(record.outcome()),
+            label: http_inspector_analysis::outcome::timing_label(record.outcome()),
             millis: settled,
             running: in_flight,
         },

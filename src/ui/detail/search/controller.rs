@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use http_inspector_analysis::filter::{FilterQuery, RecordList, TextTerm};
+use http_inspector_analysis::filter::{self, FilterQuery, RecordList, TextTerm};
 use http_inspector_analysis::search::document::{self, BodyCache, Checked};
 use http_inspector_analysis::search::{MatchOptions, Query, SearchScope, SearchWorker, TextTerms};
 use http_inspector_exchange::{Exchange, RecordId};
@@ -273,14 +273,7 @@ impl RequestSearch {
         self.error = None;
         let previous = self.active.take();
         let settings = self.settings.clone();
-        let terms = if settings.options.regex && !settings.text.is_empty() {
-            vec![TextTerm {
-                text: settings.text.clone(),
-                excluded: false,
-            }]
-        } else {
-            self.parsed.text.clone()
-        };
+        let terms = filter::text_terms(&settings.text, settings.options, &self.parsed);
         if terms.is_empty() {
             self.results.clear();
             return;
@@ -643,6 +636,82 @@ mod tests {
                 .active_query()
                 .is_some_and(|query| Arc::ptr_eq(query, &active_query))
         );
+        Ok(())
+    }
+
+    /// The list filter and the shared [`filter::RequestQuery`] used by the
+    /// command line select the same records for the same text.
+    #[test]
+    fn list_filter_matches_the_shared_request_query() -> Result<(), Box<dyn std::error::Error>> {
+        use http::header::CONTENT_TYPE;
+        use http::{HeaderValue, Method, StatusCode};
+        use http_inspector_analysis::filter::RequestQuery;
+        use http_inspector_exchange::{BodyLifecycle, ExchangeBuilder, ResponseFixture};
+
+        let json = HeaderValue::from_static("application/json");
+        let fixtures = [
+            ExchangeBuilder::http(Method::GET, "http://api.example.test/api/users?page=2")?
+                .respond(
+                    ResponseFixture::new(StatusCode::OK)
+                        .header(CONTENT_TYPE, json.clone())
+                        .body("{\"name\":\"alice\"}", BodyLifecycle::Complete),
+                )?,
+            ExchangeBuilder::http(Method::POST, "http://api.example.test/api/users")?
+                .request_body("name=bob", BodyLifecycle::Complete)
+                .respond(ResponseFixture::new(StatusCode::CREATED).header(CONTENT_TYPE, json))?,
+            ExchangeBuilder::http(Method::DELETE, "http://cdn.example.test/img/logo.png")?
+                .respond(ResponseFixture::new(StatusCode::NOT_FOUND))?,
+            ExchangeBuilder::http(Method::GET, "http://cdn.example.test/down")?
+                .fail(http_inspector_exchange::FailureStage::Connect, "refused")?,
+            ExchangeBuilder::connect("secure.example.test:443").inspection_established()?,
+        ];
+        let mut records = RecordList::new(fixtures.len());
+        for record in fixtures {
+            let _evicted = records.push(record);
+        }
+        let context = egui::Context::default();
+        let mut search = RequestSearch::new(&context);
+        let plain = MatchOptions::default();
+        let regex = MatchOptions {
+            case_sensitive: false,
+            regex: true,
+        };
+        for (text, scope, options) in [
+            ("", SearchScope::All, plain),
+            ("method:POST", SearchScope::All, plain),
+            ("status:4xx", SearchScope::All, plain),
+            ("-status:2xx", SearchScope::All, plain),
+            ("host:api.example.test alice", SearchScope::All, plain),
+            ("bob", SearchScope::RequestBody, plain),
+            ("bob", SearchScope::ResponseBody, plain),
+            ("type:json -method:GET", SearchScope::All, plain),
+            ("is:tunnel", SearchScope::All, plain),
+            ("refused", SearchScope::All, plain),
+            (
+                "ALICE",
+                SearchScope::All,
+                MatchOptions {
+                    case_sensitive: true,
+                    regex: false,
+                },
+            ),
+            ("users/?$", SearchScope::Url, regex),
+        ] {
+            search.search_now((text, scope, options), &records, &context);
+            let shown: Vec<_> = records
+                .iter()
+                .filter(|record| search.matches(record))
+                .map(Exchange::id)
+                .collect();
+            let query = RequestQuery::compile(text, scope, options)?;
+            let mut cache = BodyCache::default();
+            let shared: Vec<_> = records
+                .iter()
+                .filter(|record| query.check(record, &mut cache).matched)
+                .map(Exchange::id)
+                .collect();
+            assert_eq!(shown, shared, "{text:?} in {scope:?}");
+        }
         Ok(())
     }
 }
