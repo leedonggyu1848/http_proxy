@@ -528,7 +528,7 @@ fn spawn_segment_job(
     ctx: &FetchRunnerContext,
 ) {
     let permit_sem = Arc::clone(semaphore);
-    let mut fetcher = ctx.base_fetcher.clone();
+    let fetcher = ctx.base_fetcher.clone();
     let mut task_cancel = ctx.cancel_rx.clone();
     let task_shared = Arc::clone(&ctx.shared);
     let task_notify = Arc::clone(&ctx.notify);
@@ -546,7 +546,7 @@ fn spawn_segment_job(
         let bytes_shared = Arc::clone(&task_shared);
         let bytes_notify = Arc::clone(&task_notify);
         let result = fetch_segment_to_file(
-            &mut fetcher,
+            &fetcher,
             &job.url,
             &job.headers,
             &job.temp_path,

@@ -17,7 +17,7 @@ use hyper::client::conn::http1 as client_http1;
 use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
-use tokio::sync::watch;
+use tokio::sync::{OnceCell, watch};
 use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
 
@@ -36,32 +36,37 @@ const MAX_DECODED_SEGMENT_BYTES: u64 = 512 * 1024 * 1024;
 /// Shared network configuration for fetching missing HLS segments.
 #[derive(Clone)]
 pub(super) struct SegmentFetcher {
-    tls: Option<Arc<TlsConnector>>,
+    tls: Arc<OnceCell<Arc<TlsConnector>>>,
     additional_root: Option<std::path::PathBuf>,
     proxy_addr: Option<SocketAddr>,
 }
 
 impl SegmentFetcher {
-    pub(super) const fn new(
+    pub(super) fn new(
         additional_root: Option<std::path::PathBuf>,
         proxy_addr: Option<SocketAddr>,
     ) -> Self {
         Self {
-            tls: None,
+            tls: Arc::new(OnceCell::new()),
             additional_root,
             proxy_addr,
         }
     }
 
-    pub(super) fn ensure_tls(&mut self) -> Result<Arc<TlsConnector>, String> {
-        if let Some(tls) = &self.tls {
-            return Ok(Arc::clone(tls));
-        }
-        let connector = build_upstream_connector(self.additional_root.as_deref())
-            .map_err(|error| error.to_string())?;
-        let connector = Arc::new(connector);
-        self.tls = Some(Arc::clone(&connector));
-        Ok(connector)
+    pub(super) async fn ensure_tls(&self) -> Result<Arc<TlsConnector>, String> {
+        let root = self.additional_root.clone();
+        self.tls
+            .get_or_try_init(|| async move {
+                tokio::task::spawn_blocking(move || {
+                    build_upstream_connector(root.as_deref())
+                        .map(Arc::new)
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| format!("TLS setup task failed: {error}"))?
+            })
+            .await
+            .map(Arc::clone)
     }
 }
 
@@ -80,7 +85,7 @@ pub(super) enum FetchError {
 
 /// Fetches `url` into `destination_path`, following safe redirects and decoding `Content-Encoding`.
 pub(super) async fn fetch_segment_to_file(
-    fetcher: &mut SegmentFetcher,
+    fetcher: &SegmentFetcher,
     initial_url: &HlsUrl,
     initial_headers: &SafeRequestHeaders,
     destination_path: &Path,
@@ -142,7 +147,7 @@ fn resolve_redirect(base: &HlsUrl, response: &Response<Incoming>) -> Result<HlsU
 }
 
 async fn send_get_request(
-    fetcher: &mut SegmentFetcher,
+    fetcher: &SegmentFetcher,
     url: &HlsUrl,
     headers: &SafeRequestHeaders,
     cancel: &mut watch::Receiver<bool>,
@@ -154,7 +159,7 @@ async fn send_get_request(
     match url.scheme() {
         HttpScheme::Http => send_over_io(tcp, request, cancel).await,
         HttpScheme::Https => {
-            let tls = fetcher.ensure_tls().map_err(FetchError::TlsSetup)?;
+            let tls = fetcher.ensure_tls().await.map_err(FetchError::TlsSetup)?;
             let authority = url
                 .authority()
                 .parse::<http::uri::Authority>()
@@ -380,5 +385,26 @@ async fn wait_cancelled(cancel: &mut watch::Receiver<bool>) {
         if cancel.changed().await.is_err() {
             std::future::pending::<()>().await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cloned_fetchers_share_single_tls_connector() -> Result<(), String> {
+        let base = SegmentFetcher::new(None, None);
+        let f1 = base.clone();
+        let f2 = base.clone();
+
+        let (c1, c2) = tokio::join!(f1.ensure_tls(), f2.ensure_tls());
+        let c1 = c1?;
+        let c2 = c2?;
+        assert!(
+            Arc::ptr_eq(&c1, &c2),
+            "cloned SegmentFetcher tasks must share one TlsConnector instance"
+        );
+        Ok(())
     }
 }

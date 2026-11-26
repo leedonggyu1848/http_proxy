@@ -84,6 +84,8 @@ impl HlsDialog {
             self.download = None;
             self.last_result = None;
             self.selected_variant = 0;
+        } else if !self.is_downloading() {
+            self.last_result = None;
         }
         let task = BackgroundTask::start("hls-inspect", context, move || {
             let result = inspect_hls_session(&playlist_record, &records, body_store.as_ref())
@@ -199,6 +201,9 @@ impl HlsDialog {
                 }
                 self.plan = Some(plan);
                 self.inspect_error = None;
+                if !self.is_downloading() {
+                    self.last_result = None;
+                }
             }
             Ok(Err(message)) => {
                 self.inspect_error = Some(message);
@@ -347,7 +352,12 @@ impl HlsDialog {
 
         if let Some(entry) = self.selected_entry() {
             if let Some(media) = entry.media() {
-                render_segments_section(ui, media, self.segment_statuses_for_selected());
+                render_segments_section(
+                    ui,
+                    media,
+                    self.segment_statuses_for_selected(),
+                    self.is_downloading(),
+                );
             }
             self.render_status_line(ui, entry);
         }
@@ -496,9 +506,13 @@ fn render_variant_row(
         paint_row_cell(ui, is_selected, false);
         ui.add_space(ROW_LEAD);
         let resp = ui.add(
-            egui::Label::new(RichText::new(&entry.quality_label).size(TypeScale::DATA))
-                .truncate()
-                .sense(egui::Sense::click()),
+            egui::Label::new(
+                RichText::new(&entry.quality_label)
+                    .monospace()
+                    .size(TypeScale::DATA),
+            )
+            .truncate()
+            .sense(egui::Sense::click()),
         );
         cell_clicked |= resp.clicked();
     });
@@ -543,9 +557,14 @@ fn render_variant_row(
         ui.add_space(Space::S);
         let (text, color) = variant_status_cell(entry, palette);
         let resp = ui.add(
-            egui::Label::new(RichText::new(text).size(TypeScale::DATA).color(color))
-                .truncate()
-                .sense(egui::Sense::click()),
+            egui::Label::new(
+                RichText::new(text)
+                    .monospace()
+                    .size(TypeScale::DATA)
+                    .color(color),
+            )
+            .truncate()
+            .sense(egui::Sense::click()),
         );
         cell_clicked |= resp.clicked();
     });
@@ -562,20 +581,72 @@ fn variant_status_cell(
         VariantMediaState::Ready(plan) => match &plan.blocked {
             None => ("Ready", palette.text),
             Some(HlsBlockedReason::MissingChromeSegmentRequest) => {
-                ("Play in Chrome", palette.warning)
+                ("Play in Chrome", palette.secondary)
             }
-            Some(HlsBlockedReason::Unsupported(_)) => ("Unsupported", palette.warning),
-            Some(HlsBlockedReason::NoSegments) => ("No segments", palette.warning),
+            Some(HlsBlockedReason::Unsupported(_)) => ("Unsupported", palette.secondary),
+            Some(HlsBlockedReason::NoSegments) => ("No segments", palette.secondary),
             Some(HlsBlockedReason::PlaylistNotCaptured) => ("Not captured", palette.secondary),
             Some(HlsBlockedReason::PlaylistParseFailed(_)) => ("Parse error", palette.error),
         },
     }
 }
 
+fn segments_summary_text(
+    media: &MediaDownloadPlan,
+    live_statuses: Option<&[SegmentStatus]>,
+    is_downloading: bool,
+) -> Option<String> {
+    if is_downloading {
+        return None;
+    }
+    let Some(statuses) = live_statuses else {
+        return Some(format!(
+            "{} total · {} cached · {} missing",
+            media.segments.len(),
+            media.cached_count,
+            media.missing_count,
+        ));
+    };
+
+    let mut cached = 0usize;
+    let mut fetched = 0usize;
+    let mut failed = 0usize;
+    let mut cancelled = 0usize;
+    let mut pending = 0usize;
+    for status in statuses {
+        match status {
+            SegmentStatus::Cached => cached += 1,
+            SegmentStatus::Done => fetched += 1,
+            SegmentStatus::Failed { .. } => failed += 1,
+            SegmentStatus::Cancelled => cancelled += 1,
+            SegmentStatus::Queued | SegmentStatus::Downloading => pending += 1,
+        }
+    }
+
+    let mut parts = vec![format!("{} total", statuses.len())];
+    if cached > 0 {
+        parts.push(format!("{cached} cached"));
+    }
+    if fetched > 0 {
+        parts.push(format!("{fetched} fetched"));
+    }
+    if failed > 0 {
+        parts.push(format!("{failed} failed"));
+    }
+    if cancelled > 0 {
+        parts.push(format!("{cancelled} cancelled"));
+    }
+    if pending > 0 {
+        parts.push(format!("{pending} remaining"));
+    }
+    Some(parts.join(" · "))
+}
+
 fn render_segments_section(
     ui: &mut egui::Ui,
     media: &MediaDownloadPlan,
     live_statuses: Option<&[SegmentStatus]>,
+    is_downloading: bool,
 ) {
     let palette = Palette::of(ui);
     ui.horizontal(|ui| {
@@ -584,20 +655,16 @@ fn render_segments_section(
                 .size(TypeScale::PANEL_TITLE)
                 .color(palette.secondary),
         );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let summary = format!(
-                "{} total · {} cached · {} missing",
-                media.segments.len(),
-                media.cached_count,
-                media.missing_count,
-            );
-            ui.label(
-                RichText::new(summary)
-                    .monospace()
-                    .size(TypeScale::STATUS)
-                    .color(palette.secondary),
-            );
-        });
+        if let Some(summary) = segments_summary_text(media, live_statuses, is_downloading) {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    RichText::new(summary)
+                        .monospace()
+                        .size(TypeScale::STATUS)
+                        .color(palette.secondary),
+                );
+            });
+        }
     });
 
     let cols = Layout::HLS_SEGMENT_COLUMNS;
@@ -686,7 +753,13 @@ fn render_segment_row(
         ui.add_space(Space::S);
         let (label, color, tooltip) = segment_status_cell(plan, live_status, palette);
         let resp = ui.add(
-            egui::Label::new(RichText::new(label).size(TypeScale::DATA).color(color)).truncate(),
+            egui::Label::new(
+                RichText::new(label)
+                    .monospace()
+                    .size(TypeScale::DATA)
+                    .color(color),
+            )
+            .truncate(),
         );
         if let Some(tip) = tooltip {
             resp.on_hover_text(tip);
@@ -740,12 +813,26 @@ fn render_progress_row(ui: &mut egui::Ui, progress: &HlsDownloadProgress) {
         HlsDownloadPhase::Merging => "Merging",
         HlsDownloadPhase::Finished => "Finishing",
     };
+    let tokens = ThemeTokens::for_theme(ui.ctx().theme());
     ui.horizontal_wrapped(|ui| {
         ui.spinner();
-        ui.add(
-            egui::ProgressBar::new(fraction)
-                .desired_width(Layout::HLS_PROGRESS_WIDTH)
-                .corner_radius(egui::CornerRadius::same(Radius::STATUS_BAR)),
+        let radius = egui::CornerRadius::same(Radius::STATUS_BAR);
+        let resp = ui
+            .scope(|ui| {
+                ui.visuals_mut().extreme_bg_color = tokens.surfaces.chrome;
+                ui.add(
+                    egui::ProgressBar::new(fraction)
+                        .desired_width(Layout::HLS_PROGRESS_WIDTH)
+                        .fill(tokens.accent.primary)
+                        .corner_radius(radius),
+                )
+            })
+            .inner;
+        ui.painter().rect_stroke(
+            resp.rect,
+            radius,
+            egui::Stroke::new(StrokeWidth::STRUCTURAL, tokens.borders.control),
+            egui::StrokeKind::Inside,
         );
         let detail = format!(
             "{phase_label} {}/{} · {}",
@@ -766,12 +853,7 @@ fn render_outcome_line(ui: &mut egui::Ui, outcome: &HlsDownloadOutcome) {
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("output.ts");
-            let text = format!(
-                "Saved {file_name} ({} · {} cached · {} fetched)",
-                ByteSize::new(summary.total_bytes),
-                summary.reused_segments,
-                summary.downloaded_segments,
-            );
+            let text = format!("Saved {file_name} ({})", ByteSize::new(summary.total_bytes));
             ui.add(egui::Label::new(RichText::new(text).color(palette.text)).wrap())
                 .on_hover_text(summary.path.display().to_string());
         }
@@ -1032,6 +1114,168 @@ mod tests {
         });
         out.textures_delta.clear();
         assert_eq!(action, Some(HlsAction::Close));
+        Ok(())
+    }
+
+    #[test]
+    fn refresh_clears_previous_download_result() -> Result<(), Box<dyn std::error::Error>> {
+        let session = SessionId::next();
+        let media = fixture_exchange(
+            session,
+            "http://cdn.test/live/index.m3u8",
+            CHROME_UA,
+            "application/vnd.apple.mpegurl",
+            b"#EXTM3U\n#EXTINF:4.0,\nseg0.ts\n#EXTINF:4.0,\nseg1.ts\n#EXT-X-ENDLIST\n",
+        )?;
+        let seg0 = fixture_exchange(
+            session,
+            "http://cdn.test/live/seg0.ts",
+            CHROME_UA,
+            "video/mp2t",
+            &[0x47; 188],
+        )?;
+        let seg1 = fixture_exchange(
+            session,
+            "http://cdn.test/live/seg1.ts",
+            CHROME_UA,
+            "video/mp2t",
+            &[0x47; 188],
+        )?;
+
+        let mut dialog = make_dialog_with_plan(&[media.clone(), seg0.clone()], &media)?;
+        dialog.last_result = Some(FinishedDownload {
+            variant_index: 0,
+            outcome: HlsDownloadOutcome::Failed(HlsDownloadError::HttpStatus {
+                segment_index: 1,
+                segment_number: 2,
+                segment_name: "seg1.ts".to_owned(),
+                segment_url: "http://cdn.test/live/seg1.ts".to_owned(),
+                status: 403,
+                reason: "Forbidden".to_owned(),
+            }),
+            segment_statuses: vec![
+                SegmentStatus::Cached,
+                SegmentStatus::Failed {
+                    status: Some(403),
+                    message: "HTTP 403 Forbidden".to_owned(),
+                },
+            ],
+        });
+        assert!(dialog.segment_statuses_for_selected().is_some());
+
+        // Simulate pressing Refresh on the same playlist after capturing seg1.ts.
+        let ctx = egui::Context::default();
+        dialog.open(media.clone(), vec![media, seg0, seg1], None, &ctx);
+        assert!(
+            dialog.last_result.is_none(),
+            "Refresh must immediately clear stale download results"
+        );
+        assert!(dialog.segment_statuses_for_selected().is_none());
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while dialog.inspecting.is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "HLS refresh inspection timed out"
+            );
+            dialog.poll(&ctx);
+            std::thread::yield_now();
+        }
+
+        assert!(dialog.last_result.is_none());
+        assert!(dialog.segment_statuses_for_selected().is_none());
+        let refreshed_media = dialog
+            .selected_entry()
+            .and_then(HlsVariantEntry::media)
+            .ok_or("missing refreshed media plan")?;
+        assert_eq!(refreshed_media.cached_count, 2);
+        assert_eq!(refreshed_media.missing_count, 0);
+        run_frame(&ctx, &dialog);
+        Ok(())
+    }
+
+    #[test]
+    fn segments_summary_reflects_live_and_final_states() -> Result<(), Box<dyn std::error::Error>> {
+        let session = SessionId::next();
+        let media = fixture_exchange(
+            session,
+            "http://cdn.test/live/index.m3u8",
+            CHROME_UA,
+            "application/vnd.apple.mpegurl",
+            b"#EXTM3U\n#EXTINF:4.0,\nseg0.ts\n#EXTINF:4.0,\nseg1.ts\n#EXTINF:4.0,\nseg2.ts\n#EXT-X-ENDLIST\n",
+        )?;
+        let seg0 = fixture_exchange(
+            session,
+            "http://cdn.test/live/seg0.ts",
+            CHROME_UA,
+            "video/mp2t",
+            &[0x47; 188],
+        )?;
+        let plan = inspect_hls_session(&media, &[media.clone(), seg0], None)?;
+        let media_plan = plan
+            .variants
+            .first()
+            .and_then(HlsVariantEntry::media)
+            .ok_or("missing media plan")?;
+
+        assert_eq!(
+            segments_summary_text(media_plan, None, false).as_deref(),
+            Some("3 total · 1 cached · 2 missing")
+        );
+        assert_eq!(
+            segments_summary_text(
+                media_plan,
+                Some(&[
+                    SegmentStatus::Cached,
+                    SegmentStatus::Downloading,
+                    SegmentStatus::Downloading,
+                ]),
+                true,
+            ),
+            None
+        );
+        assert_eq!(
+            segments_summary_text(
+                media_plan,
+                Some(&[
+                    SegmentStatus::Cached,
+                    SegmentStatus::Done,
+                    SegmentStatus::Done,
+                ]),
+                false,
+            )
+            .as_deref(),
+            Some("3 total · 1 cached · 2 fetched")
+        );
+        assert_eq!(
+            segments_summary_text(
+                media_plan,
+                Some(&[
+                    SegmentStatus::Cached,
+                    SegmentStatus::Failed {
+                        status: Some(403),
+                        message: "HTTP 403 Forbidden".to_owned(),
+                    },
+                    SegmentStatus::Done,
+                ]),
+                false,
+            )
+            .as_deref(),
+            Some("3 total · 1 cached · 1 fetched · 1 failed")
+        );
+        assert_eq!(
+            segments_summary_text(
+                media_plan,
+                Some(&[
+                    SegmentStatus::Cached,
+                    SegmentStatus::Cancelled,
+                    SegmentStatus::Cancelled,
+                ]),
+                false,
+            )
+            .as_deref(),
+            Some("3 total · 1 cached · 2 cancelled")
+        );
         Ok(())
     }
 }
