@@ -105,6 +105,7 @@ struct FieldTerm {
 #[derive(Debug, Default)]
 pub struct FilterQuery {
     fields: Vec<FieldTerm>,
+    unclosed_term_start: Option<usize>,
     /// Free-text terms, matched by the text search worker.
     pub text: Vec<TextTerm>,
     /// Invalid terms to report to the user. Valid terms remain active.
@@ -116,6 +117,12 @@ impl FilterQuery {
     #[must_use]
     pub fn parse(input: &str) -> Self {
         parse::query(input)
+    }
+
+    /// Byte offset of the trailing term that contains an unclosed quote, if any.
+    #[must_use]
+    pub const fn unclosed_term_start(&self) -> Option<usize> {
+        self.unclosed_term_start
     }
 
     /// Reports whether all parsed metadata conditions match the exchange.

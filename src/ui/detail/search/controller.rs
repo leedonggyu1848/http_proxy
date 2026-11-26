@@ -179,10 +179,15 @@ impl RequestSearch {
 
     pub(crate) fn append_filter(&mut self, term: &str) {
         let mut settings = self.settings.clone();
-        if !settings.text.is_empty() && !settings.text.ends_with(char::is_whitespace) {
-            settings.text.push(' ');
+        if let Some(start) = self.parsed.unclosed_term_start() {
+            // A later term would become part of the open quote.
+            settings.text.insert_str(start, &format!("{term} "));
+        } else {
+            if !settings.text.is_empty() && !settings.text.ends_with(char::is_whitespace) {
+                settings.text.push(' ');
+            }
+            settings.text.push_str(term);
         }
-        settings.text.push_str(term);
         self.set_settings(settings);
     }
 
@@ -498,6 +503,57 @@ mod tests {
         let mut other_scope = settings("Order", false, false);
         other_scope.scope = SearchScope::Url;
         assert!(!narrows(&other_scope));
+        Ok(())
+    }
+
+    #[test]
+    fn adds_cell_filters_before_an_unclosed_term() -> Result<(), Box<dyn std::error::Error>> {
+        use http::{Method, StatusCode};
+        use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
+
+        let captured = |status| {
+            ExchangeBuilder::http(Method::POST, "http://localhost:8080/api")?
+                .respond(ResponseFixture::new(status))
+        };
+        let forbidden = captured(StatusCode::FORBIDDEN)?;
+        let not_found = captured(StatusCode::NOT_FOUND)?;
+        // Start after a multi-byte separator so the insertion offset is a byte index.
+        let original = "method:POST\u{2003}\"unfinished text";
+        let context = egui::Context::default();
+        let mut search = RequestSearch::new(&context);
+        for (term, keeps_forbidden) in [("status:403", true), ("-status:403", false)] {
+            search.set_settings(settings(original, false, false));
+            search.append_filter(term);
+            assert_eq!(
+                (search.matches(&forbidden), search.matches(&not_found)),
+                (keeps_forbidden, !keeps_forbidden),
+                "{term}"
+            );
+            let input = &search.settings().text;
+            assert_eq!(
+                input,
+                &format!("method:POST\u{2003}{term} \"unfinished text")
+            );
+            let warnings: Vec<_> = search
+                .parsed()
+                .diagnostics
+                .iter()
+                .filter_map(|warning| input.get(warning.span.clone()))
+                .collect();
+            assert_eq!(warnings, ["\"unfinished text"]);
+        }
+        for text in [
+            "method:POST",
+            "method:POST \"finished text\"",
+            "status:abc ",
+        ] {
+            search.set_settings(settings(text, false, false));
+            search.append_filter("status:403");
+            assert_eq!(
+                search.settings().text,
+                format!("{} status:403", text.trim_end())
+            );
+        }
         Ok(())
     }
 

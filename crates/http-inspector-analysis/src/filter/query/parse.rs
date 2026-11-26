@@ -7,17 +7,20 @@ pub(super) fn query(input: &str) -> FilterQuery {
         let Some(term) = input.get(span.clone()).filter(|term| !term.is_empty()) else {
             continue;
         };
-        if let Err(message) = parse_term(&mut result, term, closed) {
+        let parsed = if closed {
+            parse_term(&mut result, term)
+        } else {
+            result.unclosed_term_start = Some(span.start);
+            Err("Unclosed quote".into())
+        };
+        if let Err(message) = parsed {
             result.diagnostics.push(FilterDiagnostic { span, message });
         }
     }
     result
 }
 
-fn parse_term(query: &mut FilterQuery, term: &str, closed: bool) -> Result<(), String> {
-    if !closed {
-        return Err("Unclosed quote".into());
-    }
+fn parse_term(query: &mut FilterQuery, term: &str) -> Result<(), String> {
     let (term, excluded) = term
         .strip_prefix('-')
         .filter(|rest| !rest.is_empty())
