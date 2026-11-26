@@ -1,5 +1,6 @@
 //! Shared outcome presentation for the request list, details, and search.
 
+use http_inspector_analysis::outcome;
 use http_inspector_exchange::{Outcome, TunnelPreview, TunnelState};
 
 use crate::ui::i18n::{Language, domain};
@@ -25,29 +26,26 @@ pub(crate) fn outcome_text(outcome: &Outcome, lang: Language) -> (String, Option
 
 /// Short status text for one outcome, independent of the theme.
 fn short_text(outcome: &Outcome, lang: Language) -> String {
-    match outcome {
-        Outcome::InFlight => lang.pick("Pending", "대기 중").to_owned(),
-        Outcome::Response(response) => {
-            let status = response.status();
-            format!(
-                "{} {}",
-                status.as_str(),
-                status
-                    .canonical_reason()
-                    .unwrap_or_else(|| lang.pick("Unknown status", "알 수 없는 상태"))
-            )
-        }
-        Outcome::Tunnel(tunnel) => tunnel_summary(tunnel, lang),
-        Outcome::InspectionEstablished => "HTTPS".to_owned(),
-        Outcome::Failed { stage, message } => {
-            format!("{}: {message}", domain::failure_stage(lang, *stage))
-        }
-        Outcome::Cancelled => lang
-            .pick("Cancelled by client", "클라이언트 취소")
-            .to_owned(),
-        Outcome::Incomplete => lang
-            .pick("Incomplete (proxy stopped)", "불완전 (프록시 중지)")
-            .to_owned(),
+    match lang {
+        Language::English => outcome::short_text(outcome),
+        Language::Korean => match outcome {
+            Outcome::InFlight => "대기 중".to_owned(),
+            Outcome::Response(response) => {
+                let status = response.status();
+                format!(
+                    "{} {}",
+                    status.as_str(),
+                    status.canonical_reason().unwrap_or("알 수 없는 상태")
+                )
+            }
+            Outcome::Tunnel(tunnel) => tunnel_summary_ko(tunnel),
+            Outcome::InspectionEstablished => "HTTPS".to_owned(),
+            Outcome::Failed { stage, message } => {
+                format!("{}: {message}", domain::failure_stage(lang, *stage))
+            }
+            Outcome::Cancelled => "클라이언트 취소".to_owned(),
+            Outcome::Incomplete => "불완전 (프록시 중지)".to_owned(),
+        },
     }
 }
 
@@ -76,13 +74,16 @@ pub(crate) fn outcome_tone(outcome: &Outcome) -> Option<Tone> {
 /// Plain-language class of an HTTP status code, so that success and error do
 /// not depend on the status color alone.
 pub(crate) const fn status_class(code: u16, lang: Language) -> &'static str {
-    match code {
-        100..=199 => lang.pick("informational", "정보 응답"),
-        200..=299 => lang.pick("success", "성공"),
-        300..=399 => lang.pick("redirect", "리다이렉트"),
-        400..=499 => lang.pick("client error", "클라이언트 오류"),
-        500..=599 => lang.pick("server error", "서버 오류"),
-        _ => lang.pick("nonstandard status", "비표준 상태"),
+    match lang {
+        Language::English => outcome::status_class(code),
+        Language::Korean => match code {
+            100..=199 => "정보 응답",
+            200..=299 => "성공",
+            300..=399 => "리다이렉트",
+            400..=499 => "클라이언트 오류",
+            500..=599 => "서버 오류",
+            _ => "비표준 상태",
+        },
     }
 }
 
@@ -101,18 +102,15 @@ pub(super) fn outcome_summary(outcome: &Outcome, lang: Language) -> String {
     }
 }
 
-fn tunnel_summary(tunnel: &TunnelPreview, lang: Language) -> String {
+fn tunnel_summary_ko(tunnel: &TunnelPreview) -> String {
     match tunnel.snapshot().state() {
-        TunnelState::Open => lang.pick("Tunnel · open", "터널 · 열림").to_owned(),
-        TunnelState::Closed => lang.pick("Tunnel · closed", "터널 · 닫힘").to_owned(),
+        TunnelState::Open => "터널 · 열림".to_owned(),
+        TunnelState::Closed => "터널 · 닫힘".to_owned(),
         TunnelState::Failed { stage, .. } => {
-            let stage_label = domain::failure_stage(lang, *stage);
-            match lang {
-                Language::English => format!("Tunnel · failed ({stage_label})"),
-                Language::Korean => format!("터널 · 실패 ({stage_label})"),
-            }
+            let stage_label = domain::failure_stage(Language::Korean, *stage);
+            format!("터널 · 실패 ({stage_label})")
         }
-        TunnelState::Incomplete => lang.pick("Tunnel · incomplete", "터널 · 불완전").to_owned(),
+        TunnelState::Incomplete => "터널 · 불완전".to_owned(),
     }
 }
 
@@ -121,27 +119,29 @@ fn tunnel_summary(tunnel: &TunnelPreview, lang: Language) -> String {
 /// sent it and the HTTP version it answered with; other outcomes show the
 /// same text as the request list.
 pub(crate) fn detail_status(outcome: &Outcome, lang: Language) -> (String, Option<Tone>) {
-    match outcome {
-        Outcome::Response(response) => (
-            crate::ui::workbench::text::response_line(
+    let text = match lang {
+        Language::English => outcome::detail_text(outcome),
+        Language::Korean => match outcome {
+            Outcome::Response(response) => outcome::response_line(
                 response.status().as_u16(),
                 response.reason(),
                 &format!("{:?}", response.version()),
             ),
-            outcome_tone(outcome),
-        ),
-        _ => outcome_text(outcome, lang),
-    }
+            _ => short_text(outcome, lang),
+        },
+    };
+    (text, outcome_tone(outcome))
 }
 
 pub(crate) const fn timing_label(outcome: &Outcome, lang: Language) -> &'static str {
-    match outcome {
-        Outcome::InFlight => lang.pick("Waiting", "대기"),
-        Outcome::Response(_) => lang.pick("Response headers", "응답 헤더"),
-        Outcome::Tunnel(_) | Outcome::InspectionEstablished => lang.pick("Established", "연결됨"),
-        Outcome::Failed { .. } | Outcome::Cancelled | Outcome::Incomplete => {
-            lang.pick("Ended", "종료됨")
-        }
+    match lang {
+        Language::English => outcome::timing_label(outcome),
+        Language::Korean => match outcome {
+            Outcome::InFlight => "대기",
+            Outcome::Response(_) => "응답 헤더",
+            Outcome::Tunnel(_) | Outcome::InspectionEstablished => "연결됨",
+            Outcome::Failed { .. } | Outcome::Cancelled | Outcome::Incomplete => "종료됨",
+        },
     }
 }
 

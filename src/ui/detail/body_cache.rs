@@ -1,17 +1,18 @@
 //! Prepares captured text for display and checks which body changes need a rebuild.
 
 use http_inspector_analysis::search::Query;
-use http_inspector_content::decode::{self, BodyText};
-use http_inspector_content::detect;
 use http_inspector_content::format::{
-    self as body_format, BodyFormat, FormatError, Notice, Styled, ViewMode,
+    BodyFormat, FormatError, Notice, Styled, ViewMode,
     tree::{self, TreeModel},
 };
-use http_inspector_exchange::{BodyLifecycle, BodyRetention, BodySide, BodySnapshot, MediaType};
+use http_inspector_content::view::{self, BodyInput};
+use http_inspector_exchange::{BodySide, MediaType};
 use std::sync::Arc;
 
 use crate::ui::i18n::{Language, domain};
-use crate::ui::workbench::text;
+
+/// How much of a body the retained bytes cover; shared with the command line.
+pub(super) use http_inspector_content::view::BodyCapture as Capture;
 
 /// A captured body preview to show.
 pub(super) struct BodySource<'a> {
@@ -27,52 +28,14 @@ pub(super) struct BodySource<'a> {
     pub(super) search: Option<&'a Query>,
 }
 
-/// How much of a body the retained bytes cover, and why not all of it.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(super) enum Capture {
-    /// The retained bytes are the whole body.
-    Whole,
-    /// The body was longer than the preview keeps.
-    Truncated,
-    /// More of the body may still arrive.
-    Streaming,
-    /// The body stopped before its end: the sender interrupted it or the
-    /// receiver cancelled it.
-    Ended,
-}
-
-impl Capture {
-    /// Reads the capture state of a body snapshot. A preview cut at the
-    /// retention limit stays cut whatever happens to the stream, so
-    /// truncation wins over the lifecycle.
-    pub(super) fn of(snapshot: &BodySnapshot) -> Self {
-        if snapshot.is_complete() {
-            return Self::Whole;
+impl BodySource<'_> {
+    const fn input(&self) -> BodyInput<'_> {
+        BodyInput {
+            bytes: self.bytes,
+            encodings: self.encodings,
+            media_type: self.media_type,
+            capture: self.capture,
         }
-        match (snapshot.retention(), snapshot.lifecycle()) {
-            (BodyRetention::Prefix, BodyLifecycle::Streaming) => Self::Streaming,
-            (BodyRetention::Prefix, BodyLifecycle::Interrupted | BodyLifecycle::Cancelled) => {
-                Self::Ended
-            }
-            (BodyRetention::Truncated | BodyRetention::Omitted, _)
-            | (BodyRetention::Prefix, BodyLifecycle::Complete) => Self::Truncated,
-        }
-    }
-
-    const fn is_whole(self) -> bool {
-        matches!(self, Self::Whole)
-    }
-
-    /// Why the view ends before the body does; `None` for a whole body.
-    fn notice(self, lang: Language) -> Option<Notice> {
-        let preview_kib = http_inspector_exchange::capture::BODY_PREVIEW_BYTES / 1024;
-        let text = match self {
-            Self::Whole => return None,
-            Self::Truncated => text::body_truncated(lang, preview_kib),
-            Self::Streaming => text::body_streaming(lang).to_owned(),
-            Self::Ended => text::body_ended(lang).to_owned(),
-        };
-        Some(Notice::warning(text))
     }
 }
 
@@ -187,20 +150,19 @@ impl<S: Clone + PartialEq> BodyCache<S> {
         mode: ViewMode,
         lang: Language,
     ) -> PreparedBody {
-        let (text, decoding) =
-            match decode::decode(source.bytes, source.encodings, source.capture.is_whole()) {
-                BodyText::Ready { text, notice } => (text, notice),
-                BodyText::Unavailable(message) => {
-                    return PreparedBody::Unavailable(domain::localize_content_notice(
-                        lang, &message,
-                    ));
-                }
-            };
-        let format = detect::settle(source.media_type, text.as_bytes());
-        let mut notices = capture_notices(decoding, source.capture, lang);
+        let mut decoded = match view::decode_body(&source.input()) {
+            Ok(decoded) => decoded,
+            Err(message) => {
+                return PreparedBody::Unavailable(domain::localize_content_notice(lang, &message));
+            }
+        };
+        for notice in &mut decoded.notices {
+            notice.text = domain::localize_content_notice(lang, &notice.text);
+        }
         if mode == ViewMode::Tree {
-            match self.tree(key, format, &text) {
+            match self.tree(key, decoded.format, &decoded.text) {
                 Some(Ok(model)) => {
+                    let mut notices = decoded.notices;
                     notices.extend(
                         model
                             .incomplete
@@ -214,46 +176,48 @@ impl<S: Clone + PartialEq> BodyCache<S> {
                         )));
                     }
                     return PreparedBody::Tree {
-                        format,
+                        format: decoded.format,
                         notices,
                         model: Arc::clone(model),
                     };
                 }
                 Some(Err(reason)) => {
-                    let detail = domain::format_error(lang, reason);
-                    let message = match lang {
+                    let notice = match lang {
                         Language::English => {
-                            format!("Showing Pretty: could not read a tree: {detail}.")
+                            view::tree_fallback_notice(decoded.format, Some(reason))
                         }
                         Language::Korean => {
-                            format!("서식 보기로 표시: 트리를 읽을 수 없습니다({detail}).")
+                            let detail = domain::format_error(lang, reason);
+                            Notice::warning(format!(
+                                "서식 보기로 표시: 트리를 읽을 수 없습니다({detail})."
+                            ))
                         }
                     };
-                    notices.push(Notice::warning(message));
+                    decoded.notices.push(notice);
                 }
                 None => {
-                    let format_name = domain::body_format(lang, format);
-                    let message = match lang {
-                        Language::English => {
-                            format!("Tree view is not available for {format_name}; showing Pretty.")
+                    let notice = match lang {
+                        Language::English => view::tree_fallback_notice(decoded.format, None),
+                        Language::Korean => {
+                            let format_name = domain::body_format(lang, decoded.format);
+                            Notice::warning(format!(
+                                "{format_name} 형식에는 트리 보기를 사용할 수 없어 서식 보기로 표시합니다."
+                            ))
                         }
-                        Language::Korean => format!(
-                            "{format_name} 형식에는 트리 보기를 사용할 수 없어 서식 보기로 표시합니다."
-                        ),
                     };
-                    notices.push(Notice::warning(message));
+                    decoded.notices.push(notice);
                 }
             }
         }
-        let formatted = body_format::format(format, mode, &text);
-        notices.extend(formatted.notices.into_iter().map(|notice| Notice {
-            level: notice.level,
-            text: domain::localize_content_notice(lang, &notice.text),
-        }));
+        let prefix_len = decoded.notices.len();
+        let mut shown = view::text_view(decoded, mode);
+        for notice in shown.notices.iter_mut().skip(prefix_len) {
+            notice.text = domain::localize_content_notice(lang, &notice.text);
+        }
         PreparedBody::Text {
-            format,
-            notices,
-            styled: formatted.styled,
+            format: shown.format,
+            notices: shown.notices,
+            styled: shown.styled,
         }
     }
 
@@ -274,16 +238,6 @@ impl<S: Clone + PartialEq> BodyCache<S> {
         }
         Some(self.tree.as_ref()?.model.as_ref())
     }
-}
-
-/// What every format says about how the body was captured: the decoding
-/// used, and why the view ends early when only part of the body was kept.
-fn capture_notices(decoding: Option<String>, capture: Capture, lang: Language) -> Vec<Notice> {
-    decoding
-        .map(|text| Notice::info(domain::localize_content_notice(lang, &text)))
-        .into_iter()
-        .chain(capture.notice(lang))
-        .collect()
 }
 
 #[cfg(test)]
@@ -557,32 +511,6 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_capture_reason_from_the_snapshot() -> Result<(), &'static str> {
-        use BodyLifecycle::{Cancelled, Complete, Interrupted, Streaming};
-        for (lifecycle, limit, expected) in [
-            (Complete, 3, Capture::Whole),
-            (Streaming, 3, Capture::Streaming),
-            (Interrupted, 3, Capture::Ended),
-            (Cancelled, 3, Capture::Ended),
-            (Complete, 2, Capture::Truncated),
-            (Streaming, 2, Capture::Truncated),
-            (Interrupted, 2, Capture::Truncated),
-        ] {
-            let body = http_inspector_exchange::BodyPreviewWriter::new(limit);
-            body.observe(b"abc");
-            match lifecycle {
-                Complete => body.complete(),
-                Streaming => {}
-                Interrupted => body.interrupt(),
-                Cancelled => body.cancel(),
-            }
-            let snapshot = body.preview().snapshot().ok_or("missing snapshot")?;
-            assert_eq!(Capture::of(&snapshot), expected, "{snapshot:?}");
-        }
-        Ok(())
-    }
-
-    #[test]
     fn names_why_the_view_ends_early() {
         let mut cache = BodyCache::<()>::default();
         for (record, capture, expected) in [
@@ -657,5 +585,117 @@ mod tests {
             }),
             "{xml_shown:?}"
         );
+    }
+
+    #[test]
+    fn localizes_capture_notices_in_korean() {
+        let mut cache = BodyCache::<()>::default();
+        for (record, capture, expected) in [
+            (20, Capture::Truncated, "캡처된 처음 8 KiB 표시"),
+            (
+                21,
+                Capture::Streaming,
+                "수신 중이며 지금까지 도착한 내용 표시",
+            ),
+            (
+                22,
+                Capture::Ended,
+                "중간에 종료되어 지금까지 도착한 내용 표시",
+            ),
+        ] {
+            let body = BodySource {
+                capture,
+                ..source(record, br#"{"a":1}"#)
+            };
+            assert_eq!(
+                notices(cache.update(&body, ViewMode::Pretty, &(), Language::Korean)),
+                vec![Notice::warning(expected)],
+                "{capture:?}"
+            );
+        }
+    }
+
+    fn as_shared(content: PreparedBody) -> Result<view::BodyView, String> {
+        Ok(match content {
+            PreparedBody::Unavailable(message) => view::BodyView::Unavailable(message),
+            PreparedBody::Text {
+                format,
+                notices,
+                styled,
+            } => view::BodyView::Text(view::TextView {
+                format,
+                notices,
+                styled,
+            }),
+            PreparedBody::Tree {
+                format,
+                notices,
+                model,
+            } => view::BodyView::Tree {
+                format,
+                notices,
+                model: Arc::try_unwrap(model).map_err(|_| "the tree is still shared")?,
+            },
+        })
+    }
+
+    /// The body tab shows the same text and notices as the shared
+    /// [`view::prepare`] used by the command line.
+    #[test]
+    fn body_tab_matches_the_shared_body_view() -> Result<(), String> {
+        let fixtures: [(&[u8], &[&str], &str, Capture); 6] = [
+            (
+                br#"{"items":[{"id":7,"name":"a"}]}"#,
+                &[],
+                "application/json",
+                Capture::Whole,
+            ),
+            (
+                br#"{"items":[1,"#,
+                &[],
+                "application/json",
+                Capture::Streaming,
+            ),
+            (
+                b"<rss><channel><item>x</item></channel></rss>",
+                &[],
+                "application/xml",
+                Capture::Whole,
+            ),
+            (
+                b"a=1&b=two%20words",
+                &[],
+                "application/x-www-form-urlencoded",
+                Capture::Truncated,
+            ),
+            (b"plain text body", &[], "text/plain", Capture::Ended),
+            (b"abc", &["compress"], "text/plain", Capture::Whole),
+        ];
+        for (record, (bytes, encodings, media_type, capture)) in (1..).zip(fixtures) {
+            for mode in ViewMode::ALL {
+                let source = BodySource {
+                    record,
+                    side: BodySide::Response,
+                    bytes,
+                    encodings,
+                    media_type: media(media_type),
+                    capture,
+                    search: None,
+                };
+                let mut cache = BodyCache::<()>::default();
+                let update = cache
+                    .update(&source, mode, &(), Language::English)
+                    .ok_or("the first update always builds")?;
+                drop(cache);
+                let shown = as_shared(update.content)?;
+                let shared = view::prepare(&source.input(), mode);
+                assert_eq!(
+                    format!("{shown:?}"),
+                    format!("{shared:?}"),
+                    "{media_type} {mode:?}"
+                );
+            }
+        }
+        Ok(())
     }
 }

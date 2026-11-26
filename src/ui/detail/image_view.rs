@@ -1,7 +1,8 @@
 //! Image response bodies drawn as images, with source and hexadecimal views.
 
-use crate::ui::style::tokens::{Layout, Radius};
 use std::fmt::Write as _;
+
+use crate::ui::style::tokens::{Layout, Radius};
 
 use eframe::egui::{self, TextureHandle, TextureOptions};
 use http_inspector_exchange::capture::{IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES};
@@ -10,10 +11,10 @@ use http_inspector_exchange::{BodyLifecycle, BodySnapshot, ImageFormat, RecordId
 use crate::ui::i18n::{Language, domain};
 use crate::ui::style::theme::Palette;
 use http_inspector_content::decode as body_view;
+use http_inspector_content::hex::{self, HEX_VIEW_BYTES};
 use http_inspector_content::image::{self as image_decode, PreviewImage};
+use http_inspector_content::image_file::{self, ImageFile};
 
-/// Raw bytes shown in the hexadecimal view.
-const HEX_BYTES: usize = 8 * 1024;
 /// SVG source bytes shown in the source view.
 const SOURCE_BYTES: usize = 256 * 1024;
 /// Reason an image body could not be prepared for display.
@@ -58,70 +59,20 @@ struct TextureTooLargeError {
     max_side: usize,
 }
 
-/// The image file a body holds once `Content-Encoding` is removed.
-struct ImageFile {
-    bytes: Vec<u8>,
-    /// The format named by the leading bytes, or by `Content-Type` when the
-    /// bytes have no known signature.
-    format: ImageFormat,
-}
-
-impl ImageFile {
-    /// Removes `Content-Encoding` and recognizes the format.
-    fn decode_body(
-        bytes: &[u8],
-        encodings: &[&str],
-        declared: ImageFormat,
-    ) -> Result<Self, body_view::DecodeError> {
-        let bytes = body_view::decode_complete(bytes, encodings, IMAGE_PREVIEW_BYTES)?;
-        let format = ImageFormat::from_signature(&bytes).unwrap_or(declared);
-        Ok(Self { bytes, format })
-    }
-}
-
 /// Explains that the body is drawn as another format than `Content-Type`
 /// names, or `None` when they agree.
 fn mismatch_text(declared: ImageFormat, format: ImageFormat, lang: Language) -> Option<String> {
-    (declared != format).then(|| match lang {
-        Language::English => format!(
-            "Content-Type names {}, but the body starts like {}; it is drawn as {}.",
-            declared.name(),
-            format.name(),
-            format.name()
-        ),
-        Language::Korean => format!(
-            "Content-Type은 {}(으)로 선언되었지만 본문 시작은 {} 형식이어서 {}(으)로 표시합니다.",
-            declared.name(),
-            format.name(),
-            format.name()
-        ),
-    })
-}
-
-/// Formats `bytes` as offset, hexadecimal and ASCII columns, 16 bytes per line.
-pub(super) fn hex_dump(bytes: &[u8]) -> String {
-    let mut text = String::new();
-    for (line, chunk) in bytes.chunks(16).enumerate() {
-        let _ = write!(text, "{:08x} ", line * 16);
-        for column in 0..16 {
-            match chunk.get(column) {
-                Some(byte) => {
-                    let _ = write!(text, " {byte:02x}");
-                }
-                None => text.push_str("   "),
-            }
-        }
-        text.push_str("  |");
-        text.extend(chunk.iter().map(|&byte| {
-            if byte.is_ascii_graphic() || byte == b' ' {
-                char::from(byte)
-            } else {
-                '.'
-            }
-        }));
-        text.push_str("|\n");
+    match lang {
+        Language::English => image_file::mismatch_text(declared, format),
+        Language::Korean => (declared != format).then(|| {
+            format!(
+                "Content-Type은 {}(으)로 선언되었지만 본문 시작은 {} 형식이어서 {}(으)로 표시합니다.",
+                declared.name(),
+                format.name(),
+                format.name()
+            )
+        }),
     }
-    text
 }
 
 /// Which body the cached decode belongs to.
@@ -362,14 +313,12 @@ fn image_text(drawn: &Drawn, file_bytes: usize, lang: Language) -> String {
 
 /// Notes the number of bytes received when `Content-Encoding` changed it.
 fn received_text(file_bytes: usize, received_bytes: u64, lang: Language) -> String {
-    if u64::try_from(file_bytes).unwrap_or(u64::MAX) == received_bytes {
-        String::new()
-    } else {
-        match lang {
-            Language::English => {
-                format!(" · {received_bytes} bytes received with Content-Encoding")
-            }
-            Language::Korean => {
+    match lang {
+        Language::English => image_file::received_text(file_bytes, received_bytes),
+        Language::Korean => {
+            if u64::try_from(file_bytes).unwrap_or(u64::MAX) == received_bytes {
+                String::new()
+            } else {
                 format!(" · Content-Encoding 적용 수신 크기 {received_bytes}바이트")
             }
         }
@@ -378,46 +327,35 @@ fn received_text(file_bytes: usize, received_bytes: u64, lang: Language) -> Stri
 
 /// Explains why a body cannot be drawn yet, or `None` when it can be decoded.
 fn unavailable_reason(snapshot: &BodySnapshot, lang: Language) -> Option<String> {
-    if snapshot.lifecycle() == BodyLifecycle::Streaming {
-        return Some(match lang {
-            Language::English => format!(
-                "The image is drawn when the body finishes ({} bytes so far).",
-                snapshot.observed_bytes()
-            ),
-            Language::Korean => format!(
-                "본문 수신이 끝나면 이미지를 표시합니다(현재 {}바이트 수신됨).",
-                snapshot.observed_bytes()
-            ),
-        });
+    match lang {
+        Language::English => image_file::unavailable_reason(snapshot),
+        Language::Korean => {
+            if snapshot.lifecycle() == BodyLifecycle::Streaming {
+                return Some(format!(
+                    "본문 수신이 끝나면 이미지를 표시합니다(현재 {}바이트 수신됨).",
+                    snapshot.observed_bytes()
+                ));
+            }
+            if matches!(
+                snapshot.lifecycle(),
+                BodyLifecycle::Interrupted | BodyLifecycle::Cancelled
+            ) {
+                return Some(
+                    "이미지 본문이 중간에 종료되었습니다. 보관된 바이트를 보려면 Hex를 사용하세요."
+                        .to_owned(),
+                );
+            }
+            (!snapshot.is_complete()).then(|| {
+                format!(
+                    "{}바이트 중 {}바이트만 보관되어 이미지를 표시할 수 없습니다. 이미지 미리보기는 응답당 최대 {} MiB, 전체 응답 합계 최대 {} MiB까지 보관합니다. 보관된 바이트는 Hex에서 확인하세요.",
+                    snapshot.observed_bytes(),
+                    snapshot.bytes().len(),
+                    IMAGE_PREVIEW_BYTES / (1024 * 1024),
+                    IMAGE_PREVIEW_BUDGET_BYTES / (1024 * 1024),
+                )
+            })
+        }
     }
-    if matches!(
-        snapshot.lifecycle(),
-        BodyLifecycle::Interrupted | BodyLifecycle::Cancelled
-    ) {
-        return Some(
-            lang.pick(
-                "The image body ended early. Use Hex to inspect the kept bytes.",
-                "이미지 본문이 중간에 종료되었습니다. 보관된 바이트를 보려면 Hex를 사용하세요.",
-            )
-            .to_owned(),
-        );
-    }
-    (!snapshot.is_complete()).then(|| match lang {
-        Language::English => format!(
-            "The image cannot be drawn because only {} of {} bytes were kept. Image previews keep up to {} MiB per response and {} MiB across all responses; use Hex to inspect the kept bytes.",
-            snapshot.bytes().len(),
-            snapshot.observed_bytes(),
-            IMAGE_PREVIEW_BYTES / (1024 * 1024),
-            IMAGE_PREVIEW_BUDGET_BYTES / (1024 * 1024),
-        ),
-        Language::Korean => format!(
-            "{}바이트 중 {}바이트만 보관되어 이미지를 표시할 수 없습니다. 이미지 미리보기는 응답당 최대 {} MiB, 전체 응답 합계 최대 {} MiB까지 보관합니다. 보관된 바이트는 Hex에서 확인하세요.",
-            snapshot.observed_bytes(),
-            snapshot.bytes().len(),
-            IMAGE_PREVIEW_BYTES / (1024 * 1024),
-            IMAGE_PREVIEW_BUDGET_BYTES / (1024 * 1024),
-        ),
-    })
 }
 
 /// Removes `Content-Encoding`, decodes the image, and uploads it as a texture.
@@ -492,7 +430,7 @@ fn texture(
 
 fn show_hex(ui: &mut egui::Ui, snapshot: &BodySnapshot, lang: Language) {
     let bytes = snapshot.bytes();
-    let (shown, _) = bytes.split_at(bytes.len().min(HEX_BYTES));
+    let (shown, _) = bytes.split_at(bytes.len().min(HEX_VIEW_BYTES));
     let summary = match lang {
         Language::English => format!(
             "First {} of {} kept bytes, as received (before Content-Encoding is removed).",
@@ -506,7 +444,7 @@ fn show_hex(ui: &mut egui::Ui, snapshot: &BodySnapshot, lang: Language) {
         ),
     };
     ui.weak(summary);
-    let dump = hex_dump(shown);
+    let dump = hex::dump(shown);
     let mut text = dump.as_str();
     let font = egui::TextStyle::Monospace.resolve(ui.style());
     let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, _: f32| {
@@ -561,52 +499,36 @@ fn checkerboard(ui: &egui::Ui, rect: egui::Rect) {
 #[cfg(test)]
 mod tests {
     use std::error::Error;
-    use std::io::Write;
 
     use http_inspector_exchange::ImageFormat;
 
-    use super::{ImageFile, Language, hex_dump, mismatch_text};
+    use super::{Language, mismatch_text, unavailable_reason};
 
     #[test]
-    fn removes_content_encoding_and_prefers_the_signature() -> Result<(), Box<dyn Error>> {
-        let gif = include_bytes!("../../../tests/fixtures/images/animated.gif");
-        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        encoder.write_all(gif)?;
-        let file = ImageFile::decode_body(&encoder.finish()?, &["gzip"], ImageFormat::Png)?;
-        assert_eq!(file.bytes, gif);
-        assert_eq!(file.format, ImageFormat::Gif);
-        assert!(mismatch_text(ImageFormat::Png, file.format, Language::English).is_some());
-
-        // Bytes without a known signature keep the declared format.
-        let file = ImageFile::decode_body(b"broken", &[], ImageFormat::WebP)?;
-        assert_eq!(file.format, ImageFormat::WebP);
+    fn localizes_mismatch_and_unavailable_messages_in_korean() -> Result<(), Box<dyn Error>> {
         assert_eq!(
-            mismatch_text(ImageFormat::WebP, file.format, Language::English),
+            mismatch_text(ImageFormat::Png, ImageFormat::Gif, Language::Korean).as_deref(),
+            Some(
+                "Content-Type은 PNG(으)로 선언되었지만 본문 시작은 GIF 형식이어서 GIF(으)로 표시합니다."
+            )
+        );
+        assert_eq!(
+            mismatch_text(ImageFormat::WebP, ImageFormat::WebP, Language::Korean),
             None
         );
-        assert!(ImageFile::decode_body(b"\x1f\x8b broken", &["gzip"], ImageFormat::Png).is_err());
-        Ok(())
-    }
 
-    #[test]
-    fn an_early_end_keeps_the_image_preview_unavailable() -> Result<(), Box<dyn Error>> {
         let body = http_inspector_exchange::BodyPreviewWriter::new(32);
         body.observe(b"image prefix");
         body.interrupt();
         let snapshot = body.preview().snapshot().ok_or("missing snapshot")?;
         assert_eq!(
-            super::unavailable_reason(&snapshot, Language::English).as_deref(),
+            unavailable_reason(&snapshot, Language::English).as_deref(),
             Some("The image body ended early. Use Hex to inspect the kept bytes.")
         );
-        Ok(())
-    }
-
-    #[test]
-    fn formats_hex_with_offsets_and_ascii() {
         assert_eq!(
-            hex_dump(b"\x89PNG\r\n\x1a\n0123456789"),
-            "00000000  89 50 4e 47 0d 0a 1a 0a 30 31 32 33 34 35 36 37  |.PNG....01234567|\n\
-             00000010  38 39                                            |89|\n"
+            unavailable_reason(&snapshot, Language::Korean).as_deref(),
+            Some("이미지 본문이 중간에 종료되었습니다. 보관된 바이트를 보려면 Hex를 사용하세요.")
         );
+        Ok(())
     }
 }

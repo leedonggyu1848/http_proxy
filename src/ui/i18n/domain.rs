@@ -815,6 +815,17 @@ fn localize_content_notice_ko(raw: &str) -> String {
             .text(Text::DetailBodyNoticeFirst8KiBRetained)
             .to_owned();
     }
+    if let Some(rest) = raw.strip_prefix("Showing the first ")
+        && let Some(kib) = rest.strip_suffix(" KiB captured")
+    {
+        return format!("캡처된 처음 {kib} KiB 표시");
+    }
+    if raw == "Still receiving; showing what arrived" {
+        return "수신 중이며 지금까지 도착한 내용 표시".to_owned();
+    }
+    if raw == "Ended early; showing what arrived" {
+        return "중간에 종료되어 지금까지 도착한 내용 표시".to_owned();
+    }
     if let Some(rest) = raw.strip_prefix("Content-Encoding: ")
         && let Some((names, detail)) = rest.split_once(" · ")
     {

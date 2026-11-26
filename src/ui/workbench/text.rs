@@ -415,41 +415,6 @@ pub(crate) fn focus_filter(lang: Language, shortcut: &str) -> String {
     }
 }
 
-/// A response as the server sent it: status code, reason phrase as sent,
-/// and HTTP version, such as `502 Bad Gateway · HTTP/1.1`. A response
-/// without a reason phrase shows the code and version only.
-pub(crate) fn response_line(code: u16, reason: &str, version: &str) -> String {
-    if reason.is_empty() {
-        format!("{code} · {version}")
-    } else {
-        format!("{code} {reason} · {version}")
-    }
-}
-
-/// Body notice: the preview kept only the first `kib` KiB.
-pub(crate) fn body_truncated(lang: Language, kib: usize) -> String {
-    match lang {
-        Language::English => format!("Showing the first {kib} KiB captured"),
-        Language::Korean => format!("캡처된 처음 {kib} KiB 표시"),
-    }
-}
-
-/// Body notice: the body is still arriving.
-pub(crate) const fn body_streaming(lang: Language) -> &'static str {
-    lang.pick(
-        "Still receiving; showing what arrived",
-        "수신 중이며 지금까지 도착한 내용 표시",
-    )
-}
-
-/// Body notice: the body stopped before its end.
-pub(crate) const fn body_ended(lang: Language) -> &'static str {
-    lang.pick(
-        "Ended early; showing what arrived",
-        "중간에 종료되어 지금까지 도착한 내용 표시",
-    )
-}
-
 /// Tooltip of the dropped-records entry of the status bar.
 pub(crate) const fn dropped_hint(lang: Language) -> &'static str {
     lang.pick(
@@ -712,11 +677,6 @@ mod tests {
         assert_eq!(search_progress(Language::English, 4, 9), "Searching… 4/9");
         assert_eq!(search_progress(Language::Korean, 4, 9), "검색 중… 4/9");
         assert_eq!(match_position(1, 3), "1/3");
-        assert_eq!(
-            response_line(502, "Bad Gateway", "HTTP/1.1"),
-            "502 Bad Gateway · HTTP/1.1"
-        );
-        assert_eq!(response_line(200, "", "HTTP/2.0"), "200 · HTTP/2.0");
         assert_eq!(milliseconds(52.64), "52.6 ms");
         assert_eq!(milliseconds_running(1204.4), "1204 ms…");
     }
