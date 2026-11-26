@@ -54,6 +54,17 @@ ALLOWED_WORKSPACE_DEPS: dict[str, frozenset[str]] = {
         }
     ),
     "http-inspector-core": frozenset({"http-inspector-encoding", "http-inspector-exchange", "http-inspector-file"}),
+    "http-inspector-cli": frozenset(
+        {
+            "http-inspector-encoding",
+            "http-inspector-exchange",
+            "http-inspector-content",
+            "http-inspector-analysis",
+            "http-inspector-interop",
+            "http-inspector-file",
+            "http-inspector-core",
+        }
+    ),
 }
 
 FORBIDDEN_NORMAL_DEPS: dict[str, frozenset[str]] = {
@@ -64,6 +75,7 @@ FORBIDDEN_NORMAL_DEPS: dict[str, frozenset[str]] = {
     "http-inspector-analysis": UI_CRATES | RUNTIME_CRATES,
     "http-inspector-interop": UI_CRATES | RUNTIME_CRATES,
     "http-inspector-core": UI_CRATES,
+    "http-inspector-cli": UI_CRATES,
 }
 
 FORBIDDEN_DEV_DEPS: dict[str, frozenset[str]] = {
@@ -84,6 +96,7 @@ FORBIDDEN_DEV_DEPS: dict[str, frozenset[str]] = {
         UI_CRATES | RUNTIME_CRATES | frozenset({"http-inspector-core"})
     ),
     "http-inspector-core": UI_CRATES,
+    "http-inspector-cli": UI_CRATES,
 }
 
 WRITER_HANDLES: frozenset[str] = frozenset(
@@ -141,6 +154,7 @@ NO_WRITER_CRATE_SRCS: tuple[str, ...] = (
     "crates/http-inspector-content/src",
     "crates/http-inspector-analysis/src",
     "crates/http-inspector-interop/src",
+    "crates/http-inspector-cli/src",
     "src",
 )
 

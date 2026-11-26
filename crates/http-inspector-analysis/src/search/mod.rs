@@ -10,7 +10,8 @@ mod text_terms;
 pub mod worker;
 
 pub use document::{
-    BodyCache, Checked, Coverage, check, headers_match, is_settled, outcome_matches,
+    BodyCache, Checked, Coverage, check, headers_match, is_binary_media_type, is_settled,
+    outcome_matches,
 };
 pub use text_search::{MatchOptions, Matcher, MatcherError};
 pub use text_terms::TextTerms;

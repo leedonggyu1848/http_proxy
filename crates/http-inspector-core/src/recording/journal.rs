@@ -1,5 +1,6 @@
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
+use std::os::unix::fs::FileExt as _;
 use std::path::{Path, PathBuf};
 use std::slice::Chunks;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -9,7 +10,6 @@ use std::thread;
 use std::time::Duration;
 
 use http::{HeaderMap, Method};
-use tempfile::NamedTempFile;
 
 use super::lock_recovering;
 use http_inspector_exchange::http_semantics::redacted_value;
@@ -72,13 +72,16 @@ pub struct FullLog {
 
 impl FullLog {
     /// Creates a private temporary journal and starts its writer.
+    ///
+    /// The journal file is unlinked as soon as it is created, so it never
+    /// outlives the process, even when the process is killed.
     pub fn new() -> io::Result<Self> {
         Self::with_body_limit(SESSION_BODY_LIMIT_BYTES)
     }
 
     pub(crate) fn with_body_limit(body_limit: u64) -> io::Result<Self> {
-        let journal = NamedTempFile::new()?;
-        let writer = BufWriter::new(journal.reopen()?);
+        let journal = tempfile::tempfile()?;
+        let writer = BufWriter::new(journal.try_clone()?);
         let (sender, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
         let failure = Arc::new(Mutex::new(None));
         let worker_failure = Arc::clone(&failure);
@@ -318,12 +321,7 @@ fn while_waiting<R>(wait: impl FnOnce() -> R) -> R {
     }
 }
 
-fn run(
-    journal: &NamedTempFile,
-    mut writer: BufWriter<File>,
-    receiver: &Receiver<Event>,
-    failure: &Failure,
-) {
+fn run(journal: &File, mut writer: BufWriter<File>, receiver: &Receiver<Event>, failure: &Failure) {
     let mut write_failure = None;
     for event in receiver {
         match event {
@@ -344,9 +342,11 @@ fn run(
                     let _receiver_closed = result.send(Err(error));
                     continue;
                 }
-                let snapshot = journal.reopen().and_then(|reader| {
-                    let length = reader.metadata()?.len();
-                    Ok((reader, length))
+                // The writer shares this file's offset, so the snapshot
+                // reads at explicit positions instead of moving it.
+                let snapshot = journal.try_clone().and_then(|file| {
+                    let length = file.metadata()?.len();
+                    Ok((Snapshot { file, position: 0 }, length))
                 });
                 match snapshot {
                     Ok((reader, length)) => {
@@ -377,7 +377,21 @@ fn record_write_failure(failure: &Failure, local: &mut Option<String>, error: &i
     lock_recovering(failure).get_or_insert(message);
 }
 
-fn copy_snapshot(reader: File, length: u64, path: &Path) -> ExportResult {
+/// Reads a journal from the start without moving the shared file offset.
+struct Snapshot {
+    file: File,
+    position: u64,
+}
+
+impl Read for Snapshot {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let read = self.file.read_at(buffer, self.position)?;
+        self.position += u64::try_from(read).unwrap_or(u64::MAX);
+        Ok(read)
+    }
+}
+
+fn copy_snapshot(reader: Snapshot, length: u64, path: &Path) -> ExportResult {
     publish(path, ExistingFile::Preserve, |destination| {
         let copied = io::copy(&mut reader.take(length), destination)?;
         if copied != length {
@@ -654,7 +668,11 @@ mod tests {
         let source = directory.path().join("journal.txt");
         std::fs::write(&source, b"short")?;
         let destination = directory.path().join("export.txt");
-        let result = copy_snapshot(File::open(&source)?, 6, &destination);
+        let snapshot = Snapshot {
+            file: File::open(&source)?,
+            position: 0,
+        };
+        let result = copy_snapshot(snapshot, 6, &destination);
         assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::UnexpectedEof));
         assert!(!destination.exists());
         Ok(())
@@ -747,8 +765,8 @@ mod tests {
     #[test]
     fn multi_chunk_entries_stay_contiguous_under_contention() -> io::Result<()> {
         let directory = tempfile::tempdir()?;
-        let journal = NamedTempFile::new()?;
-        let writer = BufWriter::new(journal.reopen()?);
+        let journal = tempfile::tempfile()?;
+        let writer = BufWriter::new(journal.try_clone()?);
         let (sender, receiver) = mpsc::sync_channel(1);
         let failure = Arc::new(Mutex::new(None));
         let log = FullLog::from_parts(sender, Arc::clone(&failure), SESSION_BODY_LIMIT_BYTES);
@@ -812,8 +830,10 @@ mod tests {
     #[test]
     fn journal_write_failure_is_reported_to_export() -> io::Result<()> {
         let directory = tempfile::tempdir()?;
-        let journal = NamedTempFile::new()?;
-        let writer = BufWriter::new(File::open(journal.path())?);
+        let path = directory.path().join("journal.txt");
+        std::fs::write(&path, b"")?;
+        let journal = File::open(&path)?;
+        let writer = BufWriter::new(File::open(&path)?);
         let (sender, receiver) = mpsc::sync_channel(4);
         let failure = Arc::new(Mutex::new(None));
         let log = FullLog::from_parts(sender, Arc::clone(&failure), SESSION_BODY_LIMIT_BYTES);

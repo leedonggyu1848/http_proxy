@@ -703,6 +703,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "844c5c0b65be192cb68d570cca1b21a6444431d24e39c084dc0336177015337c"
 dependencies = [
  "clap_builder",
+ "clap_derive",
 ]
 
 [[package]]
@@ -713,6 +714,18 @@ checksum = "ec0797fb7aeb1406c84efac526901f7ec3ead2124f946b494e72879d4b54704d"
 dependencies = [
  "anstyle",
  "clap_lex",
+]
+
+[[package]]
+name = "clap_derive"
+version = "4.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4c174f11f949b9ca8c60580925e282b9cbd5454750e506f08648b2038080cd7"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -1682,6 +1695,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "heck"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+
+[[package]]
 name = "hermit-abi"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1741,6 +1760,22 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "zstd",
+]
+
+[[package]]
+name = "http-inspector-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "http",
+ "http-inspector-analysis",
+ "http-inspector-content",
+ "http-inspector-core",
+ "http-inspector-exchange",
+ "rustix 1.1.6",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1847,6 +1882,7 @@ dependencies = [
  "http-body",
  "http-body-util",
  "http-inspector-analysis",
+ "http-inspector-cli",
  "http-inspector-content",
  "http-inspector-core",
  "http-inspector-exchange",

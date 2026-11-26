@@ -271,8 +271,10 @@ fn searchable(
 }
 
 /// Media types whose bodies are not text. SVG is an image written as XML,
-/// so it is searched.
-fn is_binary_media_type(media_type: &MediaType) -> bool {
+/// so it is searched. The command line uses the same rule to decide when a
+/// body is printed as text.
+#[must_use]
+pub fn is_binary_media_type(media_type: &MediaType) -> bool {
     match media_type.kind() {
         "image" => media_type.subtype() != "svg+xml",
         "audio" | "video" | "font" => true,
