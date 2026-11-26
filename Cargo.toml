@@ -85,6 +85,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = [
 ] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+x509-parser = { version = "0.18", default-features = false }
 zstd = { version = "0.13", default-features = false }
 
 [workspace.lints.rust]

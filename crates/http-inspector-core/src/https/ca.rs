@@ -4,6 +4,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use fs2::FileExt;
 use rcgen::{
@@ -25,6 +26,8 @@ const LOCK_FILE: &str = ".ca.lock";
 pub struct CaInfo {
     certificate_path: PathBuf,
     fingerprint_sha256: String,
+    valid_from: SystemTime,
+    valid_until: SystemTime,
 }
 
 impl CaInfo {
@@ -46,6 +49,18 @@ impl CaInfo {
     #[must_use]
     pub fn fingerprint_sha256(&self) -> &str {
         &self.fingerprint_sha256
+    }
+
+    /// Returns the start of the certificate's validity period.
+    #[must_use]
+    pub const fn valid_from(&self) -> SystemTime {
+        self.valid_from
+    }
+
+    /// Returns the end of the certificate's validity period.
+    #[must_use]
+    pub const fn valid_until(&self) -> SystemTime {
+        self.valid_until
     }
 }
 
@@ -103,9 +118,12 @@ impl CertificateAuthority {
         let bundle = read_file(&identity_path)?;
         let public = read_file(&certificate_path)?;
         let (issuer, certificate) = parse_identity(&bundle, &public)?;
+        let (valid_from, valid_until) = validity(&certificate)?;
         let info = CaInfo {
             certificate_path,
             fingerprint_sha256: fingerprint(&certificate),
+            valid_from,
+            valid_until,
         };
         Ok(Self { issuer, info })
     }
@@ -242,6 +260,20 @@ fn read_file(path: &Path) -> Result<Vec<u8>, HttpsSetupError> {
     })
 }
 
+/// Reads the validity period of a certificate.
+fn validity(certificate: &CertificateDer<'_>) -> Result<(SystemTime, SystemTime), HttpsSetupError> {
+    let (_, parsed) = x509_parser::parse_x509_certificate(certificate)
+        .map_err(|error| HttpsSetupError::InvalidIdentity(error.to_string()))?;
+    let at = |time: x509_parser::time::ASN1Time| {
+        let seconds = time.timestamp();
+        u64::try_from(seconds).map_or(SystemTime::UNIX_EPOCH, |seconds| {
+            SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(seconds)
+        })
+    };
+    let validity = parsed.validity();
+    Ok((at(validity.not_before), at(validity.not_after)))
+}
+
 fn parse_identity(
     bundle: &[u8],
     public: &[u8],
@@ -337,6 +369,14 @@ mod tests {
 
         assert_eq!(first, second);
         assert_eq!(first.certificate_path(), ca_dir.join(CERTIFICATE_FILE));
+        let now = std::time::SystemTime::now();
+        assert!(first.valid_from() < now && now < first.valid_until());
+        let lifetime = first
+            .valid_until()
+            .duration_since(first.valid_from())
+            .map_err(|_| "validity must end after it starts")?;
+        // Created one day back and valid for 1,825 days ahead.
+        assert_eq!(lifetime.as_secs() / 86_400, 1_826);
         assert_eq!(public_pem_before, public_pem_after);
         assert!(
             public_pem_after
