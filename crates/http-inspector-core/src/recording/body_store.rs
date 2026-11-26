@@ -42,6 +42,21 @@ pub use export::SaveFormat;
 pub use index::{StoreGap, StoredBody};
 pub use ranges::{ContentRange, RangePlan};
 
+/// Reduces an untrusted file name candidate to one safe path component.
+pub(crate) fn sanitize_file_name(name: &str) -> Option<String> {
+    file_name::sanitize(name)
+}
+
+/// Persists `file` into `directory` under `name`, or a numbered variant when
+/// `name` already exists, without overwriting existing files.
+pub(crate) fn persist_unique_file(
+    file: tempfile::NamedTempFile,
+    directory: &Path,
+    name: &str,
+) -> io::Result<PathBuf> {
+    export::persist_unique(file, directory, name, 0).map(|(path, _)| path)
+}
+
 /// Returns the byte range of a captured `206` response, if one is present.
 #[must_use]
 pub fn response_range(record: &Exchange) -> Option<ContentRange> {
@@ -370,6 +385,47 @@ impl BodyStore {
             return ReadBodyOutcome::Unavailable;
         };
         read_decoded_segments(file, segments, &decode, max_decoded_bytes)
+    }
+
+    /// Streams a complete stored body into `output`, removing any `Content-Encoding`
+    /// layers. Call only from a background worker because this waits on the store
+    /// writer barrier and reads from disk.
+    pub(crate) fn copy_complete_decoded_to(
+        &self,
+        record: RecordId,
+        side: BodySide,
+        encodings: &[String],
+        output: &mut impl io::Write,
+    ) -> io::Result<u64> {
+        self.wait_for_writer()?;
+        let key = BodyKey {
+            record: record.value(),
+            side,
+        };
+        let (segments, body) = lock_recovering(&self.shared.index)
+            .segments(key)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, "Stored segment body not found")
+            })?;
+        if !body.is_complete() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                body.incomplete_reason()
+                    .unwrap_or_else(|| "Stored segment body is incomplete".to_owned()),
+            ));
+        }
+        if body.stored_bytes() == 0 {
+            return Ok(0);
+        }
+        let decode = storage_encodings(encodings)?;
+        let plan = CopyPlan {
+            data: File::open(&self.shared.data_path)?,
+            segments,
+            stored_bytes: body.stored_bytes(),
+            decode,
+            incomplete: false,
+        };
+        export::write_body(plan, output)
     }
 
     /// Saves one stored body to a new file in the background.

@@ -22,7 +22,7 @@ use http_inspector_interop::map_export::{
 use super::{InspectorApp, MainView};
 use crate::ui::dialogs::{
     browser_panel::BrowserAction, bulk_save::BulkAction, ca_panel, har_dialog,
-    replay_panel::ReplayAction,
+    hls_dialog::HlsAction, replay_panel::ReplayAction,
 };
 use crate::ui::map::{MapAction, MapExportFormat};
 use http_inspector_core::interception::ProxyHandle;
@@ -54,6 +54,8 @@ pub(crate) enum AppAction {
     DetailTab(DetailTab),
     BodyMode(ViewMode),
     OpenReplay(RecordId),
+    OpenHls(RecordId),
+    Hls(HlsAction),
     CopyCurl(RecordId),
     CopyText(String),
     SetCurlRedactions(RedactedHeaders),
@@ -73,6 +75,7 @@ impl InspectorApp {
         }
         self.detail.curl.expire_notice();
         self.dialogs.save.poll();
+        self.dialogs.hls.poll(context);
         self.session.body_saving.poll(context);
         self.poll_range_plan(context);
         if self.dialogs.browsers.receive() {
@@ -154,6 +157,8 @@ impl InspectorApp {
                     self.report_error(error.to_string());
                 }
             }
+            AppAction::OpenHls(id) => self.open_hls(context, id),
+            AppAction::Hls(action) => self.apply_hls_action(context, action),
             AppAction::CopyText(text) => context.copy_text(text),
             AppAction::CopyCurl(id) => {
                 if let Some(record) = self.record(id).cloned() {
@@ -262,8 +267,46 @@ impl InspectorApp {
     }
 
     pub(crate) fn clear_session(&mut self) {
+        self.dialogs.hls.close();
         self.requests.clear(self.session.capture.engine_dropped());
         self.map.clear();
+    }
+
+    fn open_hls(&mut self, context: &egui::Context, id: RecordId) {
+        let Some(record) = self.record(id).cloned() else {
+            return;
+        };
+        let records: Vec<Exchange> = self.requests.records.iter().cloned().collect();
+        let store = self.session.body_saving.store().cloned();
+        self.dialogs.hls.open(record, records, store, context);
+    }
+
+    fn apply_hls_action(&mut self, context: &egui::Context, action: HlsAction) {
+        match action {
+            HlsAction::SelectVariant(index) => self.dialogs.hls.select_variant(index),
+            HlsAction::Refresh => {
+                if let Some(id) = self.dialogs.hls.source_record_id() {
+                    self.open_hls(context, id);
+                }
+            }
+            HlsAction::Download => match self.dialogs.save.directory() {
+                Ok(directory) => {
+                    let store = self.session.body_saving.store().cloned();
+                    let proxy_addr = self
+                        .session
+                        .capture
+                        .proxy
+                        .as_ref()
+                        .map(ProxyHandle::local_addr);
+                    self.dialogs
+                        .hls
+                        .start_download(directory, store, proxy_addr, context);
+                }
+                Err(error) => self.report_error(format!("HLS download failed: {error}")),
+            },
+            HlsAction::CancelDownload => self.dialogs.hls.cancel_download(),
+            HlsAction::Close => self.dialogs.hls.close(),
+        }
     }
 
     pub(super) fn handle_map_action(&mut self, ctx: &egui::Context, action: MapAction) {

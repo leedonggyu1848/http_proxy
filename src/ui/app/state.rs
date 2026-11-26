@@ -18,6 +18,7 @@ use crate::ui::dialogs::{
     ca_panel::CaPanel,
     copy_curl::CurlCopy,
     har_dialog::HarDialog,
+    hls_dialog::HlsDialog,
     replay_panel::{ReplayAction, ReplayPanel},
     save::SaveControls,
 };
@@ -198,6 +199,7 @@ pub(crate) struct Dialogs {
     pub(crate) browsers: BrowserPanel,
     pub(crate) save: SaveControls,
     pub(crate) har: HarDialog,
+    pub(crate) hls: HlsDialog,
     pub(crate) authorization_notice: AuthorizationNotice,
 }
 
@@ -208,6 +210,7 @@ impl Dialogs {
             browsers: BrowserPanel::default(),
             save: SaveControls::new(),
             har: HarDialog::default(),
+            hls: HlsDialog::default(),
             authorization_notice: AuthorizationNotice::default(),
         }
     }

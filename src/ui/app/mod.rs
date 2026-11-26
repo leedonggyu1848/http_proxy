@@ -97,8 +97,10 @@ impl InspectorApp {
     pub(super) fn render_ui(&mut self, ui: &mut egui::Ui) {
         // The closing frame still belongs to the dialog that received the input.
         let body_dialog_open = self.session.body_saving.dialog_is_open();
-        let dialog_open =
-            body_dialog_open || self.dialogs.har.is_open() || self.detail.replay_is_open();
+        let dialog_open = body_dialog_open
+            || self.dialogs.har.is_open()
+            || self.dialogs.hls.is_open()
+            || self.detail.replay_is_open();
         self.update(ui.ctx());
         let actions = self.view(ui, body_dialog_open, dialog_open);
         self.dispatch(ui.ctx(), actions);

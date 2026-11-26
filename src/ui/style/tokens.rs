@@ -124,6 +124,22 @@ pub(crate) struct RequestColumns {
     pub(crate) duration_min: f32,
 }
 
+/// Fixed and minimum widths of the HLS variant table columns in points.
+pub(crate) struct HlsVariantColumns {
+    pub(crate) quality: f32,
+    pub(crate) bitrate: f32,
+    pub(crate) status: f32,
+    pub(crate) playlist_min: f32,
+}
+
+/// Fixed and minimum widths of the HLS segment table columns in points.
+pub(crate) struct HlsSegmentColumns {
+    pub(crate) index: f32,
+    pub(crate) duration: f32,
+    pub(crate) status: f32,
+    pub(crate) name_min: f32,
+}
+
 /// Fixed sizes of the workbench layout in points.
 pub(crate) struct Layout;
 
@@ -193,6 +209,23 @@ impl Layout {
         kind_min: 32.0,
         size_min: 40.0,
         duration_min: 52.0,
+    };
+    pub(crate) const HLS_DIALOG_WIDTH: SizeLimit = SizeLimit::new(32.0, 360.0, 680.0);
+    pub(crate) const HLS_DIALOG_HEIGHT: SizeLimit = SizeLimit::new(48.0, 260.0, 640.0);
+    pub(crate) const HLS_VARIANTS_HEIGHT: f32 = 132.0;
+    pub(crate) const HLS_SEGMENTS_HEIGHT: f32 = 220.0;
+    pub(crate) const HLS_PROGRESS_WIDTH: f32 = 180.0;
+    pub(crate) const HLS_VARIANT_COLUMNS: HlsVariantColumns = HlsVariantColumns {
+        quality: 112.0,
+        bitrate: 100.0,
+        status: 124.0,
+        playlist_min: 140.0,
+    };
+    pub(crate) const HLS_SEGMENT_COLUMNS: HlsSegmentColumns = HlsSegmentColumns {
+        index: 48.0,
+        duration: 80.0,
+        status: 112.0,
+        name_min: 160.0,
     };
     pub(crate) const REPLAY_WIDTH: SizeLimit = SizeLimit::new(24.0, 280.0, f32::INFINITY);
     pub(crate) const REPLAY_HEIGHT: SizeLimit = SizeLimit::new(48.0, 220.0, f32::INFINITY);
@@ -352,13 +385,6 @@ pub(crate) struct StatusColors {
 
 /// Colors of the one primary action button of a screen.
 #[derive(Clone, Copy, Debug)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "The primary action button is styled with the toolbar step of the redesign"
-    )
-)]
 pub(crate) struct PrimaryAction {
     pub(crate) fill: Color32,
     pub(crate) text: Color32,
@@ -375,13 +401,6 @@ pub(crate) struct ThemeTokens {
     pub(crate) text: TextColors,
     pub(crate) accent: Accents,
     pub(crate) status: StatusColors,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "The primary action button is styled with the toolbar step of the redesign"
-        )
-    )]
     pub(crate) primary_action: PrimaryAction,
     /// Colors of [`Category`], in declaration order.
     categories: [Color32; 5],

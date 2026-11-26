@@ -125,6 +125,7 @@ INTRA_CRATE_SPECS: tuple[CrateBoundarySpec, ...] = (
             "https": frozenset({"settings"}),
             "launcher": frozenset({"https", "settings"}),
             "recording": frozenset(),
+            "hls": frozenset({"https", "recording"}),
             "interception": frozenset({"https", "recording"}),
             "replay": frozenset({"interception"}),
         },

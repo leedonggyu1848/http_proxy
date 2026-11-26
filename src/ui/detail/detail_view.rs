@@ -130,6 +130,11 @@ fn detail_actions(
             actions.push(AppAction::OpenReplay(record.id()));
         }
         curl.controls(ui, record, actions);
+        if http_inspector_core::hls::is_hls_playlist_record(record)
+            && ui.button("HLS media…").clicked()
+        {
+            actions.push(AppAction::OpenHls(record.id()));
+        }
         if let Some(original) = record.replay_of()
             && ui.link(replay_link(original)).clicked()
         {
