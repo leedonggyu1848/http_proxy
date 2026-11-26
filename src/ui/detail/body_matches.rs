@@ -4,10 +4,14 @@
 use std::ops::Range;
 
 use eframe::egui::{self, text::LayoutJob};
-use http_inspector_analysis::search::Matcher;
+use http_inspector_analysis::search::TextTerms;
 
 use crate::ui::detail::search::highlight;
+use crate::ui::style::fonts;
 use crate::ui::style::theme::MatchColors;
+use crate::ui::style::tokens::Layout;
+use crate::ui::workbench::controls;
+use crate::ui::workbench::text::{self, ShellText};
 
 /// One match: the line it is on (0 for text shown without line numbers)
 /// and its byte range in that line or text.
@@ -32,7 +36,7 @@ impl BodyMatches {
     /// `job` otherwise. Matches across line ends are not marked in a line
     /// view.
     pub(super) fn find(
-        matcher: &Matcher,
+        matcher: &TextTerms,
         job: &LayoutJob,
         lines: Option<&[LayoutJob]>,
         colors: MatchColors,
@@ -117,34 +121,26 @@ impl BodyMatches {
     pub(super) fn controls(&mut self, ui: &mut egui::Ui, lang: crate::ui::i18n::Language) -> bool {
         let count = self.hits.len();
         if count == 0 {
-            ui.weak(lang.pick(
-                "No search matches in the shown text.",
-                "표시된 텍스트에 검색 일치 항목이 없습니다.",
-            ));
+            ui.weak(ShellText::NoMatches.text(lang));
             return false;
         }
         let mut step = None;
-        ui.horizontal_wrapped(|ui| {
-            let position = match lang {
-                crate::ui::i18n::Language::English => {
-                    format!("Match {} of {count}", self.current + 1)
+        ui.horizontal(|ui| {
+            controls::ghost_style(ui);
+            ui.label(
+                egui::RichText::new(text::match_position(self.current + 1, count))
+                    .font(fonts::data()),
+            );
+            for (label, offset) in [(ShellText::Previous, count - 1), (ShellText::Next, 1)] {
+                if ui
+                    .add(controls::ghost(
+                        label.text(lang),
+                        Layout::PANE_BUTTON_HEIGHT,
+                    ))
+                    .clicked()
+                {
+                    step = Some(offset);
                 }
-                crate::ui::i18n::Language::Korean => format!("일치 {} / {count}", self.current + 1),
-            };
-            ui.label(position);
-            if ui
-                .small_button(lang.pick("◀ Previous", "◀ 이전"))
-                .on_hover_text(lang.pick("Previous match", "이전 일치 항목"))
-                .clicked()
-            {
-                step = Some(count - 1);
-            }
-            if ui
-                .small_button(lang.pick("Next ▶", "다음 ▶"))
-                .on_hover_text(lang.pick("Next match", "다음 일치 항목"))
-                .clicked()
-            {
-                step = Some(1);
             }
         });
         let Some(step) = step else {
@@ -162,7 +158,7 @@ impl BodyMatches {
     }
 }
 
-fn hits_in(line: usize, matcher: &Matcher, text: &str) -> Vec<Hit> {
+fn hits_in(line: usize, matcher: &TextTerms, text: &str) -> Vec<Hit> {
     highlight::ranges(matcher, text)
         .into_iter()
         .map(|range| Hit { line, range })
@@ -174,7 +170,7 @@ mod tests {
     use super::*;
     use crate::ui::style::theme::Theme;
     use eframe::egui::text::TextFormat;
-    use http_inspector_analysis::search::MatchOptions;
+    use http_inspector_analysis::search::{MatchOptions, Matcher};
 
     fn job(text: &str) -> LayoutJob {
         let mut job = LayoutJob::default();
@@ -182,17 +178,19 @@ mod tests {
         job
     }
 
-    fn backgrounds(job: &LayoutJob) -> Vec<egui::Color32> {
+    /// Whether each marked section is the current match, which alone is
+    /// underlined.
+    fn marks(job: &LayoutJob) -> Vec<bool> {
         job.sections
             .iter()
-            .map(|section| section.format.background)
-            .filter(|color| *color != egui::Color32::TRANSPARENT)
+            .filter(|section| section.format.background != egui::Color32::TRANSPARENT)
+            .map(|section| section.format.underline != egui::Stroke::NONE)
             .collect()
     }
 
     #[test]
     fn moves_between_matches_across_lines() -> Result<(), Box<dyn std::error::Error>> {
-        let query = Matcher::new("id", MatchOptions::default())?;
+        let query = TextTerms::single(Matcher::new("id", MatchOptions::default())?);
         let colors = MatchColors::for_theme(Theme::Light);
         let lines = [job("id id"), job("none"), job("ID")];
         let mut matches = BodyMatches::find(&query, &job(""), Some(&lines), colors);
@@ -212,12 +210,8 @@ mod tests {
         let (_, marked) = matches.mark(&job(""), Some(&lines));
         let marked = marked.unwrap_or_default();
         assert_eq!(
-            marked.iter().map(backgrounds).collect::<Vec<_>>(),
-            [
-                vec![colors.other, colors.other],
-                vec![],
-                vec![colors.current],
-            ]
+            marked.iter().map(marks).collect::<Vec<_>>(),
+            [vec![false, false], vec![], vec![true]]
         );
         matches.step();
         assert_eq!(matches.take_scroll().map(|hit| hit.range), Some(0..2));
@@ -226,13 +220,13 @@ mod tests {
 
     #[test]
     fn marks_text_shown_without_line_numbers() -> Result<(), Box<dyn std::error::Error>> {
-        let query = Matcher::new("b", MatchOptions::default())?;
+        let query = TextTerms::single(Matcher::new("b", MatchOptions::default())?);
         let colors = MatchColors::for_theme(Theme::Dark);
         let text = job("abcb");
         let matches = BodyMatches::find(&query, &text, None, colors);
         let (marked, lines) = matches.mark(&text, None);
         assert!(lines.is_none());
-        assert_eq!(backgrounds(&marked), [colors.current, colors.other]);
+        assert_eq!(marks(&marked), [true, false]);
         Ok(())
     }
 }

@@ -9,32 +9,46 @@ use http_inspector_exchange::ByteSize;
 
 use super::EdgeVisibility;
 use crate::ui::i18n::Language;
-use crate::ui::style::tokens::{Category, Layout, Radius, Space, StrokeWidth, ThemeTokens};
-use crate::ui::style::{
-    fonts,
-    theme::{self, Palette},
-};
+use crate::ui::style::tokens::{Layout, Radius, Space, StrokeWidth, ThemeTokens};
+use crate::ui::style::{fonts, theme::Palette};
+use crate::ui::workbench::text::{self, ShellText};
+
+/// Inputs describing how to render the relationship graph.
+pub(super) struct GraphView<'a> {
+    pub(super) graph: &'a RelationshipGraph,
+    pub(super) visibility: EdgeVisibility,
+    pub(super) selected_host: Option<&'a str>,
+    pub(super) lang: Language,
+}
 
 /// Renders the relationship graph and returns the clicked host (if any) to jump
-/// to in Tree view.
+/// to in Tree view. `selected_host` is the host of the node selected in the
+/// tree, drawn as active with the hovered node.
 pub(super) fn show(
     ui: &mut egui::Ui,
-    graph: &RelationshipGraph,
+    view: &GraphView<'_>,
     layout: &mut ForceLayout,
-    visibility: EdgeVisibility,
     dragged_node: &mut Option<usize>,
-    lang: Language,
 ) -> Option<String> {
+    let GraphView {
+        graph,
+        visibility,
+        selected_host,
+        lang,
+    } = *view;
     layout.sync(graph);
     if !layout.is_settled() && layout.step(STEPS_PER_FRAME) {
         ui.ctx().request_repaint();
     }
 
     let palette = Palette::of(ui);
-    render_legend(ui, layout, visibility, &palette, lang);
-
     if layout.nodes().is_empty() {
-        render_empty_state(ui, lang);
+        ui.centered_and_justified(|ui| {
+            ui.add(
+                egui::Label::new(egui::RichText::new(ShellText::NoRelationships.text(lang)).weak())
+                    .wrap(),
+            );
+        });
         return None;
     }
 
@@ -43,14 +57,6 @@ pub(super) fn show(
         .max(Vec2::splat(Layout::GRAPH_CANVAS_MIN));
     let (rect, response) = ui.allocate_exact_size(available, Sense::click_and_drag());
     let painter = ui.painter().with_clip_rect(rect);
-
-    painter.rect_filled(rect, Radius::GRAPH_CANVAS, palette.surfaces.input);
-    painter.rect_stroke(
-        rect,
-        Radius::GRAPH_CANVAS,
-        theme::structural_stroke(ui),
-        egui::StrokeKind::Inside,
-    );
 
     let max_requests = layout
         .nodes()
@@ -85,7 +91,13 @@ pub(super) fn show(
         None
     };
 
-    paint_edges(&painter, layout.edges(), &positions, visibility);
+    let active: Vec<bool> = layout
+        .nodes()
+        .iter()
+        .enumerate()
+        .map(|(index, node)| hovered == Some(index) || selected_host == Some(node.host.as_str()))
+        .collect();
+    paint_edges(&painter, layout.edges(), &positions, visibility, &active);
     paint_nodes(
         &NodeCanvas {
             painter: &painter,
@@ -94,8 +106,7 @@ pub(super) fn show(
         },
         layout.nodes(),
         &positions,
-        hovered,
-        lang,
+        &active,
     );
 
     if let Some(idx) = hovered
@@ -109,22 +120,9 @@ pub(super) fn show(
     clicked_host
 }
 
-fn render_empty_state(ui: &mut egui::Ui, lang: Language) {
-    ui.centered_and_justified(|ui| {
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(lang.pick(
-                    "No domain relationships yet.\nPages loading scripts, APIs, CORS requests, or redirects appear here.",
-                    "아직 도메인 관계가 없습니다.\n스크립트·API·CORS 요청이나 리다이렉트가 발생하면 여기에 표시됩니다.",
-                ))
-                .weak(),
-            )
-            .wrap(),
-        );
-    });
-}
-
-fn legend_summary_text(
+/// Domains shown, edges shown, and whether the domain limit hid some, for
+/// the status bar.
+pub(super) fn summary_text(
     layout: &ForceLayout,
     visibility: EdgeVisibility,
     lang: Language,
@@ -137,102 +135,76 @@ fn legend_summary_text(
         .iter()
         .filter(|edge| visibility.allows(edge.kind))
         .count();
-    let edge_text = match lang {
-        Language::English => {
-            if visible_edges == total_edges {
-                format!("{total_edges} edges")
-            } else {
-                format!("{visible_edges}/{total_edges} edges")
-            }
-        }
-        Language::Korean => {
-            if visible_edges == total_edges {
-                format!("연결 {total_edges}개")
-            } else {
-                format!("연결 {visible_edges}/{total_edges}개")
-            }
-        }
-    };
-    if total > shown {
-        let text = match lang {
-            Language::English => format!("Showing top {shown} of {total} domains · {edge_text}"),
-            Language::Korean => format!("도메인 {total}개 중 상위 {shown}개 표시 · {edge_text}"),
-        };
-        (text, true)
-    } else {
-        let text = match lang {
-            Language::English => format!("{shown} domains · {edge_text}"),
-            Language::Korean => format!("도메인 {shown}개 · {edge_text}"),
-        };
-        (text, false)
+    (
+        text::graph_count(lang, shown, total, visible_edges, total_edges),
+        total > shown,
+    )
+}
+
+/// How an edge kind is drawn when it is not on the active path: Referer
+/// solid, Origin dashed 3-3, Redirect dotted (D19).
+const fn edge_dash(kind: EdgeKind) -> Option<(f32, f32)> {
+    match kind {
+        EdgeKind::Referer => None,
+        EdgeKind::Origin => Some((Layout::GRAPH_DASH, Layout::GRAPH_DASH)),
+        EdgeKind::Redirect => Some((StrokeWidth::GRAPH_ACTIVE, Layout::GRAPH_DASH)),
     }
 }
 
-fn render_legend(
-    ui: &mut egui::Ui,
-    layout: &ForceLayout,
-    visibility: EdgeVisibility,
-    palette: &Palette,
-    lang: Language,
-) {
-    let tokens = ThemeTokens::for_theme(ui.ctx().theme());
-    let chip = |ui: &mut egui::Ui, text: egui::RichText| {
-        ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend));
-    };
-    let (summary, capped) = legend_summary_text(layout, visibility, lang);
-    let summary_color = if capped {
-        palette.warning
-    } else {
-        palette.secondary
-    };
-    ui.horizontal_wrapped(|ui| {
-        chip(
-            ui,
-            egui::RichText::new(summary).color(summary_color).small(),
-        );
-        ui.separator();
-        chip(
-            ui,
-            egui::RichText::new(lang.pick("1st-party (solid)", "퍼스트파티 (실선)"))
-                .color(tokens.category(Category::BlueSlate))
-                .small(),
-        );
-        chip(
-            ui,
-            egui::RichText::new(lang.pick("3rd-party (dashed)", "서드파티 (점선)"))
-                .color(palette.warning)
-                .small(),
-        );
-        ui.separator();
-        chip(
-            ui,
-            egui::RichText::new(lang.pick("Referer (solid)", "Referer (실선)"))
-                .color(tokens.category(Category::BlueSlate))
-                .small(),
-        );
-        chip(
-            ui,
-            egui::RichText::new(lang.pick("Origin (dashed)", "Origin (점선)"))
-                .color(tokens.category(Category::Ochre))
-                .small(),
-        );
-        chip(
-            ui,
-            egui::RichText::new(lang.pick("Redirect (thick)", "리다이렉트 (굵은 선)"))
-                .color(tokens.category(Category::Teal))
-                .small(),
-        );
-        ui.separator();
-        chip(
-            ui,
-            egui::RichText::new(lang.pick(
-                "Click a domain to open Tree view.",
-                "도메인을 클릭하면 트리 보기로 이동합니다.",
-            ))
-            .color(palette.secondary)
-            .small(),
-        );
-    });
+/// The edge toggles with a sample of each line, then the node outlines, in
+/// the graph's legend menu.
+pub(super) fn legend_menu(ui: &mut egui::Ui, visibility: &mut EdgeVisibility, lang: Language) {
+    for (kind, shown, label) in [
+        (
+            EdgeKind::Referer,
+            &mut visibility.referer,
+            ShellText::Referer,
+        ),
+        (
+            EdgeKind::Origin,
+            &mut visibility.origin,
+            ShellText::OriginCors,
+        ),
+        (
+            EdgeKind::Redirect,
+            &mut visibility.redirect,
+            ShellText::Redirect,
+        ),
+    ] {
+        ui.horizontal(|ui| {
+            ui.checkbox(shown, label.text(lang));
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(Layout::LEGEND_SAMPLE_WIDTH, ui.spacing().interact_size.y),
+                Sense::hover(),
+            );
+            let stroke = Stroke::new(StrokeWidth::STRUCTURAL, ui.visuals().text_color());
+            let (start, end) = (rect.left_center(), rect.right_center());
+            match edge_dash(kind) {
+                Some((dash, gap)) => paint_dashed_line(ui.painter(), start, end, stroke, dash, gap),
+                None => {
+                    ui.painter().line_segment([start, end], stroke);
+                }
+            }
+        });
+    }
+    ui.separator();
+    for (third_party, label) in [
+        (false, ShellText::FirstParty),
+        (true, ShellText::ThirdParty),
+    ] {
+        ui.horizontal(|ui| {
+            let size = Layout::LEGEND_NODE_SIZE;
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), Sense::hover());
+            let stroke = Stroke::new(StrokeWidth::STRUCTURAL, ui.visuals().text_color());
+            if third_party {
+                paint_dashed_circle(ui.painter(), rect.center(), size / 2.0 - 1.0, stroke);
+            } else {
+                ui.painter()
+                    .circle_stroke(rect.center(), size / 2.0 - 1.0, stroke);
+            }
+            ui.label(label.text(lang));
+        });
+    }
 }
 
 fn handle_drag(
@@ -259,48 +231,52 @@ fn handle_drag(
     }
 }
 
+/// Edges touching an active node are 1.5px `accent.primary` solid lines;
+/// every other edge is a 1px `borders.control` line in its kind's dash
+/// pattern (D19).
 fn paint_edges(
     painter: &egui::Painter,
     edges: &[GraphEdge],
     positions: &[(Pos2, f32)],
     visibility: EdgeVisibility,
+    active: &[bool],
 ) {
     let tokens = ThemeTokens::for_theme(painter.ctx().theme());
     let visible: Vec<&GraphEdge> = edges
         .iter()
         .filter(|edge| visibility.allows(edge.kind))
         .collect();
-    for (idx, edge) in visible.iter().enumerate() {
+    let is_active = |edge: &GraphEdge| {
+        active.get(edge.from).copied().unwrap_or_default()
+            || active.get(edge.to).copied().unwrap_or_default()
+    };
+    // Active edges are drawn last so that they stay on top.
+    let mut order: Vec<usize> = (0..visible.len()).collect();
+    order.sort_by_key(|&idx| visible.get(idx).is_some_and(|edge| is_active(edge)));
+    for idx in order {
+        let Some(edge) = visible.get(idx) else {
+            continue;
+        };
         let (Some(&(from_pos, from_r)), Some(&(to_pos, to_r))) =
             (positions.get(edge.from), positions.get(edge.to))
         else {
             continue;
         };
-        let (color, width, dashed) = match edge.kind {
-            EdgeKind::Referer => (
-                tokens.category(Category::BlueSlate),
-                StrokeWidth::GRAPH_LINK,
-                false,
-            ),
-            EdgeKind::Origin => (
-                tokens.category(Category::Ochre),
-                StrokeWidth::GRAPH_LINK,
-                true,
-            ),
-            EdgeKind::Redirect => (
-                tokens.category(Category::Teal),
-                StrokeWidth::GRAPH_REDIRECT,
-                false,
-            ),
+        let (stroke, dash) = if is_active(edge) {
+            (
+                Stroke::new(StrokeWidth::GRAPH_ACTIVE, tokens.accent.primary),
+                None,
+            )
+        } else {
+            (
+                Stroke::new(StrokeWidth::STRUCTURAL, tokens.borders.control),
+                edge_dash(edge.kind),
+            )
         };
         if edge.from == edge.to {
             let loop_center =
                 Pos2::new(from_pos.x, from_pos.y - from_r - Layout::GRAPH_LOOP_OFFSET);
-            painter.circle_stroke(
-                loop_center,
-                Layout::GRAPH_LOOP_RADIUS,
-                Stroke::new(width, color),
-            );
+            painter.circle_stroke(loop_center, Layout::GRAPH_LOOP_RADIUS, stroke);
             continue;
         }
         let delta = to_pos - from_pos;
@@ -331,19 +307,25 @@ fn paint_edges(
         let start = from_pos + dir * (from_r + Space::XXS) + offset;
         let end = to_pos - dir * (to_r + Layout::GRAPH_ARROW_TIP_PADDING) + offset;
 
-        if dashed {
-            paint_dashed_line(painter, start, end, Stroke::new(width, color));
-        } else {
-            painter.line_segment([start, end], Stroke::new(width, color));
+        match dash {
+            Some((dash, gap)) => paint_dashed_line(painter, start, end, stroke, dash, gap),
+            None => {
+                painter.line_segment([start, end], stroke);
+            }
         }
-        paint_arrowhead(painter, end, dir, color);
+        paint_arrowhead(painter, end, dir, stroke.color);
     }
 }
 
-fn paint_dashed_line(painter: &egui::Painter, start: Pos2, end: Pos2, stroke: Stroke) {
-    const DASH: f32 = Layout::GRAPH_DASH_LENGTH;
-    const GAP: f32 = Space::XS;
-    const STRIDE: f32 = DASH + GAP;
+fn paint_dashed_line(
+    painter: &egui::Painter,
+    start: Pos2,
+    end: Pos2,
+    stroke: Stroke,
+    dash: f32,
+    gap: f32,
+) {
+    let stride = dash + gap;
     let delta = end - start;
     let total = delta.length();
     if total <= f32::EPSILON {
@@ -355,14 +337,14 @@ fn paint_dashed_line(painter: &egui::Painter, start: Pos2, end: Pos2, stroke: St
         clippy::cast_sign_loss,
         reason = "positive segment count along finite screen line"
     )]
-    let steps = (total / STRIDE).ceil() as usize;
+    let steps = (total / stride).ceil() as usize;
     for step in 0..steps {
         #[allow(
             clippy::cast_precision_loss,
             reason = "dash index along finite screen line"
         )]
-        let t = step as f32 * STRIDE;
-        let seg_end = (t + DASH).min(total);
+        let t = step as f32 * stride;
+        let seg_end = (t + dash).min(total);
         painter.line_segment([start + dir * t, start + dir * seg_end], stroke);
     }
 }
@@ -385,48 +367,46 @@ struct NodeCanvas<'a> {
     palette: &'a Palette,
 }
 
+/// Nodes are circles on the pane: inactive ones outlined in 1px
+/// `borders.control` with `text.secondary` labels, active ones in 1.5px
+/// `accent.primary` with `text.primary` labels. Third-party domains have a
+/// dashed outline (D19).
 fn paint_nodes(
     canvas: &NodeCanvas<'_>,
     nodes: &[GraphNode],
     positions: &[(Pos2, f32)],
-    hovered: Option<usize>,
-    lang: Language,
+    active: &[bool],
 ) {
     let painter = canvas.painter;
     let palette = canvas.palette;
     let tokens = ThemeTokens::for_theme(painter.ctx().theme());
-    let fill = tokens.surfaces.elevated;
-    let hover_fill = fill.blend(tokens.surfaces.hover);
-    let text_color = palette.text;
+    let fill = tokens.surfaces.pane;
     let (label_font, count_font) = fonts::graph_fonts();
     let mut placed_labels: Vec<Rect> = Vec::with_capacity(nodes.len());
-
-    for (index, (node, &(center, radius))) in nodes.iter().zip(positions.iter()).enumerate() {
-        let is_hovered = hovered == Some(index);
-        let node_fill = if is_hovered { hover_fill } else { fill };
-        painter.circle_filled(center, radius, node_fill);
-
-        if node.third_party {
-            paint_dashed_circle(
-                painter,
-                center,
-                radius,
-                Stroke::new(StrokeWidth::GRAPH_NODE_PENDING, palette.warning),
-            );
+    // Active nodes are drawn last so that their labels win overlaps.
+    let mut order: Vec<usize> = (0..nodes.len()).collect();
+    order.sort_by_key(|&index| active.get(index).copied().unwrap_or_default());
+    for index in order.into_iter().rev() {
+        let (Some(node), Some(&(center, radius))) = (nodes.get(index), positions.get(index)) else {
+            continue;
+        };
+        let is_active = active.get(index).copied().unwrap_or_default();
+        painter.circle_filled(center, radius, fill);
+        let stroke = if is_active {
+            Stroke::new(StrokeWidth::GRAPH_ACTIVE, tokens.accent.primary)
         } else {
-            let stroke_width = if is_hovered {
-                StrokeWidth::GRAPH_NODE_HOVERED
-            } else {
-                StrokeWidth::GRAPH_NODE
-            };
-            painter.circle_stroke(
-                center,
-                radius,
-                Stroke::new(stroke_width, tokens.category(Category::BlueSlate)),
-            );
+            Stroke::new(StrokeWidth::STRUCTURAL, tokens.borders.control)
+        };
+        if node.third_party {
+            paint_dashed_circle(painter, center, radius, stroke);
+        } else {
+            painter.circle_stroke(center, radius, stroke);
         }
-
-        // Numeric request count inside the node circle.
+        let text_color = if is_active {
+            palette.text
+        } else {
+            palette.secondary
+        };
         let _ = painter.text(
             center,
             Align2::CENTER_CENTER,
@@ -435,12 +415,7 @@ fn paint_nodes(
             text_color,
         );
 
-        let tag = if node.third_party {
-            format!("{} {}", node.host, lang.pick("[3rd]", "[서드파티]"))
-        } else {
-            node.host.clone()
-        };
-        let galley = painter.layout_no_wrap(tag, label_font.clone(), text_color);
+        let galley = painter.layout_no_wrap(node.host.clone(), label_font.clone(), text_color);
         let label_size = galley.size();
         let half_w = label_size.x * 0.5;
         let label_x = center.x.clamp(
@@ -455,14 +430,15 @@ fn paint_nodes(
         };
         let label_rect = Rect::from_min_size(Pos2::new(label_x - half_w, label_y), label_size);
 
-        // Skip secondary overlapping labels unless this node is hovered, preventing overlap.
+        // Skip labels that would overlap one already placed, unless active.
         let overlaps = placed_labels
             .iter()
             .any(|existing| existing.expand(Space::XXS).intersects(label_rect));
-        if !overlaps || is_hovered {
+        if !overlaps || is_active {
+            // The pane color under the label keeps edges from crossing it.
             painter.rect_filled(
                 label_rect.expand2(Layout::GRAPH_LABEL_PADDING),
-                Radius::GRAPH_LABEL,
+                Radius::PANE,
                 fill,
             );
             painter.galley(label_rect.min, galley, text_color);
@@ -544,9 +520,9 @@ fn hit_test(positions: &[(Pos2, f32)], pointer: Pos2) -> Option<usize> {
 
 fn format_node_tooltip(graph: &RelationshipGraph, node: &GraphNode, lang: Language) -> String {
     let party = if node.third_party {
-        lang.pick("3rd-party", "서드파티")
+        ShellText::ThirdParty.text(lang)
     } else {
-        lang.pick("1st-party", "퍼스트파티")
+        ShellText::FirstParty.text(lang)
     };
     let bytes = graph
         .domains()
@@ -565,11 +541,11 @@ fn format_node_tooltip(graph: &RelationshipGraph, node: &GraphNode, lang: Langua
     let size = ByteSize::new(bytes);
     match lang {
         Language::English => format!(
-            "{}\nSite (eTLD+1): {}\nParty: {party}\nRequests: {} · Errors: {} · Size: {size}\nEdges: {outgoing} outgoing, {incoming} incoming\nClick to open in Tree view",
+            "{}\nSite (eTLD+1): {}\nParty: {party}\nRequests: {} · Errors: {} · Size: {size}\nEdges: {outgoing} outgoing, {incoming} incoming",
             node.host, node.site, node.request_count, node.error_count,
         ),
         Language::Korean => format!(
-            "{}\n사이트 (eTLD+1): {}\n구분: {party}\n요청: {} · 오류: {} · 크기: {size}\n연결: 발신 {outgoing}, 수신 {incoming}\n클릭하면 트리 보기로 이동합니다",
+            "{}\n사이트 (eTLD+1): {}\n구분: {party}\n요청: {} · 오류: {} · 크기: {size}\n연결선: 발신 {outgoing}, 수신 {incoming}",
             node.host, node.site, node.request_count, node.error_count,
         ),
     }
@@ -606,7 +582,7 @@ mod tests {
         layout.sync(&graph);
 
         let (all_text, capped) =
-            legend_summary_text(&layout, EdgeVisibility::default(), Language::English);
+            summary_text(&layout, EdgeVisibility::default(), Language::English);
         assert!(!capped);
         assert_eq!(all_text, "2 domains · 2 edges");
 
@@ -615,7 +591,10 @@ mod tests {
             origin: false,
             redirect: false,
         };
-        let (filtered_text, _) = legend_summary_text(&layout, only_referer, Language::English);
+        let (filtered_text, _) = summary_text(&layout, only_referer, Language::English);
         assert_eq!(filtered_text, "2 domains · 1/2 edges");
+
+        let (ko_text, _) = summary_text(&layout, only_referer, Language::Korean);
+        assert_eq!(ko_text, "도메인 2 · 연결선 1/2");
     }
 }

@@ -36,13 +36,13 @@
 선택한 요청의 본문을 파일로 저장한다. 압축을 풀거나 받은 바이트를 그대로 쓸 수 있다. 파일에는 본문 바이트가 들어가므로 이미지, PDF, ZIP, 동영상 조각을 해당 형식으로 열 수 있다.
 
 1. **Save** 메뉴의 **Save directory**에 저장할 기존 폴더를 입력한다.
-2. 요청을 고르고 **Body** 탭의 **Save request body ▼** 또는 **Save response body ▼**를 연다. 메뉴 첫 줄에 저장소에 보관한 크기와 완료 여부가 표시된다.
+2. 요청을 고르고 **Body** 탭에서 **Request body** 또는 **Response body** 머리줄의 **Save ▼**를 연다. 메뉴 첫 줄에 저장소에 보관한 크기와 완료 여부가 표시된다.
 3. **Decoded**는 `gzip`, `deflate`, `br`, `zstd` `Content-Encoding`을 풀어 실제 파일을 저장한다(기본 동작). **As received**는 받은 바이트를 그대로 저장하고 `.gz`, `.br`, `.zst`, `.zz` 확장자를 붙인다. 요청 목록에서 행을 우클릭해 **Save response body**·**Save request body**를 누르면 **Decoded**로 저장한다.
 4. 세션에서 처음 저장할 때와 본문이 불완전할 때 확인 창이 나타난다. 저장 결과는 하단 상태 바에 `Saved body:` 경로로 표시된다.
 
-다음 이미지는 로컬 테스트 서버로 보낸 테스트 트래픽에서 MPEG-TS 응답을 고른 실제 화면이다. **Body** 탭 위쪽에 두 저장 메뉴가 있다.
+다음 이미지는 로컬 테스트 서버로 보낸 테스트 트래픽에서 JSON 응답의 저장 메뉴를 연 실제 화면이다. 각 본문 머리줄 오른쪽에 저장 메뉴가 있다.
 
-![Body 탭의 Save request body·Save response body 메뉴](../screenshots/body-save-menu.png)
+![Body 탭 본문 머리줄의 Save 메뉴](../screenshots/body-save-menu.png)
 
 처음 저장할 때 나타나는 확인 창이다.
 

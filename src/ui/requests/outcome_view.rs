@@ -116,29 +116,22 @@ fn tunnel_summary(tunnel: &TunnelPreview, lang: Language) -> String {
     }
 }
 
-/// Status sentence for the details panel and the tone of an exceptional
-/// outcome.
-pub(crate) fn detail_text(outcome: &Outcome, lang: Language) -> (String, Option<Tone>) {
-    let text = match outcome {
-        Outcome::InFlight => lang.pick(
-            "Waiting for the upstream server.",
-            "업스트림 서버의 응답을 기다리는 중입니다.",
+/// Status text of the inspector's result line and the tone of an
+/// exceptional outcome. A response shows the reason phrase as the server
+/// sent it and the HTTP version it answered with; other outcomes show the
+/// same text as the request list.
+pub(crate) fn detail_status(outcome: &Outcome, lang: Language) -> (String, Option<Tone>) {
+    match outcome {
+        Outcome::Response(response) => (
+            crate::ui::workbench::text::response_line(
+                response.status().as_u16(),
+                response.reason(),
+                &format!("{:?}", response.version()),
+            ),
+            outcome_tone(outcome),
         ),
-        Outcome::InspectionEstablished => lang.pick(
-            "HTTPS inspection session established.",
-            "HTTPS 복호화 세션이 연결되었습니다.",
-        ),
-        Outcome::Cancelled => lang.pick(
-            "The client closed the connection before a response arrived.",
-            "응답이 도착하기 전에 클라이언트가 연결을 닫았습니다.",
-        ),
-        Outcome::Incomplete => lang.pick(
-            "The proxy stopped before a response arrived.",
-            "응답이 도착하기 전에 프록시가 중지되었습니다.",
-        ),
-        _ => return outcome_text(outcome, lang),
-    };
-    (text.to_owned(), outcome_tone(outcome))
+        _ => outcome_text(outcome, lang),
+    }
 }
 
 pub(crate) const fn timing_label(outcome: &Outcome, lang: Language) -> &'static str {
@@ -226,15 +219,18 @@ mod tests {
         };
         assert_eq!(
             outcome_text(&outcome, Language::English),
-            detail_text(&outcome, Language::English)
+            (
+                "Upstream TLS handshake: certificate rejected".to_owned(),
+                Some(Tone::Danger)
+            )
+        );
+        assert_eq!(
+            outcome_text(&outcome, Language::English),
+            detail_status(&outcome, Language::English)
         );
         assert_eq!(
             outcome_text(&outcome, Language::Korean),
-            detail_text(&outcome, Language::Korean)
-        );
-        assert_eq!(
-            outcome_text(&outcome, Language::English).1,
-            Some(Tone::Danger)
+            detail_status(&outcome, Language::Korean)
         );
         let matches = |query: &str| {
             http_inspector_analysis::search::Matcher::new(
@@ -248,5 +244,49 @@ mod tests {
         assert!(matches("upstream tls handshake"));
         assert!(matches("certificate rejected"));
         assert!(!matches("response timeout"));
+    }
+
+    #[test]
+    fn inspector_shows_the_reason_and_version_the_server_sent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use http::{Method, StatusCode, Version};
+        use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
+
+        let answered = |fixture: ResponseFixture| {
+            ExchangeBuilder::http(Method::GET, "http://localhost:8080/api")?.respond(fixture)
+        };
+        let gateway = answered(
+            ResponseFixture::new(StatusCode::BAD_GATEWAY).reason("Upstream Took Too Long"),
+        )?;
+        assert_eq!(
+            detail_status(gateway.outcome(), Language::English),
+            (
+                "502 Upstream Took Too Long · HTTP/1.1".to_owned(),
+                Some(Tone::Danger)
+            ),
+            "a nonstandard reason phrase is shown as sent"
+        );
+        let custom =
+            answered(ResponseFixture::new(StatusCode::from_u16(599)?).reason("Net Timeout"))?;
+        assert_eq!(
+            detail_status(custom.outcome(), Language::English).0,
+            "599 Net Timeout · HTTP/1.1",
+            "a nonstandard code keeps its phrase instead of `Unknown status`"
+        );
+        let old = answered(ResponseFixture::new(StatusCode::OK).version(Version::HTTP_10))?;
+        assert_eq!(
+            detail_status(old.outcome(), Language::English),
+            ("200 OK · HTTP/1.0".to_owned(), None)
+        );
+        // Other outcomes keep the request list's text.
+        assert_eq!(
+            detail_status(&Outcome::Cancelled, Language::English),
+            outcome_text(&Outcome::Cancelled, Language::English)
+        );
+        assert_eq!(
+            detail_status(&Outcome::Cancelled, Language::Korean),
+            outcome_text(&Outcome::Cancelled, Language::Korean)
+        );
+        Ok(())
     }
 }

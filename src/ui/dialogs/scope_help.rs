@@ -4,69 +4,44 @@ use crate::ui::i18n::Language;
 use crate::ui::style::tokens::{Layout, Space};
 use eframe::egui;
 
-/// One-line scope at the top of the capture help.
-const fn scope_summary(lang: Language) -> &'static str {
-    lang.pick(
-        "Capture scope: only HTTP traffic that a client sends through this proxy. \
-         Other traffic on this computer is not recorded.",
-        "캡처 범위: 클라이언트가 이 프록시를 통해 보내는 HTTP 트래픽만 기록합니다. \
-         이 컴퓨터의 다른 네트워크 트래픽은 기록되지 않습니다.",
-    )
-}
-
-/// Explains what a CONNECT tunnel row does and does not contain.
-pub(crate) const fn tunnel_note(lang: Language) -> &'static str {
-    lang.pick(
-        "CONNECT tunnel forwarded without decryption, as HTTPS uses by default. \
-         Only the host, port, byte counts, and duration are recorded. \
-         URL paths, headers, and bodies inside the tunnel are not recorded. \
-         Enable Decrypt HTTPS to inspect requests in new connections.",
-        "HTTPS 기본 동작에 따라 복호화 없이 전달된 CONNECT 터널입니다. \
-         호스트, 포트, 전송 바이트 수, 소요 시간만 기록됩니다. \
-         터널 내부의 URL 경로, 헤더, 본문은 기록되지 않습니다. \
-         새 연결의 요청을 검사하려면 HTTPS 복호화를 켜세요.",
-    )
-}
-
+/// Traffic the proxy records, as short labels (S1, D13). The explanation
+/// is in `docs/guide/proxy-and-capture.md`.
 const fn recorded(lang: Language) -> [&'static str; 3] {
     match lang {
         Language::English => [
-            "HTTP requests and responses: method, URL, headers, and bodies.",
-            "HTTPS with Decrypt HTTPS off: one Tunnel row per CONNECT with only the host, port, byte counts, and duration.",
-            "HTTPS with Decrypt HTTPS on: each HTTP/1.1 request inside the connection, after the client trusts the app CA.",
+            "HTTP: method, URL, headers, bodies",
+            "HTTPS, Decrypt off: one Tunnel row per CONNECT",
+            "HTTPS, Decrypt on: each HTTP/1.1 request",
         ],
         Language::Korean => [
-            "HTTP 요청 및 응답: 메서드, URL, 헤더, 본문.",
-            "HTTPS 복호화 꺼짐 상태의 HTTPS: CONNECT당 터널 행 1개(호스트, 포트, 바이트 수, 소요 시간만 기록).",
-            "HTTPS 복호화 켜짐 상태의 HTTPS: 클라이언트가 앱 CA를 신뢰한 뒤 연결 내부의 각 HTTP/1.1 요청.",
+            "HTTP: 메서드, URL, 헤더, 본문",
+            "HTTPS(복호화 끔): CONNECT당 터널 행 1개",
+            "HTTPS(복호화 켬): 각 HTTP/1.1 요청",
         ],
     }
 }
 
+/// Traffic the proxy cannot see, as short labels.
 const fn not_recorded(lang: Language) -> [&'static str; 4] {
     match lang {
         Language::English => [
-            "Programs that ignore proxy settings or open their own connections.",
-            "Hosts excluded by NO_PROXY or a proxy bypass list, which often includes localhost.",
-            "HTTP/3 (QUIC) over UDP. Browsers may switch to it after the first visit.",
-            "Traffic sent through a VPN tunnel or another proxy instead of this one.",
+            "Apps that ignore proxy settings",
+            "NO_PROXY and bypass-list hosts",
+            "HTTP/3 (QUIC) over UDP",
+            "Traffic through a VPN or another proxy",
         ],
         Language::Korean => [
-            "프록시 설정을 무시하거나 직접 연결을 여는 프로그램.",
-            "NO_PROXY 또는 프록시 우회 목록에 포함된 호스트(대개 localhost 포함).",
-            "UDP 기반 HTTP/3 (QUIC). 브라우저는 첫 방문 이후 QUIC으로 전환할 수 있습니다.",
-            "이 프록시 대신 VPN 터널이나 다른 프록시를 통해 전송되는 트래픽.",
+            "프록시 설정을 무시하는 앱",
+            "NO_PROXY 및 우회 목록 호스트",
+            "UDP 기반 HTTP/3 (QUIC)",
+            "VPN 또는 다른 프록시 경유 트래픽",
         ],
     }
 }
 
-const fn quic_hint(lang: Language) -> &'static str {
-    lang.pick(
-        "Browsers opened with Open Browser already disable QUIC. \
-         For a Chrome profile you start yourself, add --disable-quic so it uses HTTP/1.1 or HTTP/2 over TCP.",
-        "'브라우저 열기'로 실행한 브라우저는 이미 QUIC이 비활성화되어 있습니다. \
-         직접 실행하는 Chrome 프로필에서는 TCP 기반 HTTP/1.1 또는 HTTP/2를 사용하도록 --disable-quic 옵션을 추가하세요.",
-    )
+/// Label of the Chrome command that keeps a self-started profile off QUIC.
+const fn quic_command(lang: Language) -> &'static str {
+    lang.pick("Chrome without QUIC", "QUIC 비활성화 Chrome 실행 명령")
 }
 
 fn disable_quic_example(address: std::net::SocketAddr) -> String {
@@ -75,11 +50,14 @@ fn disable_quic_example(address: std::net::SocketAddr) -> String {
     )
 }
 
-/// Shows the `?` button whose popup explains the capture scope.
-pub(crate) fn button(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>, lang: Language) {
-    ui.menu_button("?", |ui| contents(ui, address, lang))
-        .response
-        .on_hover_text(lang.pick("What is captured?", "무엇이 캡처되나요?"));
+/// Shows the Capture scope submenu that explains which traffic is recorded.
+pub(crate) fn submenu(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>, lang: Language) {
+    ui.menu_button(
+        crate::ui::workbench::text::ShellText::CaptureScope.text(lang),
+        |ui| contents(ui, address, lang),
+    )
+    .response
+    .on_hover_text(lang.pick("What is captured?", "무엇이 캡처되나요?"));
 }
 
 fn contents(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>, lang: Language) {
@@ -91,23 +69,23 @@ fn contents(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>, lang: Lang
         egui::ScrollArea::vertical()
             .max_height(max_height)
             .show(ui, |ui| {
-                ui.label(scope_summary(lang));
-                ui.add_space(Space::XS);
-                ui.strong(lang.pick("Recorded", "기록되는 항목"));
-                for line in recorded(lang) {
-                    ui.label(format!("• {line}"));
+                let recorded_lines = recorded(lang);
+                let not_recorded_lines = not_recorded(lang);
+                for (title, lines) in [
+                    (lang.pick("Recorded", "기록되는 항목"), &recorded_lines[..]),
+                    (
+                        lang.pick("Not recorded", "기록되지 않는 항목"),
+                        &not_recorded_lines[..],
+                    ),
+                ] {
+                    ui.strong(title);
+                    for line in lines {
+                        ui.label(*line);
+                    }
+                    ui.add_space(Space::XS);
                 }
-                ui.add_space(Space::XS);
-                ui.strong(lang.pick("Not recorded", "기록되지 않는 항목"));
-                for line in not_recorded(lang) {
-                    ui.colored_label(
-                        crate::ui::style::theme::Palette::of(ui).warning,
-                        format!("• {line}"),
-                    );
-                }
-                ui.add_space(Space::XS);
-                ui.label(quic_hint(lang));
                 if let Some(address) = address {
+                    ui.strong(quic_command(lang));
                     ui.add(
                         egui::Label::new(
                             egui::RichText::new(disable_quic_example(address)).monospace(),
@@ -151,13 +129,12 @@ mod tests {
     }
 
     #[test]
-    fn tunnel_note_says_contents_are_not_recorded() {
-        let en = tunnel_note(Language::English);
-        assert!(en.contains("without decryption"));
-        assert!(en.contains("bodies inside the tunnel are not recorded"));
-        let ko = tunnel_note(Language::Korean);
-        assert!(ko.contains("CONNECT"));
-        assert!(ko.contains("기록되지 않습니다"));
+    fn labels_are_not_sentences() {
+        for lang in [Language::English, Language::Korean] {
+            for line in recorded(lang).into_iter().chain(not_recorded(lang)) {
+                assert!(!line.ends_with('.'), "{lang:?}: {line}");
+            }
+        }
     }
 
     #[test]

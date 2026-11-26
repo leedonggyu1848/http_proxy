@@ -4,7 +4,6 @@
 //! pane. Matching requests display path-only URLs with query parameter *names*
 //! only.
 
-use crate::ui::style::tokens::Space;
 use std::collections::HashSet;
 use std::time::SystemTime;
 
@@ -18,7 +17,11 @@ use http_inspector_exchange::{ByteSize, Exchange, RecordId};
 use super::{MapAction, endpoint_view};
 use crate::ui::i18n::{Language, domain};
 use crate::ui::requests::outcome_view::outcome_text;
+use crate::ui::style::fonts;
 use crate::ui::style::theme::Palette;
+use crate::ui::style::tokens::Layout;
+use crate::ui::workbench::text::{self, ShellText};
+use crate::ui::workbench::{chrome, controls, tree};
 
 /// Maximum matching retained requests listed directly inside the node detail pane.
 const MAX_INLINE_REQUESTS: usize = 100;
@@ -141,47 +144,45 @@ pub(super) fn show(
     lang: Language,
 ) -> Option<MapAction> {
     let Some(node) = node else {
+        chrome::pane_header(ui, "map-detail-header", |ui| {
+            pane_title(ui, ShellText::Node.text(lang));
+        });
         ui.centered_and_justified(|ui| {
             ui.add(
-                egui::Label::new(
-                    RichText::new(lang.pick(
-                        "Select a host or path node to inspect its aggregates and requests.",
-                        "집계와 요청 목록을 확인하려면 호스트나 경로 노드를 선택하세요.",
-                    ))
-                    .weak(),
-                )
-                .wrap(),
+                egui::Label::new(RichText::new(ShellText::NoNodeSelected.text(lang)).weak()).wrap(),
             );
         });
         return None;
     };
 
     cache.sync(&RequestScope::subtree(node.key.clone()), records, true);
-    let mut action = None;
+    let mut action = header(ui, node, lang);
     egui::ScrollArea::vertical()
         .id_salt("url-map-detail-scroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
             let retained = cache.matched_count();
             let evicted = node
                 .subtree
                 .request_count
                 .saturating_sub(u64::try_from(retained).unwrap_or(u64::MAX));
-
-            if let Some(header_action) = render_header(ui, node, retained, evicted, lang) {
-                action = Some(header_action);
-            }
-            ui.separator();
-            render_stats_section(ui, node, retained, evicted, lang);
-            ui.separator();
+            let key_width = tree::key_width(ui.available_width());
+            tree::group(
+                ui,
+                "map-summary",
+                ShellText::Summary.text(lang),
+                None,
+                |ui| {
+                    render_stats_section(ui, node, retained, evicted, key_width, lang);
+                },
+            );
             if let Some(endpoint_action) =
                 endpoint_view::show(ui, node, endpoints.merged, endpoints.skipped, lang)
             {
                 action = Some(endpoint_action);
             }
-            ui.separator();
-            render_query_params_section(ui, node, lang);
-            ui.separator();
+            render_query_params_section(ui, node, key_width, lang);
             if let Some(req_action) = render_requests_section(ui, records, cache, evicted, lang) {
                 action = Some(req_action);
             }
@@ -189,103 +190,51 @@ pub(super) fn show(
     action
 }
 
-fn render_header(
-    ui: &mut egui::Ui,
-    node: &ViewNode,
-    retained: usize,
-    evicted: u64,
-    lang: Language,
-) -> Option<MapAction> {
-    let palette = Palette::of(ui);
-    let mut action = None;
-
-    ui.add(egui::Label::new(RichText::new(node.key.display_url()).strong().monospace()).wrap());
-
-    render_header_flags(ui, node, &palette, lang);
-
-    ui.add_space(Space::XS);
-    ui.horizontal_wrapped(|ui| {
-        if ui
-            .button(lang.pick("Show in Requests", "요청 목록에서 보기"))
-            .on_hover_text(lang.pick(
-                "Switch to Requests view filtered to this origin and path prefix.",
-                "이 출처와 경로 접두사로 필터링된 요청 목록으로 전환합니다.",
-            ))
-            .clicked()
-        {
-            action = Some(MapAction::ShowInRequests(RequestScope::subtree(
-                node.key.clone(),
-            )));
-        }
-        let retention_note = if evicted > 0 {
-            match lang {
-                Language::English => format!("{retained} retained · {evicted} older removed"),
-                Language::Korean => format!("{retained}건 보관 · 오래된 {evicted}건 제거됨"),
-            }
-        } else {
-            match lang {
-                Language::English => format!("{retained} retained"),
-                Language::Korean => format!("{retained}건 보관"),
-            }
-        };
-        ui.label(
-            RichText::new(retention_note)
-                .color(palette.secondary)
-                .small(),
-        );
-    });
-    action
+/// The pane header: the node's URL as the pane name and Show in Requests at
+/// the right (D22).
+fn header(ui: &mut egui::Ui, node: &ViewNode, lang: Language) -> Option<MapAction> {
+    chrome::pane_header(ui, "map-detail-header", |ui| {
+        let action = ui
+            .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                controls::ghost_style(ui);
+                let clicked = ui
+                    .add(controls::ghost(
+                        ShellText::ShowInRequests.text(lang),
+                        Layout::PANE_BUTTON_HEIGHT,
+                    ))
+                    .on_hover_text(ShellText::ShowInRequestsHint.text(lang))
+                    .clicked();
+                let url = node.key.display_url();
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(&url)
+                                .font(fonts::data())
+                                .color(Palette::of(ui).text),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text(url);
+                });
+                clicked
+            })
+            .inner;
+        action.then(|| MapAction::ShowInRequests(RequestScope::subtree(node.key.clone())))
+    })
 }
 
-fn render_header_flags(ui: &mut egui::Ui, node: &ViewNode, palette: &Palette, lang: Language) {
-    ui.horizontal_wrapped(|ui| {
-        if node.subtree.is_tunnel_only() {
-            ui.label(
-                RichText::new(lang.pick("[Tunnel] No path info", "[터널] 경로 정보 없음"))
-                    .color(palette.secondary),
-            );
-        }
-        if node.is_folded_id {
-            let kinds: Vec<&str> = node
-                .subtree
-                .observed_id_kinds
-                .iter()
-                .map(|kind| domain::id_kind(lang, *kind))
-                .collect();
-            let kind_text = if kinds.is_empty() {
-                String::new()
-            } else {
-                match lang {
-                    Language::English => format!(" · types: {}", kinds.join(", ")),
-                    Language::Korean => format!(" · 형식: {}", kinds.join(", ")),
-                }
-            };
-            let folded = match lang {
-                Language::English => format!("Folded {} IDs{kind_text}", node.folded_count),
-                Language::Korean => format!("ID {}개 묶임{kind_text}", node.folded_count),
-            };
-            ui.label(RichText::new(folded).color(palette.secondary).small());
-        }
-        if node.subtree.is_third_party() {
-            let third = match lang {
-                Language::English => format!("3rd-party ({} hits)", node.subtree.third_party_hits),
-                Language::Korean => format!("서드파티 ({}회)", node.subtree.third_party_hits),
-            };
-            ui.label(RichText::new(third).color(palette.warning).small());
-        }
-        if node.subtree.overflow_merged > 0 {
-            let merged = match lang {
-                Language::English => format!(
-                    "{} deeper requests merged at node cap",
-                    node.subtree.overflow_merged
-                ),
-                Language::Korean => format!(
-                    "노드 한도로 하위 요청 {}건이 병합됨",
-                    node.subtree.overflow_merged
-                ),
-            };
-            ui.label(RichText::new(merged).color(palette.warning).small());
-        }
+fn pane_title(ui: &mut egui::Ui, title: &str) {
+    ui.label(
+        RichText::new(title)
+            .font(fonts::panel_title())
+            .color(Palette::of(ui).text),
+    );
+}
+
+/// One key-value row under a group.
+fn pair(ui: &mut egui::Ui, key_width: f32, key: &str, value: RichText) {
+    tree::row(ui, tree::TreeRow::new(1, key), |ui| {
+        tree::key_value(ui, key_width, tree::key_text(ui, key), value);
     });
 }
 
@@ -294,119 +243,181 @@ fn render_stats_section(
     node: &ViewNode,
     retained: usize,
     evicted: u64,
+    key_width: f32,
     lang: Language,
 ) {
     let palette = Palette::of(ui);
     let stats = &node.subtree;
+    let data = |text: String| RichText::new(text).font(fonts::data()).color(palette.text);
 
-    ui.label(RichText::new(lang.pick("Summary", "요약")).strong());
-    egui::Grid::new("url-map-stats-grid")
-        .num_columns(2)
-        .spacing([Space::MD, Space::XS])
-        .show(ui, |ui| {
-            ui.weak(lang.pick("Requests", "요청"));
-            let req_text = if node.direct.request_count > 0
-                && node.direct.request_count != stats.request_count
-            {
-                match lang {
-                    Language::English => format!(
-                        "{} total ({} direct, {retained} retained, {evicted} evicted)",
-                        stats.request_count, node.direct.request_count
-                    ),
-                    Language::Korean => format!(
-                        "총 {}건 (직접 {}건, 보관 {retained}건, 제거 {evicted}건)",
-                        stats.request_count, node.direct.request_count
-                    ),
-                }
-            } else if evicted > 0 {
-                match lang {
-                    Language::English => format!(
-                        "{} total ({retained} retained, {evicted} evicted)",
-                        stats.request_count
-                    ),
-                    Language::Korean => format!(
-                        "총 {}건 (보관 {retained}건, 제거 {evicted}건)",
-                        stats.request_count
-                    ),
-                }
-            } else {
-                format!("{}", stats.request_count)
-            };
-            ui.add(egui::Label::new(req_text).wrap());
-            ui.end_row();
-
-            ui.weak(lang.pick("Methods", "메서드"));
-            let methods = stats.methods.names().join(", ");
-            ui.add(egui::Label::new(if methods.is_empty() { "—" } else { &methods }).wrap());
-            ui.end_row();
-
-            ui.weak(lang.pick("Status", "상태"));
-            ui.horizontal_wrapped(|ui| {
-                render_status_counts(ui, stats, &palette, lang);
-            });
-            ui.end_row();
-
-            ui.weak("Content-Type");
-            ui.add(egui::Label::new(format_content_types(stats)).wrap());
-            ui.end_row();
-
-            ui.weak(lang.pick("Transferred", "전송량"));
-            ui.label(ByteSize::new(stats.total_bytes).to_string());
-            ui.end_row();
-
-            ui.weak(lang.pick("Response time", "응답 시간"));
-            let timing_text = match (stats.avg_duration_ms(), stats.max_duration_ms()) {
-                (Some(avg), Some(max)) => match lang {
-                    Language::English => format!("avg {avg:.1} ms · max {max:.1} ms"),
-                    Language::Korean => format!("평균 {avg:.1} ms · 최대 {max:.1} ms"),
-                },
-                _ => "—".to_owned(),
-            };
-            ui.label(timing_text);
-            ui.end_row();
-
-            ui.weak(lang.pick("Observed", "관측 시각"));
-            ui.label(format!(
-                "{} – {}",
-                format_wall_time(stats.first_seen),
-                format_wall_time(stats.last_seen),
-            ));
-            ui.end_row();
-        });
+    pair(
+        ui,
+        key_width,
+        ShellText::Requests.text(lang),
+        data(text::node_requests(
+            lang,
+            stats.request_count,
+            node.direct.request_count,
+            retained,
+            evicted,
+        )),
+    );
+    let methods = stats.methods.names().join(" ");
+    pair(
+        ui,
+        key_width,
+        ShellText::Methods.text(lang),
+        data(if methods.is_empty() {
+            ShellText::NotObserved.text(lang).to_owned()
+        } else {
+            methods
+        }),
+    );
+    let counts = status_counts(ui, stats, lang);
+    tree::row(
+        ui,
+        tree::TreeRow::new(1, ShellText::Status.text(lang)),
+        |ui| {
+            tree::key_value(
+                ui,
+                key_width,
+                tree::key_text(ui, ShellText::Status.text(lang)),
+                counts,
+            );
+        },
+    );
+    pair(
+        ui,
+        key_width,
+        ShellText::ContentType.text(lang),
+        data(format_content_types(stats)),
+    );
+    pair(
+        ui,
+        key_width,
+        ShellText::Transferred.text(lang),
+        data(ByteSize::new(stats.total_bytes).to_string()),
+    );
+    let timing_text = match (stats.avg_duration_ms(), stats.max_duration_ms()) {
+        (Some(avg), Some(max)) => text::avg_max(lang, avg, max),
+        _ => ShellText::NotObserved.text(lang).to_owned(),
+    };
+    pair(
+        ui,
+        key_width,
+        ShellText::ResponseTime.text(lang),
+        data(timing_text),
+    );
+    pair(
+        ui,
+        key_width,
+        ShellText::Observed.text(lang),
+        data(format!(
+            "{} – {}",
+            format_wall_time(stats.first_seen),
+            format_wall_time(stats.last_seen),
+        )),
+    );
+    render_node_flags(ui, node, key_width, lang);
 }
 
-fn render_status_counts(ui: &mut egui::Ui, stats: &NodeStats, palette: &Palette, lang: Language) {
+/// Rows that only some nodes have: party, folded IDs, tunnel, and merged
+/// requests.
+fn render_node_flags(ui: &mut egui::Ui, node: &ViewNode, key_width: f32, lang: Language) {
+    let palette = Palette::of(ui);
+    let stats = &node.subtree;
+    let data = |text: String| RichText::new(text).font(fonts::data()).color(palette.text);
+    if stats.is_third_party() {
+        pair(
+            ui,
+            key_width,
+            ShellText::Party.text(lang),
+            data(text::third_party_hits(lang, stats.third_party_hits)),
+        );
+    }
+    if node.is_folded_id {
+        let kinds: Vec<&str> = stats
+            .observed_id_kinds
+            .iter()
+            .map(|kind| domain::id_kind(lang, *kind))
+            .collect();
+        pair(
+            ui,
+            key_width,
+            ShellText::FoldedIds.text(lang),
+            data(text::folded_kinds(node.folded_count, &kinds)),
+        );
+    }
+    if stats.is_tunnel_only() {
+        pair(
+            ui,
+            key_width,
+            ShellText::Tunnel.text(lang),
+            RichText::new(ShellText::NoPathInfo.text(lang))
+                .font(fonts::data())
+                .color(palette.secondary),
+        );
+    }
+    if stats.overflow_merged > 0 {
+        pair(
+            ui,
+            key_width,
+            ShellText::Merged.text(lang),
+            RichText::new(text::merged_at_cap(lang, stats.overflow_merged))
+                .font(fonts::data())
+                .color(palette.warning),
+        );
+    }
+}
+
+/// Status buckets with requests, such as `2xx 4 · 5xx 2`. Only 4xx and
+/// failures take a status color; the rest keep the text color (S7, D1).
+fn status_counts(ui: &egui::Ui, stats: &NodeStats, lang: Language) -> egui::text::LayoutJob {
+    let palette = Palette::of(ui);
     let buckets = [
         ("2xx", stats.status.s2xx, palette.text),
         ("3xx", stats.status.s3xx, palette.text),
         ("4xx", stats.status.s4xx, palette.warning),
         ("5xx", stats.status.s5xx, palette.error),
         (
-            lang.pick("Failed", "실패"),
+            ShellText::Failed.text(lang),
             stats.status.failed,
             palette.error,
         ),
         (
-            lang.pick("Tunnel", "터널"),
+            ShellText::Tunnel.text(lang),
             stats.status.tunnel,
             palette.text,
         ),
         (
-            lang.pick("Pending", "대기 중"),
+            ShellText::Pending.text(lang),
             stats.status.pending,
-            palette.secondary,
+            palette.text,
         ),
     ];
-    let mut shown = false;
-    for (label, count, color) in buckets {
-        if count > 0 {
-            ui.label(RichText::new(format!("{label}: {count}")).color(color));
-            shown = true;
+    let mut job = egui::text::LayoutJob::default();
+    for (label, count, color) in buckets.into_iter().filter(|(_, count, _)| *count > 0) {
+        if !job.text.is_empty() {
+            job.append(
+                " · ",
+                0.0,
+                egui::TextFormat::simple(fonts::data(), palette.secondary),
+            );
         }
+        job.append(
+            &format!("{label} {count}"),
+            0.0,
+            egui::TextFormat::simple(fonts::data(), color),
+        );
     }
-    if !shown {
-        ui.weak("—");
+    if job.text.is_empty() {
+        job.append(
+            ShellText::NotObserved.text(lang),
+            0.0,
+            egui::TextFormat::simple(fonts::data(), palette.secondary),
+        );
     }
+    job
 }
 
 fn format_content_types(stats: &NodeStats) -> String {
@@ -423,40 +434,46 @@ fn format_content_types(stats: &NodeStats) -> String {
         .join(", ")
 }
 
-fn render_query_params_section(ui: &mut egui::Ui, node: &ViewNode, lang: Language) {
-    ui.label(
-        RichText::new(lang.pick(
-            "Query Parameters (names only)",
-            "쿼리 매개변수 (이름만 표시)",
-        ))
-        .strong(),
-    );
+/// Query parameter names seen under the node, most frequent first. Values
+/// are never shown.
+fn render_query_params_section(ui: &mut egui::Ui, node: &ViewNode, key_width: f32, lang: Language) {
     let params = if node.direct.query_params.is_empty() {
         &node.subtree.query_params
     } else {
         &node.direct.query_params
     };
-    if params.is_empty() {
-        ui.weak(lang.pick(
-            "No query parameters observed.",
-            "관측된 쿼리 매개변수가 없습니다.",
-        ));
-        return;
-    }
     let mut pairs: Vec<(&String, &u64)> = params.iter().collect();
     pairs.sort_by(|left, right| right.1.cmp(left.1).then_with(|| left.0.cmp(right.0)));
-    egui::Grid::new("url-map-query-params")
-        .num_columns(2)
-        .spacing([Space::LG, Space::XXS])
-        .show(ui, |ui| {
-            for (name, count) in pairs.into_iter().take(40) {
-                ui.monospace(percent_decode_display(name));
-                ui.weak(format!("{count}×"));
-                ui.end_row();
+    tree::group(
+        ui,
+        "map-query",
+        ShellText::QueryNames.text(lang),
+        Some(pairs.len()),
+        |ui| {
+            for (name, count) in pairs.into_iter().take(MAX_QUERY_NAMES) {
+                let value = RichText::new(text::times(*count))
+                    .font(fonts::data())
+                    .color(Palette::of(ui).secondary);
+                tree::row(ui, tree::TreeRow::new(1, name), |ui| {
+                    tree::key_value(
+                        ui,
+                        key_width,
+                        RichText::new(percent_decode_display(name))
+                            .font(fonts::data())
+                            .color(Palette::of(ui).text),
+                        value,
+                    );
+                });
             }
-        });
+        },
+    );
 }
 
+/// Query parameter names listed before the rest are left out.
+const MAX_QUERY_NAMES: usize = 40;
+
+/// The newest retained requests under the node, each opening the request in
+/// the Requests view.
 fn render_requests_section(
     ui: &mut egui::Ui,
     records: &RecordList<Exchange>,
@@ -466,68 +483,57 @@ fn render_requests_section(
 ) -> Option<MapAction> {
     let palette = Palette::of(ui);
     let total_retained = cache.matched_count();
-    let heading = match lang {
-        Language::English => format!("Requests under this node ({total_retained})"),
-        Language::Korean => format!("이 노드 아래의 요청 ({total_retained})"),
-    };
-    ui.label(RichText::new(heading).strong());
-    if evicted > 0 {
-        let note = match lang {
-            Language::English => format!(
-                "{evicted} older request(s) were evicted from the screen buffer; aggregates above still include them."
-            ),
-            Language::Korean => format!(
-                "오래된 요청 {evicted}건이 화면 버퍼에서 제거되었지만 위 집계에는 계속 포함됩니다."
-            ),
-        };
-        ui.label(RichText::new(note).color(palette.warning).small());
-    }
-    if total_retained == 0 {
-        ui.weak(lang.pick(
-            "No retained requests remain for this node.",
-            "이 노드에 남아 있는 보관 요청이 없습니다.",
-        ));
-        return None;
-    }
-
     let mut action = None;
-    for (idx, preview) in &cache.newest_previews {
-        let Some(record) = records.get(*idx) else {
-            continue;
-        };
-        let (status_label, status_tone) = outcome_text(record.outcome(), lang);
-        let status_color = palette.status(status_tone);
-        let safe_path = preview.display(lang);
-        ui.horizontal(|ui| {
-            ui.monospace(record.request().method().as_str());
-            ui.label(RichText::new(status_label).color(status_color).small());
-            let link = ui.add(
-                egui::Label::new(RichText::new(safe_path.as_str()).monospace())
-                    .wrap_mode(egui::TextWrapMode::Truncate)
-                    .sense(egui::Sense::click()),
-            );
-            if link
-                .on_hover_text(lang.pick(
-                    "Open this request in Requests view.",
-                    "이 요청을 요청 목록에서 엽니다.",
-                ))
-                .clicked()
-            {
-                action = Some(MapAction::SelectRequest(record.id()));
+    tree::group(
+        ui,
+        "map-requests",
+        ShellText::Requests.text(lang),
+        Some(total_retained),
+        |ui| {
+            if evicted > 0 {
+                tree::row(ui, tree::TreeRow::new(1, ""), |ui| {
+                    ui.label(
+                        RichText::new(text::older_removed(lang, evicted)).color(palette.warning),
+                    );
+                });
             }
-        });
-    }
-    if total_retained > MAX_INLINE_REQUESTS {
-        let more = match lang {
-            Language::English => format!(
-                "Showing newest {MAX_INLINE_REQUESTS} of {total_retained} retained requests. Use Show in Requests to inspect all."
-            ),
-            Language::Korean => format!(
-                "보관된 요청 {total_retained}건 중 최신 {MAX_INLINE_REQUESTS}건만 표시합니다. 전체를 보려면 '요청 목록에서 보기'를 사용하세요."
-            ),
-        };
-        ui.weak(more);
-    }
+            for (idx, preview) in &cache.newest_previews {
+                let Some(record) = records.get(*idx) else {
+                    continue;
+                };
+                let (status_label, status_tone) = outcome_text(record.outcome(), lang);
+                let safe_path = preview.display(lang);
+                let shown = tree::row(
+                    ui,
+                    tree::TreeRow::new(1, safe_path.as_str()).clickable(),
+                    |ui| {
+                        let data = |text: &str, color| {
+                            egui::Label::new(RichText::new(text).font(fonts::data()).color(color))
+                                .selectable(false)
+                        };
+                        ui.add(data(record.request().method().as_str(), palette.secondary));
+                        ui.add(data(&status_label, palette.status(status_tone)));
+                        ui.add(data(safe_path.as_str(), palette.text).truncate());
+                    },
+                );
+                if shown
+                    .response
+                    .on_hover_text(ShellText::OpenInRequests.text(lang))
+                    .clicked()
+                {
+                    action = Some(MapAction::SelectRequest(record.id()));
+                }
+            }
+            if total_retained > MAX_INLINE_REQUESTS {
+                tree::row(ui, tree::TreeRow::new(1, ""), |ui| {
+                    ui.label(
+                        RichText::new(text::newest_of(lang, MAX_INLINE_REQUESTS, total_retained))
+                            .color(palette.secondary),
+                    );
+                });
+            }
+        },
+    );
     action
 }
 

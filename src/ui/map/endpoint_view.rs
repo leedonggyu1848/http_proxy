@@ -5,7 +5,9 @@
 //! counts from [`EndpointSchema`]. The schema holds no query, header,
 //! cookie, credential or body value, so none can appear here.
 
-use crate::ui::style::tokens::Space;
+use crate::ui::style::tokens::{Layout, Space};
+use crate::ui::workbench::text::{self, ShellText};
+use crate::ui::workbench::tree;
 use std::fmt::Write as _;
 
 use eframe::egui::{self, RichText};
@@ -19,9 +21,6 @@ use http_inspector_analysis::url_map::{NodeId, RequestScope, ViewNode, ViewNodeK
 use super::MapAction;
 use crate::ui::i18n::{Language, domain};
 use crate::ui::style::theme::Palette;
-
-/// Below this many described bodies the structure is flagged as tentative.
-const FEW_SAMPLES: u64 = 3;
 
 /// Per-method endpoint aggregates merged for the selected node, rebuilt only
 /// when the node, its folded raw nodes, or the aggregates change.
@@ -56,7 +55,7 @@ impl EndpointCache {
     }
 }
 
-/// Renders the endpoint section and returns a `Show in Requests` action.
+/// Renders the endpoint group and returns a `Show in Requests` action.
 pub(super) fn show(
     ui: &mut egui::Ui,
     node: &ViewNode,
@@ -65,56 +64,46 @@ pub(super) fn show(
     lang: Language,
 ) -> Option<MapAction> {
     let palette = Palette::of(ui);
-    ui.label(RichText::new(lang.pick("Endpoints", "엔드포인트")).strong());
-    ui.add(
-        egui::Label::new(
-            RichText::new(lang.pick(
-                "Structure inferred from captured requests on this exact path: names, types and how often they appeared. Values are never shown.",
-                "이 경로에서 캡처된 요청으로 추론한 구조(이름·형식·빈도)입니다. 실제 값은 표시하지 않습니다.",
-            ))
-            .color(palette.secondary)
-            .small(),
-        )
-        .wrap(),
-    );
-    if skipped > 0 {
-        let skipped_message = match lang {
-            Language::English => {
-                format!("Endpoint analysis skipped {skipped} request(s) this session.")
-            }
-            Language::Korean => {
-                format!("이번 세션에서 요청 {skipped}건의 엔드포인트 분석을 건너뛰었습니다.")
-            }
-        };
-        ui.label(
-            RichText::new(skipped_message)
-                .color(palette.warning)
-                .small(),
-        );
-    }
-    if endpoints.is_empty() {
-        ui.weak(lang.pick(
-            "No finished requests on this exact path yet.",
-            "이 정확한 경로에서 완료된 요청이 아직 없습니다.",
-        ));
-        return None;
-    }
     let mut action = None;
-    for (index, (method, schema)) in endpoints.iter().enumerate() {
-        let salt = format!("{}#{method}", node.key.display_url());
-        let title = match lang {
-            Language::English => format!("{method} · {} request(s)", schema.requests()),
-            Language::Korean => format!("{method} · 요청 {}건", schema.requests()),
-        };
-        egui::CollapsingHeader::new(RichText::new(title).monospace().strong())
-            .id_salt(&salt)
-            .default_open(index == 0)
-            .show(ui, |ui| {
-                if let Some(clicked) = render_endpoint(ui, node, method, schema, &salt, lang) {
-                    action = Some(clicked);
-                }
-            });
-    }
+    tree::group(
+        ui,
+        "map-endpoints",
+        ShellText::Endpoints.text(lang),
+        Some(endpoints.len()),
+        |ui| {
+            egui::Frame::new()
+                .inner_margin(Layout::GROUP_BODY_MARGIN)
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = Space::XS;
+                    if skipped > 0 {
+                        ui.label(
+                            RichText::new(text::analysis_skipped(lang, skipped))
+                                .color(palette.warning),
+                        );
+                    }
+                    for (index, (method, schema)) in endpoints.iter().enumerate() {
+                        let salt = format!("{}#{method}", node.key.display_url());
+                        let title = match lang {
+                            Language::English => {
+                                format!("{method} · {} request(s)", schema.requests())
+                            }
+                            Language::Korean => format!("{method} · 요청 {}건", schema.requests()),
+                        };
+                        egui::CollapsingHeader::new(RichText::new(title).monospace().strong())
+                            .id_salt(&salt)
+                            .default_open(index == 0)
+                            .show(ui, |ui| {
+                                if let Some(clicked) =
+                                    render_endpoint(ui, node, method, schema, &salt, lang)
+                                {
+                                    action = Some(clicked);
+                                }
+                            });
+                    }
+                });
+        },
+    )
+    .on_hover_text(ShellText::EndpointsHint.text(lang));
     action
 }
 
@@ -187,17 +176,7 @@ fn render_evidence(ui: &mut egui::Ui, schema: &EndpointSchema, lang: Language) {
         Language::English => format!("Evidence: {}", parts.join(" · ")),
         Language::Korean => format!("근거: {}", parts.join(" · ")),
     };
-    ui.label(RichText::new(summary).small());
-    if schema.requests() < FEW_SAMPLES {
-        ui.label(
-            RichText::new(lang.pick(
-                "Few samples: fields seen once may be optional or vary.",
-                "샘플 수가 적습니다. 한 번만 관측된 필드는 선택 항목이거나 달라질 수 있습니다.",
-            ))
-            .color(palette.warning)
-            .small(),
-        );
-    }
+    ui.label(RichText::new(summary).color(palette.secondary));
 }
 
 fn render_path_params(
@@ -443,7 +422,7 @@ fn render_body_evidence(ui: &mut egui::Ui, group: &BodySchema, lang: Language) {
             Language::Korean => format!("제외 {excluded}건 ({})", reasons.join(", ")),
         });
     }
-    let color = if excluded > 0 || (described > 0 && described < FEW_SAMPLES) {
+    let color = if excluded > 0 {
         palette.warning
     } else {
         palette.secondary

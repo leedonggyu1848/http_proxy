@@ -190,6 +190,10 @@ impl LanguageSettings {
                 });
     }
 
+    pub(crate) const fn has_error(&self) -> bool {
+        self.error.is_some()
+    }
+
     /// Shows a persistence failure in the status bar, matching [`crate::ui::style::theme::ThemeSettings`].
     pub(crate) fn status(&self, ui: &mut egui::Ui) {
         if let Some(error) = &self.error {

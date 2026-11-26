@@ -11,6 +11,7 @@ use http_inspector_exchange::{BodyLifecycle, BodyRetention, BodySide, BodySnapsh
 use std::sync::Arc;
 
 use crate::ui::i18n::{Language, domain};
+use crate::ui::workbench::text;
 
 /// A captured body preview to show.
 pub(super) struct BodySource<'a> {
@@ -67,26 +68,9 @@ impl Capture {
         let preview_kib = http_inspector_exchange::capture::BODY_PREVIEW_BYTES / 1024;
         let text = match self {
             Self::Whole => return None,
-            Self::Truncated => match lang {
-                Language::English => format!(
-                    "Only part of the body was captured (at most {preview_kib} KiB is kept); the view ends where the capture ends."
-                ),
-                Language::Korean => format!(
-                    "본문의 일부만 캡처되었습니다(최대 {preview_kib} KiB 보관). 캡처된 지점까지만 표시됩니다."
-                ),
-            },
-            Self::Streaming => lang
-                .pick(
-                    "The body is still being received; the view shows what has arrived so far.",
-                    "본문을 아직 수신 중입니다. 지금까지 도착한 내용만 표시됩니다.",
-                )
-                .to_owned(),
-            Self::Ended => lang
-                .pick(
-                    "The body ended early (interrupted or cancelled); the view shows what was received.",
-                    "본문이 중간에 종료되었습니다(중단 또는 취소). 수신된 내용만 표시됩니다.",
-                )
-                .to_owned(),
+            Self::Truncated => text::body_truncated(lang, preview_kib),
+            Self::Streaming => text::body_streaming(lang).to_owned(),
+            Self::Ended => text::body_ended(lang).to_owned(),
         };
         Some(Notice::warning(text))
     }
@@ -226,7 +210,7 @@ impl<S: Clone + PartialEq> BodyCache<S> {
                     if source.search.is_some() {
                         notices.push(Notice::info(lang.pick(
                             "Search matches are marked in Pretty and Raw.",
-                            "검색 일치 항목은 정렬(Pretty) 및 원문(Raw) 보기에서 표시됩니다.",
+                            "검색 일치 항목은 서식 및 원문 보기에서 표시됩니다.",
                         )));
                     }
                     return PreparedBody::Tree {
@@ -241,7 +225,7 @@ impl<S: Clone + PartialEq> BodyCache<S> {
                             format!("Showing Pretty: could not read a tree: {reason}.")
                         }
                         Language::Korean => {
-                            format!("정렬 보기로 표시: 트리를 읽을 수 없습니다({reason}).")
+                            format!("서식 보기로 표시: 트리를 읽을 수 없습니다({reason}).")
                         }
                     };
                     notices.push(Notice::warning(message));
@@ -253,7 +237,7 @@ impl<S: Clone + PartialEq> BodyCache<S> {
                             format!("Tree view is not available for {format_name}; showing Pretty.")
                         }
                         Language::Korean => format!(
-                            "{format_name} 형식에는 트리 보기를 사용할 수 없어 정렬 보기로 표시합니다."
+                            "{format_name} 형식에는 트리 보기를 사용할 수 없어 서식 보기로 표시합니다."
                         ),
                     };
                     notices.push(Notice::warning(message));
@@ -306,9 +290,7 @@ pub(super) mod fixtures {
     use super::*;
 
     pub(in crate::ui::detail) fn partial_capture() -> Notice {
-        Notice::warning(
-            "Only part of the body was captured (at most 8 KiB is kept); the view ends where the capture ends.",
-        )
+        Notice::warning("Showing the first 8 KiB captured")
     }
 
     /// Parses a test media type that lives for the whole test run.
@@ -353,7 +335,10 @@ mod tests {
         let body = source(1, b"abc");
         let query = Query {
             generation: 1,
-            matcher: Matcher::new("abc", MatchOptions::default())?,
+            terms: http_inspector_analysis::search::TextTerms::single(Matcher::new(
+                "abc",
+                MatchOptions::default(),
+            )?),
             scope: SearchScope::All,
         };
         let longer = BodySource {
@@ -605,16 +590,12 @@ mod tests {
             (
                 3,
                 Capture::Streaming,
-                Some(Notice::warning(
-                    "The body is still being received; the view shows what has arrived so far.",
-                )),
+                Some(Notice::warning("Still receiving; showing what arrived")),
             ),
             (
                 4,
                 Capture::Ended,
-                Some(Notice::warning(
-                    "The body ended early (interrupted or cancelled); the view shows what was received.",
-                )),
+                Some(Notice::warning("Ended early; showing what arrived")),
             ),
         ] {
             let body = BodySource {

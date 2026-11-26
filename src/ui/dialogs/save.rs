@@ -1,5 +1,8 @@
 use crate::ui::i18n::Language;
 use crate::ui::style::tokens::Layout;
+use crate::ui::workbench::controls;
+use crate::ui::workbench::field::{self, Field};
+use crate::ui::workbench::text::ShellText;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -93,25 +96,29 @@ impl SaveControls {
         }
     }
 
-    /// Shows the save controls and returns any edits or requested operations.
+    /// Shows the Save menu on the toolbar, with a spinner beside it while a
+    /// save runs. Laid out right to left, so the menu comes first.
     pub(crate) fn menu(
         &self,
         ui: &mut egui::Ui,
         log_available: bool,
         lang: Language,
     ) -> Vec<SaveMenuAction> {
+        let actions = ui
+            .add_enabled_ui(self.pending.is_none(), |ui| {
+                let label = format!("{} ▼", ShellText::Save.text(lang));
+                controls::ghost_menu(ui, label, Layout::TOOLBAR_BUTTON_HEIGHT, |ui| {
+                    self.menu_items(ui, log_available, lang)
+                })
+                .inner
+                .unwrap_or_default()
+            })
+            .inner;
         if self.pending.is_some() {
             ui.spinner();
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
-        ui.add_enabled_ui(self.pending.is_none(), |ui| {
-            ui.menu_button(lang.pick("Save ▼", "저장 ▼"), |ui| {
-                self.menu_items(ui, log_available, lang)
-            })
-            .inner
-            .unwrap_or_default()
-        })
-        .inner
+        actions
     }
 
     pub(crate) fn set_directory(&mut self, directory: String) {
@@ -185,14 +192,9 @@ impl SaveControls {
         ui.label(lang.pick("Save directory", "저장 폴더"));
         let input_width = Layout::SAVE_DIRECTORY_WIDTH.fit(ui.ctx().content_rect().width());
         let mut directory = self.directory.clone();
-        if ui
-            .add(
-                egui::TextEdit::singleline(&mut directory)
-                    .desired_width(input_width)
-                    .hint_text(lang.pick("Existing directory", "존재하는 폴더 경로")),
-            )
-            .changed()
-        {
+        let field =
+            Field::new(input_width).hint(lang.pick("Existing directory", "존재하는 폴더 경로"));
+        if field::single_line(ui, &mut directory, field, |_| {}).changed() {
             actions.push(SaveMenuAction::Directory(directory));
         }
         if ui
@@ -223,7 +225,7 @@ impl SaveControls {
         if ui
             .button(lang.pick("Export HAR…", "HAR 내보내기…"))
             .on_hover_text(lang.pick(
-                "Save the listed requests as a HAR 1.2 file, excluding bodies and sensitive headers unless selected.",
+                "Save the listed requests as a HAR 1.2 file, without bodies or sensitive headers unless you include them.",
                 "목록의 요청을 HAR 1.2 파일로 저장하며, 본문과 민감 헤더는 직접 선택하지 않으면 제외됩니다.",
             ))
             .clicked()
@@ -245,15 +247,21 @@ impl SaveControls {
         actions
     }
 
+    /// Whether [`Self::status`] has a save result to show.
+    pub(crate) const fn has_status(&self) -> bool {
+        self.status.is_some()
+    }
+
     /// Shows the result of the last save in the status bar.
     pub(crate) fn status(&self, ui: &mut egui::Ui, lang: Language) {
         match &self.status {
             Some(Ok(path)) => {
-                let text = match lang {
+                let saved = match lang {
                     Language::English => format!("Saved: {}", path.display()),
                     Language::Korean => format!("저장됨: {}", path.display()),
                 };
-                ui.label(text);
+                ui.add(egui::Label::new(saved.as_str()).truncate())
+                    .on_hover_text(saved);
             }
             Some(Err(error)) => {
                 let detail = error.localized(lang);

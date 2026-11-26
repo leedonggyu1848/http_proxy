@@ -1,20 +1,31 @@
 //! Network-panel style request list that lays out only the visible rows.
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::time::Duration;
 
 use eframe::egui::{self, Key, RichText};
 use egui_extras::{Column, TableBuilder};
+use http_inspector_analysis::filter::{FilterKey, TargetParts, content_type};
 use http_inspector_exchange::{ByteSize, Exchange, Outcome, RecordId};
 
 use crate::ui::AppAction;
 use crate::ui::dialogs::copy_curl;
 use crate::ui::i18n::{Language, Text};
+use crate::ui::requests::filter_menu;
 use crate::ui::requests::outcome_view::{outcome_summary, outcome_text, status_rank};
-use crate::ui::requests::target_view::{TargetParts, host_fits, middle_ellipsis, shared_host};
+use crate::ui::requests::target_view::{host_fits, middle_ellipsis, shared_host};
 use crate::ui::style::tokens::{Layout, Radius, Space, StrokeWidth, ThemeTokens, TypeScale};
 use crate::ui::style::{indicator, theme::Palette};
+use crate::ui::workbench::text::ShellText;
 use http_inspector_core::recording::SaveFormat;
+
+#[derive(Clone, Copy, Default)]
+pub(super) struct TableMenus {
+    pub(super) saving_body: bool,
+    pub(super) filter_enabled: bool,
+    pub(super) lang: Language,
+}
 
 /// Space before the method, kept free for the selection bar of the row.
 const ROW_LEAD: f32 = Layout::SELECTION_BAR_WIDTH + Space::S;
@@ -182,6 +193,14 @@ fn keyboard_selection(
     selected.filter(|&index| Some(index) != current)
 }
 
+pub(super) const fn follow_newest_label(lang: Language) -> &'static str {
+    lang.pick("Follow newest", "최신 항목 따라가기")
+}
+
+pub(super) const fn arrival_order_label(lang: Language) -> &'static str {
+    lang.pick("Arrival order", "도착순")
+}
+
 /// Sort state and scrolling preference of the request list.
 pub(crate) struct RequestTable {
     sort: Sort,
@@ -195,15 +214,6 @@ pub(crate) struct RequestTable {
 pub(super) struct TableResult {
     pub(super) selected: Option<RecordId>,
     pub(super) action: Option<AppAction>,
-}
-
-/// Rendering options for [`RequestTable::show`].
-#[derive(Clone, Copy)]
-pub(super) struct TableViewOptions {
-    pub(super) selected: Option<RecordId>,
-    pub(super) shortcuts_allowed: bool,
-    pub(super) saving_body: bool,
-    pub(super) lang: Language,
 }
 
 impl RequestTable {
@@ -220,20 +230,28 @@ impl RequestTable {
         }
     }
 
-    /// Shows the list options inline in the filter row.
+    /// Reports whether the list is sorted by a column instead of arrival.
+    pub(super) const fn is_sorted(&self) -> bool {
+        self.sort.field.is_some()
+    }
+
+    /// Shows the list options in the request pane header.
     pub(super) fn controls(&mut self, ui: &mut egui::Ui, lang: Language) {
-        ui.checkbox(
-            &mut self.follow_newest,
-            lang.pick("Follow newest", "최신 항목 따라가기"),
-        )
-        .on_hover_text(lang.pick(
-            "Keep the newest request in view while sorted by arrival.",
-            "도착순으로 정렬된 동안 가장 최근 요청이 보이도록 유지합니다.",
-        ));
+        ui.checkbox(&mut self.follow_newest, follow_newest_label(lang))
+            .on_hover_text(lang.pick(
+                "Keep the newest request in view while sorted by arrival.",
+                "도착순으로 정렬된 동안 가장 최근 요청이 보이도록 유지합니다.",
+            ));
         if self.follow_newest {
             self.keyboard_row = None;
         }
-        if self.sort.field.is_some() && ui.button(lang.pick("Arrival order", "도착순")).clicked()
+        if self.sort.field.is_some()
+            && ui
+                .add(crate::ui::workbench::controls::ghost(
+                    arrival_order_label(lang),
+                    Layout::PANE_BUTTON_HEIGHT,
+                ))
+                .clicked()
         {
             self.sort = Self::new().sort;
         }
@@ -257,14 +275,10 @@ impl RequestTable {
         &mut self,
         ui: &mut egui::Ui,
         mut rows: Vec<&Exchange>,
-        options: TableViewOptions,
+        mut selected: Option<RecordId>,
+        shortcuts_allowed: bool,
+        menus: TableMenus,
     ) -> TableResult {
-        let TableViewOptions {
-            mut selected,
-            shortcuts_allowed,
-            saving_body,
-            lang,
-        } = options;
         self.sort_rows(&mut rows);
         let mut result = TableResult::default();
         let mut scroll_to = None;
@@ -307,8 +321,7 @@ impl RequestTable {
                     widths,
                     width_changed,
                     &mut result,
-                    saving_body,
-                    lang,
+                    menus,
                 )
             })
             .inner;
@@ -335,8 +348,7 @@ impl RequestTable {
         widths: [f32; 6],
         width_changed: bool,
         result: &mut TableResult,
-        saving_body: bool,
-        lang: Language,
+        menus: TableMenus,
     ) -> f32 {
         // Rows touch each other; the row line separates them.
         ui.spacing_mut().item_spacing.y = 0.0;
@@ -365,7 +377,7 @@ impl RequestTable {
                     header.col(|ui| {
                         paint_header_cell(ui, field == Field::Duration);
                         let host = shared_host.filter(|_| field == Field::Target);
-                        if self.header_cell(ui, field, host, lang) {
+                        if self.header_cell(ui, field, host, menus, result) {
                             self.sort = self.sort.toggled(field);
                         }
                     });
@@ -382,12 +394,14 @@ impl RequestTable {
                     let selected_row = selected == Some(record.id());
                     let focus_row = scroll_to == Some(row.index());
                     let show_host = shared_host.is_none();
-                    if show_cells(&mut row, record, selected_row, focus_row, show_host, lang) {
+                    let (method_clicked, action) =
+                        show_cells(&mut row, record, selected_row, focus_row, show_host, menus);
+                    if method_clicked {
                         self.follow_newest = false;
                         self.keyboard_row = None;
                         result.selected = Some(record.id());
                     }
-                    if let Some(action) = row_menu(&row.response(), record, saving_body, lang) {
+                    if let Some(action) = action {
                         result.action = Some(action);
                     }
                     if row.response().clicked() {
@@ -406,8 +420,10 @@ impl RequestTable {
         ui: &mut egui::Ui,
         field: Field,
         shared_host: Option<&str>,
-        lang: Language,
+        menus: TableMenus,
+        result: &mut TableResult,
     ) -> bool {
+        let lang = menus.lang;
         let secondary = ThemeTokens::for_theme(ui.ctx().theme()).text.secondary;
         let title = RichText::new(format!("{}{}", field.title(lang), self.sort.arrow(field)))
             .size(TypeScale::COLUMN_HEADER)
@@ -423,11 +439,18 @@ impl RequestTable {
         ui.add_space(field.lead());
         let clicked = ui.add(button).clicked();
         if let Some(host) = shared_host {
-            ui.add(egui::Label::new(RichText::new(host).monospace().weak()).truncate())
-                .on_hover_text(lang.pick(
-                    "Every request in the list goes to this host.",
-                    "목록의 모든 요청이 이 호스트로 향합니다.",
-                ));
+            let label = egui::Label::new(RichText::new(host).monospace().weak())
+                .truncate()
+                .sense(egui::Sense::click());
+            ui.add(label)
+                .on_hover_text(ShellText::SharedHost.text(lang))
+                .context_menu(|ui| {
+                    if let Some(action) =
+                        filter_menu::items(ui, FilterKey::Host, host, menus.filter_enabled, lang)
+                    {
+                        result.action = Some(action);
+                    }
+                });
         }
         clicked
     }
@@ -558,15 +581,20 @@ fn column_widths(viewport_width: f32, spacing_x: f32, scroll_gutter: f32) -> [f3
 fn row_menu(
     response: &egui::Response,
     record: &Exchange,
-    saving_body: bool,
-    lang: Language,
+    menus: TableMenus,
+    field: Field,
 ) -> Option<AppAction> {
+    let lang = menus.lang;
     let mut action = None;
     response.context_menu(|ui| {
+        if let Some((key, value)) = field_filter(field, record) {
+            action = filter_menu::items(ui, key, &value, menus.filter_enabled, lang);
+            ui.separator();
+        }
         if ui
             .add_enabled(
                 record.source() != http_inspector_exchange::CaptureSource::Connect,
-                egui::Button::new(lang.pick("Edit and Resend", "수정 후 재전송")),
+                egui::Button::new(ShellText::EditAndResend.text(lang)),
             )
             .clicked()
         {
@@ -578,7 +606,7 @@ fn row_menu(
             ui.close();
         }
         ui.separator();
-        if let Some(side) = save_body_items(ui, record, !saving_body, lang) {
+        if let Some(side) = save_body_items(ui, record, !menus.saving_body, lang) {
             action = Some(AppAction::SaveBody(record.id(), side, SaveFormat::Decoded));
             ui.close();
         }
@@ -627,25 +655,30 @@ fn save_body_items(
     chosen
 }
 
-/// Fills one row and returns whether its method was clicked.
+/// Fills a row and reports selection and context actions.
 fn show_cells(
     row: &mut egui_extras::TableRow<'_, '_>,
     record: &Exchange,
     selected: bool,
     focus: bool,
     show_host: bool,
-    lang: Language,
-) -> bool {
+    menus: TableMenus,
+) -> (bool, Option<AppAction>) {
+    let lang = menus.lang;
     let mut clicked = false;
+    let mut action = None;
     for field in Field::ALL {
-        row.col(|ui| {
+        let mut method_response = None;
+        let (_, cell) = row.col(|ui| {
             paint_row_cell(
                 ui,
                 selected && field == Field::Method,
                 field == Field::Duration,
             );
             match field {
-                Field::Method => clicked = method_cell(ui, record, selected, focus, lang),
+                Field::Method => {
+                    method_response = Some(method_cell(ui, record, selected, focus, lang));
+                }
                 Field::Target => target_cell(ui, record, show_host, lang),
                 Field::Status => status_cell(ui, record, lang),
                 Field::Type => data_cell(ui, content_type(record).unwrap_or("—")),
@@ -653,8 +686,38 @@ fn show_cells(
                 Field::Duration => numeric_cell(ui, &duration_text(record)),
             }
         });
+        let cell = if let Some(method) = method_response {
+            clicked = method.clicked();
+            cell.union(method)
+        } else {
+            cell
+        };
+        if let Some(selected_action) = row_menu(&cell, record, menus, field) {
+            action = Some(selected_action);
+        }
     }
-    clicked
+    (clicked, action)
+}
+
+fn field_filter(field: Field, record: &Exchange) -> Option<(FilterKey, Cow<'_, str>)> {
+    match field {
+        Field::Method => Some((
+            FilterKey::Method,
+            Cow::Borrowed(record.request().method().as_str()),
+        )),
+        Field::Target => {
+            let host = TargetParts::of(record.request().target()).host;
+            (!host.is_empty()).then_some((FilterKey::Host, Cow::Borrowed(host)))
+        }
+        Field::Status => match record.outcome() {
+            Outcome::Response(response) => Some((
+                FilterKey::Status,
+                Cow::Owned(response.status().as_u16().to_string()),
+            )),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Monospace data that truncates to the cell.
@@ -677,7 +740,7 @@ fn method_cell(
     selected: bool,
     focus: bool,
     lang: Language,
-) -> bool {
+) -> egui::Response {
     ui.add_space(ROW_LEAD);
     ui.push_id(record.id(), |ui| {
         let response = method_text(ui, record.request().method().as_str());
@@ -710,7 +773,7 @@ fn method_cell(
                 egui::StrokeKind::Outside,
             );
         }
-        response.clicked()
+        response
     })
     .inner
 }
@@ -784,7 +847,7 @@ fn status_cell(ui: &mut egui::Ui, record: &Exchange, lang: Language) {
     indicator::tick(ui, tone);
     let status = ui.add(egui::Label::new(RichText::new(text).monospace()).truncate());
     if matches!(record.outcome(), Outcome::Tunnel(_)) {
-        status.on_hover_text(crate::ui::dialogs::scope_help::tunnel_note(lang));
+        status.on_hover_text(ShellText::TunnelHint.text(lang));
     } else {
         status.on_hover_text(outcome_summary(record.outcome(), lang));
     }
@@ -797,17 +860,6 @@ fn target_text(record: &Exchange) -> &str {
         .strip_prefix("http://")
         .or_else(|| target.strip_prefix("https://"))
         .unwrap_or(target)
-}
-
-/// Short media type such as `json` or `html`, from the response `Content-Type`.
-fn content_type(record: &Exchange) -> Option<&str> {
-    let Outcome::Response(response) = record.outcome() else {
-        return None;
-    };
-    let media_type = response.media_type()?;
-    let subtype = media_type.subtype();
-    let subtype = subtype.rsplit('+').next().unwrap_or(subtype);
-    Some(subtype.strip_prefix("x-").unwrap_or(subtype))
 }
 
 /// Total time once nothing more will be observed, for sorting.
@@ -831,6 +883,24 @@ fn duration_text(record: &Exchange) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn status_context_filter_uses_numeric_code() -> Result<(), Box<dyn std::error::Error>> {
+        use http::{Method, StatusCode};
+        use http_inspector_analysis::filter::FilterQuery;
+        use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
+
+        let record = ExchangeBuilder::http(Method::GET, "http://fixture.test/")?
+            .respond(ResponseFixture::new(StatusCode::NOT_FOUND))?;
+        let (key, value) =
+            super::field_filter(super::Field::Status, &record).ok_or("missing filter")?;
+        let term = super::filter_menu::field_term(key, &value, false);
+        assert_eq!(term, "status:404");
+        let parsed = FilterQuery::parse(&term);
+        assert!(parsed.diagnostics.is_empty());
+        assert!(parsed.matches(&record));
+        Ok(())
+    }
+
     use super::*;
 
     #[test]
@@ -916,13 +986,11 @@ mod tests {
                     .iter()
                     .filter(|record| record.request().target().contains(query.as_str()))
                     .collect();
-                let opts = TableViewOptions {
-                    selected,
-                    shortcuts_allowed: crate::ui::request_shortcuts_allowed(ui.ctx()),
-                    saving_body: false,
-                    lang: Language::English,
-                };
-                if let Some(id) = table.show(ui, rows, opts).selected {
+                let shortcuts_allowed = crate::ui::request_shortcuts_allowed(ui.ctx());
+                if let Some(id) = table
+                    .show(ui, rows, selected, shortcuts_allowed, TableMenus::default())
+                    .selected
+                {
                     selected = Some(id);
                 }
             });
@@ -1031,16 +1099,7 @@ mod tests {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
                     .show(ui, |ui| {
-                        let _ = table.show(
-                            ui,
-                            Vec::new(),
-                            TableViewOptions {
-                                selected: None,
-                                shortcuts_allowed: false,
-                                saving_body: false,
-                                lang: Language::English,
-                            },
-                        );
+                        let _ = table.show(ui, Vec::new(), None, false, TableMenus::default());
                     });
             });
             output.textures_delta.clear();

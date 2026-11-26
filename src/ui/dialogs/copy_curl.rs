@@ -12,7 +12,13 @@ use http_inspector_interop::curl::{
 use crate::ui::AppAction;
 use crate::ui::i18n::{Language, Text, domain};
 use crate::ui::style::indicator;
+use crate::ui::style::theme::Palette;
 use crate::ui::style::tokens::Tone;
+
+/// Label shared by the request-list menu and the details panel.
+pub(crate) const fn copy_label(lang: Language) -> &'static str {
+    lang.text(Text::CtxCopyAsCurl)
+}
 
 /// How long a plain success notice stays before it hides itself.
 const SUCCESS_NOTICE: Duration = Duration::from_secs(4);
@@ -86,44 +92,37 @@ pub(crate) struct CurlCopy {
 }
 
 impl CurlCopy {
-    /// Shows the copy button for `record` and the redacted-header option.
-    pub(crate) fn controls(
-        &self,
-        ui: &mut egui::Ui,
-        record: &Exchange,
-        lang: Language,
-        actions: &mut Vec<AppAction>,
-    ) {
-        if copy_button(ui, record, lang).clicked() {
-            actions.push(AppAction::CopyCurl(record.id()));
-        }
+    /// The redaction choice for copied commands, in the Settings menu: it
+    /// applies to every copy, not to the selected request.
+    pub(crate) fn settings(&self, ui: &mut egui::Ui, lang: Language) -> Option<AppAction> {
+        ui.label(egui::RichText::new(copy_label(lang)).color(Palette::of(ui).secondary));
         let mut placeholders = self.redacted == RedactedHeaders::Placeholder;
         let hover = match lang {
             Language::English => format!(
-                "Authorization and Cookie values are never stored. When on, the copied command \
-                 carries them as {CURL_REDACTED_PLACEHOLDER} for you to fill in; when off, it \
-                 leaves them out."
+                "Copied commands carry {CURL_REDACTED_PLACEHOLDER} for Authorization and Cookie values, which are never stored."
             ),
             Language::Korean => format!(
-                "Authorization 및 Cookie 값은 저장되지 않습니다. 켜면 복사한 명령에 직접 채울 수 있도록 \
-                 {CURL_REDACTED_PLACEHOLDER} 자리표시자를 넣고, 끄면 해당 헤더를 제외합니다."
+                "저장되지 않는 Authorization 및 Cookie 값 자리에 {CURL_REDACTED_PLACEHOLDER} 자리표시자를 넣어 복사합니다."
             ),
         };
-        if ui
+        let changed = ui
             .checkbox(
                 &mut placeholders,
                 lang.pick("Redacted placeholders", "가려진 헤더 자리표시자"),
             )
             .on_hover_text(hover)
-            .changed()
-        {
-            let redacted = if placeholders {
-                RedactedHeaders::Placeholder
-            } else {
-                RedactedHeaders::Omit
-            };
-            actions.push(AppAction::SetCurlRedactions(redacted));
-        }
+            .changed();
+        let redacted = if placeholders {
+            RedactedHeaders::Placeholder
+        } else {
+            RedactedHeaders::Omit
+        };
+        changed.then_some(AppAction::SetCurlRedactions(redacted))
+    }
+
+    /// Reports whether [`Self::notice`] has anything to show.
+    pub(crate) const fn has_notice(&self) -> bool {
+        self.notice.is_some()
     }
 
     /// Copies `record` as a `curl` command, or explains why it was not copied.
@@ -195,10 +194,11 @@ impl CurlCopy {
 /// no request to copy. Other problems are reported when it is pressed.
 pub(crate) fn copy_button(ui: &mut egui::Ui, record: &Exchange, lang: Language) -> egui::Response {
     let unavailable = curl_unavailable_reason(record);
-    let response = ui.add_enabled(
-        unavailable.is_none(),
-        egui::Button::new(lang.text(Text::CtxCopyAsCurl)),
+    let button = crate::ui::workbench::controls::ghost(
+        copy_label(lang),
+        crate::ui::style::tokens::Layout::PANE_BUTTON_HEIGHT,
     );
+    let response = ui.add_enabled(unavailable.is_none(), button);
     match unavailable {
         Some(reason) => response.on_disabled_hover_text(domain::curl_unavailable(lang, &reason)),
         None => response.on_hover_text(lang.pick(

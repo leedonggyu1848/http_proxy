@@ -1,15 +1,18 @@
-//! Headers and Body tabs of the detail panel: keyboard switching and an
+//! Headers, Body, and Timing tabs of the detail panel: keyboard switching and an
 //! accessible tab list.
 
 use eframe::egui::{self, Key, Modifiers};
 
 use crate::ui::i18n::Language;
+use crate::ui::workbench::controls;
+use crate::ui::workbench::text::ShellText;
 
 /// Section of the selected request shown in the detail panel.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum DetailTab {
     Headers,
     Body,
+    Timing,
 }
 
 /// Direction of a keyboard tab switch.
@@ -20,12 +23,13 @@ enum TabStep {
 }
 
 impl DetailTab {
-    const ALL: [Self; 2] = [Self::Headers, Self::Body];
+    const ALL: [Self; 3] = [Self::Headers, Self::Body, Self::Timing];
 
     const fn title(self, lang: Language) -> &'static str {
         match self {
-            Self::Headers => lang.pick("Headers", "헤더"),
-            Self::Body => lang.pick("Body", "본문"),
+            Self::Headers => ShellText::Headers.text(lang),
+            Self::Body => ShellText::Body.text(lang),
+            Self::Timing => ShellText::Timing.text(lang),
         }
     }
 
@@ -75,55 +79,38 @@ pub(super) fn apply_shortcuts(ui: &egui::Ui, tab: &mut DetailTab) {
     });
 }
 
-/// Shows the tabs as an accessibility tab list whose items report selection
-/// instead of a toggle-button state, and returns the area the bar occupies.
-///
-/// The tab list scope sits inside `horizontal` so the bar stays one row tall;
-/// a scope with its own horizontal layout would claim the rest of the panel.
+/// Shows the tabs as text tabs in an accessibility tab list whose items
+/// report selection instead of a toggle-button state, and returns the area
+/// they occupy. Call it inside a pane header, whose height the tabs fill.
 pub(super) fn show(ui: &mut egui::Ui, current: &mut DetailTab, lang: Language) -> egui::Rect {
-    ui.horizontal(|ui| {
-        ui.scope_builder(
-            egui::UiBuilder::new()
-                .accessibility_role(egui::accesskit::Role::TabList)
-                .accessibility_label(lang.pick("Request details", "요청 상세")),
-            |ui| {
-                for tab in DetailTab::ALL {
-                    show_tab(ui, current, tab, lang);
-                }
-            },
-        );
+    controls::tab_list(ui, lang.pick("Request details", "요청 상세"), |ui| {
+        let mut area = egui::Rect::NOTHING;
+        for tab in DetailTab::ALL {
+            let selected = *current == tab;
+            let response = controls::text_tab(ui, selected, tab.title(lang));
+            if response.clicked() {
+                *current = tab;
+            }
+            area = area.union(response.rect);
+        }
+        area
     })
-    .response
-    .rect
-}
-
-fn show_tab(ui: &mut egui::Ui, current: &mut DetailTab, tab: DetailTab, lang: Language) {
-    let selected = *current == tab;
-    let title = tab.title(lang);
-    let response = ui.selectable_label(selected, title);
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::Role::Tab, ui.is_enabled(), selected, title)
-    });
-    ui.ctx().accesskit_node_builder(response.id, |node| {
-        node.clear_toggled();
-        node.set_selected(selected);
-    });
-    if response.clicked() {
-        *current = tab;
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::style::tokens::Layout;
+    use crate::ui::workbench::chrome;
 
     #[test]
     fn steps_wrap_around_both_ends() {
         assert_eq!(DetailTab::Headers.stepped(TabStep::Next), DetailTab::Body);
-        assert_eq!(DetailTab::Body.stepped(TabStep::Next), DetailTab::Headers);
+        assert_eq!(DetailTab::Body.stepped(TabStep::Next), DetailTab::Timing);
+        assert_eq!(DetailTab::Timing.stepped(TabStep::Next), DetailTab::Headers);
         assert_eq!(
             DetailTab::Headers.stepped(TabStep::Previous),
-            DetailTab::Body
+            DetailTab::Timing
         );
         assert_eq!(
             DetailTab::Body.stepped(TabStep::Previous),
@@ -182,15 +169,17 @@ mod tests {
         };
         let mut remaining = Vec::new();
         let mut bar = egui::Rect::NOTHING;
-        let mut row_height = 0.0;
         let mut output = ctx.run_ui(input, |ui| {
             apply_shortcuts(ui, &mut tab);
             remaining = ui.input(|input| input.events.clone());
-            row_height = ui.spacing().interact_size.y;
-            bar = show(ui, &mut tab, Language::English);
+            bar = chrome::pane_header(ui, "tabs", |ui| show(ui, &mut tab, Language::English));
         });
-        // The bar must leave the rest of the panel to the details below it.
-        assert!(bar.height() <= row_height + 1.0, "tab bar is {bar:?}");
+        // The tabs fill the pane header and leave the rest of the panel to
+        // the details below it.
+        assert!(
+            (bar.height() - Layout::PANE_HEADER_HEIGHT).abs() < 1.0,
+            "tab bar is {bar:?}"
+        );
         assert_eq!(tab, DetailTab::Body);
         output.textures_delta.clear();
         assert!(matches!(
@@ -236,6 +225,7 @@ mod tests {
             vec![
                 (egui::Role::Tab, "Headers".to_owned(), Some(false), None),
                 (egui::Role::Tab, "Body".to_owned(), Some(true), None),
+                (egui::Role::Tab, "Timing".to_owned(), Some(false), None),
             ]
         );
         Ok(())

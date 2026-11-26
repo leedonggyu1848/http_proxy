@@ -147,10 +147,10 @@ pub(crate) const fn failure_stage(lang: Language, stage: FailureStage) -> &'stat
         FailureStage::ConnectTimeout => lang.pick("Connection timeout", "연결 시간 초과"),
         FailureStage::Response => lang.pick("Response", "응답"),
         FailureStage::ResponseTimeout => lang.pick("Response timeout", "응답 시간 초과"),
-        FailureStage::Upgrade => lang.pick("Tunnel upgrade", "터널 업그레이드"),
-        FailureStage::ClientTls => lang.pick("Client TLS", "클라이언트 TLS"),
-        FailureStage::UpstreamTls => lang.pick("Upstream TLS", "업스트림 TLS"),
-        FailureStage::Tunnel => lang.pick("Tunnel", "터널"),
+        FailureStage::Upgrade => lang.pick("CONNECT upgrade", "CONNECT 업그레이드"),
+        FailureStage::ClientTls => lang.pick("Client TLS handshake", "클라이언트 TLS 핸드셰이크"),
+        FailureStage::UpstreamTls => lang.pick("Upstream TLS handshake", "업스트림 TLS 핸드셰이크"),
+        FailureStage::Tunnel => lang.pick("Tunnel relay", "터널 릴레이"),
     }
 }
 
@@ -602,7 +602,7 @@ pub(crate) fn curl_unavailable(lang: Language, reason: &CurlUnavailable) -> Stri
         CurlUnavailable::BodyInProgress => lang
             .pick(
                 "The request body is still being sent; try again when it ends",
-                "요청 본문이 아직 전송 중입니다. 완료 후 다시 시도하세요",
+                "요청 본문이 아직 전송 중이므로 완료 후 다시 시도하세요",
             )
             .to_owned(),
         CurlUnavailable::BodyIncomplete => lang
@@ -616,7 +616,7 @@ pub(crate) fn curl_unavailable(lang: Language, reason: &CurlUnavailable) -> Stri
                 "The request body was truncated: only {retained} of {observed} bytes are kept in memory, so the command was not copied"
             ),
             Language::Korean => format!(
-                "요청 본문이 잘렸습니다({observed}바이트 중 {retained}바이트만 보관됨). 정확한 명령을 만들 수 없어 복사하지 않았습니다"
+                "요청 본문이 잘려({observed}바이트 중 {retained}바이트만 보관됨) 원본 명령을 복사할 수 없습니다"
             ),
         },
         CurlUnavailable::BodyNotCaptured => lang
@@ -799,9 +799,14 @@ pub(crate) fn range_plan_incomplete_reason(lang: Language, plan: &RangePlan) -> 
 /// Translates body decode/format/image notes produced by domain crates into the active UI language.
 #[must_use]
 pub(crate) fn localize_content_notice(lang: Language, raw: &str) -> String {
-    if lang == Language::English {
-        return raw.to_owned();
+    match lang {
+        Language::English => raw.to_owned(),
+        Language::Korean => localize_content_notice_ko(raw),
     }
+}
+
+fn localize_content_notice_ko(raw: &str) -> String {
+    let lang = Language::Korean;
     if raw == "first 8 KiB of retained bytes" {
         return lang
             .text(Text::DetailBodyNoticeFirst8KiBRetained)
@@ -823,6 +828,11 @@ pub(crate) fn localize_content_notice(lang: Language, raw: &str) -> String {
     if let Some(rest) = raw.strip_prefix("Source map: ")
         && let Some(url) = rest.strip_suffix(" (not fetched).")
     {
+        let url = if url == "inline data: URL" {
+            "인라인 data: URL"
+        } else {
+            url
+        };
         return format!("소스 맵: {url} (가져오지 않음).");
     }
     if raw
@@ -830,23 +840,491 @@ pub(crate) fn localize_content_notice(lang: Language, raw: &str) -> String {
     {
         return lang.text(Text::DetailBodyNoticeCssIncomplete).to_owned();
     }
+    if let Some(rest) = raw.strip_prefix("XML is incomplete (")
+        && let Some(reason) = rest.strip_suffix("); showing the part read so far.")
+    {
+        let reason = localize_format_reason_ko(reason);
+        return format!("XML이 불완전합니다({reason}). 지금까지 읽은 부분만 표시합니다.");
+    }
+    if let Some(rest) =
+        raw.strip_prefix("The script preview is incomplete: it ends inside an unfinished ")
+        && let Some(unfinished) = rest.strip_suffix(". Formatted up to where it ends.")
+    {
+        let kind = localize_js_unfinished_ko(unfinished);
+        return format!(
+            "스크립트 미리보기가 불완전합니다({kind} 중간에서 끝남). 끝부분까지만 서식을 적용했습니다."
+        );
+    }
     if let Some(rest) = raw.strip_prefix("Showing raw text: could not format as ") {
-        return format!("원문으로 표시: 형식을 변환하지 못했습니다({rest})");
+        let trimmed = rest.strip_suffix('.').unwrap_or(rest);
+        if let Some((label, reason)) = trimmed.split_once(": ") {
+            let label = localize_format_label_ko(label);
+            let reason = localize_format_reason_ko(reason);
+            return format!("원문으로 표시: {label} 서식을 적용하지 못했습니다({reason}).");
+        }
+        return format!("원문으로 표시: 서식을 적용하지 못했습니다({trimmed}).");
     }
-    if raw == "text is not drawn; use Source to read it" {
-        return lang.text(Text::DetailBodyImageSvgTextNote).to_owned();
+    if let Some(translated) = localize_image_note_ko(raw) {
+        return translated;
     }
-    if raw == "embedded images and foreign content are not loaded" {
-        return lang.text(Text::DetailBodyImageSvgExternalNote).to_owned();
-    }
-    if let Some(rest) = raw.strip_prefix("Could not decompress preview (") {
-        return format!("미리보기 압축 해제 실패 ({rest}");
-    }
-    if let Some(rest) = raw.strip_prefix("Could not decompress preview: ") {
-        return format!("미리보기 압축 해제 실패: {rest}");
-    }
-    if raw.starts_with("Too many Content-Encoding layers") {
-        return decode_error(lang, &DecodeError::TooManyLayers);
+    if let Some(translated) = localize_decode_unavailable_ko(raw) {
+        return translated;
     }
     raw.to_owned()
+}
+
+fn localize_js_unfinished_ko(unfinished: &str) -> &str {
+    match unfinished {
+        "block or object" => "블록 또는 객체",
+        "parenthesis" => "괄호",
+        "array or index" => "배열 또는 인덱스",
+        "comment" => "주석",
+        "regular expression" => "정규식",
+        "string" => "문자열",
+        "template literal" => "템플릿 리터럴",
+        other => other,
+    }
+}
+
+fn localize_format_label_ko(label: &str) -> &str {
+    match label {
+        "Form" => "폼",
+        "Text" => "텍스트",
+        other => other,
+    }
+}
+
+fn localize_format_reason_ko(reason: &str) -> String {
+    match reason {
+        "JSON preview nesting exceeds 64 levels" => {
+            return "JSON 미리보기 중첩이 64단계를 초과했습니다".to_owned();
+        }
+        "unexpected data after JSON value" => {
+            return "JSON 값 뒤에 예상치 못한 데이터가 있습니다".to_owned();
+        }
+        "invalid JSON offset" => return "잘못된 JSON 오프셋입니다".to_owned(),
+        "unfinished JSON value" => return "완성되지 않은 JSON 값입니다".to_owned(),
+        "invalid JSON whitespace" => return "잘못된 JSON 공백입니다".to_owned(),
+        "unexpected JSON token" => return "예상치 못한 JSON 토큰입니다".to_owned(),
+        "invalid JSON value" => return "잘못된 JSON 값입니다".to_owned(),
+        "invalid JSON span" => return "잘못된 JSON 범위입니다".to_owned(),
+        "missing JSON node" => return "누락된 JSON 노드입니다".to_owned(),
+        "expected JSON key" => return "JSON 키가 필요합니다".to_owned(),
+        "expected comma or closing bracket" => {
+            return "쉼표 또는 닫는 괄호가 필요합니다".to_owned();
+        }
+        "no tags found" => return "태그를 찾을 수 없습니다".to_owned(),
+        "no elements found" => return "요소를 찾을 수 없습니다".to_owned(),
+        _ => {}
+    }
+    if let Some(rest) = reason.strip_prefix("more than ")
+        && let Some(nodes) = rest.strip_suffix(" nodes")
+    {
+        return format!("노드가 {nodes}개를 초과했습니다");
+    }
+    if let Some(rest) = reason.strip_prefix("nested deeper than ")
+        && let Some(depth) = rest.strip_suffix(" elements")
+    {
+        return format!("요소 중첩이 {depth}단계를 초과했습니다");
+    }
+    if let Some(rest) = reason.strip_prefix('<')
+        && let Some(name) = rest.strip_suffix("> is not closed")
+    {
+        return format!("<{name}> 태그가 닫히지 않았습니다");
+    }
+    if let Some(offset) = reason.strip_prefix("unterminated regular expression at byte ") {
+        return format!("{offset}바이트에서 닫히지 않은 정규식");
+    }
+    if let Some(offset) = reason.strip_prefix("unterminated string at byte ") {
+        return format!("{offset}바이트에서 닫히지 않은 문자열");
+    }
+    if let Some(rest) = reason.strip_prefix("unbalanced ")
+        && let Some((bracket, offset)) = rest.rsplit_once(" at byte ")
+    {
+        return format!("{offset}바이트에서 짝이 맞지 않는 {bracket}");
+    }
+    if let Some(rest) = reason.strip_prefix("unexpected word ")
+        && let Some((word, offset)) = rest.rsplit_once(" at byte ")
+    {
+        return format!("{offset}바이트에서 예상치 못한 토큰 {word}");
+    }
+    if let Some(rest) = reason.strip_prefix("unexpected ")
+        && let Some((found, offset)) = rest.rsplit_once(" at byte ")
+    {
+        return format!("{offset}바이트에서 예상치 못한 문자 {found}");
+    }
+    if let Some(rest) = reason.strip_prefix("tree limit exceeded (")
+        && let Some(inner) = rest.strip_suffix(" nodes)")
+        && let Some((depth, nodes)) = inner.split_once(" levels, ")
+    {
+        return format!("트리 한도를 초과했습니다(깊이 {depth}, 노드 {nodes})");
+    }
+    if let Some((source, offset)) = reason.rsplit_once(" at byte ") {
+        return format!("{offset}바이트에서 구문 오류({source})");
+    }
+    reason.to_owned()
+}
+
+fn localize_image_note_ko(raw: &str) -> Option<String> {
+    let lang = Language::Korean;
+    if raw == "text is not drawn; use Source to read it" {
+        return Some(lang.text(Text::DetailBodyImageSvgTextNote).to_owned());
+    }
+    if raw == "embedded images and foreign content are not loaded" {
+        return Some(lang.text(Text::DetailBodyImageSvgExternalNote).to_owned());
+    }
+    if let Some(rest) = raw.strip_prefix("drawn scaled down from ") {
+        return Some(format!("{rest}에서 축소하여 표시"));
+    }
+    if let Some(rest) = raw.strip_prefix("more than ")
+        && let Some(frames) = rest.strip_suffix(" frames, first frame shown")
+    {
+        return Some(format!("{frames}프레임 초과, 첫 프레임만 표시"));
+    }
+    if let Some(frames) = raw.strip_suffix(" frames, first frame shown") {
+        return Some(format!("{frames}프레임 중 첫 프레임 표시"));
+    }
+    None
+}
+
+fn localize_decode_unavailable_ko(raw: &str) -> Option<String> {
+    let lang = Language::Korean;
+    if raw == "Too many Content-Encoding layers to preview safely." {
+        return Some(decode_error(lang, &DecodeError::TooManyLayers));
+    }
+    if let Some(rest) = raw.strip_prefix("Unsupported Content-Encoding: ")
+        && let Some(encoding) = rest.strip_suffix(". Raw bytes are retained in the full log.")
+    {
+        return Some(format!(
+            "지원하지 않는 Content-Encoding입니다({encoding}). 원본 바이트는 전체 로그에 보관됩니다."
+        ));
+    }
+    if let Some(rest) = raw.strip_prefix("Could not decompress preview (")
+        && let Some((names, detail)) = rest.split_once("): ")
+    {
+        if let Some(error) = detail.strip_suffix(
+            ". The captured data may be incomplete, invalid, or exceed preview limits.",
+        ) {
+            return Some(format!(
+                "미리보기 압축({names})을 해제하지 못했습니다: {error}. 캡처된 데이터가 불완전하거나 잘못되었거나 미리보기 한도를 초과했을 수 있습니다."
+            ));
+        }
+        return Some(format!(
+            "미리보기 압축({names})을 해제하지 못했습니다: {detail}"
+        ));
+    }
+    if let Some(rest) = raw.strip_prefix("Could not decompress preview: ") {
+        return Some(format!("미리보기 압축을 해제하지 못했습니다: {rest}"));
+    }
+    if let Some(rest) = raw.strip_prefix("Could not decompress the body (")
+        && let Some((names, source)) = rest.split_once("): ")
+    {
+        return Some(format!(
+            "본문 압축({names})을 해제하지 못했습니다: {source}"
+        ));
+    }
+    if let Some(source) = raw.strip_prefix("Could not decompress the body: ") {
+        return Some(format!("본문 압축을 해제하지 못했습니다: {source}"));
+    }
+    if let Some(rest) = raw.strip_prefix("The decompressed body is larger than ")
+        && let Some(mib) = rest.strip_suffix(" MiB.")
+    {
+        return Some(format!("압축을 해제한 본문이 {mib} MiB를 초과합니다."));
+    }
+    None
+}
+
+/// Translates `LaunchPort::warning` text produced by `http-inspector-core`.
+#[must_use]
+pub(crate) fn localize_port_launch_warning(lang: Language, warning: &str) -> String {
+    match lang {
+        Language::English => warning.to_owned(),
+        Language::Korean => {
+            const ENV_SEPARATOR: &str = " HTTP_INSPECTOR_PORT ignored: ";
+            if let Some((arg_part, env_rest)) = warning.split_once(ENV_SEPARATOR) {
+                let first = localize_port_warning_part_ko(arg_part);
+                let second = localize_port_warning_part_ko(&format!(
+                    "HTTP_INSPECTOR_PORT ignored: {env_rest}"
+                ));
+                return format!("{first} {second}");
+            }
+            localize_port_warning_part_ko(warning)
+        }
+    }
+}
+
+fn localize_port_warning_part_ko(part: &str) -> String {
+    if part == "--port ignored: it needs a value." {
+        return "--port 옵션 무시됨: 값이 필요합니다.".to_owned();
+    }
+    if let Some(rest) = part.strip_prefix("Unknown argument \"")
+        && let Some(arg) = rest.strip_suffix("\" ignored. Use --port <number>.")
+    {
+        return format!("알 수 없는 인수 \"{arg}\" 무시됨. --port <번호> 형식을 사용하세요.");
+    }
+    if let Some(error) = part.strip_prefix("--port ignored: ") {
+        return format!("--port 옵션 무시됨: {}", localize_port_error_text_ko(error));
+    }
+    if let Some(error) = part.strip_prefix("HTTP_INSPECTOR_PORT ignored: ") {
+        return format!(
+            "HTTP_INSPECTOR_PORT 무시됨: {}",
+            localize_port_error_text_ko(error)
+        );
+    }
+    part.to_owned()
+}
+
+fn localize_port_error_text_ko(raw: &str) -> String {
+    let lang = Language::Korean;
+    if raw == "Enter a port number, or 0 to pick a free port." {
+        return port_error(lang, &PortError::Empty);
+    }
+    if let Some(rest) = raw.strip_prefix('"')
+        && let Some(value) = rest
+            .strip_suffix("\" is not a port. Enter a number from 0 to 65535 (0 picks a free port).")
+    {
+        return port_error(lang, &PortError::Invalid(value.to_owned()));
+    }
+    raw.to_owned()
+}
+
+/// Translates full session log initialization errors.
+#[must_use]
+pub(crate) fn full_log_error(lang: Language, error: &io::Error) -> String {
+    match lang {
+        Language::English => format!("Full log unavailable: {error}"),
+        Language::Korean => format!("전체 로그를 사용할 수 없습니다: {error}"),
+    }
+}
+
+/// Translates runtime errors reported by [`http_inspector_core::recording::FullLog::error`].
+#[must_use]
+pub(crate) fn localize_full_log_runtime_error(lang: Language, raw: &str) -> String {
+    match lang {
+        Language::English => raw.to_owned(),
+        Language::Korean => {
+            if raw
+                == "Session logging stopped because its writer disconnected; the log is incomplete"
+            {
+                return "기록기 연결이 끊어져 세션 로깅이 중지되었으며 로그가 불완전합니다"
+                    .to_owned();
+            }
+            if raw == "The session journal queue is unavailable; the log is incomplete" {
+                return "세션 저널 대기열을 사용할 수 없어 로그가 불완전합니다".to_owned();
+            }
+            if let Some(detail) =
+                raw.strip_prefix("Session logging failed; the log is incomplete: ")
+            {
+                return format!("세션 로깅에 실패하여 로그가 불완전합니다: {detail}");
+            }
+            if raw == "Session logging is busy; retry saving the log shortly" {
+                return "세션 로깅이 사용 중입니다. 잠시 후 다시 저장하세요".to_owned();
+            }
+            if raw == "The session journal snapshot ended early" {
+                return "세션 저널 스냅샷이 예상보다 일찍 끝났습니다".to_owned();
+            }
+            raw.to_owned()
+        }
+    }
+}
+
+/// Translates structured request filter diagnostics from `http-inspector-analysis`.
+#[must_use]
+pub(crate) fn localize_filter_diagnostic(lang: Language, message: &str) -> String {
+    match lang {
+        Language::English => message.to_owned(),
+        Language::Korean => {
+            if message == "Unclosed quote" {
+                return "닫히지 않은 따옴표".to_owned();
+            }
+            if message == "Empty search term" {
+                return "비어 있는 검색어".to_owned();
+            }
+            if let Some(rest) = message.strip_prefix("Reserved filter key `")
+                && let Some(key) = rest.strip_suffix('`')
+            {
+                return format!("예약된 필터 키 `{key}`");
+            }
+            if let Some(rest) = message.strip_prefix("Unknown filter key `")
+                && let Some(key) = rest.strip_suffix('`')
+            {
+                return format!("알 수 없는 필터 키 `{key}`");
+            }
+            if let Some(rest) = message.strip_prefix("Missing value for `")
+                && let Some(key) = rest.strip_suffix('`')
+            {
+                return format!("`{key}` 필터 값이 비어 있습니다");
+            }
+            if let Some(rest) = message.strip_prefix("Invalid ")
+                && let Some((key, value)) = rest.split_once(" value `")
+                && let Some(value) = value.strip_suffix('`')
+            {
+                return format!("잘못된 {key} 값 `{value}`");
+            }
+            message.to_owned()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+
+    use http_inspector_analysis::filter::FilterQuery;
+    use http_inspector_content::decode::{BodyText, decode};
+    use http_inspector_content::format::{BodyFormat, ViewMode, format as format_body};
+    use http_inspector_core::settings::port::launch_port;
+
+    use super::*;
+
+    #[test]
+    fn localize_content_notice_covers_xml_js_and_decode_messages()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let xml = format_body(BodyFormat::Xml, ViewMode::Pretty, "<root><child>");
+        let xml_notice = xml.notices.first().map(|notice| notice.text.as_str());
+        assert!(xml_notice.is_some());
+        if let Some(raw) = xml_notice {
+            assert_eq!(localize_content_notice(Language::English, raw), raw);
+            let ko = localize_content_notice(Language::Korean, raw);
+            assert!(ko.contains("XML이 불완전합니다"), "{ko}");
+            assert!(ko.contains("<child> 태그가 닫히지 않았습니다"), "{ko}");
+        }
+
+        let js = format_body(
+            BodyFormat::JavaScript,
+            ViewMode::Pretty,
+            "function f() { const s = \"abc",
+        );
+        let js_notice = js.notices.first().map(|notice| notice.text.as_str());
+        assert!(js_notice.is_some());
+        if let Some(raw) = js_notice {
+            let ko = localize_content_notice(Language::Korean, raw);
+            assert!(ko.contains("스크립트 미리보기가 불완전합니다"), "{ko}");
+            assert!(ko.contains("문자열 중간에서 끝남"), "{ko}");
+        }
+
+        let BodyText::Unavailable(bad_gzip) = decode(b"invalid gzip", &["gzip"], true) else {
+            return Err("invalid gzip should be unavailable".into());
+        };
+        let ko_bad_gzip = localize_content_notice(Language::Korean, &bad_gzip);
+        assert!(
+            ko_bad_gzip.contains("미리보기 압축(gzip)을 해제하지 못했습니다"),
+            "{ko_bad_gzip}"
+        );
+        assert!(
+            ko_bad_gzip.contains("캡처된 데이터가 불완전하거나"),
+            "{ko_bad_gzip}"
+        );
+
+        let BodyText::Unavailable(unsupported) = decode(b"hello", &["compress"], true) else {
+            return Err("unsupported encoding should be unavailable".into());
+        };
+        let ko_unsupported = localize_content_notice(Language::Korean, &unsupported);
+        assert!(
+            ko_unsupported.contains("지원하지 않는 Content-Encoding입니다"),
+            "{ko_unsupported}"
+        );
+
+        let BodyText::Unavailable(too_many) = decode(b"hello", &["gzip,gzip,gzip,gzip,gzip"], true)
+        else {
+            return Err("too many layers should be unavailable".into());
+        };
+        let ko_too_many = localize_content_notice(Language::Korean, &too_many);
+        assert!(
+            ko_too_many.contains("Content-Encoding 중첩이 너무 많아"),
+            "{ko_too_many}"
+        );
+
+        let scaled =
+            localize_content_notice(Language::Korean, "drawn scaled down from 4000×3000 px");
+        assert_eq!(scaled, "4000×3000 px에서 축소하여 표시");
+        let frames = localize_content_notice(Language::Korean, "12 frames, first frame shown");
+        assert_eq!(frames, "12프레임 중 첫 프레임 표시");
+        Ok(())
+    }
+
+    #[test]
+    fn localize_port_launch_warning_covers_args_and_env() {
+        let args = |values: &[&str]| -> Vec<OsString> {
+            std::iter::once("http-proxy")
+                .chain(values.iter().copied())
+                .map(OsString::from)
+                .collect()
+        };
+
+        let missing = launch_port(args(&["--port"]), None, None)
+            .warning
+            .unwrap_or_default();
+        assert_eq!(
+            localize_port_launch_warning(Language::Korean, &missing),
+            "--port 옵션 무시됨: 값이 필요합니다."
+        );
+
+        let unknown = launch_port(args(&["--verbose"]), None, None)
+            .warning
+            .unwrap_or_default();
+        assert_eq!(
+            localize_port_launch_warning(Language::Korean, &unknown),
+            "알 수 없는 인수 \"--verbose\" 무시됨. --port <번호> 형식을 사용하세요."
+        );
+
+        let both = launch_port(args(&["--port", "http"]), Some("x".into()), None)
+            .warning
+            .unwrap_or_default();
+        let ko_both = localize_port_launch_warning(Language::Korean, &both);
+        assert!(ko_both.contains("--port 옵션 무시됨:"), "{ko_both}");
+        assert!(ko_both.contains("HTTP_INSPECTOR_PORT 무시됨:"), "{ko_both}");
+        assert!(!ko_both.contains("is not a port"), "{ko_both}");
+        assert_eq!(localize_port_launch_warning(Language::English, &both), both);
+    }
+
+    #[test]
+    fn localize_full_log_errors_translates_known_messages() {
+        let init = full_log_error(Language::Korean, &io::Error::other("disk full"));
+        assert_eq!(init, "전체 로그를 사용할 수 없습니다: disk full");
+
+        assert_eq!(
+            localize_full_log_runtime_error(
+                Language::Korean,
+                "Session logging stopped because its writer disconnected; the log is incomplete"
+            ),
+            "기록기 연결이 끊어져 세션 로깅이 중지되었으며 로그가 불완전합니다"
+        );
+        assert_eq!(
+            localize_full_log_runtime_error(
+                Language::Korean,
+                "The session journal queue is unavailable; the log is incomplete"
+            ),
+            "세션 저널 대기열을 사용할 수 없어 로그가 불완전합니다"
+        );
+        assert_eq!(
+            localize_full_log_runtime_error(
+                Language::Korean,
+                "Session logging failed; the log is incomplete: permission denied"
+            ),
+            "세션 로깅에 실패하여 로그가 불완전합니다: permission denied"
+        );
+    }
+
+    #[test]
+    fn localize_filter_diagnostic_translates_parser_messages() {
+        for (input, expected_substring) in [
+            ("\"unclosed", "닫히지 않은 따옴표"),
+            ("foo:bar", "알 수 없는 필터 키 `foo`"),
+            ("body:test", "예약된 필터 키 `body`"),
+            ("status:", "`status` 필터 값이 비어 있습니다"),
+            ("status:abc", "잘못된 status 값 `abc`"),
+        ] {
+            let parsed = FilterQuery::parse(input);
+            let diag = parsed
+                .diagnostics
+                .first()
+                .map_or_default(|d| d.message.as_str());
+            let ko = localize_filter_diagnostic(Language::Korean, diag);
+            assert!(
+                ko.contains(expected_substring),
+                "input={input:?}, diag={diag:?}, ko={ko:?}"
+            );
+        }
+    }
 }

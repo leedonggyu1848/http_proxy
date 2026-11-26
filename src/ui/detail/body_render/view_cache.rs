@@ -21,6 +21,17 @@ pub(super) struct RenderStyle {
     pub(super) language: Language,
 }
 
+impl RenderStyle {
+    /// The theme, monospace font, and UI language `ui` draws with this frame.
+    pub(super) fn of(ui: &egui::Ui, language: Language) -> Self {
+        Self {
+            theme: ui.ctx().theme(),
+            font: egui::TextStyle::Monospace.resolve(ui.style()),
+            language,
+        }
+    }
+}
+
 pub(super) enum Content {
     Unavailable(String),
     Tree {
@@ -134,7 +145,7 @@ fn layout_text(
         };
     };
     let matches = BodyMatches::find(
-        &query.matcher,
+        &query.terms,
         &job,
         lines.as_deref(),
         MatchColors::for_theme(style.theme),

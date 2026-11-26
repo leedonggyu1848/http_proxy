@@ -1,5 +1,6 @@
 //! Draws prepared body text and trees and manages widget selection and scrolling.
 
+mod gutter;
 mod layout;
 mod view_cache;
 
@@ -15,14 +16,17 @@ use http_inspector_exchange::BodySide;
 use crate::ui::detail::body_cache::BodySource;
 use crate::ui::detail::body_matches::Hit;
 use crate::ui::detail::tree_view::TreeView;
-use crate::ui::i18n::{Language, domain};
+use crate::ui::i18n::Language;
 use crate::ui::style::theme::Palette;
-use crate::ui::style::tokens::Layout;
+use crate::ui::style::tokens::{Layout, TypeScale};
 
 pub(crate) use view_cache::BodyViewCache;
 use view_cache::{Content, RenderStyle};
 
 impl BodyViewCache {
+    /// Prepares and draws the body of `source`, as [`Self::prepare`] and
+    /// [`Self::render`] do one after the other.
+    #[cfg(test)]
     pub(super) fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -30,22 +34,48 @@ impl BodyViewCache {
         mode: ViewMode,
         lang: Language,
     ) -> Option<String> {
-        let style = RenderStyle {
-            theme: ui.ctx().theme(),
-            font: egui::TextStyle::Monospace.resolve(ui.style()),
-            language: lang,
-        };
+        let _ = self.prepare(ui, source, mode, lang);
+        self.render(ui, source.side, mode, lang)
+    }
+
+    /// Builds the view of `source` again when its bytes, mode, search, or
+    /// style changed, and returns the format it was read as, if any.
+    pub(super) fn prepare(
+        &mut self,
+        ui: &egui::Ui,
+        source: &BodySource<'_>,
+        mode: ViewMode,
+        lang: Language,
+    ) -> Option<BodyFormat> {
+        let style = RenderStyle::of(ui, lang);
         let side = self.side(source.side);
         if side.update(ui.ctx(), source, mode, &style) {
             reset_text_selection(ui, source.side);
         }
+        match side.shown.as_ref()? {
+            Content::Unavailable(_) => None,
+            Content::Tree { format, .. } | Content::Ready { format, .. } => Some(*format),
+        }
+    }
+
+    /// Draws the view [`Self::prepare`] built for `side`. Returns text the
+    /// user chose to copy.
+    pub(super) fn render(
+        &mut self,
+        ui: &mut egui::Ui,
+        side: BodySide,
+        mode: ViewMode,
+        lang: Language,
+    ) -> Option<String> {
+        let style = RenderStyle::of(ui, lang);
+        let view = self.side(side);
         render(
             ui,
-            side.shown.as_mut()?,
-            source.side,
+            view.shown.as_mut()?,
+            side,
             mode,
             &style,
-            side.tree.as_mut(),
+            view.tree.as_mut(),
         )
     }
 }
@@ -54,18 +84,20 @@ fn render(
     ui: &mut egui::Ui,
     content: &mut Content,
     side: BodySide,
-    mode: ViewMode,
+    _mode: ViewMode,
     style: &RenderStyle,
     tree: Option<&mut TreeView>,
 ) -> Option<String> {
     let lang = style.language;
-    let (format, notices, job, lines, matches, galley) = match content {
+    let (notices, job, lines, matches, galley) = match content {
         Content::Unavailable(message) => {
-            ui.colored_label(Palette::of(ui).warning, message.as_str());
+            padded(ui, |ui| {
+                ui.colored_label(Palette::of(ui).warning, message.as_str());
+            });
             return None;
         }
-        Content::Tree { format, notices } => {
-            render_header(ui, *format, notices, mode, lang);
+        Content::Tree { notices, .. } => {
+            render_notices(ui, notices);
             return ui
                 .push_id(("body-tree", side), |ui| {
                     tree.and_then(|view| view.show(ui, style.theme, &style.font, lang))
@@ -73,17 +105,17 @@ fn render(
                 .inner;
         }
         Content::Ready {
-            format,
             notices,
             job,
             lines,
             matches,
             galley,
-        } => (*format, &*notices, job, lines, matches, galley),
+            ..
+        } => (&*notices, job, lines, matches, galley),
     };
-    render_header(ui, format, notices, mode, lang);
+    render_notices(ui, notices);
     let scroll = matches.as_mut().and_then(|marked| {
-        if marked.matches.controls(ui, lang) {
+        if padded(ui, |ui| marked.matches.controls(ui, lang)) {
             (*job, *lines) = marked.matches.mark(&marked.job, marked.lines.as_deref());
             *galley = None;
         }
@@ -107,17 +139,33 @@ fn render(
             }
         }
     };
-    let output = egui::TextEdit::multiline(&mut text)
-        .id(body_text_id(ui, side))
-        .font(egui::TextStyle::Monospace)
-        .desired_rows(8)
-        .desired_width(f32::INFINITY)
-        .layouter(&mut layouter)
-        .show(ui);
+    let id = body_text_id(ui, side);
+    let lines_in_text = job.text.lines().count().max(1);
+    let output = gutter::beside_text(ui, lines_in_text, |ui| {
+        egui::TextEdit::multiline(&mut text)
+            .id(id)
+            .font(egui::TextStyle::Monospace)
+            .frame(egui::Frame::NONE)
+            .desired_rows(1)
+            .desired_width(f32::INFINITY)
+            .layouter(&mut layouter)
+            .show(ui)
+    });
     if let Some(hit) = scroll {
         scroll_to_hit(ui, &output, &job.text, &hit);
     }
     None
+}
+
+/// Runs `add` inside the padding of a one-line pane row.
+fn padded<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::Frame::new()
+        .inner_margin(Layout::PANE_ROW_MARGIN)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui)
+        })
+        .inner
 }
 
 /// Persistent widget id for one side's non-numbered read-only body text view.
@@ -151,37 +199,24 @@ fn scroll_to_hit(ui: &egui::Ui, output: &egui::text_edit::TextEditOutput, text: 
     ui.scroll_to_rect(rect, Some(egui::Align::Center));
 }
 
-/// The format and view mode, then each notice in order.
-fn render_header(
-    ui: &mut egui::Ui,
-    format: BodyFormat,
-    notices: &[Notice],
-    mode: ViewMode,
-    lang: Language,
-) {
-    let label = match lang {
-        Language::English => format!(
-            "Format: {} · {}",
-            domain::body_format(lang, format),
-            domain::view_mode(lang, mode)
-        ),
-        Language::Korean => format!(
-            "형식: {} · {}",
-            domain::body_format(lang, format),
-            domain::view_mode(lang, mode)
-        ),
-    };
-    ui.weak(label);
-    for notice in notices {
-        match notice.level {
-            NoticeLevel::Info => {
-                ui.weak(notice.text.as_str());
-            }
-            NoticeLevel::Warning => {
-                ui.colored_label(Palette::of(ui).warning, notice.text.as_str());
+/// Each notice of the view, in order: why the view ends early, how the
+/// body was decoded, or why another view was shown instead.
+fn render_notices(ui: &mut egui::Ui, notices: &[Notice]) {
+    if notices.is_empty() {
+        return;
+    }
+    padded(ui, |ui| {
+        for notice in notices {
+            match notice.level {
+                NoticeLevel::Info => {
+                    ui.weak(notice.text.as_str());
+                }
+                NoticeLevel::Warning => {
+                    ui.colored_label(Palette::of(ui).warning, notice.text.as_str());
+                }
             }
         }
-    }
+    });
 }
 
 /// Draws `lines` with a line number gutter, laying out only the rows that
@@ -193,9 +228,7 @@ fn render_numbered_lines(
     side: BodySide,
     scroll_to: Option<usize>,
 ) {
-    let font = egui::TextStyle::Monospace.resolve(ui.style());
-    let row_height = ui.fonts_mut(|fonts| fonts.row_height(&font));
-    let digits = lines.len().to_string().len();
+    let row_height = TypeScale::DATA_LINE_HEIGHT;
     let mut area = egui::ScrollArea::both()
         .id_salt(("body-lines", side))
         .max_height(Layout::BODY_LINE_VIEW_HEIGHT)
@@ -210,7 +243,10 @@ fn render_numbered_lines(
         let top = line as f32 * (row_height + spacing);
         area = area.vertical_scroll_offset((top - Layout::BODY_LINE_VIEW_HEIGHT / 2.0).max(0.0));
     }
+    let gutter_width = gutter::width(ui, lines.len());
     area.show_rows(ui, row_height, lines.len(), |ui, rows| {
+        let top = ui.cursor().top();
+        let mut bottom = top;
         for number in rows {
             let Some(line) = lines.get(number) else {
                 break;
@@ -219,17 +255,16 @@ fn render_numbered_lines(
             // the fixed row height `show_rows` relies on.
             let row_size = egui::vec2(ui.available_width(), row_height);
             let layout = egui::Layout::left_to_right(egui::Align::Min);
-            ui.allocate_ui_with_layout(row_size, layout, |ui| {
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(format!("{:>digits$}", number + 1))
-                            .font(font.clone())
-                            .weak(),
-                    )
-                    .selectable(false),
-                );
+            let row = ui.allocate_ui_with_layout(row_size, layout, |ui| {
+                gutter::number(ui, number + 1, gutter_width, row_height);
                 ui.add(egui::Label::new(line.clone()).wrap_mode(egui::TextWrapMode::Extend));
             });
+            bottom = row.response.rect.bottom();
         }
+        gutter::paint_edge(
+            ui,
+            ui.max_rect().left() + gutter_width,
+            egui::Rangef::new(top, bottom),
+        );
     });
 }

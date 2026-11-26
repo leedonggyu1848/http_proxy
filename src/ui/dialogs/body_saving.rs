@@ -18,6 +18,8 @@ use crate::ui::AppAction;
 use crate::ui::style::indicator;
 use crate::ui::style::theme::Palette;
 use crate::ui::style::tokens::Tone;
+use crate::ui::workbench::controls;
+use crate::ui::workbench::text::{self, ShellText};
 
 use super::background_task::{BackgroundTask, TaskPoll};
 
@@ -114,6 +116,37 @@ impl BodySaveFailure {
     }
 }
 
+/// Reason saving the body store limit setting failed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum LimitSaveError {
+    DirectoryUnavailable,
+    InvalidPath,
+    Io(String),
+}
+
+impl LimitSaveError {
+    fn localized(&self, lang: Language) -> String {
+        match self {
+            Self::DirectoryUnavailable => lang
+                .pick(
+                    "settings directory unavailable",
+                    "설정 폴더를 사용할 수 없습니다",
+                )
+                .to_owned(),
+            Self::InvalidPath => lang
+                .pick("invalid settings path", "유효하지 않은 설정 경로입니다")
+                .to_owned(),
+            Self::Io(detail) => detail.clone(),
+        }
+    }
+}
+
+impl From<io::Error> for LimitSaveError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error.to_string())
+    }
+}
+
 /// Outcome of the most recent single-body save attempt.
 #[derive(Debug, Eq, PartialEq)]
 enum SaveStatus {
@@ -127,7 +160,7 @@ pub(crate) struct BodySaving {
     init_error: Option<InitError>,
     limit_mib: u64,
     settings_path: Option<PathBuf>,
-    settings_error: Option<String>,
+    settings_error: Option<LimitSaveError>,
     pending: Option<BackgroundTask<SavedBody>>,
     status: Option<SaveStatus>,
     confirmation: Option<Confirmation>,
@@ -210,23 +243,8 @@ impl BodySaving {
         self.store.as_ref()
     }
 
-    /// The request and response `Save … body ▼` menus of the Body tab.
-    pub(crate) fn menus(
-        &self,
-        ui: &mut egui::Ui,
-        record: &Exchange,
-        lang: Language,
-    ) -> Option<AppAction> {
-        ui.horizontal_wrapped(|ui| {
-            let request = self.menu(ui, record, BodySide::Request, lang);
-            let response = self.menu(ui, record, BodySide::Response, lang);
-            request.or(response)
-        })
-        .inner
-    }
-
-    /// One `Save … body ▼` menu of the Body tab.
-    fn menu(
+    /// The `Save` menu in the header of one body section of the Body tab.
+    pub(crate) fn menu(
         &self,
         ui: &mut egui::Ui,
         record: &Exchange,
@@ -237,34 +255,39 @@ impl BodySaving {
             .store
             .as_ref()
             .and_then(|store| store.body(record.id(), side));
-        let label = match side {
-            BodySide::Request => lang.pick("Save request body ▼", "요청 본문 저장 ▼"),
-            BodySide::Response => lang.pick("Save response body ▼", "응답 본문 저장 ▼"),
-        };
         let enabled = stored.is_some() && !self.is_busy();
-        let response = ui.add_enabled_ui(enabled, |ui| {
-            ui.menu_button(label, |ui| {
-                if let Some(stored) = stored {
-                    ui.weak(stored_text(&stored, lang));
-                }
-                for format in [SaveFormat::Decoded, SaveFormat::AsReceived] {
-                    let (text, hover) = format_text(format, lang);
-                    if ui.button(text).on_hover_text(hover).clicked() {
-                        ui.close();
-                        return Some(AppAction::SaveBody(record.id(), side, format));
-                    }
-                }
-                if side == BodySide::Response && super::range_merge::menu_items(ui, record, lang) {
-                    ui.close();
-                    return Some(AppAction::PlanRanges(record.id()));
-                }
-                None
+        let shown = ui
+            .add_enabled_ui(enabled, |ui| {
+                controls::ghost_menu(
+                    ui,
+                    text::menu_label(ShellText::Save.text(lang)),
+                    Layout::PANE_BUTTON_HEIGHT,
+                    |ui| {
+                        if let Some(stored) = stored {
+                            ui.weak(stored_text(&stored, lang));
+                        }
+                        for format in [SaveFormat::Decoded, SaveFormat::AsReceived] {
+                            let (text, hover) = format_text(format, lang);
+                            if ui.button(text).on_hover_text(hover).clicked() {
+                                ui.close();
+                                return Some(AppAction::SaveBody(record.id(), side, format));
+                            }
+                        }
+                        if side == BodySide::Response
+                            && super::range_merge::menu_items(ui, record, lang)
+                        {
+                            ui.close();
+                            return Some(AppAction::PlanRanges(record.id()));
+                        }
+                        None
+                    },
+                )
             })
-        });
-        response
+            .inner;
+        let _ = shown
             .response
             .on_disabled_hover_text(self.unavailable_text(lang));
-        response.inner.inner.flatten()
+        shown.inner.flatten()
     }
 
     fn unavailable_text(&self, lang: Language) -> String {
@@ -459,22 +482,37 @@ impl BodySaving {
         if let Some(store) = self.store.as_ref() {
             store.set_limit_bytes(limit_mib * MIB);
         }
-        self.settings_error = self.save_settings().err().map(|error| error.to_string());
+        self.settings_error = self.save_settings().err();
     }
 
-    fn save_settings(&self) -> io::Result<()> {
+    fn save_settings(&self) -> Result<(), LimitSaveError> {
         use std::io::Write as _;
         let path = self
             .settings_path
             .as_ref()
-            .ok_or_else(|| io::Error::other("settings directory unavailable"))?;
-        let parent = path
-            .parent()
-            .ok_or_else(|| io::Error::other("invalid settings path"))?;
+            .ok_or(LimitSaveError::DirectoryUnavailable)?;
+        let parent = path.parent().ok_or(LimitSaveError::InvalidPath)?;
         std::fs::create_dir_all(parent)?;
         publish(path, ExistingFile::Replace, |file| {
             writeln!(file, "{LIMIT_KEY}={}", self.limit_mib)
+        })?;
+        Ok(())
+    }
+
+    fn has_warnings(&self) -> bool {
+        self.store.as_ref().is_some_and(|store| {
+            store.error().is_some() || store.limit_reached() || store.low_disk_space()
         })
+    }
+
+    /// Whether [`Self::status`] has anything to show.
+    pub(crate) fn has_status(&self) -> bool {
+        self.has_warnings()
+            || self.init_error.is_some()
+            || self.settings_error.is_some()
+            || self.pending.is_some()
+            || self.status.is_some()
+            || self.bulk.has_status()
     }
 
     /// Body store warnings and the result of the last body save, for the status bar.
@@ -486,8 +524,9 @@ impl BodySaving {
         if let Some(error) = self.init_error.as_ref() {
             ui.separator();
             indicator::dot_label(ui, Tone::Danger, error.localized(lang));
-        } else if let Some(detail) = self.settings_error.as_deref() {
+        } else if let Some(error) = self.settings_error.as_ref() {
             ui.separator();
+            let detail = error.localized(lang);
             let text = match lang {
                 Language::English => format!("Could not save the body store limit: {detail}"),
                 Language::Korean => format!("본문 저장소 한도를 저장하지 못했습니다: {detail}"),
@@ -625,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn saves_and_replaces_limit_settings() -> io::Result<()> {
+    fn saves_and_replaces_limit_settings() -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("settings").join(SETTINGS_FILE);
         let mut saving = BodySaving {
@@ -643,10 +682,32 @@ mod tests {
         };
         for limit in [64, 128] {
             saving.limit_mib = limit;
-            saving.save_settings()?;
+            saving
+                .save_settings()
+                .map_err(|err| err.localized(Language::English))?;
             assert_eq!(parse_limit(&std::fs::read_to_string(&path)?), Some(limit));
         }
         Ok(())
+    }
+
+    #[test]
+    fn limit_save_errors_localize_in_english_and_korean() {
+        assert_eq!(
+            LimitSaveError::DirectoryUnavailable.localized(Language::English),
+            "settings directory unavailable"
+        );
+        assert_eq!(
+            LimitSaveError::DirectoryUnavailable.localized(Language::Korean),
+            "설정 폴더를 사용할 수 없습니다"
+        );
+        assert_eq!(
+            LimitSaveError::InvalidPath.localized(Language::English),
+            "invalid settings path"
+        );
+        assert_eq!(
+            LimitSaveError::InvalidPath.localized(Language::Korean),
+            "유효하지 않은 설정 경로입니다"
+        );
     }
 
     #[test]

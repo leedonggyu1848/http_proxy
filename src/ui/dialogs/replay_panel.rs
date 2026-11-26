@@ -1,6 +1,7 @@
 //! Manual replay editor. Sensitive inputs live only as long as the editor.
 use crate::ui::i18n::{Language, Text, domain};
 use crate::ui::style::{theme::Palette, tokens::Layout};
+use crate::ui::workbench::field::{self as input, Field};
 use eframe::egui;
 use http_inspector_core::interception::ProxyHandle;
 use http_inspector_core::replay::{
@@ -88,7 +89,7 @@ impl ReplayPanel {
         let viewport = context.content_rect();
         let max_width = Layout::REPLAY_WIDTH.fit(viewport.width());
         let max_height = Layout::REPLAY_HEIGHT.fit(viewport.height());
-        egui::Window::new(lang.text(Text::CtxEditAndResend))
+        egui::Window::new(crate::ui::workbench::text::ShellText::EditAndResend.text(lang))
             .id(egui::Id::unique("edit-and-resend"))
             .open(&mut open)
             .default_width(Layout::REPLAY_DIALOG.x.min(max_width))
@@ -119,10 +120,6 @@ impl ReplayPanel {
             Language::Korean => format!("원본 #{orig_id}"),
         };
         ui.label(orig_label);
-        ui.label(lang.pick(
-            "Redacted values must be entered or disabled. Hop-by-hop headers are removed; Content-Length is calculated.",
-            "가려진 값은 직접 입력하거나 비활성화해야 합니다. Hop-by-hop 헤더는 제거되며 Content-Length는 자동으로 계산됩니다.",
-        ));
         ui.horizontal(|ui| {
             egui::ComboBox::from_id_salt("replay-method")
                 .selected_text(&self.draft.method)
@@ -132,16 +129,21 @@ impl ReplayPanel {
                     }
                 });
             let url_width = Layout::REPLAY_URL_WIDTH.fit(ui.available_width());
-            ui.add(egui::TextEdit::singleline(&mut self.draft.url).desired_width(url_width));
+            let _ = input::single_line(
+                ui,
+                &mut self.draft.url,
+                Field::new(url_width).hint("URL").monospace(),
+                |_| {},
+            );
         });
         self.query_ui(ui, lang);
         ui.checkbox(
             &mut self.draft.automatic_host,
             lang.pick("Update Host from URL", "URL에 맞춰 Host 자동 갱신"),
         );
-        ui.strong(lang.pick(
-            "Headers (Cookie: name=value; name2=value2)",
-            "헤더 (Cookie: name=value; name2=value2)",
+        ui.strong(lang.pick("Headers", "헤더")).on_hover_text(lang.pick(
+            "Cookies are written as Cookie: name=value; name2=value2, hop-by-hop headers are removed, and Content-Length is recalculated.",
+            "쿠키는 Cookie: name=value; name2=value2 형식으로 쓰며 hop-by-hop 헤더는 제거되고 Content-Length는 자동 계산됩니다.",
         ));
         fields(ui, &mut self.draft.headers, lang);
         ui.collapsing(lang.pick("Cookies", "쿠키"), |ui| {
@@ -156,6 +158,7 @@ impl ReplayPanel {
                         &mut field.value,
                         PairSyntax::Cookie,
                         lang.pick("Add cookie", "쿠키 추가"),
+                        lang,
                     );
                 });
             }
@@ -188,6 +191,7 @@ impl ReplayPanel {
                         query,
                         PairSyntax::UrlEncoded,
                         lang.pick("Add parameter", "파라미터 추가"),
+                        lang,
                     )
                 });
             },
@@ -223,17 +227,12 @@ impl ReplayPanel {
                             text,
                             PairSyntax::UrlEncoded,
                             lang.pick("Add field", "필드 추가"),
+                            lang,
                         );
                     },
                 );
             }
-            edited |= ui
-                .add(
-                    egui::TextEdit::multiline(text)
-                        .desired_rows(6)
-                        .desired_width(f32::INFINITY),
-                )
-                .changed();
+            edited |= input::multi_line(ui, text, 6).changed();
         } else {
             ui.label(self.non_editable_body_note(lang));
         }
@@ -244,7 +243,14 @@ impl ReplayPanel {
         }
         ui.horizontal_wrapped(|ui| {
             let file_width = Layout::REPLAY_FILE_WIDTH.fit(ui.available_width());
-            ui.add(egui::TextEdit::singleline(&mut self.file).desired_width(file_width));
+            let _ = input::single_line(
+                ui,
+                &mut self.file,
+                Field::new(file_width)
+                    .hint(lang.pick("Body file path", "본문 파일 경로"))
+                    .monospace(),
+                |_| {},
+            );
             if ui
                 .button(lang.pick("Load complete body file", "전체 본문 파일 불러오기"))
                 .clicked()
@@ -256,8 +262,8 @@ impl ReplayPanel {
             ui.colored_label(
                 crate::ui::style::theme::Palette::of(ui).warning,
                 lang.pick(
-                    "Capture is incomplete. Load the full body; omitted headers require another complete capture.",
-                    "캡처가 불완전합니다. 전체 본문 파일을 불러오세요. 누락된 헤더는 완전한 캡처가 필요합니다.",
+                    "Capture incomplete; load the full body file, and capture again for omitted headers.",
+                    "캡처가 불완전하므로 전체 본문 파일을 불러오고, 누락된 헤더는 다시 캡처하세요.",
                 ),
             );
         }
@@ -462,14 +468,26 @@ fn fields(ui: &mut egui::Ui, fields: &mut Vec<ReplayField>, lang: Language) {
         ui.push_id(index, |ui| {
             ui.horizontal(|ui| {
                 ui.checkbox(&mut field.enabled, "");
-                ui.add(egui::TextEdit::singleline(&mut field.name).desired_width(name_width));
-                ui.add(
-                    egui::TextEdit::singleline(&mut field.value)
-                        .desired_width(value_width)
-                        .password(matches!(
-                            field.name.to_lowercase().as_str(),
-                            "authorization" | "cookie" | "proxy-authorization" | "set-cookie"
-                        )),
+                let masked = matches!(
+                    field.name.to_lowercase().as_str(),
+                    "authorization" | "cookie" | "proxy-authorization" | "set-cookie"
+                );
+                let _ = input::single_line(
+                    ui,
+                    &mut field.name,
+                    Field::new(name_width)
+                        .hint(lang.pick("Name", "이름"))
+                        .monospace(),
+                    |_| {},
+                );
+                let _ = input::single_line(
+                    ui,
+                    &mut field.value,
+                    Field::new(value_width)
+                        .hint(lang.pick("Value", "값"))
+                        .monospace()
+                        .password(masked),
+                    |_| {},
                 );
                 if ui.button("−").clicked() {
                     remove = Some(index);
@@ -649,9 +667,10 @@ impl PairTable {
         text: &mut String,
         syntax: PairSyntax,
         add: &str,
+        lang: Language,
     ) -> bool {
         self.sync(text, syntax);
-        let changed = pair_rows(ui, &mut self.rows, syntax == PairSyntax::Cookie, add);
+        let changed = pair_rows(ui, &mut self.rows, syntax == PairSyntax::Cookie, add, lang);
         if changed {
             self.apply(text, syntax);
         }
@@ -659,7 +678,13 @@ impl PairTable {
     }
 }
 
-fn pair_rows(ui: &mut egui::Ui, rows: &mut Vec<PairRow>, mask: bool, add: &str) -> bool {
+fn pair_rows(
+    ui: &mut egui::Ui,
+    rows: &mut Vec<PairRow>,
+    mask: bool,
+    add: &str,
+    lang: Language,
+) -> bool {
     let (name_width, value_width) = pair_input_widths(ui);
     let mut changed = false;
     let mut remove = None;
@@ -667,16 +692,25 @@ fn pair_rows(ui: &mut egui::Ui, rows: &mut Vec<PairRow>, mask: bool, add: &str) 
         ui.push_id(index, |ui| {
             ui.horizontal(|ui| {
                 changed |= ui.checkbox(&mut row.enabled, "").changed();
-                let mut edited = ui
-                    .add(egui::TextEdit::singleline(&mut row.name).desired_width(name_width))
-                    .changed();
-                edited |= ui
-                    .add(
-                        egui::TextEdit::singleline(&mut row.value)
-                            .desired_width(value_width)
-                            .password(mask),
-                    )
-                    .changed();
+                let mut edited = input::single_line(
+                    ui,
+                    &mut row.name,
+                    Field::new(name_width)
+                        .hint(lang.pick("Name", "이름"))
+                        .monospace(),
+                    |_| {},
+                )
+                .changed();
+                edited |= input::single_line(
+                    ui,
+                    &mut row.value,
+                    Field::new(value_width)
+                        .hint(lang.pick("Value", "값"))
+                        .monospace()
+                        .password(mask),
+                    |_| {},
+                )
+                .changed();
                 if edited {
                     row.raw = None;
                     changed = true;

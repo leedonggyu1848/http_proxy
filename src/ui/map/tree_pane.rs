@@ -1,16 +1,18 @@
-//! Virtualized host -> path tree pane with keyboard navigation, accessible
-//! status indicators, method badges, and brief new-node highlights.
+//! Virtualized host -> path tree pane with keyboard navigation, counts in
+//! aligned monospace columns, and brief new-node highlights.
 
 use std::time::Duration;
 
-use eframe::egui::{self, Key, RichText, Stroke};
+use eframe::egui::{self, Key, RichText};
 use http_inspector_analysis::url_map::{NodeStats, RowKind, UrlMap, ViewNodeKey, VisibleRow};
 
 use super::MapPanel;
-use crate::ui::detail::tree_view;
 use crate::ui::i18n::Language;
+use crate::ui::style::fonts;
 use crate::ui::style::theme::Palette;
-use crate::ui::style::tokens::{Layout, Radius, Space, StrokeWidth};
+use crate::ui::style::tokens::{Layout, Space};
+use crate::ui::workbench::text::{self, ShellText};
+use crate::ui::workbench::tree;
 
 const NEW_NODE_HIGHLIGHT: Duration = Duration::from_secs(2);
 
@@ -23,31 +25,24 @@ pub(super) fn show(
 ) {
     if panel.cached_rows.is_empty() {
         let message = if map.node_count() == 0 {
-            lang.pick(
-                "No URLs captured yet.\nSend HTTP/HTTPS traffic through the proxy to build the URL map.",
-                "아직 캡처된 URL이 없습니다.\n프록시를 통해 HTTP/HTTPS 트래픽을 보내면 URL 맵이 만들어집니다.",
-            )
+            ShellText::NoUrlsYet
         } else {
-            lang.pick(
-                "No nodes match the current map filters.",
-                "현재 맵 필터와 일치하는 노드가 없습니다.",
-            )
+            ShellText::NoNodesMatch
         };
         ui.centered_and_justified(|ui| {
-            ui.add(egui::Label::new(RichText::new(message).weak()).wrap());
+            ui.add(egui::Label::new(RichText::new(message.text(lang)).weak()).wrap());
         });
         return;
     }
 
-    let available_height = ui.available_height().max(Layout::MAP_TREE_ROW_HEIGHT);
+    let available_height = ui.available_height().max(Layout::TREE_ROW_HEIGHT);
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "positive viewport height divided by fixed row height"
     )]
     {
-        panel.page_rows =
-            ((available_height / Layout::MAP_TREE_ROW_HEIGHT).floor() as usize).max(1);
+        panel.page_rows = ((available_height / Layout::TREE_ROW_HEIGHT).floor() as usize).max(1);
     }
 
     if shortcuts_allowed {
@@ -60,7 +55,7 @@ pub(super) fn show(
     if let Some(target_row) = panel.keyboard_scroll_to.take() {
         #[allow(clippy::cast_precision_loss, reason = "row index for scroll offset")]
         let offset = available_height
-            .mul_add(-0.35, target_row as f32 * Layout::MAP_TREE_ROW_HEIGHT)
+            .mul_add(-0.35, target_row as f32 * Layout::TREE_ROW_HEIGHT)
             .max(0.0);
         scroll = scroll.vertical_scroll_offset(offset);
     }
@@ -70,7 +65,8 @@ pub(super) fn show(
     let mut any_fading = false;
     let row_count = panel.cached_rows.len();
 
-    scroll.show_rows(ui, Layout::MAP_TREE_ROW_HEIGHT, row_count, |ui, range| {
+    scroll.show_rows(ui, Layout::TREE_ROW_HEIGHT, row_count, |ui, range| {
+        ui.spacing_mut().item_spacing.y = 0.0;
         for index in range {
             let Some(row) = panel.cached_rows.get(index) else {
                 continue;
@@ -105,6 +101,8 @@ struct RowOutcome {
     fading: bool,
 }
 
+/// One 24pt tree row: the node name, then its counts right-aligned in fixed
+/// columns so they line up from row to row (D15, D18).
 fn render_row(
     ui: &mut egui::Ui,
     row: &VisibleRow,
@@ -114,44 +112,46 @@ fn render_row(
     let palette = Palette::of(ui);
     let age = row.created_at.elapsed();
     let fading = age < NEW_NODE_HIGHLIGHT;
-
-    let mut frame = egui::Frame::NONE.inner_margin(Layout::MAP_TREE_ROW_MARGIN);
-    if is_selected {
-        frame = frame.fill(palette.surfaces.selected);
-    } else if fading {
+    if fading && !is_selected {
+        let rect = egui::Rect::from_min_size(
+            ui.cursor().min,
+            egui::vec2(ui.available_width(), Layout::TREE_ROW_HEIGHT),
+        );
         let strength = new_highlight_strength(age);
-        frame = frame.fill(palette.surfaces.cross_highlight.gamma_multiply(strength));
+        ui.painter().rect_filled(
+            rect,
+            0.0,
+            palette.surfaces.cross_highlight.gamma_multiply(strength),
+        );
     }
-
-    let mut toggled = false;
-    let mut clicked = false;
-    frame.show(ui, |ui| {
-        ui.horizontal(|ui| {
-            ui.set_min_height(Layout::MAP_TREE_ROW_HEIGHT - Space::XS);
-            toggled = tree_view::tree_row_prefix(
-                ui,
-                row.depth,
+    let mark = if is_selected {
+        tree::Mark::Selected
+    } else {
+        tree::Mark::None
+    };
+    let shown = tree::row(
+        ui,
+        tree::TreeRow::new(row.depth, &row.label)
+            .disclosure(tree::Disclosure::new(
                 row.expansion.is_expandable(),
                 row.expansion.is_expanded(),
-            );
-
-            let label_text = format_row_label(row, &palette, lang);
-            let response = ui.add(
-                egui::Label::new(label_text)
+            ))
+            .mark(mark)
+            .clickable(),
+        |ui| {
+            ui.add(
+                egui::Label::new(format_row_label(row, &palette))
                     .wrap_mode(egui::TextWrapMode::Extend)
-                    .sense(egui::Sense::click()),
+                    .selectable(false),
             );
-            if response.clicked() {
-                clicked = true;
-            }
-            if response.double_clicked() && row.expansion.is_expandable() {
-                toggled = true;
-            }
-
-            render_row_badges(ui, row, &palette, lang);
-        });
-    });
-
+            render_row_metrics(ui, row, &palette, lang);
+        },
+    );
+    let response = shown
+        .response
+        .on_hover_text(status_breakdown(&row.subtree, lang));
+    let clicked = response.clicked() && !shown.toggled;
+    let toggled = shown.toggled || (response.double_clicked() && row.expansion.is_expandable());
     RowOutcome {
         clicked,
         toggled,
@@ -159,159 +159,99 @@ fn render_row(
     }
 }
 
-fn format_row_label(row: &VisibleRow, palette: &Palette, lang: Language) -> RichText {
+fn format_row_label(row: &VisibleRow, palette: &Palette) -> RichText {
     match row.kind {
-        RowKind::Origin => RichText::new(&row.label).strong(),
-        RowKind::FoldedId { count } => {
-            let text = match lang {
-                Language::English => format!("{} ({count} IDs)", row.label),
-                Language::Korean => format!("{} (ID {count}개)", row.label),
-            };
-            RichText::new(text).monospace().color(palette.secondary)
-        }
-        RowKind::Segment => RichText::new(&row.label).monospace(),
+        RowKind::Origin => RichText::new(&row.label)
+            .font(fonts::control())
+            .color(palette.text),
+        RowKind::FoldedId { count } => RichText::new(text::folded_ids(&row.label, count))
+            .font(fonts::data())
+            .color(palette.secondary),
+        RowKind::Segment => RichText::new(&row.label)
+            .font(fonts::data())
+            .color(palette.text),
     }
 }
 
-fn render_row_badges(ui: &mut egui::Ui, row: &VisibleRow, palette: &Palette, lang: Language) {
+/// Party and tunnel markers, methods, failures, and the request count,
+/// right to left from the row's right edge.
+fn render_row_metrics(ui: &mut egui::Ui, row: &VisibleRow, palette: &Palette, lang: Language) {
     let stats = &row.subtree;
-    if stats.is_tunnel_only() {
-        let text = match lang {
-            Language::English => format!("[Tunnel] No path info · {} req", stats.request_count),
-            Language::Korean => format!("[터널] 경로 정보 없음 · {}건", stats.request_count),
-        };
-        ui.label(RichText::new(text).color(palette.secondary).small());
-        return;
-    }
-
-    if stats.has_tunnel {
-        ui.label(
-            RichText::new(lang.pick("[Tunnel]", "[터널]"))
-                .color(palette.secondary)
-                .small(),
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.add_space(Space::SM);
+        let data = |text: String, color| RichText::new(text).font(fonts::data()).color(color);
+        column(
+            ui,
+            data(text::request_total(lang, stats.request_count), palette.text),
         );
-    }
-
-    let req_label = match lang {
-        Language::English => format!("{} req", stats.request_count),
-        Language::Korean => format!("{}건", stats.request_count),
-    };
-    ui.label(RichText::new(req_label).color(palette.secondary).small());
-
-    paint_status_bar(ui, stats, palette, lang);
-
-    let numeric_status = compact_status_numbers(stats, lang);
-    if !numeric_status.is_empty() {
-        let color = if stats.status.errors() > 0 {
-            palette.error
+        let errors = stats.status.errors();
+        let errors_text = if errors > 0 {
+            data(text::error_total(lang, errors), palette.error)
         } else {
-            palette.secondary
+            RichText::new("")
         };
-        ui.label(RichText::new(numeric_status).color(color).small());
-    }
-
-    for method in stats.methods.names().into_iter().take(4) {
-        ui.label(RichText::new(method).monospace().small());
-    }
-    let total_methods = stats.methods.names().len();
-    if total_methods > 4 {
-        ui.label(
-            RichText::new(format!("+{}", total_methods - 4))
-                .color(palette.secondary)
-                .small(),
+        column(ui, errors_text);
+        let mut methods: Vec<String> = stats
+            .methods
+            .names()
+            .into_iter()
+            .take(MAX_METHODS)
+            .map(str::to_owned)
+            .collect();
+        let total_methods = stats.methods.names().len();
+        if total_methods > MAX_METHODS {
+            methods.push(format!("+{}", total_methods - MAX_METHODS));
+        }
+        ui.add(
+            egui::Label::new(data(methods.join(" "), palette.secondary))
+                .wrap_mode(egui::TextWrapMode::Extend)
+                .selectable(false),
         );
-    }
-
-    if stats.is_third_party() {
-        ui.label(
-            RichText::new(lang.pick("[3rd]", "[서드파티]"))
-                .color(palette.warning)
-                .small()
-                .strong(),
-        );
-    }
+        let mut markers = Vec::new();
+        if stats.has_tunnel {
+            markers.push(ShellText::Tunnel.text(lang));
+        }
+        if stats.is_third_party() {
+            markers.push(ShellText::ThirdParty.text(lang));
+        }
+        if !markers.is_empty() {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(markers.join(" · "))
+                        .font(fonts::control())
+                        .color(palette.secondary),
+                )
+                .selectable(false),
+            );
+        }
+    });
 }
 
-fn paint_status_bar(ui: &mut egui::Ui, stats: &NodeStats, palette: &Palette, lang: Language) {
-    let total = stats.status.total();
-    if total == 0 {
-        return;
-    }
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(Layout::MAP_STATUS_WIDTH, Layout::MAP_STATUS_HEIGHT),
-        egui::Sense::hover(),
+/// Methods listed in a row before the rest are counted as `+N`.
+const MAX_METHODS: usize = 4;
+
+/// A right-aligned column of [`Layout::MAP_COUNT_WIDTH`].
+fn column(ui: &mut egui::Ui, text: RichText) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(Layout::MAP_COUNT_WIDTH, Layout::TREE_ROW_HEIGHT),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            ui.add(egui::Label::new(text).selectable(false));
+        },
     );
-    let painter = ui.painter();
-    painter.rect_filled(rect, Radius::STATUS_BAR, palette.surfaces.input);
+}
 
-    // Normal outcomes stay neutral so that only failures stand out.
-    let segments = [
-        (stats.status.s2xx, palette.secondary),
-        (stats.status.s3xx, palette.secondary),
-        (
-            stats
-                .status
-                .s4xx
-                .saturating_add(stats.status.s5xx)
-                .saturating_add(stats.status.failed),
-            palette.error,
-        ),
-        (stats.status.tunnel, palette.borders.control),
-        (stats.status.pending, palette.borders.control),
-    ];
-
-    let mut x = rect.left();
-    #[allow(clippy::cast_precision_loss, reason = "proportional status bar width")]
-    let total_f = total as f32;
-    for (count, color) in segments {
-        if count == 0 {
-            continue;
-        }
-        #[allow(clippy::cast_precision_loss, reason = "proportional status bar width")]
-        let share = (count as f32 / total_f) * rect.width();
-        let seg_width = share
-            .max(Layout::MAP_STATUS_MIN_SEGMENT)
-            .min(rect.right() - x);
-        if seg_width <= 0.0 {
-            break;
-        }
-        let seg_rect = egui::Rect::from_min_max(
-            egui::pos2(x, rect.top()),
-            egui::pos2((x + seg_width).min(rect.right()), rect.bottom()),
-        );
-        painter.rect_filled(seg_rect, Radius::PANE, color);
-        x += seg_width;
+/// Every status count of a node, for the row tooltip and screen readers.
+fn status_breakdown(stats: &NodeStats, lang: Language) -> String {
+    let counts = compact_status_numbers(stats, lang);
+    if counts.is_empty() {
+        text::request_total(lang, stats.request_count)
+    } else {
+        format!(
+            "{} · {counts}",
+            text::request_total(lang, stats.request_count)
+        )
     }
-    painter.rect_stroke(
-        rect,
-        Radius::STATUS_BAR,
-        Stroke::new(StrokeWidth::MAP_STATUS, palette.borders.structural),
-        egui::StrokeKind::Inside,
-    );
-
-    let hover = match lang {
-        Language::English => format!(
-            "2xx: {} · 3xx: {} · 4xx: {} · 5xx: {} · Failed: {} · Tunnel: {} · Pending: {}",
-            stats.status.s2xx,
-            stats.status.s3xx,
-            stats.status.s4xx,
-            stats.status.s5xx,
-            stats.status.failed,
-            stats.status.tunnel,
-            stats.status.pending,
-        ),
-        Language::Korean => format!(
-            "2xx: {} · 3xx: {} · 4xx: {} · 5xx: {} · 실패: {} · 터널: {} · 대기 중: {}",
-            stats.status.s2xx,
-            stats.status.s3xx,
-            stats.status.s4xx,
-            stats.status.s5xx,
-            stats.status.failed,
-            stats.status.tunnel,
-            stats.status.pending,
-        ),
-    };
-    let _ = response.on_hover_text(hover);
 }
 
 fn compact_status_numbers(stats: &NodeStats, lang: Language) -> String {

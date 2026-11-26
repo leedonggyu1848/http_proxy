@@ -33,8 +33,13 @@ mod requests;
     reason = "cross-screen items in a private module; `pub` triggers `unreachable_pub`"
 )]
 mod style;
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "cross-screen items in a private module; `pub` triggers `unreachable_pub`"
+)]
+mod workbench;
 
 pub use app::main;
 #[cfg(test)]
 use app::request_shortcuts_allowed;
-use app::{AppAction, InspectorApp, MAX_RECORDS};
+use app::{AppAction, InspectorApp};

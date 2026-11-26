@@ -132,11 +132,11 @@ impl Badge {
         }
     }
 
-    /// The one action the summary offers for this state, if any.
+    /// The one action the summary offers for this state, if any. A trusted
+    /// CA needs none; removing it is in the details menu.
     const fn primary(self) -> Option<Action> {
         match self {
-            Self::Busy(_) => None,
-            Self::Status(CaTrustStatus::Trusted) => Some(Action::Remove),
+            Self::Busy(_) | Self::Status(CaTrustStatus::Trusted) => None,
             Self::Unknown | Self::Failed | Self::Status(_) => Some(Action::Install),
         }
     }
@@ -144,18 +144,16 @@ impl Badge {
 
 const fn register_help(lang: Language) -> &'static str {
     lang.pick(
-        "Trust the public CA for HTTPS in Chrome/Chromium for your current user. \
-         Other browsers and apps may require separate CA registration.",
-        "현재 사용자의 Chrome/Chromium에서 HTTPS 복호화용 공개 CA를 신뢰하도록 등록합니다. \
-         다른 브라우저나 앱은 별도의 CA 등록이 필요할 수 있습니다.",
+        "Trust the public CA in Chrome and Chromium for the current user.",
+        "현재 사용자의 Chrome 및 Chromium에서 공개 CA를 신뢰하도록 등록합니다.",
     )
 }
 
 #[cfg(target_os = "macos")]
 const fn keychain_help(lang: Language) -> &'static str {
     lang.pick(
-        "macOS may request authorization. Approve the keychain dialog; cancellation leaves registration incomplete.",
-        "macOS가 인증을 요청할 수 있습니다. 키체인 대화상자를 승인하세요. 취소하면 등록이 완료되지 않습니다.",
+        "Approve the macOS keychain dialog to finish; cancelling leaves registration incomplete.",
+        "등록을 완료하려면 macOS 키체인 대화상자를 승인해야 하며, 취소하면 등록이 완료되지 않습니다.",
     )
 }
 
@@ -184,7 +182,17 @@ impl CaPanel {
         }
     }
 
-    /// Shows the registration badge and the available CA actions.
+    /// Tone of the HTTPS indicator dot while decryption is on: the CA
+    /// registration state, or `Danger` when the CA cannot be stored.
+    pub(crate) const fn tone(&self, directory: Option<&Path>) -> Option<Tone> {
+        match directory {
+            Some(_) => self.badge().tone(),
+            None => Some(Tone::Danger),
+        }
+    }
+
+    /// Shows the registration state, the action it calls for, and the
+    /// details menu, in one row of the HTTPS menu.
     pub(crate) fn summary(
         &self,
         ui: &mut egui::Ui,
@@ -203,6 +211,16 @@ impl CaPanel {
             ));
             return None;
         };
+        ui.horizontal(|ui| self.summary_row(ui, directory, lang))
+            .inner
+    }
+
+    fn summary_row(
+        &self,
+        ui: &mut egui::Ui,
+        directory: &Path,
+        lang: Language,
+    ) -> Option<AppAction> {
         let mut action = None;
         let badge = self.badge();
         ui.label("CA");
@@ -224,29 +242,13 @@ impl CaPanel {
         {
             action = Some(AppAction::Ca(Action::Check));
         }
-        match badge.primary() {
-            Some(Action::Install) => {
-                if ui
-                    .button(lang.pick("Register CA", "CA 등록"))
-                    .on_hover_text(register_help(lang))
-                    .clicked()
-                {
-                    action = Some(AppAction::Ca(Action::Install));
-                }
-            }
-            Some(Action::Remove) => {
-                if ui
-                    .small_button(lang.pick("Remove CA", "CA 제거"))
-                    .on_hover_text(lang.pick(
-                        "Remove the CA that HTTP Inspector registered.",
-                        "HTTP Inspector가 등록한 CA를 제거합니다.",
-                    ))
-                    .clicked()
-                {
-                    action = Some(AppAction::Ca(Action::Remove));
-                }
-            }
-            Some(Action::Check) | None => {}
+        if badge.primary() == Some(Action::Install)
+            && ui
+                .button(lang.pick("Register CA", "CA 등록"))
+                .on_hover_text(register_help(lang))
+                .clicked()
+        {
+            action = Some(AppAction::Ca(Action::Install));
         }
         let menu = ui.menu_button(lang.pick("CA details", "CA 정보"), |ui| {
             self.details(ui, directory, lang)
@@ -295,9 +297,6 @@ impl CaPanel {
                         .or_else(|| action.take());
                     }
                     ui.separator();
-                    ui.weak(register_help(lang));
-                    #[cfg(target_os = "macos")]
-                    ui.weak(keychain_help(lang));
                     ui.add_enabled_ui(self.pending_action.is_none(), |ui| {
                         ui.horizontal_wrapped(|ui| {
                             if ui
@@ -315,6 +314,10 @@ impl CaPanel {
                                     registered,
                                     egui::Button::new(lang.pick("Remove CA", "CA 제거")),
                                 )
+                                .on_hover_text(lang.pick(
+                                    "Remove the CA that HTTP Inspector registered.",
+                                    "HTTP Inspector가 등록한 CA를 제거합니다.",
+                                ))
                                 .clicked()
                             {
                                 action = Some(AppAction::Ca(Action::Remove));
@@ -326,9 +329,23 @@ impl CaPanel {
         action
     }
 
+    /// Reports whether [`Self::messages`] has anything to show.
+    pub(crate) const fn has_messages(&self) -> bool {
+        self.error.is_some()
+            || self.notice.is_some()
+            || cfg!(target_os = "macos")
+                && matches!(self.pending_action, Some(Action::Install | Action::Remove))
+    }
+
+    /// Hides the follow-up note after a registration change.
+    pub(crate) const fn dismiss_notice(&mut self) {
+        self.notice = None;
+    }
+
     /// Errors and follow-up guidance shown right below the toolbar so they
-    /// are never hidden in the details menu.
-    pub(crate) fn messages(&self, ui: &mut egui::Ui, lang: Language) {
+    /// are never hidden in the HTTPS menu. Returns whether the follow-up
+    /// note was dismissed.
+    pub(crate) fn messages(&self, ui: &mut egui::Ui, lang: Language) -> bool {
         if let Some(error) = &self.error {
             indicator::dot_label(ui, Tone::Danger, format!("CA: {}", error.localized(lang)));
         }
@@ -337,8 +354,10 @@ impl CaPanel {
             ui.label(keychain_help(lang));
         }
         if let Some(notice) = self.notice {
-            ui.label(notice.text(lang));
+            indicator::dot_label(ui, Tone::Warning, notice.text(lang));
+            return ui.small_button(lang.text(Text::Dismiss)).clicked();
         }
+        false
     }
 
     pub(crate) fn start(&mut self, action: Action, directory: &Path, context: &egui::Context) {
@@ -451,16 +470,16 @@ mod tests {
     }
 
     #[test]
-    fn badge_offers_one_action_that_fits_the_status() {
+    fn badge_offers_registration_until_the_ca_is_trusted() {
         assert_eq!(Badge::Busy(Action::Check).primary(), None);
         assert_eq!(Badge::Unknown.primary(), Some(Action::Install));
         assert_eq!(Badge::Failed.primary(), Some(Action::Install));
         for (status, action) in [
-            (CaTrustStatus::NotInstalled, Action::Install),
-            (CaTrustStatus::Untrusted, Action::Install),
-            (CaTrustStatus::Trusted, Action::Remove),
+            (CaTrustStatus::NotInstalled, Some(Action::Install)),
+            (CaTrustStatus::Untrusted, Some(Action::Install)),
+            (CaTrustStatus::Trusted, None),
         ] {
-            assert_eq!(Badge::Status(status).primary(), Some(action));
+            assert_eq!(Badge::Status(status).primary(), action);
         }
     }
 

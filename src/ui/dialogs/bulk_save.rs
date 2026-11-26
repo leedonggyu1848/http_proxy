@@ -184,6 +184,11 @@ impl BulkControls {
         }
     }
 
+    /// Whether [`Self::status`] has a running save or a result to show.
+    pub(super) const fn has_status(&self) -> bool {
+        self.running.is_some() || self.result.is_some()
+    }
+
     /// Shows progress with a Cancel button, or the last result, in the status bar.
     pub(super) fn status(&self, ui: &mut egui::Ui, lang: Language) -> bool {
         if let Some(running) = self.running.as_ref() {

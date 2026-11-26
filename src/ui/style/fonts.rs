@@ -192,6 +192,60 @@ pub(crate) const fn code_large() -> egui::FontId {
     egui::FontId::monospace(TypeScale::LARGE_CODE)
 }
 
+/// Monospace status bar and secondary metadata text (`TypeScale::STATUS`).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "status typography comes from the type scale"
+)]
+pub(crate) const fn status() -> egui::FontId {
+    egui::FontId::monospace(TypeScale::STATUS)
+}
+
+/// Sans panel and toolbar titles (`TypeScale::PANEL_TITLE`).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "title typography comes from the type scale"
+)]
+pub(crate) const fn panel_title() -> egui::FontId {
+    egui::FontId::proportional(TypeScale::PANEL_TITLE)
+}
+
+/// Sans tabs, buttons, and other controls (`TypeScale::CONTROL`).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "control typography comes from the type scale"
+)]
+pub(crate) const fn control() -> egui::FontId {
+    egui::FontId::proportional(TypeScale::CONTROL)
+}
+
+/// Monospace data next to controls, such as the proxy address (`TypeScale::DATA`).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "data typography comes from the type scale"
+)]
+pub(crate) const fn data() -> egui::FontId {
+    egui::FontId::monospace(TypeScale::DATA)
+}
+
+/// Table column headers and group titles (`TypeScale::COLUMN_HEADER`).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "column header typography comes from the type scale"
+)]
+pub(crate) const fn column_header() -> egui::FontId {
+    egui::FontId::proportional(TypeScale::COLUMN_HEADER)
+}
+
+/// The one-line error at the right end of an input (`TypeScale::STATUS`).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "input error typography comes from the type scale"
+)]
+pub(crate) const fn input_error() -> egui::FontId {
+    egui::FontId::proportional(TypeScale::STATUS)
+}
+
 #[expect(
     clippy::disallowed_methods,
     reason = "graph typography comes from the type scale"

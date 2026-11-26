@@ -38,6 +38,7 @@ pub(crate) enum AppAction {
     SetPort(String),
     SetHttpsInspection(bool),
     DismissAuthorization,
+    DismissCaNotice,
     SaveMenu(SaveMenuAction),
     SetTheme(egui::ThemePreference),
     SetLanguage(LanguagePreference),
@@ -65,6 +66,7 @@ pub(crate) enum AppAction {
     PlanRanges(RecordId),
     Range(RangeAction),
     Search(SearchSettings),
+    AppendFilter(String),
     Map(MapAction),
 }
 
@@ -122,6 +124,7 @@ impl InspectorApp {
             AppAction::DismissAuthorization => {
                 self.dialogs.authorization_notice = AuthorizationNotice::Dismissed;
             }
+            AppAction::DismissCaNotice => self.dialogs.ca_panel.dismiss_notice(),
             AppAction::SaveMenu(action) => self.apply_save_menu(context, action),
             AppAction::SetTheme(preference) => {
                 self.layout.theme.set_preference(context, preference);
@@ -150,6 +153,7 @@ impl InspectorApp {
             AppAction::ClearMapFilter => self.requests.clear_map_filter(),
             AppAction::Filter(filter) => self.requests.record_filter = filter,
             AppAction::Search(settings) => self.requests.search.set_settings(settings),
+            AppAction::AppendFilter(term) => self.requests.search.append_filter(&term),
             AppAction::SelectRecord(id) => self.requests.selected = Some(id),
             AppAction::DetailTab(tab) => self.detail.tab = tab,
             AppAction::BodyMode(mode) => self.detail.body_mode = mode,

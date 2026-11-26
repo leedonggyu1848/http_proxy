@@ -18,6 +18,8 @@ use tokio::time::timeout;
 
 fn test_app(context: egui::Context) -> InspectorApp {
     fonts::configure_fonts(&context);
+    let mut layout = LayoutState::new(&context);
+    layout.language = crate::ui::i18n::LanguageSettings::fixed(crate::ui::i18n::Language::English);
     InspectorApp {
         session: SessionState {
             capture: super::capture::CaptureSession::fixture(),
@@ -29,7 +31,7 @@ fn test_app(context: egui::Context) -> InspectorApp {
         detail: DetailState::default(),
         map: MapState::new(AnalysisPipeline::disabled()),
         dialogs: Dialogs::new(),
-        layout: LayoutState::new(&context),
+        layout,
         context,
     }
 }
@@ -349,16 +351,17 @@ async fn narrow_and_resized_windows_do_not_overlap_text() -> Result<(), Box<dyn 
 
         // At 1100x700 after shrinking to 640px, verify the details pane recovered its width.
         if (size[0] - 1_100.0).abs() < 1.0 {
-            let edit_button = drawn
+            let headers_tab = drawn
                 .iter()
-                .find(|item| item.text == "Edit and Resend")
-                .ok_or("missing Edit and Resend button at 1100x700")?;
-            // 40% detail share on 1100px puts details starting around x ≈ 650,
-            // well left of the cramped ~780px position a stuck narrow panel would keep.
+                .find(|item| item.text == "Headers")
+                .ok_or("missing Headers tab at 1100x700")?;
+            // A 38% detail share on 1100px puts the details pane and its
+            // first tab around x ≈ 690, well left of the cramped ~780px
+            // position a stuck narrow panel would keep.
             assert!(
-                edit_button.rect.left() < 760.0,
+                headers_tab.rect.left() < 760.0,
                 "details pane did not recover width on enlarge: {:#?}",
-                edit_button.rect
+                headers_tab.rect
             );
         }
     }
@@ -437,7 +440,7 @@ async fn split_divider_drag_repaints_and_restores_across_resize()
     }
 
     let wide = [1_100.0, 700.0];
-    let initial_edit_left = text_left(&render_settled(&mut app, wide), "Edit and Resend")?;
+    let initial_tab_left = text_left(&render_settled(&mut app, wide), "Headers")?;
 
     // CentralPanel defaults to 8px horizontal margin on each side.
     let main_width = wide[0] - 16.0;
@@ -467,10 +470,10 @@ async fn split_divider_drag_repaints_and_restores_across_resize()
         app.layout.detail_share
     );
     let dragged_share = app.layout.detail_share;
-    let dragged_edit_left = text_left(&after_drag, "Edit and Resend")?;
+    let dragged_tab_left = text_left(&after_drag, "Headers")?;
     assert!(
-        dragged_edit_left < initial_edit_left - 100.0,
-        "details pane should widen immediately after drag release: before={initial_edit_left}, after={dragged_edit_left}"
+        dragged_tab_left < initial_tab_left - 100.0,
+        "details pane should widen immediately after drag release: before={initial_tab_left}, after={dragged_tab_left}"
     );
 
     // Shrink to minimum size: clamped cleanly without overwriting the user's preferred share.
@@ -486,10 +489,10 @@ async fn split_divider_drag_repaints_and_restores_across_resize()
     let wide_viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(wide[0], wide[1]));
     let restored_drawn = render_settled(&mut app, wide);
     assert_no_text_overlap(&restored_drawn, wide_viewport, "dragged-restored@1100x700");
-    let restored_edit_left = text_left(&restored_drawn, "Edit and Resend")?;
+    let restored_tab_left = text_left(&restored_drawn, "Headers")?;
     assert!(
-        (restored_edit_left - dragged_edit_left).abs() < 4.0,
-        "expected restored detail position near {dragged_edit_left}, got {restored_edit_left}"
+        (restored_tab_left - dragged_tab_left).abs() < 4.0,
+        "expected restored detail position near {dragged_tab_left}, got {restored_tab_left}"
     );
 
     Ok(())
@@ -1456,7 +1459,7 @@ fn switching_language_updates_ui_immediately_without_restart() {
     app.layout.language = LanguageSettings::fixed(Language::English);
 
     let english_drawn = render_settled(&mut app, Layout::WINDOW);
-    assert!(english_drawn.iter().any(|item| item.text == "Start"));
+    assert!(english_drawn.iter().any(|item| item.text == "Requests"));
     assert!(english_drawn.iter().any(|item| item.text == "Settings"));
 
     let ctx = app.context.clone();
@@ -1464,14 +1467,534 @@ fn switching_language_updates_ui_immediately_without_restart() {
         .language
         .set_preference(&ctx, LanguagePreference::Korean);
     let (korean_drawn, _) = render_frame(&mut app, Layout::WINDOW, Vec::new());
-    assert!(korean_drawn.iter().any(|item| item.text == "시작"));
+    assert!(korean_drawn.iter().any(|item| item.text == "요청"));
     assert!(korean_drawn.iter().any(|item| item.text == "설정"));
-    assert!(!korean_drawn.iter().any(|item| item.text == "Start"));
+    assert!(!korean_drawn.iter().any(|item| item.text == "Requests"));
 
     app.layout
         .language
         .set_preference(&ctx, LanguagePreference::English);
     let (restored_drawn, _) = render_frame(&mut app, Layout::WINDOW, Vec::new());
-    assert!(restored_drawn.iter().any(|item| item.text == "Start"));
-    assert!(!restored_drawn.iter().any(|item| item.text == "시작"));
+    assert!(restored_drawn.iter().any(|item| item.text == "Requests"));
+    assert!(!restored_drawn.iter().any(|item| item.text == "요청"));
+}
+
+/// Vertical center of the first drawn text equal to `label`.
+fn text_center_y(drawn: &[DrawnText], label: &str) -> Result<f32, String> {
+    drawn
+        .iter()
+        .find(|item| item.text == label)
+        .map(|item| item.rect.center().y)
+        .ok_or_else(|| format!("missing {label:?} text"))
+}
+
+#[tokio::test]
+async fn shell_bands_keep_their_heights_and_positions_in_both_themes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let exchanges = timeout(Duration::from_secs(5), capture_sample_exchanges()).await??;
+    let mut app = test_app(egui::Context::default());
+    for exchange in exchanges {
+        app.requests.selected = Some(exchange.id());
+        let _evicted = app.requests.records.push(exchange);
+    }
+    let count = format!("{} requests", app.requests.records.len());
+    // `render_frame` wraps the app in a CentralPanel with an 8px margin.
+    let margin = 8.0;
+    let size = Layout::WINDOW;
+    let toolbar = margin..=margin + Layout::TOOLBAR_HEIGHT;
+    let header = *toolbar.end()..=*toolbar.end() + Layout::PANE_HEADER_HEIGHT;
+    let status = size[1] - margin - Layout::STATUS_BAR_HEIGHT..=size[1] - margin;
+
+    let mut positions = Vec::new();
+    for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        app.context.set_theme(theme);
+        let drawn = render_settled(&mut app, size);
+        let placed = [
+            (http_inspector_exchange::APP_NAME, &toolbar),
+            ("Requests", &toolbar),
+            ("Settings", &toolbar),
+            ("All", &header),
+            ("Headers", &header),
+            (count.as_str(), &status),
+        ]
+        .map(|(label, band)| {
+            text_center_y(&drawn, label).inspect(|y| {
+                assert!(
+                    band.contains(y),
+                    "{theme:?}: {label:?} at y={y}, outside {band:?}"
+                );
+            })
+        });
+        positions.push(placed.into_iter().collect::<Result<Vec<_>, _>>()?);
+    }
+    // Light and dark differ in color only (D22).
+    assert_eq!(positions.first(), positions.last());
+    Ok(())
+}
+
+#[test]
+fn narrow_toolbar_moves_the_view_switch_and_filter_to_a_second_row() {
+    let mut app = test_app(egui::Context::default());
+    let drawn = render_settled(&mut app, Layout::MIN_WINDOW);
+    let margin = 8.0;
+    let first_row = margin + Layout::TOOLBAR_HEIGHT;
+    for label in [
+        "Requests",
+        crate::ui::workbench::text::ShellText::Filter.text(crate::ui::i18n::Language::English),
+    ] {
+        let y = text_center_y(&drawn, label).unwrap_or_default();
+        assert!(
+            y > first_row && y < first_row + Layout::TOOLBAR_HEIGHT,
+            "{label} at y={y}"
+        );
+    }
+    let viewport = egui::Rect::from_min_size(
+        egui::Pos2::ZERO,
+        egui::vec2(Layout::MIN_WINDOW[0], Layout::MIN_WINDOW[1]),
+    );
+    assert_no_text_overlap(&drawn, viewport, "toolbar@640x420");
+}
+
+#[test]
+fn invalid_pattern_is_reported_inside_the_filter_input() {
+    use http_inspector_analysis::search::{MatchOptions, SearchScope};
+    let mut app = test_app(egui::Context::default());
+    let options = MatchOptions {
+        regex: true,
+        ..MatchOptions::default()
+    };
+    let context = app.context.clone();
+    app.requests.search.search_now(
+        ("users[", SearchScope::All, options),
+        &app.requests.records,
+        &context,
+    );
+    let drawn = render_settled(&mut app, Layout::WINDOW);
+    let error = drawn
+        .iter()
+        .find(|item| item.text == "Invalid pattern")
+        .map(|item| item.rect);
+    let toolbar_bottom = 8.0 + Layout::TOOLBAR_HEIGHT;
+    assert!(
+        error.is_some_and(|rect| rect.bottom() <= toolbar_bottom),
+        "expected the short error inside the toolbar input, got {error:?}"
+    );
+    // The parser message is the input's tooltip, not a line of its own.
+    assert!(!drawn.iter().any(|item| item.text.contains("error parsing")));
+}
+
+#[test]
+fn shell_tabs_are_announced_as_tab_lists() -> Result<(), Box<dyn std::error::Error>> {
+    let mut app = test_app(egui::Context::default());
+    app.context.enable_accesskit();
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1_280.0, 820.0));
+    let mut tree = None;
+    for _ in 0..3 {
+        let input = egui::RawInput {
+            screen_rect: Some(viewport),
+            ..Default::default()
+        };
+        let mut output = app.context.clone().run_ui(input, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| app.render_ui(ui));
+        });
+        output.textures_delta.clear();
+        tree = output.platform_output.accesskit_update;
+    }
+    let tree = tree.ok_or("missing accessibility tree")?;
+    let node = |id| {
+        tree.nodes
+            .iter()
+            .find(|(node_id, _)| *node_id == id)
+            .map(|(_, node)| node)
+    };
+    let tabs_of = |name: &str| -> Option<Vec<(String, Option<bool>)>> {
+        let (_, list) = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == egui::Role::TabList && node.label() == Some(name))?;
+        Some(
+            list.children()
+                .iter()
+                .filter_map(|&id| node(id))
+                .filter(|tab| tab.role() == egui::Role::Tab)
+                .map(|tab| {
+                    (
+                        tab.label().unwrap_or_default().to_owned(),
+                        tab.is_selected(),
+                    )
+                })
+                .collect(),
+        )
+    };
+    let selected = |label: &str, on: bool| (label.to_owned(), Some(on));
+    assert_eq!(
+        tabs_of("View").ok_or("missing View tab list")?,
+        vec![selected("Requests", true), selected("Map", false)]
+    );
+    assert_eq!(
+        tabs_of("Request outcome").ok_or("missing Request outcome tab list")?,
+        vec![
+            selected("All", true),
+            selected("Responses", false),
+            selected("Failures", false),
+            selected("Tunnels", false),
+        ]
+    );
+    assert_eq!(
+        tabs_of("Request details").ok_or("missing Request details tab list")?,
+        vec![
+            selected("Headers", true),
+            selected("Body", false),
+            selected("Timing", false),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn structured_filter_displays_the_actual_combined_count_and_diagnostic()
+-> Result<(), Box<dyn std::error::Error>> {
+    use http::{Method, StatusCode};
+    use http_inspector_analysis::filter::RecordFilter;
+    use http_inspector_analysis::search::{MatchOptions, SearchScope};
+    use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
+
+    let mut app = test_app(egui::Context::default());
+    for (method, path, status) in [
+        (Method::POST, "/api/users", StatusCode::NOT_FOUND),
+        (Method::POST, "/api/orders", StatusCode::NOT_FOUND),
+        (Method::GET, "/api/users", StatusCode::NOT_FOUND),
+    ] {
+        let record = ExchangeBuilder::http(method, format!("http://localhost:8080{path}"))?
+            .respond(ResponseFixture::new(status))?;
+        let _evicted = app.requests.records.push(record);
+    }
+    let context = app.context.clone();
+    app.requests.search.search_now(
+        (
+            "method:POST url:/api/users status:abc localhost:8080",
+            SearchScope::All,
+            MatchOptions::default(),
+        ),
+        &app.requests.records,
+        &context,
+    );
+    app.requests.record_filter = RecordFilter::Responses;
+    let filtered = app.requests.filtered_records();
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(
+        filtered.first().map(|record| record.request().method()),
+        Some(&Method::POST)
+    );
+
+    for size in [Layout::WINDOW, Layout::MIN_WINDOW] {
+        let drawn = render_settled(&mut app, size);
+        assert!(drawn.iter().any(|item| item.text == "1 of 3 requests"));
+        assert!(drawn.iter().any(|item| item.text == "Invalid condition"));
+        assert!(!drawn.iter().any(|item| item.text == "3 requests"));
+    }
+    app.requests.record_filter = RecordFilter::Failures;
+    assert!(app.requests.filtered_records().is_empty());
+    Ok(())
+}
+
+#[test]
+#[ignore = "manual performance measurement; run in release mode with --ignored --nocapture"]
+#[allow(clippy::print_stderr, reason = "manual performance measurement output")]
+fn measure_structured_filter_at_scale() -> Result<(), Box<dyn std::error::Error>> {
+    use http::header::{CONTENT_TYPE, HeaderValue};
+    use http::{Method, StatusCode};
+    use http_inspector_analysis::search::{MatchOptions, SearchScope};
+    use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    let mut app = test_app(egui::Context::default());
+    for id in 0..MAX_RECORDS {
+        let method = if id % 4 == 0 {
+            Method::GET
+        } else {
+            Method::POST
+        };
+        let status = if id % 2 == 0 {
+            StatusCode::OK
+        } else {
+            StatusCode::NOT_FOUND
+        };
+        let route = if id % 4 == 3 {
+            "static/users"
+        } else {
+            "api/users"
+        };
+        let record =
+            ExchangeBuilder::http(method, format!("http://api.example.test/{route}/{id}"))?
+                .respond(
+                    ResponseFixture::new(status)
+                        .header(CONTENT_TYPE, HeaderValue::from_static("application/json")),
+                )?;
+        let _evicted = app.requests.records.push(record);
+    }
+    let context = app.context.clone();
+    app.requests.search.search_now(
+        (
+            "method:POST url:/users status:4xx -path:/static/ res-header:content-type=json",
+            SearchScope::All,
+            MatchOptions::default(),
+        ),
+        &app.requests.records,
+        &context,
+    );
+    let expected = MAX_RECORDS / 4;
+    assert_eq!(app.requests.records.len(), MAX_RECORDS);
+    assert_eq!(app.requests.filtered_records().len(), expected);
+    let mut filter = Vec::new();
+    for _ in 0..60 {
+        let start = Instant::now();
+        let rows = black_box(app.requests.filtered_records());
+        filter.push(start.elapsed());
+        assert_eq!(rows.len(), expected);
+    }
+    filter.sort_unstable();
+
+    let expected_count = format!("{expected} of {MAX_RECORDS} requests");
+    assert!(
+        render_settled(&mut app, Layout::WINDOW)
+            .iter()
+            .any(|item| item.text == expected_count)
+    );
+    let frame = measure_frames(&mut app, &mut 0.0, 60);
+    for (label, samples) in [("filter", filter), ("egui frame", frame)] {
+        let ms = |duration: Option<&Duration>| {
+            duration.map_or(f64::NAN, |duration| duration.as_secs_f64() * 1_000.0)
+        };
+        eprintln!(
+            "{label}: 60 samples, min={:.3} ms median={:.3} ms p95={:.3} ms max={:.3} ms",
+            ms(samples.first()),
+            ms(samples.get(30)),
+            ms(samples.get(57)),
+            ms(samples.last())
+        );
+        assert!(
+            samples
+                .get(30)
+                .is_some_and(|time| *time < Duration::from_millis(16))
+        );
+    }
+    Ok(())
+}
+
+fn filter_key_event(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    }
+}
+
+fn type_request_filter(app: &mut InspectorApp, text: &str) {
+    let _ = render_frame(
+        app,
+        Layout::WINDOW,
+        vec![
+            filter_key_event(egui::Key::F, egui::Modifiers::COMMAND),
+            egui::Event::Text(text.to_owned()),
+        ],
+    );
+}
+
+#[test]
+fn filter_completion_leaves_tab_to_focus_navigation_inside_a_quote() {
+    let mut app = test_app(egui::Context::default());
+    let _ = render_settled(&mut app, Layout::WINDOW);
+    let phrase = r#""connection status:""#;
+    type_request_filter(&mut app, phrase);
+    let _ = render_settled(&mut app, Layout::WINDOW);
+    let filter_focus = app.context.memory(egui::Memory::focused);
+    assert!(filter_focus.is_some());
+
+    let (drawn, _) = render_frame(
+        &mut app,
+        Layout::WINDOW,
+        vec![filter_key_event(
+            egui::Key::ArrowLeft,
+            egui::Modifiers::NONE,
+        )],
+    );
+    assert!(drawn.iter().any(|item| item.text == phrase));
+    assert!(
+        !drawn.iter().any(|item| item.text == "status:2xx"),
+        "field suggestions appeared inside the quoted phrase"
+    );
+    for key in [egui::Key::ArrowDown, egui::Key::Tab] {
+        let _ = render_frame(
+            &mut app,
+            Layout::WINDOW,
+            vec![filter_key_event(key, egui::Modifiers::NONE)],
+        );
+    }
+    let drawn = render_settled(&mut app, Layout::WINDOW);
+    assert!(drawn.iter().any(|item| item.text == phrase));
+    assert_ne!(app.context.memory(egui::Memory::focused), filter_focus);
+}
+
+#[test]
+fn standalone_field_completion_accepts_enter_and_tab_after_a_phrase() {
+    for (arrow, accept, expected) in [
+        (egui::Key::ArrowDown, egui::Key::Enter, "4xx"),
+        (egui::Key::ArrowUp, egui::Key::Tab, "5xx"),
+    ] {
+        let mut app = test_app(egui::Context::default());
+        let _ = render_settled(&mut app, Layout::WINDOW);
+        let phrase = r#""한글 status:""#;
+        type_request_filter(&mut app, &format!("{phrase} status:"));
+        let drawn = render_settled(&mut app, Layout::WINDOW);
+        assert!(drawn.iter().any(|item| item.text == "status:2xx"));
+
+        for key in [arrow, accept] {
+            let _ = render_frame(
+                &mut app,
+                Layout::WINDOW,
+                vec![filter_key_event(key, egui::Modifiers::NONE)],
+            );
+        }
+        let drawn = render_settled(&mut app, Layout::WINDOW);
+        let input = format!("{phrase} status:{expected}");
+        assert!(drawn.iter().any(|item| item.text == input), "{input}");
+        assert!(!drawn.iter().any(|item| item.text == "status:2xx"));
+    }
+}
+
+/// Top of the first painted text equal to `label`.
+fn text_top(drawn: &[DrawnText], label: &str) -> Result<f32, String> {
+    drawn
+        .iter()
+        .find(|item| item.text == label)
+        .map(|item| item.rect.top())
+        .ok_or_else(|| format!("missing {label:?}"))
+}
+
+#[tokio::test]
+async fn inspector_rows_follow_the_tree_grid_in_every_tab() -> Result<(), Box<dyn std::error::Error>>
+{
+    let exchanges = timeout(Duration::from_secs(5), capture_sample_exchanges()).await??;
+    let mut app = test_app(egui::Context::default());
+    for exchange in exchanges {
+        app.requests.selected = Some(exchange.id());
+        let _evicted = app.requests.records.push(exchange);
+    }
+
+    app.detail.tab = DetailTab::Headers;
+    let drawn = render_settled(&mut app, Layout::WINDOW);
+    for group in ["Query", "Request", "Response"] {
+        text_top(&drawn, group)?;
+    }
+    // The result line names the status and HTTP version the server sent.
+    text_top(&drawn, "200 OK · HTTP/1.1")?;
+    // Query parameters are one-line key-value rows, one tree row apart.
+    // One-line key-value rows are one tree row apart, and their colons
+    // line up in one column after the keys.
+    let colons: Vec<egui::Rect> = drawn
+        .iter()
+        .filter(|item| item.text == ":")
+        .map(|item| item.rect)
+        .take(4)
+        .collect();
+    assert_eq!(colons.len(), 4, "query parameter rows");
+    for pair in colons.windows(2) {
+        if let [a, b] = pair {
+            assert!(
+                (b.top() - a.top() - Layout::TREE_ROW_HEIGHT).abs() < 0.5,
+                "rows {a:?} and {b:?} are not {} apart",
+                Layout::TREE_ROW_HEIGHT
+            );
+            assert!((a.left() - b.left()).abs() < 0.5);
+        }
+    }
+
+    app.detail.tab = DetailTab::Timing;
+    let drawn = render_settled(&mut app, Layout::WINDOW);
+    let connect = text_top(&drawn, "Connect")?;
+    let total = text_top(&drawn, "Total")?;
+    assert!(
+        5.0f32
+            .mul_add(-Layout::TREE_ROW_HEIGHT, total - connect)
+            .abs()
+            < 1.5,
+        "six timing rows: {connect} to {total}"
+    );
+    // Times are right-aligned in one column of the inspector (the request
+    // list left of it has its own Duration column).
+    let connect_left = text_left(&drawn, "Connect")?;
+    let rights: Vec<f32> = drawn
+        .iter()
+        .filter(|item| item.text.ends_with(" ms") && item.rect.left() > connect_left)
+        .map(|item| item.rect.right())
+        .collect();
+    assert_eq!(rights.len(), 6, "times: {rights:?}");
+    assert!(
+        rights.windows(2).all(|pair| match pair {
+            [a, b] => (a - b).abs() < 0.5,
+            _ => true,
+        }),
+        "times are not right-aligned: {rights:?}"
+    );
+
+    app.detail.tab = DetailTab::Body;
+    let drawn = render_settled(&mut app, Layout::WINDOW);
+    for label in ["Request body", "Response body", "Pretty", "Raw", "Tree"] {
+        text_top(&drawn, label)?;
+    }
+    // The raw viewer numbers its lines.
+    assert!(drawn.iter().any(|item| item.text == "1"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn map_panes_have_headers_and_tree_rows() -> Result<(), Box<dyn std::error::Error>> {
+    let exchanges = timeout(Duration::from_secs(5), capture_sample_exchanges()).await??;
+    let mut app = test_app(egui::Context::default());
+    load_synthetic_map(&mut app, exchanges)?;
+    app.layout.main_view = MainView::Map;
+    app.map.panel.sub_view = super::MapSubView::Tree;
+    let drawn = render_settled(&mut app, Layout::WINDOW);
+    let tree = text_top(&drawn, "Tree")?;
+    let graph = text_top(&drawn, "Graph")?;
+    assert!(
+        (tree - graph).abs() < 2.0,
+        "Tree and Graph share the header"
+    );
+    assert!(
+        tree < Layout::TOOLBAR_HEIGHT + Layout::PANE_HEADER_HEIGHT,
+        "the tabs sit in the pane header under the toolbar"
+    );
+    text_top(&drawn, "No node selected")?;
+    // Origin rows are tree rows: consecutive roots after a collapsed one are
+    // one tree row apart.
+    let mut roots: Vec<f32> = drawn
+        .iter()
+        .filter(|item| item.text.starts_with("http://") || item.text.starts_with("https://"))
+        .map(|item| item.rect.top())
+        .collect();
+    roots.sort_by(f32::total_cmp);
+    assert_ne!(roots, Vec::<f32>::new());
+    for pair in roots.windows(2) {
+        if let [a, b] = pair {
+            let gap = b - a;
+            let rows = (gap / Layout::TREE_ROW_HEIGHT).round();
+            assert!(
+                rows.mul_add(-Layout::TREE_ROW_HEIGHT, gap).abs() < 1.0,
+                "roots {a} and {b} are not on the {} grid",
+                Layout::TREE_ROW_HEIGHT
+            );
+        }
+    }
+
+    app.map.panel.sub_view = super::MapSubView::Graph;
+    let drawn = render_settled(&mut app, Layout::WINDOW);
+    for label in ["Edges ▼", "Relayout", "Export ▼"] {
+        text_top(&drawn, label)?;
+    }
+    Ok(())
 }

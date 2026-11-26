@@ -2,6 +2,7 @@
 
 use crate::ui::i18n::{Language, Text};
 use crate::ui::style::tokens::Layout;
+use crate::ui::workbench::field::{self, Field};
 use std::path::PathBuf;
 
 use eframe::egui;
@@ -126,7 +127,7 @@ impl HarDialog {
         ui.radio_value(&mut self.scope, HarScope::Filtered, filtered_label);
         ui.weak(lang.pick(
             "Only requests kept in the list since the last Clear are exported.",
-            "마지막 비우기 이후 목록에 보관된 요청만 내보냅니다.",
+            "마지막 비우기 이후 목록에 유지된 요청만 내보냅니다.",
         ));
         ui.separator();
         ui.label(lang.pick("Include (off by default)", "포함 항목 (기본 꺼짐)"));
@@ -152,12 +153,15 @@ impl HarDialog {
         ui.separator();
         ui.label(lang.pick("File", "파일"));
         let path_width = Layout::HAR_PATH_WIDTH.fit(ui.available_width());
-        ui.add(
-            egui::TextEdit::singleline(&mut self.path)
-                .desired_width(path_width)
-                .hint_text(lang.pick("Path of a new .har file", "새 .har 파일 경로")),
-        );
-        ui.weak(lang.pick(
+        let _ = field::single_line(
+            ui,
+            &mut self.path,
+            Field::new(path_width)
+                .hint(lang.pick("Path of a new .har file", "새 .har 파일 경로"))
+                .monospace(),
+            |_| {},
+        )
+        .on_hover_text(lang.pick(
             "An existing file is never replaced.",
             "이미 존재하는 파일은 덮어쓰지 않습니다.",
         ));

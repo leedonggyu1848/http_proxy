@@ -3,18 +3,20 @@
 use crate::ui::app::capture::CaptureNotice;
 #[cfg(test)]
 use crate::ui::app::capture::PortChoice;
-use crate::ui::app::state::SessionError;
+use crate::ui::app::state::{MainView, SessionError};
 use crate::ui::i18n::{Language, Text, domain};
+use crate::ui::style::theme::Palette;
 use crate::ui::style::{
-    indicator,
-    tokens::{Layout, Tone},
+    fonts, indicator,
+    tokens::{Layout, Space, StrokeWidth, Tone, TypeScale},
 };
-use crate::ui::{AppAction, InspectorApp, MAX_RECORDS};
+use crate::ui::workbench::field::{self, Field};
+use crate::ui::workbench::text::ShellText;
+use crate::ui::workbench::{chrome, controls};
+use crate::ui::{AppAction, InspectorApp};
 use eframe::egui;
 use http_inspector_core::interception::{ProxyHandle, StartError};
-use http_inspector_core::recording::FullLog;
 use http_inspector_core::settings;
-use http_inspector_exchange::ByteSize;
 use std::borrow::Cow;
 
 /// Explains a failed start in terms of what the user can change.
@@ -41,12 +43,8 @@ pub(crate) fn notice_text(notice: &CaptureNotice, lang: Language) -> Cow<'_, str
             stop_error,
         } => {
             let base = match lang {
-                Language::English => {
-                    format!("The proxy stopped: {message}. Press Start to restart it.")
-                }
-                Language::Korean => {
-                    format!("프록시가 중지되었습니다: {message}. 다시 시작하려면 시작을 누르세요.")
-                }
+                Language::English => format!("The proxy stopped: {message}"),
+                Language::Korean => format!("프록시가 중지되었습니다: {message}"),
             };
             match stop_error {
                 Some(error) => {
@@ -64,7 +62,7 @@ fn session_error_text(error: &SessionError, lang: Language) -> String {
         SessionError::Replay(err) => domain::replay_error(lang, err),
         SessionError::RangeMerge(detail) => match lang {
             Language::English => format!("Merging ranges failed: {detail}"),
-            Language::Korean => format!("범위 응답 합치기 실패: {detail}"),
+            Language::Korean => format!("범위 응답 병합 실패: {detail}"),
         },
     }
 }
@@ -96,26 +94,39 @@ impl AuthorizationNotice {
 }
 
 impl InspectorApp {
-    /// One toolbar row with the controls used while watching requests.
-    pub(crate) fn toolbar(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+    /// The toolbar: app name, proxy and HTTPS state, the view switch, the
+    /// request filter, the Save and Settings menus, and the one primary
+    /// action. Windows narrower than [`Layout::TOOLBAR_ONE_ROW_MIN_WIDTH`]
+    /// move the view switch and the filter to a second row.
+    pub(crate) fn toolbar(
+        &self,
+        ui: &mut egui::Ui,
+        dialog_open: bool,
+        actions: &mut Vec<AppAction>,
+    ) {
         let lang = self.language();
-        ui.horizontal_wrapped(|ui| {
-            self.proxy_controls(ui, actions);
-            ui.separator();
-            self.https_controls(ui, actions);
-            ui.separator();
-            actions.extend(
-                self.dialogs
-                    .browsers
-                    .toolbar(
-                        ui,
-                        self.session.capture.proxy.is_some(),
-                        self.session.capture.ca_directory.is_some()
-                            && self.session.capture.https_inspection,
-                        lang,
-                    )
-                    .map(AppAction::Browser),
-            );
+        let one_row = ui.available_width() >= Layout::TOOLBAR_ONE_ROW_MIN_WIDTH;
+        let rows = if one_row { 1.0 } else { 2.0 };
+        let rect = chrome::allocate(ui, Layout::TOOLBAR_HEIGHT * rows);
+        chrome::paint(ui, rect, chrome::Edge::Bottom);
+        let (top, bottom) = if one_row {
+            (rect, None)
+        } else {
+            let split = rect.top() + Layout::TOOLBAR_HEIGHT;
+            let (top, bottom) = rect.split_top_bottom_at_y(split);
+            (top, Some(bottom))
+        };
+        let mut row = chrome::row(ui, top, chrome::Inset::BAR, "toolbar");
+        row.spacing_mut().item_spacing.x = Space::MD;
+        if one_row {
+            title(&mut row);
+            chrome::separator(&mut row);
+        }
+        self.proxy_indicator(&mut row, actions);
+        self.https_indicator(&mut row, actions);
+        row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            self.primary_action(ui, actions);
+            self.settings_menu(ui, actions);
             actions.extend(
                 self.dialogs
                     .save
@@ -123,122 +134,322 @@ impl InspectorApp {
                     .into_iter()
                     .map(AppAction::SaveMenu),
             );
-            ui.menu_button(lang.text(Text::Settings), |ui| {
+            if one_row {
+                let switch_width = view_switch_width(ui, lang);
+                let room = 2.0f32.mul_add(-Space::LG, ui.available_width() - switch_width);
+                self.filter_input(
+                    ui,
+                    Layout::TOOLBAR_FILTER_WIDTH.fit(room),
+                    dialog_open,
+                    actions,
+                );
+                let free = ui.available_rect_before_wrap();
+                let centered = egui::Rect::from_center_size(
+                    egui::pos2(
+                        free.center().x.max(free.left() + switch_width / 2.0),
+                        free.center().y,
+                    ),
+                    egui::vec2(switch_width, free.height()),
+                );
+                let mut switch = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(centered)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                self.view_switch(&mut switch, actions);
+            }
+        });
+        if let Some(bottom) = bottom {
+            let mut row = chrome::row(ui, bottom, chrome::Inset::BAR, "toolbar-second-row");
+            row.spacing_mut().item_spacing.x = Space::MD;
+            self.view_switch(&mut row, actions);
+            let width = row.available_width();
+            self.filter_input(&mut row, width, dialog_open, actions);
+        }
+    }
+
+    /// Requests and Map. The counts live in the status bar (S16).
+    fn view_switch(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+        let lang = self.language();
+        actions.extend(
+            controls::segmented(
+                ui,
+                ShellText::ViewSwitch.text(lang),
+                self.layout.main_view,
+                &VIEWS.map(|(view, label)| (view, label.text(lang))),
+            )
+            .map(AppAction::SwitchView),
+        );
+    }
+
+    /// The request filter. It only filters the request list, so the Map
+    /// view leaves its place empty instead of offering a control that does
+    /// nothing there.
+    fn filter_input(
+        &self,
+        ui: &mut egui::Ui,
+        width: f32,
+        dialog_open: bool,
+        actions: &mut Vec<AppAction>,
+    ) {
+        let lang = self.language();
+        if self.layout.main_view == MainView::Requests {
+            actions.extend(
+                self.requests
+                    .search
+                    .controls(ui, width, &self.requests.records, dialog_open, lang)
+                    .map(AppAction::Search),
+            );
+        } else {
+            ui.add_space(width);
+        }
+    }
+
+    /// The proxy dot and address. While running, the address opens a menu
+    /// with the copy actions and Stop; while stopped, the port to start on
+    /// is edited in place.
+    fn proxy_indicator(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+        let lang = self.language();
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = Space::XS;
+            if let Some(proxy) = self.session.capture.proxy.as_ref() {
+                let address = proxy.local_addr();
+                indicator::dot(ui, Tone::Success);
+                let label = egui::RichText::new(format!("{address} ▼")).font(fonts::data());
+                let menu = controls::ghost_menu(ui, label, Layout::TOOLBAR_BUTTON_HEIGHT, |ui| {
+                    proxy_menu(ui, address, lang)
+                });
+                if let Some(action) = menu.inner.flatten() {
+                    actions.push(action);
+                }
+            } else {
+                indicator::dot(ui, Tone::Danger);
+                ui.label(ShellText::Stopped.text(lang));
+                ui.add_space(Space::SM);
+                ui.label(ShellText::Port.text(lang));
+                let mut port = self.session.capture.port.text.clone();
+                let edited = field::single_line(
+                    ui,
+                    &mut port,
+                    Field::new(Layout::PORT_INPUT_WIDTH).monospace(),
+                    |_| {},
+                )
+                .on_hover_text(lang.pick(
+                    "Loopback port to listen on; 0 picks a free port.",
+                    "프록시가 수신할 루프백 포트이며 0을 입력하면 빈 포트를 자동으로 선택합니다.",
+                ))
+                .changed();
+                if edited {
+                    actions.push(AppAction::SetPort(port));
+                }
+            }
+        });
+    }
+
+    /// HTTPS decryption state; the menu holds the switch and the CA.
+    fn https_indicator(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+        let lang = self.language();
+        let capture = &self.session.capture;
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = Space::XS;
+            let label = if capture.https_inspection {
+                if let Some(tone) = self.dialogs.ca_panel.tone(capture.ca_directory.as_deref()) {
+                    indicator::dot(ui, tone);
+                }
+                ShellText::HttpsOn
+            } else {
+                ShellText::HttpsOff
+            };
+            let menu = controls::ghost_menu(
+                ui,
+                format!("{} ▼", label.text(lang)),
+                Layout::TOOLBAR_BUTTON_HEIGHT,
+                |ui| self.https_menu(ui),
+            );
+            actions.extend(menu.inner.into_iter().flatten());
+        });
+    }
+
+    fn https_menu(&self, ui: &mut egui::Ui) -> Vec<AppAction> {
+        let lang = self.language();
+        let capture = &self.session.capture;
+        let mut actions = Vec::new();
+        let hover = if capture.proxy.is_some() {
+            lang.pick(
+                "Stop the proxy to change this setting.",
+                "이 설정을 바꾸려면 프록시를 중지하세요.",
+            )
+        } else {
+            lang.pick(
+                "Decrypt HTTPS in new connections with the app CA.",
+                "앱 CA로 새 연결의 HTTPS를 복호화합니다.",
+            )
+        };
+        let mut enabled = capture.https_inspection;
+        let toggled = ui
+            .add_enabled(
+                capture.proxy.is_none(),
+                egui::Checkbox::new(&mut enabled, ShellText::DecryptHttps.text(lang)),
+            )
+            .on_hover_text(hover)
+            .on_disabled_hover_text(hover)
+            .changed();
+        if toggled {
+            actions.push(AppAction::SetHttpsInspection(enabled));
+        }
+        if capture.https_inspection {
+            ui.separator();
+            actions.extend(self.dialogs.ca_panel.summary(
+                ui,
+                capture.ca_directory.as_deref(),
+                lang,
+            ));
+        }
+        actions
+    }
+
+    /// Language, theme, body storage, cURL redaction, and the capture scope help.
+    fn settings_menu(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+        let lang = self.language();
+        let menu = controls::ghost_menu(
+            ui,
+            ShellText::Settings.text(lang),
+            Layout::TOOLBAR_BUTTON_HEIGHT,
+            |ui| {
+                let mut chosen = Vec::new();
                 ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                    actions.extend(self.layout.theme.menu(ui, lang).map(AppAction::SetTheme));
+                    chosen.extend(self.layout.theme.menu(ui, lang).map(AppAction::SetTheme));
                     ui.separator();
-                    actions.extend(self.layout.language.menu(ui).map(AppAction::SetLanguage));
+                    chosen.extend(self.layout.language.menu(ui).map(AppAction::SetLanguage));
                     ui.separator();
-                    actions.extend(
+                    chosen.extend(
                         self.session
                             .body_saving
                             .settings_menu(ui, lang)
                             .map(AppAction::SetBodyStorageLimit),
                     );
+                    ui.separator();
+                    chosen.extend(self.detail.curl.settings(ui, lang));
+                    ui.separator();
+                    crate::ui::dialogs::scope_help::submenu(
+                        ui,
+                        self.session
+                            .capture
+                            .proxy
+                            .as_ref()
+                            .map(ProxyHandle::local_addr),
+                        lang,
+                    );
                 });
-            });
-            crate::ui::dialogs::scope_help::button(
-                ui,
-                self.session
-                    .capture
-                    .proxy
-                    .as_ref()
-                    .map(ProxyHandle::local_addr),
-                lang,
-            );
-        });
+                chosen
+            },
+        );
+        actions.extend(menu.inner.into_iter().flatten());
     }
 
-    fn proxy_controls(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+    /// The one Primary button (S9): Start while the proxy is stopped, since
+    /// nothing is captured until it runs, and Open Browser while it runs,
+    /// since an inspection browser is the shortest way to send traffic
+    /// through it.
+    fn primary_action(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
         let lang = self.language();
-        if let Some(proxy) = self.session.capture.proxy.as_ref() {
-            let address = proxy.local_addr();
-            indicator::dot_label(ui, Tone::Success, lang.text(Text::StatusRunning));
-            ui.monospace(address.to_string());
-            actions.extend(copy_menu(ui, address, lang).map(AppAction::CopyText));
-            if ui.button(lang.text(Text::Stop)).clicked() {
-                actions.push(AppAction::StopProxy);
-            }
-        } else {
-            indicator::dot_label(ui, Tone::Danger, lang.text(Text::StatusStopped));
-            ui.label(lang.text(Text::PortLabel));
-            let mut port = self.session.capture.port.text.clone();
-            let edited = ui
-                .add(egui::TextEdit::singleline(&mut port).desired_width(Layout::PORT_INPUT_WIDTH))
-                .on_hover_text(lang.pick(
-                    "Loopback port for the proxy (0 picks a free port; typed ports are remembered).",
-                    "프록시가 사용할 로컬 포트입니다(0은 빈 포트 자동 선택, 입력한 포트는 저장).",
-                ))
-                .changed();
-            if edited {
-                actions.push(AppAction::SetPort(port));
-            }
-            if ui.button(lang.text(Text::Start)).clicked() {
+        if self.session.capture.proxy.is_none() {
+            if ui
+                .add(controls::primary(ui, ShellText::Start.text(lang)))
+                .clicked()
+            {
                 actions.push(AppAction::StartProxy);
             }
+            return;
         }
+        actions.extend(
+            self.dialogs
+                .browsers
+                .toolbar(
+                    ui,
+                    self.session.capture.ca_directory.is_some()
+                        && self.session.capture.https_inspection,
+                    lang,
+                )
+                .map(AppAction::Browser),
+        );
     }
 
-    fn https_controls(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
-        let lang = self.language();
-        let warning = authorization_warning(lang);
-        let hover = if self.session.capture.proxy.is_some() {
-            match lang {
-                Language::English => format!("Stop the proxy to change this setting. {warning}"),
-                Language::Korean => format!("이 설정을 바꾸려면 프록시를 중지하세요. {warning}"),
-            }
-        } else {
-            match lang {
-                Language::English => {
-                    format!("Decrypt HTTPS in new connections with the app CA. {warning}")
-                }
-                Language::Korean => {
-                    format!("앱 CA로 새 연결의 HTTPS를 복호화합니다. {warning}")
-                }
-            }
-        };
-        let mut enabled = self.session.capture.https_inspection;
-        let toggled = ui
-            .add_enabled(
-                self.session.capture.proxy.is_none(),
-                egui::Checkbox::new(&mut enabled, lang.text(Text::DecryptHttps)),
-            )
-            .on_hover_text(&hover)
-            .on_disabled_hover_text(&hover)
-            .changed();
-        if toggled {
-            actions.push(AppAction::SetHttpsInspection(enabled));
-        }
-        if self.session.capture.https_inspection {
-            actions.extend(self.dialogs.ca_panel.summary(
-                ui,
-                self.session.capture.ca_directory.as_deref(),
-                lang,
-            ));
-        }
-    }
-
-    /// Errors and warnings that need attention, shown right below the toolbar.
+    /// Errors and warnings that need attention, one line each, in a chrome
+    /// strip right below the toolbar. Draws nothing when all is well.
     pub(crate) fn notices(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+        let background = ui.painter().add(egui::Shape::Noop);
+        let top = ui.cursor().top();
+        let response = ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            self.notice_lines(ui, actions)
+        });
+        if !response.inner {
+            return;
+        }
+        let rect = egui::Rect::from_x_y_ranges(
+            ui.max_rect().x_range(),
+            top..=response.response.rect.bottom(),
+        );
+        let palette = Palette::of(ui);
+        ui.painter().set(
+            background,
+            egui::Shape::rect_filled(rect, 0.0, palette.surfaces.chrome),
+        );
+        ui.painter().hline(
+            rect.x_range(),
+            rect.bottom() - StrokeWidth::STRUCTURAL / 2.0,
+            egui::Stroke::new(StrokeWidth::STRUCTURAL, palette.borders.structural),
+        );
+    }
+
+    /// Shows each notice on its own line; reports whether any was shown.
+    fn notice_lines(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) -> bool {
         let lang = self.language();
+        let mut shown = false;
+        let mut line = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)| {
+            shown = true;
+            notice_row(ui, add);
+        };
         if let Some(warning) = self.session.capture.port.launch_warning.as_ref() {
-            indicator::dot_label(ui, Tone::Warning, warning);
+            let text = domain::localize_port_launch_warning(lang, warning);
+            line(ui, &mut |ui| {
+                indicator::dot_label(ui, Tone::Warning, &text);
+            });
         }
         if let Some(error) = self.session.capture.error.as_ref() {
-            indicator::dot_label(ui, Tone::Danger, notice_text(error, lang));
+            let text = notice_text(error, lang);
+            line(ui, &mut |ui| {
+                indicator::dot_label(ui, Tone::Danger, text.as_ref());
+            });
         } else if let Some(error) = self.session.error.as_ref() {
-            indicator::dot_label(ui, Tone::Danger, session_error_text(error, lang));
+            let text = session_error_text(error, lang);
+            line(ui, &mut |ui| {
+                indicator::dot_label(ui, Tone::Danger, &text);
+            });
         }
         if let Some(error) = self.dialogs.browsers.error(lang) {
-            indicator::dot_label(ui, Tone::Danger, error);
+            line(ui, &mut |ui| {
+                indicator::dot_label(ui, Tone::Danger, &error);
+            });
         }
-        if self.detail.curl.notice(ui, lang) {
-            actions.push(AppAction::DismissCurlNotice);
+        if self.detail.curl.has_notice() {
+            line(ui, &mut |ui| {
+                if self.detail.curl.notice(ui, lang) {
+                    actions.push(AppAction::DismissCurlNotice);
+                }
+            });
         }
         if self.session.capture.https_inspection {
-            self.dialogs.ca_panel.messages(ui, lang);
+            if self.dialogs.ca_panel.has_messages() {
+                line(ui, &mut |ui| {
+                    if self.dialogs.ca_panel.messages(ui, lang) {
+                        actions.push(AppAction::DismissCaNotice);
+                    }
+                });
+            }
             if self.dialogs.authorization_notice == AuthorizationNotice::Showing {
-                ui.horizontal_wrapped(|ui| {
+                line(ui, &mut |ui| {
                     indicator::dot_label(ui, Tone::Warning, authorization_warning(lang));
                     if ui.small_button(lang.text(Text::Dismiss)).clicked() {
                         actions.push(AppAction::DismissAuthorization);
@@ -246,113 +457,63 @@ impl InspectorApp {
                 });
             }
         }
+        shown
     }
+}
 
-    /// Counters and full-session log state below the request list.
-    pub(crate) fn status_bar(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
-        let lang = self.language();
-        ui.horizontal_wrapped(|ui| {
-            let count = self.requests.records.len();
-            ui.label(match lang {
-                Language::English => format!("{count} requests"),
-                Language::Korean => format!("요청 {count}건"),
-            });
-            let dropped = self
-                .requests
-                .records
-                .dropped(self.session.capture.engine_dropped());
-            if dropped > 0 {
-                ui.separator();
-                let label = match lang {
-                    Language::English => format!("{dropped} records dropped"),
-                    Language::Korean => format!("기록 {dropped}건 누락"),
-                };
-                indicator::dot_label(ui, Tone::Danger, label).on_hover_text(lang.pick(
-                    "The capture queue was full, so these exchanges were forwarded but not shown.",
-                    "캡처 대기열이 가득 차 이 요청들은 전달되었지만 목록에 표시되지 않았습니다.",
-                ));
-            }
-            let evicted = self.requests.records.evicted();
-            if evicted > 0 {
-                ui.separator();
-                let label = match lang {
-                    Language::English => format!("{evicted} older records removed"),
-                    Language::Korean => format!("오래된 기록 {evicted}건 정리됨"),
-                };
-                let hover = match lang {
-                    Language::English => format!(
-                        "Only the newest {MAX_RECORDS} requests stay on screen while the full-session log keeps every record."
-                    ),
-                    Language::Korean => format!(
-                        "화면에는 최신 {MAX_RECORDS}건만 유지되며 전체 세션 로그에는 모든 기록이 남습니다."
-                    ),
-                };
-                indicator::dot_label(ui, Tone::Warning, label).on_hover_text(hover);
-            }
-            if self.map.analysis.url_map().node_limit_reached() {
-                ui.separator();
-                let max_nodes = self.map.analysis.url_map().max_nodes();
-                let message = match lang {
-                    Language::English => format!(
-                        "URL map reached its {max_nodes} node limit; deeper paths are folded into parent nodes."
-                    ),
-                    Language::Korean => format!(
-                        "URL 맵이 최대 {max_nodes}개 노드 한도에 도달했습니다. 하위 경로는 상위 노드에 묶입니다."
-                    ),
-                };
-                indicator::dot_label(ui, Tone::Warning, message);
-            }
-            self.full_log_status(ui, lang);
-            self.dialogs.save.status(ui, lang);
-            if self.session.body_saving.status(ui, lang) {
-                actions.push(AppAction::CancelBulkSave);
-            }
-            self.layout.theme.status(ui, lang);
-            self.layout.language.status(ui);
+const VIEWS: [(MainView, ShellText); 2] = [
+    (MainView::Requests, ShellText::Requests),
+    (MainView::Map, ShellText::Map),
+];
+
+/// Width the view switch takes, so the toolbar can center it.
+fn view_switch_width(ui: &egui::Ui, lang: Language) -> f32 {
+    controls::segmented_width(ui, VIEWS.iter().map(|(_, label)| label.text(lang)))
+}
+
+/// The app name at the left end of the toolbar.
+fn title(ui: &mut egui::Ui) {
+    ui.label(
+        egui::RichText::new(http_inspector_exchange::APP_NAME)
+            .font(fonts::panel_title())
+            .extra_letter_spacing(TypeScale::PANEL_TITLE_TRACKING)
+            .strong(),
+    );
+}
+
+/// One notice: [`Layout::STATUS_BAR_HEIGHT`] or taller when it wraps.
+fn notice_row(ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)) {
+    egui::Frame::new()
+        .inner_margin(Layout::NOTICE_MARGIN)
+        .show(ui, |ui| {
+            ui.set_min_height(2.0f32.mul_add(-Space::XXS, Layout::STATUS_BAR_HEIGHT));
+            ui.horizontal_wrapped(|ui| add(ui));
         });
-    }
+}
 
-    fn full_log_status(&self, ui: &mut egui::Ui, lang: Language) {
-        if let Some(error) = self
-            .session
-            .capture
-            .log_init_error
-            .as_ref()
-            .map(|error| match lang {
-                Language::English => format!("Full-session logging is unavailable: {error}"),
-                Language::Korean => format!("전체 세션 로그를 사용할 수 없습니다: {error}"),
-            })
-            .or_else(|| {
-                self.session
-                    .capture
-                    .full_log
-                    .as_ref()
-                    .and_then(FullLog::error)
-            })
-        {
-            ui.separator();
-            indicator::dot_label(ui, Tone::Danger, error);
+/// Copy actions and Stop for the running proxy at `address`.
+fn proxy_menu(
+    ui: &mut egui::Ui,
+    address: std::net::SocketAddr,
+    lang: Language,
+) -> Option<AppAction> {
+    let mut action = None;
+    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+        ui.label(egui::RichText::new(ShellText::Copy.text(lang)).color(Palette::of(ui).secondary));
+        for target in CopyTarget::ALL {
+            let text = target.text(address);
+            if ui.button(target.label(lang)).on_hover_text(&text).clicked() {
+                action = Some(AppAction::CopyText(text));
+                ui.close();
+            }
         }
-        if let Some(log) = self
-            .session
-            .capture
-            .full_log
-            .as_ref()
-            .filter(|log| log.body_limit_reached())
-        {
-            ui.separator();
-            let limit = ByteSize::new(log.body_limit()).exact();
-            let message = match lang {
-                Language::English => format!(
-                    "The full-session log reached its {limit} body limit. Later body bytes are omitted; headers and results are still logged."
-                ),
-                Language::Korean => format!(
-                    "전체 세션 로그가 본문 한도({limit})에 도달했습니다. 이후 본문은 생략되며 헤더와 결과만 계속 기록됩니다."
-                ),
-            };
-            indicator::dot_label(ui, Tone::Warning, message);
+        ui.separator();
+        if ui.button(ShellText::Stop.text(lang)).clicked() {
+            action = Some(AppAction::StopProxy);
+            ui.close();
         }
-    }
+    });
+    action
 }
 
 /// Text placed on the clipboard for one of the toolbar copy actions.
@@ -383,22 +544,6 @@ impl CopyTarget {
         }
     }
 }
-
-fn copy_menu(ui: &mut egui::Ui, address: std::net::SocketAddr, lang: Language) -> Option<String> {
-    let menu = ui.menu_button(lang.pick("Copy ▼", "복사 ▼"), |ui| {
-        let mut copied = None;
-        for target in CopyTarget::ALL {
-            let text = target.text(address);
-            if ui.button(target.label(lang)).on_hover_text(&text).clicked() {
-                copied = Some(text);
-                ui.close();
-            }
-        }
-        copied
-    });
-    menu.inner.flatten()
-}
-
 #[cfg(test)]
 mod port_choice_tests {
     use super::{PortChoice, start_error_text};
