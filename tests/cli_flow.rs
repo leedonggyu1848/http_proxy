@@ -36,10 +36,23 @@ impl Sandbox {
             .prefix("hi-cli")
             .tempdir_in("/tmp")?;
         fs::set_permissions(runtime.path(), fs::Permissions::from_mode(0o700))?;
-        Ok(Self {
-            root: tempfile::tempdir()?,
-            runtime,
-        })
+        let root = tempfile::tempdir()?;
+        fs::create_dir(root.path().join("tmp"))?;
+        Ok(Self { root, runtime })
+    }
+
+    /// The daemon's `TMPDIR`, where nothing may remain.
+    fn temporary(&self) -> PathBuf {
+        self.root.path().join("tmp")
+    }
+
+    fn assert_temporary_empty(&self) -> TestResult {
+        let left: Vec<_> = fs::read_dir(self.temporary())?
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .collect();
+        assert!(left.is_empty(), "temporary files left behind: {left:?}");
+        Ok(())
     }
 
     fn command(&self, args: &[&str]) -> Command {
@@ -54,6 +67,7 @@ impl Sandbox {
             .env("XDG_CONFIG_HOME", home.join("config"))
             .env("XDG_CACHE_HOME", home.join("cache"))
             .env("XDG_RUNTIME_DIR", self.runtime.path())
+            .env("TMPDIR", self.temporary())
             .stdin(Stdio::null());
         command
     }
@@ -255,7 +269,8 @@ fn stop(sandbox: &Sandbox, proxy: SocketAddr) -> TestResult {
         TcpStream::connect(proxy).is_err(),
         "the proxy must stop listening"
     );
-    Ok(())
+    assert!(!sandbox.socket_directory().join("control.sock").exists());
+    sandbox.assert_temporary_empty()
 }
 
 #[test]
@@ -264,6 +279,8 @@ fn proxy_records_and_log_work_without_a_display() -> TestResult {
     let proxy = start(&sandbox)?;
     let id = capture(&sandbox, proxy)?;
     read_record(&sandbox, &id)?;
+    // The session log holds bodies but has no name on disk.
+    sandbox.assert_temporary_empty()?;
     check_exit_codes(&sandbox)?;
     save_log(&sandbox)?;
     stop(&sandbox, proxy)
@@ -297,4 +314,108 @@ fn help_and_schema_need_no_daemon() -> TestResult {
     let usage = sandbox.run(&["records", "body"])?;
     assert_eq!(usage.status.code(), Some(2));
     Ok(())
+}
+
+#[test]
+fn concurrent_starts_share_one_daemon() -> TestResult {
+    let sandbox = Sandbox::new()?;
+    let children = (0..4)
+        .map(|_| {
+            sandbox
+                .command(&["proxy", "start", "--port", "0", "--json"])
+                .stdout(Stdio::piped())
+                .spawn()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut documents = Vec::new();
+    for child in children {
+        let output = child.wait_with_output()?;
+        let stdout = String::from_utf8(output.stdout)?;
+        assert!(output.status.success(), "{stdout}");
+        documents.push(serde_json::from_str::<Value>(&stdout)?);
+    }
+    let started = documents
+        .iter()
+        .filter(|document| document["already_running"] != true)
+        .count();
+    assert_eq!(started, 1, "{documents:?}");
+    let first = documents.first().ok_or("no document")?;
+    for document in &documents {
+        assert_eq!(document["address"], first["address"]);
+        assert_eq!(document["pid"], first["pid"]);
+    }
+    let stopped = sandbox.json(&["proxy", "stop", "--json"])?;
+    assert_eq!(stopped["stopped"], true);
+    wait_for_exit(&first["pid"])
+}
+
+#[test]
+fn start_refuses_settings_other_than_the_running_proxy() -> TestResult {
+    let sandbox = Sandbox::new()?;
+    let started = sandbox.json(&["proxy", "start", "--port", "0", "--json"])?;
+    let port = started["port"].as_u64().ok_or("no port")?;
+    let other = if port == 65_535 { port - 1 } else { port + 1 }.to_string();
+    for args in [
+        ["proxy", "start", "--https-inspection", "--json"].as_slice(),
+        ["proxy", "start", "--port", &other, "--json"].as_slice(),
+    ] {
+        let output = sandbox.run(args)?;
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        let error: Value = serde_json::from_slice(&output.stdout)?;
+        assert_eq!(error["error"]["code"], "proxy_conflict", "{args:?}");
+    }
+    let unchanged = sandbox.json(&["proxy", "status", "--json"])?;
+    assert_eq!(unchanged["https_inspection"], false);
+    assert_eq!(unchanged["port"], port);
+    let same = sandbox.json(&["proxy", "start", "--port", &port.to_string(), "--json"])?;
+    assert_eq!(same["already_running"], true);
+    Ok(())
+}
+
+#[test]
+fn a_terminated_daemon_leaves_no_session_log_and_can_be_restarted() -> TestResult {
+    let sandbox = Sandbox::new()?;
+    let proxy = start(&sandbox)?;
+    let _id = capture(&sandbox, proxy)?;
+    let status = sandbox.json(&["proxy", "status", "--json"])?;
+    let pid = status["pid"].as_u64().ok_or("no pid")?.to_string();
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &pid])
+            .status()?
+            .success()
+    );
+    wait_for_exit(&status["pid"])?;
+    sandbox.assert_temporary_empty()?;
+    // The socket file is stale now; the next start replaces it.
+    let restarted = sandbox.json(&["proxy", "start", "--port", "0", "--json"])?;
+    assert_eq!(restarted["already_running"], false);
+    let stopped = sandbox.json(&["proxy", "stop", "--json"])?;
+    assert_eq!(stopped["stopped"], true);
+    sandbox.assert_temporary_empty()
+}
+
+/// Waits up to five seconds for a daemon process to exit.
+fn wait_for_exit(pid: &Value) -> TestResult {
+    let pid = pid.as_u64().ok_or("no pid")?.to_string();
+    for _ in 0..100 {
+        let alive = Command::new("kill")
+            .args(["-0", &pid])
+            .stderr(Stdio::null())
+            .status()?
+            .success();
+        if !alive {
+            return Ok(());
+        }
+        pause();
+    }
+    Err(format!("process {pid} did not exit").into())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test polls another process, not async work"
+)]
+fn pause() {
+    thread::sleep(std::time::Duration::from_millis(50));
 }

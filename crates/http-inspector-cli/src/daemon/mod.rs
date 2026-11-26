@@ -69,10 +69,11 @@ pub(crate) fn run(
     options: StartOptions,
     ready: impl FnOnce(&Value),
 ) -> Result<(), CliError> {
-    let listener = control.bind()?;
+    let bound = control.bind()?;
     let mut session = Session::new();
     if let Err(error) = session.start(options) {
-        control.remove_socket();
+        drop(bound.listener);
+        control.remove_own_socket(bound.inode);
         return Err(error);
     }
     let shared = Arc::new(Shared {
@@ -82,13 +83,17 @@ pub(crate) fn run(
         streams: AtomicUsize::new(0),
         control,
     });
-    ready(&shared.status(&shared.lock()));
+    let mut status = shared.status(&shared.lock());
+    if let Some(status) = status.as_object_mut() {
+        status.insert("already_running".to_owned(), json!(false));
+    }
+    ready(&status);
     let pump = Arc::clone(&shared);
-    thread::Builder::new()
+    let pump = thread::Builder::new()
         .name("cli-pump".to_owned())
         .spawn(move || run_pump(&pump))
         .map_err(|error| CliError::io("Could not start the capture thread", &error))?;
-    for stream in listener.incoming() {
+    for stream in bound.listener.incoming() {
         if shared.stopping.load(Ordering::Acquire) {
             break;
         }
@@ -99,8 +104,14 @@ pub(crate) fn run(
             .spawn(move || serve(&connection, stream))
             .is_err();
     }
+    // Refuse new clients before the socket file goes away.
+    drop(bound.listener);
     say_goodbye(&shared);
-    shared.control.remove_socket();
+    let _pump_panicked = pump.join().is_err();
+    // `proxy stop` already stopped the proxy; this also covers a proxy that
+    // is still running when the accept loop ends for another reason.
+    let _stop_failed = shared.lock().stop_proxy().is_err();
+    shared.control.remove_own_socket(bound.inode);
     Ok(())
 }
 

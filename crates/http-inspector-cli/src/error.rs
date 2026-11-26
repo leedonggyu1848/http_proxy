@@ -16,6 +16,8 @@ pub(crate) enum ErrorCode {
     InsecureControlPath,
     /// The daemon did not become ready, or the control channel broke.
     DaemonUnavailable,
+    /// Another daemon already listens on the control socket.
+    DaemonAlreadyRunning,
     /// No retained record has the requested ID.
     RecordNotFound,
     /// The record has no body or response on the requested side.
@@ -30,6 +32,8 @@ pub(crate) enum ErrorCode {
     ProxyNotRunning,
     /// The proxy could not start or restart.
     ProxyStartFailed,
+    /// `proxy start` asked for settings other than the running proxy's.
+    ProxyConflict,
     /// HTTPS inspection could not be prepared.
     HttpsUnavailable,
     /// No record matched before the timeout.
@@ -44,12 +48,13 @@ pub(crate) enum ErrorCode {
 
 impl ErrorCode {
     /// Every code, in documentation order.
-    pub(crate) const ALL: [Self; 17] = [
+    pub(crate) const ALL: [Self; 19] = [
         Self::Usage,
         Self::InvalidFilter,
         Self::DaemonNotRunning,
         Self::InsecureControlPath,
         Self::DaemonUnavailable,
+        Self::DaemonAlreadyRunning,
         Self::RecordNotFound,
         Self::BodyUnavailable,
         Self::PathNotFound,
@@ -57,6 +62,7 @@ impl ErrorCode {
         Self::ViewUnavailable,
         Self::ProxyNotRunning,
         Self::ProxyStartFailed,
+        Self::ProxyConflict,
         Self::HttpsUnavailable,
         Self::Timeout,
         Self::Busy,
@@ -72,6 +78,7 @@ impl ErrorCode {
             Self::DaemonNotRunning => "daemon_not_running",
             Self::InsecureControlPath => "insecure_control_path",
             Self::DaemonUnavailable => "daemon_unavailable",
+            Self::DaemonAlreadyRunning => "daemon_already_running",
             Self::RecordNotFound => "record_not_found",
             Self::BodyUnavailable => "body_unavailable",
             Self::PathNotFound => "path_not_found",
@@ -79,6 +86,7 @@ impl ErrorCode {
             Self::ViewUnavailable => "view_unavailable",
             Self::ProxyNotRunning => "proxy_not_running",
             Self::ProxyStartFailed => "proxy_start_failed",
+            Self::ProxyConflict => "proxy_conflict",
             Self::HttpsUnavailable => "https_unavailable",
             Self::Timeout => "timeout",
             Self::Busy => "busy",
@@ -97,10 +105,12 @@ impl ErrorCode {
             Self::Busy => 75,
             Self::InsecureControlPath
             | Self::DaemonUnavailable
+            | Self::DaemonAlreadyRunning
             | Self::BinaryBody
             | Self::ViewUnavailable
             | Self::ProxyNotRunning
             | Self::ProxyStartFailed
+            | Self::ProxyConflict
             | Self::HttpsUnavailable
             | Self::FileExists
             | Self::Io => 1,

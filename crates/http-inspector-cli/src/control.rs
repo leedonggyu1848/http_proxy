@@ -8,9 +8,11 @@
 //! refused instead of being used or repaired. No TCP control port exists.
 
 use std::ffi::OsString;
-use std::fs::{self, DirBuilder, Permissions};
+use std::fs::{self, DirBuilder, File, OpenOptions, Permissions};
 use std::io;
-use std::os::unix::fs::{DirBuilderExt as _, FileTypeExt as _, MetadataExt as _, PermissionsExt};
+use std::os::unix::fs::{
+    DirBuilderExt as _, FileTypeExt as _, MetadataExt as _, OpenOptionsExt as _, PermissionsExt,
+};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
@@ -18,6 +20,7 @@ use crate::error::{CliError, ErrorCode};
 
 const DIRECTORY_NAME: &str = "http-inspector";
 const SOCKET_NAME: &str = "control.sock";
+const LOCK_NAME: &str = "control.lock";
 /// Permission bits for group and others, which must all be clear.
 const SHARED_BITS: u32 = 0o077;
 
@@ -100,14 +103,32 @@ impl ControlPath {
         })
     }
 
+    /// Takes the startup lock. Every daemon holds it while it checks for a
+    /// live daemon, removes a stale socket, and binds, and while it removes
+    /// its own socket at exit, so two daemons never take the same path.
+    fn lock(&self) -> Result<File, CliError> {
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(self.directory.join(LOCK_NAME))
+            .map_err(|error| CliError::io("Could not open the control lock", &error))?;
+        lock.lock()
+            .map_err(|error| CliError::io("Could not take the control lock", &error))?;
+        Ok(lock)
+    }
+
     /// Binds the socket with mode 0600, replacing a socket that no daemon
-    /// answers on. Fails when a daemon is already listening.
-    pub(crate) fn bind(&self) -> Result<UnixListener, CliError> {
+    /// answers on. Fails with `daemon_already_running` when a daemon is
+    /// listening.
+    pub(crate) fn bind(&self) -> Result<Bound, CliError> {
         self.prepare_directory()?;
+        let _lock = self.lock()?;
         match self.connect() {
             Ok(_) => {
                 return Err(CliError::new(
-                    ErrorCode::ProxyStartFailed,
+                    ErrorCode::DaemonAlreadyRunning,
                     "Another HTTP Inspector daemon is already running",
                 )
                 .with_hint("run `http-proxy proxy status`"));
@@ -115,6 +136,8 @@ impl ControlPath {
             Err(error) if error.code == ErrorCode::DaemonNotRunning => {}
             Err(error) => return Err(error),
         }
+        // Nobody answers on the path, and no other daemon can bind while we
+        // hold the lock, so the socket file is stale.
         if fs::symlink_metadata(&self.socket).is_ok() {
             fs::remove_file(&self.socket)
                 .map_err(|error| CliError::io("Could not remove a stale control socket", &error))?;
@@ -133,13 +156,29 @@ impl ControlPath {
         })?;
         fs::set_permissions(&self.socket, Permissions::from_mode(0o600))
             .map_err(|error| CliError::io("Could not restrict the control socket", &error))?;
-        Ok(listener)
+        let inode = fs::symlink_metadata(&self.socket)
+            .map_err(|error| CliError::io("Could not read the control socket", &error))?
+            .ino();
+        Ok(Bound { listener, inode })
     }
 
-    /// Removes the socket file when the daemon stops.
-    pub(crate) fn remove_socket(&self) {
-        let _already_gone = fs::remove_file(&self.socket).is_err();
+    /// Removes the socket file at exit, unless it is no longer the one this
+    /// daemon bound.
+    pub(crate) fn remove_own_socket(&self, inode: u64) {
+        let Ok(_lock) = self.lock() else {
+            return;
+        };
+        let ours = fs::symlink_metadata(&self.socket).is_ok_and(|metadata| metadata.ino() == inode);
+        if ours {
+            let _already_gone = fs::remove_file(&self.socket).is_err();
+        }
     }
+}
+
+/// A bound control socket and the inode that identifies its file.
+pub(crate) struct Bound {
+    pub(crate) listener: UnixListener,
+    pub(crate) inode: u64,
 }
 
 fn current_uid() -> u32 {
@@ -203,14 +242,22 @@ mod tests {
     fn creates_a_private_directory_and_socket() -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let control = ControlPath::in_directory(root.path().join("control"));
-        let listener = control.bind()?;
+        let bound = control.bind()?;
         let directory = fs::metadata(root.path().join("control"))?;
         assert_eq!(directory.mode() & 0o777, 0o700);
         assert_eq!(fs::metadata(control.socket())?.mode() & 0o777, 0o600);
         let _client = control.connect()?;
-        drop(listener);
+        let second = control.bind().err().map(|error| error.code);
+        assert_eq!(second, Some(ErrorCode::DaemonAlreadyRunning));
+        let inode = bound.inode;
+        drop(bound);
         // A socket nobody listens on is stale and replaced.
-        let _listener = control.bind()?;
+        let replaced = control.bind()?;
+        // The old daemon's exit leaves the new socket alone.
+        control.remove_own_socket(inode);
+        assert!(control.socket().exists());
+        control.remove_own_socket(replaced.inode);
+        assert!(!control.socket().exists());
         Ok(())
     }
 

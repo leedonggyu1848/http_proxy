@@ -57,7 +57,13 @@ http-proxy proxy stop
 
 ### `http-proxy proxy start`
 
-데몬과 프록시를 시작한다. 이미 데몬이 있으면 상태만 출력하고 `already_running`이 `true`가 된다. 데몬은 있지만 프록시가 멈춰 있으면 주어진 옵션으로 다시 시작한다.
+데몬과 프록시를 시작한다. 데몬은 있지만 프록시가 멈춰 있으면 주어진 옵션으로 다시 시작한다.
+
+이미 프록시가 실행 중이면 요청한 설정과 비교한다.
+
+- 같으면 상태를 출력하고 `already_running`이 `true`가 된다. `--port`를 생략하거나 `--port 0`이면 어떤 포트든 같다고 본다.
+- HTTPS 복호화 여부가 다르거나 `--port`로 다른 포트를 지정하면 설정을 바꾸지 않고 `proxy_conflict`로 실패한다. HTTPS 복호화는 `proxy set --https-inspection on|off`로 바꾸고, 포트는 `proxy stop` 뒤 다시 시작한다.
+- 여러 `proxy start`를 동시에 실행해도 데몬은 하나만 뜬다. 제어 디렉터리의 잠금 파일(`control.lock`)이 소켓 확인·정리·생성을 한 번에 하나씩 처리하고, 나머지는 먼저 뜬 데몬에 다시 연결해 `already_running: true`를 출력한다.
 
 | 옵션 | 설명 |
 | --- | --- |
@@ -197,6 +203,7 @@ http-proxy proxy stop
 | `daemon_not_running` | 3 | `http-proxy proxy start` 실행 |
 | `insecure_control_path` | 1 | 제어 디렉터리·소켓이 다른 사용자 소유이거나 다른 사용자에게 열려 있음 |
 | `daemon_unavailable` | 1 | 데몬이 준비되지 않았거나 연결이 끊김. `proxy start --foreground`로 원인 확인 |
+| `daemon_already_running` | 1 | 다른 데몬이 이미 소켓에서 응답함. `proxy start`는 이 경우 그 데몬에 다시 연결하므로 보통 보이지 않는다 |
 | `record_not_found` | 4 | 그 ID의 기록이 보관 목록에 없음 |
 | `body_unavailable` | 4 | 요청 본문·응답이 없거나 본문을 보관하지 않음 |
 | `path_not_found` | 4 | `--json-path`·`--xpath`에 맞는 트리 행이 없음 |
@@ -204,6 +211,7 @@ http-proxy proxy stop
 | `view_unavailable` | 1 | 이 본문에 쓸 수 없는 보기(트리 없음, 이미지 아님, 압축 해제 실패) |
 | `proxy_not_running` | 1 | 프록시가 멈춰 있음. `proxy start` |
 | `proxy_start_failed` | 1 | 포트 사용 중 등. `--port 0` 시도 |
+| `proxy_conflict` | 1 | 실행 중인 프록시와 다른 포트·HTTPS 설정으로 `proxy start`. `proxy set` 또는 `proxy stop` 뒤 다시 시작 |
 | `https_unavailable` | 1 | CA를 준비할 수 없음 |
 | `timeout` | 6 | `records wait` 시간 초과 |
 | `busy` | 75 | 세션 로그가 바쁨 등. 다시 실행 |
@@ -216,6 +224,8 @@ http-proxy proxy stop
 - **프록시**: 앱과 같이 `127.0.0.1`에만 바인딩한다.
 - **가려진 헤더**: `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie` 값은 캡처할 때 `[REDACTED]`로 바뀌므로 명령 출력, 소켓 메시지, 세션 로그 어디에도 원래 값이 없다. 원래 값을 복원하는 옵션은 없다.
 - **CA 개인키**: 어떤 명령·출력·소켓 메시지에도 포함하지 않는다.
+- **세션 로그**: 데몬의 전체 로그는 만들자마자 이름을 지운 임시 파일에 기록한다. `proxy stop`, `SIGTERM`·`SIGINT`, 강제 종료 어느 경우에도 본문이 담긴 파일이 임시 디렉터리에 남지 않는다. 신호로 끝난 데몬의 소켓 파일은 다음 `proxy start`가 응답이 없음을 확인한 뒤 지운다.
+- **소켓 정리**: 데몬은 종료할 때 자기가 만든 소켓(같은 inode)만 지운다.
 
 ## 화면 기능 대응
 

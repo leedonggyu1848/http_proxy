@@ -48,7 +48,8 @@ impl Session {
     /// Starts the proxy unless it already runs. Returns `true` when it was
     /// already running.
     pub(crate) fn start(&mut self, options: StartOptions) -> Result<bool, CliError> {
-        if self.proxy.is_some() {
+        if let Some(proxy) = &self.proxy {
+            self.check_running_matches(proxy.local_addr().port(), options)?;
             return Ok(true);
         }
         let port = options.port.unwrap_or_else(|| {
@@ -61,6 +62,37 @@ impl Session {
         });
         self.launch(port, options.https_inspection)?;
         Ok(false)
+    }
+
+    /// A running proxy satisfies `proxy start` only with the same settings.
+    /// A missing port or port 0 accepts any port; HTTPS inspection must
+    /// match, because a script that asked for it must not proceed without it.
+    fn check_running_matches(&self, port: u16, options: StartOptions) -> Result<(), CliError> {
+        let port_differs = options
+            .port
+            .is_some_and(|wanted| wanted != 0 && wanted != port);
+        let https_differs = options.https_inspection != self.https_inspection;
+        if !port_differs && !https_differs {
+            return Ok(());
+        }
+        let https = if self.https_inspection { "on" } else { "off" };
+        let hint = if port_differs {
+            "run `http-proxy proxy stop` first to use another port".to_owned()
+        } else {
+            format!(
+                "run `http-proxy proxy set --https-inspection {}`",
+                if options.https_inspection {
+                    "on"
+                } else {
+                    "off"
+                }
+            )
+        };
+        Err(CliError::new(
+            ErrorCode::ProxyConflict,
+            format!("The running proxy listens on 127.0.0.1:{port} with HTTPS inspection {https}"),
+        )
+        .with_hint(hint))
     }
 
     fn launch(&mut self, port: u16, https_inspection: bool) -> Result<(), CliError> {

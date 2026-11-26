@@ -36,12 +36,23 @@ pub(crate) fn start(
         Err(error) if error.code == ErrorCode::DaemonNotRunning => {}
         Err(error) => return Err(error),
     }
-    if command.foreground {
-        return daemon::run(control.clone(), options, |status| {
+    let started = if command.foreground {
+        daemon::run(control.clone(), options, |status| {
             output.document(Kind::Status, status);
-        });
-    }
-    let status = spawn(options)?;
+        })
+        .map(|()| None)
+    } else {
+        spawn(options).map(Some)
+    };
+    let status = match started {
+        Ok(Some(status)) => status,
+        Ok(None) => return Ok(()),
+        // Another `proxy start` won the race; ask the daemon it started.
+        Err(error) if error.code == ErrorCode::DaemonAlreadyRunning => {
+            client::call(control, &Request::Start(options))?
+        }
+        Err(error) => return Err(error),
+    };
     output.document(Kind::Status, &status);
     Ok(())
 }

@@ -71,7 +71,7 @@ fn outputs() -> Value {
     json!({
         "proxy start": {
             "same as": "proxy status",
-            "already_running": "boolean, true when a daemon already served the proxy",
+            "already_running": "boolean, true when a running proxy with the same settings answered",
         },
         "proxy status": {
             "running": "boolean", "address": "string or null, such as 127.0.0.1:8080",
