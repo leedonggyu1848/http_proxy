@@ -244,7 +244,7 @@ impl Session {
                 format!("The session log is unavailable: {error}"),
             )
         })?;
-        if path.exists() {
+        if std::fs::symlink_metadata(&path).is_ok() {
             return Err(file_exists(&path));
         }
         log.export(path).map_err(|error| export_error(&error))

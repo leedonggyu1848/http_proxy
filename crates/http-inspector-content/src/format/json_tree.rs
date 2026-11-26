@@ -205,7 +205,11 @@ fn valid_number(text: &str) -> bool {
     rest.is_empty()
 }
 
-fn child_path(parent: &str, key: &str) -> String {
+/// The Tree path of object member `key` under `parent`: `parent.key` for
+/// identifier keys, otherwise `parent["key"]`. The command line uses the
+/// same rule to read `--json-path`.
+#[must_use]
+pub fn child_path(parent: &str, key: &str) -> String {
     let mut chars = key.chars();
     let identifier = chars
         .next()

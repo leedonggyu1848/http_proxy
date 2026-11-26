@@ -715,6 +715,18 @@ fn export_and_endpoints_describe_the_capture() -> TestResult {
         Some(1),
         "an existing file is never overwritten"
     );
+    let dangling = sandbox.root.path().join("dangling.har");
+    std::os::unix::fs::symlink(sandbox.root.path().join("missing.har"), &dangling)?;
+    let dangling_arg = dangling.to_str().ok_or("path")?;
+    for command in [
+        ["records", "export", "--output", dangling_arg, "--json"].as_slice(),
+        ["log", "save", dangling_arg, "--json"].as_slice(),
+    ] {
+        let refused = sandbox.run(command)?;
+        let error: Value = serde_json::from_slice(&refused.stdout)?;
+        assert_eq!(error["error"]["code"], "file_exists", "{command:?}");
+    }
+    assert!(!sandbox.root.path().join("missing.har").exists());
     let printed = sandbox.run(&["records", "export", "--include-redacted-headers"])?;
     let printed_text = String::from_utf8(printed.stdout)?;
     assert_no_secret("printed HAR", &printed_text);
@@ -832,7 +844,26 @@ fn hls_downloads_a_variant_into_a_new_file() -> TestResult {
     assert_eq!(variant["segments"]["total"], 2);
     assert_eq!(variant["segments"]["cached"], 1);
 
-    let output = sandbox.root.path().join("video.ts");
+    // A dangling symlink at the destination is an existing file: refused,
+    // and nothing is saved under another name.
+    let downloads = sandbox.root.path().join("downloads");
+    fs::create_dir(&downloads)?;
+    let dangling = downloads.join("dangling.ts");
+    std::os::unix::fs::symlink(downloads.join("missing.ts"), &dangling)?;
+    let refused = sandbox.run(&[
+        "records",
+        "hls",
+        &id,
+        "--output",
+        dangling.to_str().ok_or("path")?,
+        "--json",
+    ])?;
+    assert_eq!(refused.status.code(), Some(1));
+    let error: Value = serde_json::from_slice(&refused.stdout)?;
+    assert_eq!(error["error"]["code"], "file_exists");
+    assert_eq!(names_in(&downloads)?, ["dangling.ts"]);
+
+    let output = downloads.join("video.ts");
     let output_arg = output.to_str().ok_or("path")?;
     let download = sandbox.run(&["records", "hls", &id, "--output", output_arg, "--json"])?;
     let stdout = String::from_utf8(download.stdout)?;
@@ -847,6 +878,8 @@ fn hls_downloads_a_variant_into_a_new_file() -> TestResult {
     assert_eq!(last["reused_segments"], 1);
     assert!(events.iter().any(|event| event["event"] == "progress"));
     assert_eq!(fs::read(&output)?, [segment(0), segment(1)].concat());
+    // The staging file is gone; only the requested file was added.
+    assert_eq!(names_in(&downloads)?, ["dangling.ts", "video.ts"]);
     server.join().map_err(|_| "server panicked")??;
 
     let again = sandbox.run(&["records", "hls", &id, "--output", output_arg, "--json"])?;
@@ -856,4 +889,13 @@ fn hls_downloads_a_variant_into_a_new_file() -> TestResult {
     let not_hls = sandbox.run(&["records", "hls", "999999", "--json"])?;
     assert_eq!(not_hls.status.code(), Some(4));
     Ok(())
+}
+
+/// Sorted file names in `directory`, including hidden ones.
+fn names_in(directory: &Path) -> TestResult<Vec<String>> {
+    let mut names: Vec<String> = fs::read_dir(directory)?
+        .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+        .collect::<Result<_, _>>()?;
+    names.sort_unstable();
+    Ok(names)
 }

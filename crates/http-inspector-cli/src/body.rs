@@ -2,6 +2,7 @@
 //! desktop Body tab, cut to the requested size.
 
 use http_inspector_analysis::search::is_binary_media_type;
+use http_inspector_content::format::json_child_path;
 use http_inspector_content::format::{BodyFormat, Notice, NoticeLevel, ViewMode, tree::TreeModel};
 use http_inspector_content::hex::{self, HEX_VIEW_BYTES};
 use http_inspector_content::view::{self, BodyCapture, BodyInput, BodyView as Prepared};
@@ -259,19 +260,7 @@ fn canonical_json_path(path: &str) -> String {
                     name.push(c);
                     chars.next();
                 }
-                let mut letters = name.chars();
-                let identifier = letters
-                    .next()
-                    .is_some_and(|c| c.is_ascii_alphabetic() || c == '_' || c == '$')
-                    && letters.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$');
-                if identifier {
-                    out.push('.');
-                    out.push_str(&name);
-                } else {
-                    out.push('[');
-                    out.push_str(&Value::String(name).to_string());
-                    out.push(']');
-                }
+                out = json_child_path(&out, &name);
             }
             '[' => {
                 out.push('[');

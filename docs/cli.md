@@ -248,7 +248,8 @@ http-proxy proxy stop
 
 - `--output`이 없으면 화질 목록(`variants`: `index`, `quality`, `bandwidth`, `resolution`, `state`, 세그먼트 수, `can_download`, `blocked`)과 기본 화질(`default_variant`)을 출력한다.
 - `--output PATH`면 `--variant`(기본은 앱이 고르는 화질)를 받아 PATH에 저장한다. 진행은 NDJSON `progress` 이벤트(단계, 전체·완료·재사용·받은 세그먼트 수, 받은 바이트)로, 끝은 `completed`(경로, 전체 바이트, 세그먼트 수)로 알린다. 실패하면 오류 줄로 끝난다.
-- PATH에 파일이 있으면 시작하지 않고 `file_exists`로 실패한다. 덮어쓰는 옵션은 없다.
+- 파일은 정확히 PATH에만 저장한다. PATH에 파일이나 심볼릭 링크(가리키는 대상이 없는 링크 포함)가 있으면 시작하지 않고 `file_exists`로 실패한다. 받는 동안 PATH에 파일이 생기면 그 파일을 덮어쓰거나 다른 이름으로 저장하지 않고 `file_exists`로 끝낸다. 덮어쓰는 옵션은 없다.
+- 받는 동안에는 같은 디렉터리의 숨은 임시 파일(`.이름.partial`)에 쓰고, 성공·실패·취소 어느 경우에도 지운다.
 - 앱과 같은 조건이 필요하다. 현재 데몬 세션에 해당 화질의 미디어 재생목록과 Chrome `.ts` 세그먼트 요청이 캡처되어 있어야 하며, 없으면 `hls_unavailable`로 이유(예: `No Chrome .ts segment request captured for this quality`)를 알려 준다. 이미 보관한 세그먼트는 재사용하고 나머지는 프록시를 거쳐 받는다.
 - 진행 중에 명령을 끝내면(Ctrl+C) 다운로드를 취소한다.
 
