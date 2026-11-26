@@ -138,13 +138,15 @@ Actions의 [파일 권한 제한](https://github.com/actions/upload-artifact/tre
 | `http-inspector-interop` | `crates/http-inspector-interop/` | `har`, `curl`, `map_export` (HAR 1.2, cURL, URL 맵 Text/JSON/Mermaid/DOT) | 없음 | 없음 |
 | `http-inspector-file` | `crates/http-inspector-file/` | 내보내기·설정의 임시 파일 작성과 발행 | 없음 | 없음 |
 | `http-inspector-core` | `crates/http-inspector-core/` | `interception`, `https`, `recording`, `hls`, `replay`, `launcher`, `settings`, `DEFAULT_PORT` | 사용 | 없음 |
+| `http-inspector-cli` | `crates/http-inspector-cli/` | 명령줄 인자(`clap`), 헤드리스 데몬, Unix 제어 소켓과 권한 검사, 요청 프로토콜, 기록·본문 JSON 문서, 출력 전용 모듈. [명령줄 인터페이스](cli.md) | 사용(`core` 경유) | 없음 |
 | `http-proxy` (바이너리) | `src/main.rs`, `src/ui/` (`app`, `requests`, `detail`, `map`, `dialogs`, `style`) | eframe/egui 데스크톱 화면, 통합 테스트(`tests/`), 벤치마크(`benches/`) | 사용 | 사용 |
 
 아래 그림은 Cargo가 강제하는 크레이트 간 의존 방향과 `http-inspector-core` 내부 모듈 의존 방향을 보여 준다. 화살표 반대 방향 참조는 허용하지 않는다.
 
 ```mermaid
 graph TD
-  ui["http-proxy (ui 바이너리)"] --> interop & analysis & content & core & exchange & file
+  ui["http-proxy (ui 바이너리)"] --> cli & interop & analysis & content & core & exchange & file
+  cli["http-inspector-cli"] --> analysis & content & core & exchange
   interop["http-inspector-interop"] --> analysis & content & encoding & exchange & file
   analysis["http-inspector-analysis"] --> content & exchange
   content["http-inspector-content"] --> encoding & exchange
@@ -164,8 +166,8 @@ graph TD
 
 `scripts/check-boundaries.py`는 Cargo의 비순환 의존 그래프만으로는 막히지 않는 크레이트 간 의존 방향·전이 유입·내부 모듈 경계·쓰기 핸들 소유권을 로컬과 CI(`quality` 작업)에서 함께 검사한다.
 
-- **워크스페이스 크레이트 의존 방향 (`ALLOWED_WORKSPACE_DEPS`)**: 각 라이브러리 크레이트의 `[dependencies]`(`target.*.dependencies`와 `build-dependencies` 포함)에 허용 목록 밖의 워크스페이스 크레이트가 들어오는 것을 차단한다(`http-inspector-encoding`·`http-inspector-exchange`·`http-inspector-file`: 없음, `http-inspector-content`: `encoding`·`exchange`, `http-inspector-analysis`: `exchange`·`content`, `http-inspector-interop`: `encoding`·`exchange`·`content`·`analysis`·`file`, `http-inspector-core`: `encoding`·`exchange`·`file`). 이를 통해 역방향 의존과 `http-inspector-core`를 통한 런타임 전이 유입을 함께 막는다.
-- **런타임·UI 격리와 `dev-dependencies` 검사**: `http-inspector-encoding`·`http-inspector-exchange`·`http-inspector-content`·`http-inspector-analysis`·`http-inspector-interop`·`http-inspector-file`은 normal 의존성과 `[dev-dependencies]`(`target.*.dev-dependencies` 포함) 모두에서 `tokio`·`hyper`·`hyper-util`·`eframe`·`egui`·`egui_extras` 및 `http-inspector-core` 의존을 금지한다(`http-inspector-exchange`가 `test-support` 활성화를 위해 자기 자신을 `dev-dependencies`에 두는 경우 등 자기 자신 및 허용된 하위 워크스페이스 크레이트만 허용). `http-inspector-core`는 normal 의존성과 `dev-dependencies` 모두에서 `eframe`·`egui`·`egui_extras` 의존을 금지한다. `dep = { package = "..." }` 형태(직접 선언 및 `[workspace.dependencies]` 상속 포함)의 별칭도 실제 패키지 이름으로 해석해 검사한다.
+- **워크스페이스 크레이트 의존 방향 (`ALLOWED_WORKSPACE_DEPS`)**: 각 라이브러리 크레이트의 `[dependencies]`(`target.*.dependencies`와 `build-dependencies` 포함)에 허용 목록 밖의 워크스페이스 크레이트가 들어오는 것을 차단한다(`http-inspector-encoding`·`http-inspector-exchange`·`http-inspector-file`: 없음, `http-inspector-content`: `encoding`·`exchange`, `http-inspector-analysis`: `exchange`·`content`, `http-inspector-interop`: `encoding`·`exchange`·`content`·`analysis`·`file`, `http-inspector-core`: `encoding`·`exchange`·`file`, `http-inspector-cli`: `core`를 포함한 모든 라이브러리 크레이트). 이를 통해 역방향 의존과 `http-inspector-core`를 통한 런타임 전이 유입을 함께 막는다.
+- **런타임·UI 격리와 `dev-dependencies` 검사**: `http-inspector-encoding`·`http-inspector-exchange`·`http-inspector-content`·`http-inspector-analysis`·`http-inspector-interop`·`http-inspector-file`은 normal 의존성과 `[dev-dependencies]`(`target.*.dev-dependencies` 포함) 모두에서 `tokio`·`hyper`·`hyper-util`·`eframe`·`egui`·`egui_extras` 및 `http-inspector-core` 의존을 금지한다(`http-inspector-exchange`가 `test-support` 활성화를 위해 자기 자신을 `dev-dependencies`에 두는 경우 등 자기 자신 및 허용된 하위 워크스페이스 크레이트만 허용). `http-inspector-core`와 `http-inspector-cli`는 normal 의존성과 `dev-dependencies` 모두에서 `eframe`·`egui`·`egui_extras` 의존을 금지한다. 그래서 명령줄은 디스플레이 없이 동작한다. `dep = { package = "..." }` 형태(직접 선언 및 `[workspace.dependencies]` 상속 포함)의 별칭도 실제 패키지 이름으로 해석해 검사한다.
 - **크레이트 내부 모듈 방향** (`crate::`, `self::`, `super::` 상대 경로 정규화 및 크레이트 루트 별칭 금지):
   - `http-inspector-exchange`: `exchange`와 `http_semantics`는 서로 참조하지 않으며, `capture`는 `exchange`·`http_semantics`만, `exchange_builder`는 `exchange`·`capture`만 참조한다.
   - `http-inspector-core`: `settings`·`recording`은 다른 내부 모듈을 참조하지 않고, `https -> settings`, `launcher -> https, settings`, `hls -> https, recording`, `interception -> https, recording`, `replay -> interception`만 허용한다.

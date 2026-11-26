@@ -14,6 +14,13 @@ publish = false
 aho-corasick = "1.1"
 brotli-decompressor = "6"
 bytes = "1"
+clap = { version = "4.6", default-features = false, features = [
+	"derive",
+	"error-context",
+	"help",
+	"std",
+	"usage",
+] }
 criterion = { version = "0.8.2", default-features = false }
 cssparser = "0.38.0"
 eframe = { version = "0.37", default-features = false, features = [
@@ -30,6 +37,7 @@ http = "1"
 http-body = "1"
 http-body-util = "0.1"
 http-inspector-analysis = { path = "crates/http-inspector-analysis" }
+http-inspector-cli = { path = "crates/http-inspector-cli" }
 http-inspector-content = { path = "crates/http-inspector-content" }
 http-inspector-core = { path = "crates/http-inspector-core" }
 http-inspector-encoding = { path = "crates/http-inspector-encoding" }
@@ -48,6 +56,7 @@ quick-xml = { version = "0.41", default-features = false }
 rcgen = { version = "0.14", features = ["x509-parser"] }
 regex-automata = "0.4"
 resvg = { version = "0.50", default-features = false }
+rustix = { version = "1.1", default-features = false, features = ["process", "std"] }
 rustls = { version = "0.23", default-features = false, features = [
 	"ring",
 	"std",
@@ -123,6 +132,7 @@ eframe.workspace = true
 egui_extras.workspace = true
 http.workspace = true
 http-inspector-analysis.workspace = true
+http-inspector-cli.workspace = true
 http-inspector-content.workspace = true
 http-inspector-core.workspace = true
 http-inspector-exchange.workspace = true

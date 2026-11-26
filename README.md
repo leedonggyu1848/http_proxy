@@ -120,6 +120,21 @@ http_proxy=http://127.0.0.1:8080 https_proxy=http://127.0.0.1:8080 curl http://e
 
 HTTPS 복호화를 끈 상태에서는 호스트, 포트, 전송 바이트 수와 연결 시간을 `Tunnel` 행에 기록한다. [프록시 포트와 캡처 범위](docs/guide/proxy-and-capture.md)
 
+## 명령줄 사용
+
+화면 없이 셸, 스크립트, AI 에이전트에서 같은 기능을 쓴다. X11 디스플레이가 필요하지 않다. 하위 명령을 주면 `http-proxy`가 앱 대신 명령줄로 동작하고, `proxy start`가 백그라운드 데몬을 띄운다. 모든 명령은 `--json`으로 `"schema": 1`이 있는 JSON을 출력한다.
+
+```bash
+http-proxy proxy start --port 0 --json      # 빈 포트로 시작하고 주소 출력
+curl -x http://127.0.0.1:<포트> http://example.test/api/users
+http-proxy records wait --filter 'method:GET url:/api/users' --timeout 10s
+http-proxy records body <ID> --view pretty --max-bytes 4096
+http-proxy log save ./session.log
+http-proxy proxy stop
+```
+
+필터 문법, 본문 정리, 헤더 마스킹은 앱과 같은 코드를 쓴다. 제어 채널은 현재 사용자만 열 수 있는 Unix 소켓이다. 전체 명령, 출력 필드, 종료 코드는 [명령줄 인터페이스](docs/cli.md) 또는 `http-proxy schema`에 있다.
+
 ## 요청 필터
 
 툴바의 필터에서 `method:POST url:/api/users status:4xx`를 입력하면 세 조건을 모두 만족하는 요청만 남는다. 공백은 AND, 같은 키 안의 쉼표는 OR로 읽는다. 조건 앞에 `-`를 붙이면 제외한다. 공백이나 쉼표를 포함한 값은 큰따옴표로 감싼다. 키 없는 단어는 선택한 검색 범위에서 찾는다.
@@ -193,7 +208,7 @@ CA 상태 표시의 의미, OS별 CA 저장 위치, 직접 실행한 Chrome 설�
 
 ## 문서
 
-화면 조작과 기능별 사용 절차는 [사용자 가이드](docs/guide/README.md)에 있다. 개발 환경, 검증 명령, CI와 코드 구조는 [개발 문서](docs/development.md)에서 확인할 수 있다.
+화면 조작과 기능별 사용 절차는 [사용자 가이드](docs/guide/README.md)에, 명령줄 사용법은 [명령줄 인터페이스](docs/cli.md)에 있다. 개발 환경, 검증 명령, CI와 코드 구조는 [개발 문서](docs/development.md)에서 확인할 수 있다.
 
 배포 파일에서 이 README를 열었다면 [GitHub의 문서](https://github.com/leedonggyu1848/http_proxy/tree/main/docs)를 참고한다.
 
