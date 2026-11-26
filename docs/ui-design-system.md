@@ -322,7 +322,7 @@ UI 글자는 sans, 데이터는 mono로 나눈다. egui의 `FontFamily::Proporti
 
 - 선 차트: 격자는 최소한의 1px 점선 `borders.subtle`, 데이터 선은 1.5px `accent.primary` 단색이다. 선 아래 면을 채우지 않는다.
 - 관계도: 비활성 노드와 선은 `text.muted`로 누른다. 선택·활성 경로만 1.5px `accent.primary` 실선이고 대기·보조 경로는 3-3 점선이다.
-  - 구현: 마우스를 올린 도메인과 Tree에서 고른 노드의 도메인이 활성이다. 비활성 노드 이름과 요청 수는 글자이므로 `text.muted` 대신 `text.secondary`로 쓴다(D8). 비활성 노드 테두리는 1px `text.muted`, 비활성 간선과 화살표는 1.25px(`StrokeWidth::GRAPH_EDGE`) `text.muted`로 그려 다크·라이트 배경에서 3:1 이상의 대비를 유지한다. 간선 종류는 비활성일 때 Referer 실선, Origin(CORS) 3-3 점선, Redirect 1.5-3 점선으로 구분하고, 패널 머리줄의 **Edges ▼** 메뉴에 그래프와 같은 색·굵기·패턴의 견본을 둔다. 3rd-party 도메인은 점선 테두리다.
+  - 구현: 마우스를 올린 도메인과 Tree에서 고른 노드의 도메인이 활성이다. 비활성 노드 이름과 요청 수는 글자이므로 `text.muted` 대신 `text.secondary`로 쓴다(D8). 비활성 노드 테두리는 1px(`StrokeWidth::STRUCTURAL`) `text.muted`, 비활성 간선과 화살표는 1.25px(`StrokeWidth::GRAPH_EDGE`) `text.muted`로 그려 다크·라이트 배경에서 3:1 이상의 대비를 유지한다. 간선 종류는 비활성일 때 Referer 실선, Origin(CORS) 3-3 점선, Redirect 1.5-3 점선으로 구분하며, 패널 머리줄의 **Edges ▼** 메뉴에서 표시 여부를 켜고 끈다. 3rd-party 도메인은 점선 테두리다. 노드·선 견본과 짧은 설명은 패널 머리줄의 **Legend** 토글로 여닫는 오른쪽 도킹 범례 패널에 두어 **Edges ▼** 메뉴와 견본을 중복하지 않는다(S15). 범례 패널은 1px 스플리터(5px 히트 영역)로 나누며 좁은 창에서도 그래프 캔버스 최소 폭(`Layout::GRAPH_CANVAS_MIN`)을 유지한다. 견본은 `graph_pane.rs`의 그리기 함수(`inactive_node_stroke`, `inactive_edge_stroke`, `active_stroke`, `edge_dash`, `paint_dashed_line`, `paint_dashed_circle`, `paint_arrowhead`)와 토큰(`text.muted`, `accent.primary`)을 그대로 공유한다(D6, D7).
 
 ### 아이콘
 

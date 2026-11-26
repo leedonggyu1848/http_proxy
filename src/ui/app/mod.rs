@@ -10,7 +10,8 @@ use self::state::{
     DetailState, Dialogs, LayoutState, MainView, MapState, RequestsState, SessionState,
 };
 use crate::ui::detail::detail_view::DetailView;
-use crate::ui::map::{MapAction, MapSubView};
+use crate::ui::i18n::Language;
+use crate::ui::map::{MapAction, MapPanel, MapSubView};
 use crate::ui::requests::{filter::ListView, request_table::RequestTable};
 use crate::ui::style::fonts;
 use crate::ui::style::theme::{self, Palette};
@@ -224,8 +225,8 @@ impl InspectorApp {
     }
 
     /// Map main area: split tree + detail panes in Tree sub-view, or full-width
-    /// relationship graph canvas in Graph sub-view. The pane header of the
-    /// tree, or of the graph, holds the view tabs and the map actions.
+    /// relationship graph canvas (with an optional docked right legend pane) in
+    /// Graph sub-view. The pane header holds the view tabs and the map actions.
     fn map_area(
         &mut self,
         ui: &mut egui::Ui,
@@ -235,24 +236,7 @@ impl InspectorApp {
         let lang = self.language();
         let save_busy = self.dialogs.save.is_busy();
         if self.map.panel.sub_view == MapSubView::Graph {
-            let size = egui::vec2(ui.available_width(), height);
-            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-            let mut main = ui.new_child(
-                egui::UiBuilder::new()
-                    .id_salt("map-graph-area")
-                    .max_rect(rect)
-                    .layout(egui::Layout::top_down(egui::Align::Min)),
-            );
-            main.shrink_clip_rect(rect);
-            paint_pane_surfaces(&main, [rect, egui::Rect::NOTHING]);
-            let action =
-                self.map
-                    .panel
-                    .header(&mut main, self.map.analysis.url_map(), save_busy, lang);
-            self.map
-                .panel
-                .show_graph_pane(&mut main, self.map.analysis.url_map(), lang);
-            return action;
+            return self.map_graph_area(ui, height, save_busy, lang);
         }
 
         let mut share = self.layout.detail_share;
@@ -291,6 +275,58 @@ impl InspectorApp {
         self.layout.detail_share = share;
         action
     }
+
+    fn map_graph_area(
+        &mut self,
+        ui: &mut egui::Ui,
+        height: f32,
+        save_busy: bool,
+        lang: Language,
+    ) -> Option<MapAction> {
+        let size = egui::vec2(ui.available_width(), height);
+        let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+        let mut main = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("map-graph-area")
+                .max_rect(rect)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        main.shrink_clip_rect(rect);
+        main.spacing_mut().item_spacing.y = 0.0;
+        paint_pane_surfaces(&main, [rect, egui::Rect::NOTHING]);
+        let action = self
+            .map
+            .panel
+            .header(&mut main, self.map.analysis.url_map(), save_busy, lang);
+        let body_rect =
+            egui::Rect::from_min_max(egui::pos2(rect.left(), main.cursor().top()), rect.max);
+        let url_map = self.map.analysis.url_map();
+        if self.map.panel.legend_open && can_dock_graph_legend(body_rect.width()) {
+            let mut legend_width = self.map.panel.legend_width;
+            split_graph_legend(
+                &mut main,
+                body_rect,
+                &mut legend_width,
+                |canvas_ui, legend_ui| {
+                    self.map.panel.show_graph_pane(canvas_ui, url_map, lang);
+                    MapPanel::show_graph_legend(legend_ui, lang);
+                },
+            );
+            self.map.panel.legend_width = legend_width;
+        } else {
+            let mut canvas_ui = main.new_child(
+                egui::UiBuilder::new()
+                    .id_salt("map-graph-canvas")
+                    .max_rect(body_rect)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
+            canvas_ui.shrink_clip_rect(body_rect);
+            self.map
+                .panel
+                .show_graph_pane(&mut canvas_ui, url_map, lang);
+        }
+        action
+    }
 }
 
 /// Fills content panes one surface above the window chrome around them.
@@ -299,6 +335,83 @@ fn paint_pane_surfaces(ui: &egui::Ui, panes: [egui::Rect; 2]) {
     for pane in panes {
         ui.painter().rect_filled(pane, Radius::PANE, fill);
     }
+}
+
+fn read_dragged_right_width(
+    main: &egui::Ui,
+    rect: egui::Rect,
+    split_id: egui::Id,
+    bounds: (f32, f32),
+) -> Option<f32> {
+    let prev = main.ctx().read_response(split_id)?;
+    if !(prev.dragged() || prev.drag_stopped()) {
+        return None;
+    }
+    let pointer = prev.interact_pointer_pos()?;
+    let (min_right, max_right) = bounds;
+    Some((rect.right() - pointer.x).clamp(min_right, max_right))
+}
+
+fn render_split_rect<R>(
+    main: &mut egui::Ui,
+    rect: egui::Rect,
+    split_id: egui::Id,
+    right_width: f32,
+    pane_ids: (&str, &str),
+    render: impl FnOnce(&mut egui::Ui, &mut egui::Ui) -> R,
+) -> R {
+    let split_x = (rect.right() - right_width)
+        .round()
+        .clamp(rect.left(), rect.right());
+    // The 1px splitter line occupies [split_x, split_x + 1).
+    let left_rect = egui::Rect::from_min_max(rect.min, egui::pos2(split_x, rect.max.y));
+    let right_rect = egui::Rect::from_min_max(
+        egui::pos2(
+            (split_x + StrokeWidth::STRUCTURAL).min(rect.right()),
+            rect.min.y,
+        ),
+        rect.max,
+    );
+
+    let mut left_ui = main.new_child(
+        egui::UiBuilder::new()
+            .id_salt(pane_ids.0)
+            .max_rect(left_rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    left_ui.shrink_clip_rect(left_rect);
+
+    let mut right_ui = main.new_child(
+        egui::UiBuilder::new()
+            .id_salt(pane_ids.1)
+            .max_rect(right_rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    right_ui.shrink_clip_rect(right_rect);
+    for pane in [&mut left_ui, &mut right_ui] {
+        pane.spacing_mut().item_spacing.y = Space::XS;
+    }
+    paint_pane_surfaces(main, [left_rect, right_rect]);
+    let result = render(&mut left_ui, &mut right_ui);
+
+    let line_x = split_x + StrokeWidth::STRUCTURAL / 2.0;
+    let handle_rect = egui::Rect::from_x_y_ranges(
+        (line_x - Layout::SPLITTER_HIT / 2.0).max(rect.left())
+            ..=(line_x + Layout::SPLITTER_HIT / 2.0).min(rect.right()),
+        rect.y_range(),
+    );
+    let handle = main.interact(handle_rect, split_id, egui::Sense::drag());
+    if handle.dragged() || handle.dragged_by(egui::PointerButton::Primary) || handle.drag_stopped()
+    {
+        main.ctx().request_repaint();
+    }
+    if handle.hovered() || handle.dragged() {
+        main.ctx()
+            .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+    let stroke = theme::divider_stroke(main, &handle);
+    main.painter().vline(line_x, rect.y_range(), stroke);
+    result
 }
 
 fn split_panes<R>(
@@ -320,69 +433,56 @@ fn split_panes<R>(
 
     let width = rect.width();
     let split_id = main.make_persistent_id(ids.1);
-    if let Some(prev) = main.ctx().read_response(split_id)
-        && (prev.dragged() || prev.drag_stopped())
-        && let Some(pointer) = prev.interact_pointer_pos()
-        && width > 0.0
+    if width > 0.0
+        && let Some(dragged) =
+            read_dragged_right_width(&main, rect, split_id, detail_width_bounds(width))
     {
-        let (min_detail, max_detail) = detail_width_bounds(width);
-        let dragged = (rect.right() - pointer.x).clamp(min_detail, max_detail);
         *detail_share = (dragged / width).clamp(0.0, 1.0);
     }
 
     let detail_width = split_detail_width(width, *detail_share);
-    let split_x = (rect.right() - detail_width)
-        .round()
-        .clamp(rect.left(), rect.right());
-    // The 1px splitter line occupies [split_x, split_x + 1).
-    let left_rect = egui::Rect::from_min_max(rect.min, egui::pos2(split_x, rect.max.y));
-    let right_rect = egui::Rect::from_min_max(
-        egui::pos2(
-            (split_x + StrokeWidth::STRUCTURAL).min(rect.right()),
-            rect.min.y,
-        ),
-        rect.max,
-    );
+    render_split_rect(
+        &mut main,
+        rect,
+        split_id,
+        detail_width,
+        (ids.2, ids.3),
+        render,
+    )
+}
 
-    let mut left_ui = main.new_child(
+fn split_graph_legend<R>(
+    parent: &mut egui::Ui,
+    rect: egui::Rect,
+    legend_width: &mut f32,
+    render: impl FnOnce(&mut egui::Ui, &mut egui::Ui) -> R,
+) -> R {
+    let mut body = parent.new_child(
         egui::UiBuilder::new()
-            .id_salt(ids.2)
-            .max_rect(left_rect)
+            .id_salt("map-graph-body")
+            .max_rect(rect)
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
-    left_ui.shrink_clip_rect(left_rect);
+    body.shrink_clip_rect(rect);
 
-    let mut right_ui = main.new_child(
-        egui::UiBuilder::new()
-            .id_salt(ids.3)
-            .max_rect(right_rect)
-            .layout(egui::Layout::top_down(egui::Align::Min)),
-    );
-    right_ui.shrink_clip_rect(right_rect);
-    for pane in [&mut left_ui, &mut right_ui] {
-        pane.spacing_mut().item_spacing.y = Space::XS;
-    }
-    paint_pane_surfaces(&main, [left_rect, right_rect]);
-    let result = render(&mut left_ui, &mut right_ui);
-
-    let line_x = split_x + StrokeWidth::STRUCTURAL / 2.0;
-    let handle_rect = egui::Rect::from_x_y_ranges(
-        (line_x - Layout::SPLITTER_HIT / 2.0).max(rect.left())
-            ..=(line_x + Layout::SPLITTER_HIT / 2.0).min(rect.right()),
-        rect.y_range(),
-    );
-    let handle = main.interact(handle_rect, split_id, egui::Sense::drag());
-    if handle.dragged() || handle.dragged_by(egui::PointerButton::Primary) || handle.drag_stopped()
+    let width = rect.width();
+    let split_id = body.make_persistent_id("map-graph-legend-split");
+    if width > 0.0
+        && let Some(dragged) =
+            read_dragged_right_width(&body, rect, split_id, graph_legend_width_bounds(width))
     {
-        main.ctx().request_repaint();
+        *legend_width = dragged;
     }
-    if handle.hovered() || handle.dragged() {
-        main.ctx()
-            .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-    }
-    let stroke = theme::divider_stroke(&main, &handle);
-    main.painter().vline(line_x, rect.y_range(), stroke);
-    result
+
+    let clamped = graph_legend_width(width, *legend_width);
+    render_split_rect(
+        &mut body,
+        rect,
+        split_id,
+        clamped,
+        ("map-graph-canvas", "map-graph-legend"),
+        render,
+    )
 }
 
 /// Minimum and maximum width of the right details pane for `total_width`.
@@ -396,6 +496,31 @@ fn detail_width_bounds(total_width: f32) -> (f32, f32) {
 fn split_detail_width(total_width: f32, share: f32) -> f32 {
     let (min_detail, max_detail) = detail_width_bounds(total_width);
     (total_width * share).clamp(min_detail, max_detail)
+}
+
+/// Minimum and maximum width of the docked graph legend pane (including the
+/// 1px structural splitter) for `total_width`, keeping at least
+/// [`Layout::GRAPH_CANVAS_MIN`] for the graph canvas.
+fn graph_legend_width_bounds(total_width: f32) -> (f32, f32) {
+    let max_for_canvas = (total_width - Layout::GRAPH_CANVAS_MIN - StrokeWidth::STRUCTURAL)
+        .floor()
+        .max(0.0);
+    let max_legend = Layout::GRAPH_LEGEND_MAX_WIDTH.min(max_for_canvas);
+    let min_legend = Layout::GRAPH_LEGEND_MIN_WIDTH.min(max_legend);
+    (min_legend, max_legend)
+}
+
+/// Whether `total_width` has room for both the minimum graph canvas and a
+/// readable docked legend pane without collapsing the pane to a 0px strip.
+fn can_dock_graph_legend(total_width: f32) -> bool {
+    let (_, max_legend) = graph_legend_width_bounds(total_width);
+    max_legend >= Layout::GRAPH_LEGEND_MIN_WIDTH
+}
+
+/// Width of the docked graph legend pane for `total_width` and `preferred`.
+fn graph_legend_width(total_width: f32, preferred: f32) -> f32 {
+    let (min_legend, max_legend) = graph_legend_width_bounds(total_width);
+    preferred.clamp(min_legend, max_legend)
 }
 
 /// Height left for the request list and details once the controls above and
