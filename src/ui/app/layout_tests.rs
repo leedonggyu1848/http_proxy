@@ -1,6 +1,7 @@
 use super::{
     AnalysisPipeline, DetailState, Dialogs, InspectorApp, Layout, LayoutState, MAX_RECORDS,
-    MainView, MapState, RequestsState, SessionState, fonts, main_height, split_detail_width,
+    MainView, MapState, RequestsState, SessionState, StrokeWidth, can_dock_graph_legend, fonts,
+    graph_legend_width, main_height, split_detail_width,
 };
 use crate::ui::detail::detail_tabs::DetailTab;
 use crate::ui::dialogs::{body_saving::BodySaving, har_dialog, replay_panel};
@@ -54,6 +55,8 @@ fn clear_drops_capture_state_and_keeps_view_preferences() -> Result<(), Box<dyn 
     app.map.analysis.record_added(&record);
     app.map.panel.selected = Some(key.clone());
     app.map.panel.sub_view = super::MapSubView::Graph;
+    app.map.panel.legend_open = true;
+    app.map.panel.legend_width = 310.0;
     let id = record.id();
     let _evicted = super::capture::add_record(
         &mut app.requests.records,
@@ -84,6 +87,8 @@ fn clear_drops_capture_state_and_keeps_view_preferences() -> Result<(), Box<dyn 
 
     assert_eq!(app.requests.record_filter, RecordFilter::Failures);
     assert_eq!(app.map.panel.sub_view, super::MapSubView::Graph);
+    assert!(app.map.panel.legend_open);
+    assert!((app.map.panel.legend_width - 310.0).abs() < f32::EPSILON);
     assert_eq!(app.detail.tab, DetailTab::Body);
     assert_eq!(app.detail.body_mode, body_format::ViewMode::Raw);
     assert!(app.dialogs.har.is_open());
@@ -1993,8 +1998,487 @@ async fn map_panes_have_headers_and_tree_rows() -> Result<(), Box<dyn std::error
 
     app.map.panel.sub_view = super::MapSubView::Graph;
     let drawn = render_settled(&mut app, Layout::WINDOW);
-    for label in ["Edges ▼", "Relayout", "Export ▼"] {
+    for label in ["Legend", "Edges ▼", "Relayout", "Export ▼"] {
         text_top(&drawn, label)?;
     }
+    Ok(())
+}
+
+/// Finds the clip rectangle of the first painted text equal to `needle`.
+fn clip_rect_for_text(shapes: &[egui::epaint::ClippedShape], needle: &str) -> Option<egui::Rect> {
+    fn contains_text(shape: &egui::Shape, needle: &str) -> bool {
+        match shape {
+            egui::Shape::Text(text) => text.galley.text().trim() == needle,
+            egui::Shape::Vec(items) => items.iter().any(|item| contains_text(item, needle)),
+            _ => false,
+        }
+    }
+    shapes
+        .iter()
+        .find(|clipped| contains_text(&clipped.shape, needle))
+        .map(|clipped| clipped.clip_rect)
+}
+
+fn click_point(app: &mut InspectorApp, size: [f32; 2], time: &mut f64, pos: egui::Pos2) {
+    for events in [
+        vec![egui::Event::PointerMoved(pos)],
+        vec![egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        vec![egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    ] {
+        *time += 0.05;
+        let _ = run_app_frame(app, size, *time, events);
+    }
+}
+
+fn drag_point(
+    app: &mut InspectorApp,
+    size: [f32; 2],
+    time: &mut f64,
+    from: egui::Pos2,
+    to: egui::Pos2,
+) -> (Duration, Duration) {
+    let delay_of = |out: &egui::FullOutput| {
+        out.viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map_or(Duration::MAX, |viewport_out| viewport_out.repaint_delay)
+    };
+    *time += 0.05;
+    let _ = run_app_frame(app, size, *time, vec![egui::Event::PointerMoved(from)]);
+    *time += 0.05;
+    let _ = run_app_frame(
+        app,
+        size,
+        *time,
+        vec![egui::Event::PointerButton {
+            pos: from,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    *time += 0.05;
+    let drag_out = run_app_frame(app, size, *time, vec![egui::Event::PointerMoved(to)]);
+    *time += 0.05;
+    let release_out = run_app_frame(
+        app,
+        size,
+        *time,
+        vec![egui::Event::PointerButton {
+            pos: to,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    (delay_of(&drag_out), delay_of(&release_out))
+}
+
+#[test]
+fn graph_legend_width_keeps_canvas_at_least_minimum() {
+    let wide = Layout::WINDOW[0] - 16.0;
+    assert!(can_dock_graph_legend(wide));
+    let wide_legend = graph_legend_width(wide, Layout::GRAPH_LEGEND_DEFAULT_WIDTH);
+    assert!((wide_legend - Layout::GRAPH_LEGEND_DEFAULT_WIDTH).abs() < f32::EPSILON);
+    assert!(wide - wide_legend - StrokeWidth::STRUCTURAL >= Layout::GRAPH_CANVAS_MIN);
+
+    let min_window = Layout::MIN_WINDOW[0] - 16.0;
+    assert!(can_dock_graph_legend(min_window));
+    let min_window_legend = graph_legend_width(min_window, Layout::GRAPH_LEGEND_DEFAULT_WIDTH);
+    assert!(min_window_legend >= Layout::GRAPH_LEGEND_MIN_WIDTH);
+    assert!(min_window - min_window_legend - StrokeWidth::STRUCTURAL >= Layout::GRAPH_CANVAS_MIN);
+
+    // Threshold where canvas min + legend min + 1px splitter just fits.
+    let threshold =
+        Layout::GRAPH_CANVAS_MIN + Layout::GRAPH_LEGEND_MIN_WIDTH + StrokeWidth::STRUCTURAL;
+    assert!(can_dock_graph_legend(threshold));
+    let threshold_legend = graph_legend_width(threshold, 320.0);
+    assert!((threshold_legend - Layout::GRAPH_LEGEND_MIN_WIDTH).abs() < f32::EPSILON);
+    assert!(threshold_legend - StrokeWidth::STRUCTURAL > 0.0);
+    assert!(threshold - threshold_legend >= Layout::GRAPH_CANVAS_MIN);
+
+    // Narrower containers (including GRAPH_CANVAS_MIN + 2.0 where max_legend would be 1px)
+    // do not open a zero-width or unreadable legend strip.
+    for total in [
+        threshold - 1.0,
+        260.0_f32,
+        200.0,
+        Layout::GRAPH_CANVAS_MIN + 2.0,
+        Layout::GRAPH_CANVAS_MIN,
+    ] {
+        assert!(
+            !can_dock_graph_legend(total),
+            "expected legend not to dock at total={total}"
+        );
+    }
+
+    // Returning to a wide container restores a user-preferred width.
+    let restored = graph_legend_width(wide, 320.0);
+    assert!((restored - 320.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn graph_legend_aligns_description_column_and_skips_unreadable_strip()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::ui::i18n::{Language, LanguageSettings};
+
+    let mut app = seeded_graph_app()?;
+    app.map.panel.legend_open = true;
+    let mut time = 1.0;
+
+    for (lang, labels) in [
+        (
+            Language::English,
+            [
+                "One domain (host)",
+                "Page loads resource (caller → target)",
+                "Move node",
+                "Open host in Tree",
+            ],
+        ),
+        (
+            Language::Korean,
+            [
+                "도메인(호스트) 하나",
+                "페이지 리소스 호출 (참조 → 대상)",
+                "노드 이동",
+                "트리에서 해당 호스트로 이동",
+            ],
+        ),
+    ] {
+        app.layout.language = LanguageSettings::fixed(lang);
+        let out = settle_graph_frames(&mut app, Layout::WINDOW, &mut time, 3);
+        let drawn = collect_text_shapes(&out.shapes);
+        let mut xs = Vec::new();
+        for label in labels {
+            let left = drawn
+                .iter()
+                .find(|item| item.text == label)
+                .ok_or_else(|| format!("missing legend description {label:?}"))?
+                .rect
+                .left();
+            xs.push((label, left));
+        }
+        let baseline = xs.first().ok_or("missing baseline legend description")?.1;
+        for (label, left) in xs {
+            assert!(
+                (left - baseline).abs() < 0.5,
+                "{lang:?}: {label:?} left {left} misaligned with baseline {baseline}"
+            );
+        }
+    }
+
+    // At body_width == GRAPH_CANVAS_MIN + 2.0 (window width 138px), the legend must not dock.
+    app.layout.language = LanguageSettings::fixed(Language::English);
+    let tiny = [Layout::GRAPH_CANVAS_MIN + 18.0, Layout::MIN_WINDOW[1]];
+    let out = settle_graph_frames(&mut app, tiny, &mut time, 3);
+    let drawn = collect_text_shapes(&out.shapes);
+    assert!(!drawn.iter().any(|item| item.text == "One domain (host)"));
+    let canvas = clip_rect_for_text(&out.shapes, "app.example.test")
+        .ok_or("missing graph canvas clip rect in tiny window")?;
+    assert!(canvas.width() >= Layout::GRAPH_CANVAS_MIN);
+    Ok(())
+}
+
+fn seeded_graph_app() -> Result<InspectorApp, Box<dyn std::error::Error>> {
+    let mut app = test_app(egui::Context::default());
+    let mut url_map = UrlMap::new();
+    seed_synthetic_map_data(&mut url_map)?;
+    app.map.analysis = AnalysisPipeline::seeded(url_map);
+    app.layout.main_view = MainView::Map;
+    app.map.panel.sub_view = super::MapSubView::Graph;
+    Ok(app)
+}
+
+fn settle_graph_frames(
+    app: &mut InspectorApp,
+    size: [f32; 2],
+    time: &mut f64,
+    frames: usize,
+) -> egui::FullOutput {
+    let mut out = run_app_frame(app, size, *time, Vec::new());
+    for _ in 0..frames {
+        *time += 0.05;
+        out = run_app_frame(app, size, *time, Vec::new());
+    }
+    out
+}
+
+const REQUIRED_LEGEND_LABELS: &[&str] = &[
+    "Node",
+    "One domain (host)",
+    "Node size",
+    "Request count (log scale)",
+    "1st-party",
+    "3rd-party",
+    "Referer",
+    "Origin (CORS)",
+    "Redirect (3xx)",
+    "Active",
+    "Self-loop",
+    "Drag",
+    "Click",
+];
+
+#[test]
+fn graph_legend_hidden_in_tree_and_toggles_docked_panel() -> Result<(), Box<dyn std::error::Error>>
+{
+    let mut app = seeded_graph_app()?;
+    app.map.panel.sub_view = super::MapSubView::Tree;
+    let tree_drawn = render_settled(&mut app, Layout::WINDOW);
+    assert!(!tree_drawn.iter().any(|item| item.text == "Legend"));
+    assert!(
+        !tree_drawn
+            .iter()
+            .any(|item| item.text == "One domain (host)")
+    );
+
+    app.map.panel.sub_view = super::MapSubView::Graph;
+    assert!(!app.map.panel.legend_open);
+    let size = Layout::WINDOW;
+    let mut time = 1.0;
+    let closed_out = settle_graph_frames(&mut app, size, &mut time, 4);
+    let closed_drawn = collect_text_shapes(&closed_out.shapes);
+    assert!(
+        !closed_drawn
+            .iter()
+            .any(|item| item.text == "One domain (host)")
+    );
+    let closed_canvas = clip_rect_for_text(&closed_out.shapes, "app.example.test")
+        .ok_or("missing graph node clip rect while legend is closed")?;
+    let expected_full_width = size[0] - 16.0;
+    assert!((closed_canvas.width() - expected_full_width).abs() < 1.5);
+
+    let legend_button = closed_drawn
+        .iter()
+        .find(|item| item.text == "Legend")
+        .ok_or("missing Legend toggle button")?
+        .rect
+        .center();
+    click_point(&mut app, size, &mut time, legend_button);
+    assert!(app.map.panel.legend_open);
+
+    time += 0.05;
+    let open_out = run_app_frame(&mut app, size, time, Vec::new());
+    let open_drawn = collect_text_shapes(&open_out.shapes);
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size[0], size[1]));
+    assert_no_text_overlap(&open_drawn, viewport, "graph-legend-open@1280x820");
+
+    let open_canvas = clip_rect_for_text(&open_out.shapes, "app.example.test")
+        .ok_or("missing graph node clip rect while legend is open")?;
+    let legend_clip = clip_rect_for_text(&open_out.shapes, "One domain (host)")
+        .ok_or("missing legend description clip rect")?;
+    let expected_open_canvas = expected_full_width - Layout::GRAPH_LEGEND_DEFAULT_WIDTH;
+    assert!((open_canvas.width() - expected_open_canvas).abs() < 2.0);
+    assert!(legend_clip.left() >= open_canvas.right());
+    for required in REQUIRED_LEGEND_LABELS {
+        assert!(
+            open_drawn.iter().any(|item| item.text == *required),
+            "missing legend entry {required:?}"
+        );
+    }
+
+    // Light and Dark themes keep the exact same split geometry (D22).
+    app.context.set_theme(egui::Theme::Light);
+    time += 0.05;
+    let light_out = run_app_frame(&mut app, size, time, Vec::new());
+    let light_canvas = clip_rect_for_text(&light_out.shapes, "app.example.test")
+        .ok_or("missing light graph canvas clip rect")?;
+    assert!((light_canvas.width() - open_canvas.width()).abs() < f32::EPSILON);
+    Ok(())
+}
+
+#[test]
+fn graph_legend_resize_and_toggle_preserve_graph_state() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::ui::map::EdgeVisibility;
+    use http_inspector_analysis::url::OriginKey;
+    use http_inspector_analysis::url_map::ViewNodeKey;
+
+    let mut app = seeded_graph_app()?;
+    let selected = ViewNodeKey {
+        origin: OriginKey::new("https", "app.example.test", None),
+        path: Vec::new(),
+    };
+    app.map.panel.selected = Some(selected.clone());
+    let custom_visibility = EdgeVisibility {
+        referer: true,
+        origin: false,
+        redirect: true,
+    };
+    app.map.panel.set_edge_visibility(custom_visibility);
+
+    let size = Layout::WINDOW;
+    let mut time = 1.0;
+    let closed_out = settle_graph_frames(&mut app, size, &mut time, 40);
+    let closed_canvas = clip_rect_for_text(&closed_out.shapes, "app.example.test")
+        .ok_or("missing closed graph canvas clip rect")?;
+    let legend_button = collect_text_shapes(&closed_out.shapes)
+        .into_iter()
+        .find(|item| item.text == "Legend")
+        .ok_or("missing Legend toggle button")?
+        .rect
+        .center();
+
+    let baseline_coords = app.map.panel.graph_node_coords();
+    assert_ne!(baseline_coords.len(), 0);
+    app.map.panel.set_dragged_node(Some(0));
+
+    click_point(&mut app, size, &mut time, legend_button);
+    time += 0.05;
+    let open_out = run_app_frame(&mut app, size, time, Vec::new());
+    let open_canvas = clip_rect_for_text(&open_out.shapes, "app.example.test")
+        .ok_or("missing open graph canvas clip rect")?;
+
+    let split_x = open_canvas.right();
+    let (drag_delay, release_delay) = drag_point(
+        &mut app,
+        size,
+        &mut time,
+        egui::pos2(split_x, 360.0),
+        egui::pos2(split_x - 60.0, 360.0),
+    );
+    assert_eq!(drag_delay, Duration::ZERO);
+    assert_eq!(release_delay, Duration::ZERO);
+    time += 0.05;
+    let widened_out = run_app_frame(&mut app, size, time, Vec::new());
+    let widened_canvas = clip_rect_for_text(&widened_out.shapes, "app.example.test")
+        .ok_or("missing widened graph canvas clip rect")?;
+    assert!(widened_canvas.width() < open_canvas.width() - 40.0);
+    let custom_width = app.map.panel.legend_width;
+    assert!(custom_width > Layout::GRAPH_LEGEND_DEFAULT_WIDTH + 40.0);
+
+    click_point(&mut app, size, &mut time, legend_button);
+    assert!(!app.map.panel.legend_open);
+    time += 0.05;
+    let reclosed_out = run_app_frame(&mut app, size, time, Vec::new());
+    let reclosed_canvas = clip_rect_for_text(&reclosed_out.shapes, "app.example.test")
+        .ok_or("missing reclosed graph canvas clip rect")?;
+    assert!((reclosed_canvas.width() - closed_canvas.width()).abs() < 1.0);
+
+    click_point(&mut app, size, &mut time, legend_button);
+    assert!(app.map.panel.legend_open);
+    assert!((app.map.panel.legend_width - custom_width).abs() < f32::EPSILON);
+
+    assert_eq!(app.map.panel.graph_node_coords(), baseline_coords);
+    assert_eq!(app.map.panel.selected, Some(selected));
+    assert_eq!(app.map.panel.edge_visibility(), custom_visibility);
+    assert_eq!(app.map.panel.dragged_node(), Some(0));
+    Ok(())
+}
+
+#[test]
+fn graph_legend_narrow_window_keeps_minimum_canvas_without_overlap()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::ui::i18n::{Language, LanguageSettings};
+
+    let mut app = seeded_graph_app()?;
+    app.map.panel.legend_open = true;
+    let min_viewport = egui::Rect::from_min_size(
+        egui::Pos2::ZERO,
+        egui::vec2(Layout::MIN_WINDOW[0], Layout::MIN_WINDOW[1]),
+    );
+    let mut time = 1.0;
+    for (lang, label) in [(Language::English, "en"), (Language::Korean, "ko")] {
+        app.layout.language = LanguageSettings::fixed(lang);
+        let out = settle_graph_frames(&mut app, Layout::MIN_WINDOW, &mut time, 3);
+        let drawn = collect_text_shapes(&out.shapes);
+        assert_no_text_overlap(
+            &drawn,
+            min_viewport,
+            &format!("graph-legend-{label}@640x420"),
+        );
+        let canvas = clip_rect_for_text(&out.shapes, "app.example.test")
+            .ok_or("missing narrow graph canvas clip rect")?;
+        assert!(
+            canvas.width() >= Layout::GRAPH_CANVAS_MIN,
+            "{label}: narrow canvas width {} dropped below {}",
+            canvas.width(),
+            Layout::GRAPH_CANVAS_MIN
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn graph_legend_toggle_and_labels_are_accessible() -> Result<(), Box<dyn std::error::Error>> {
+    let mut app = test_app(egui::Context::default());
+    app.context.enable_accesskit();
+    let mut url_map = UrlMap::new();
+    seed_synthetic_map_data(&mut url_map)?;
+    app.map.analysis = AnalysisPipeline::seeded(url_map);
+    app.layout.main_view = MainView::Map;
+    app.map.panel.sub_view = super::MapSubView::Graph;
+
+    let collect_tree = |app: &mut InspectorApp| -> Result<egui::accesskit::TreeUpdate, String> {
+        let viewport = egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(Layout::WINDOW[0], Layout::WINDOW[1]),
+        );
+        let mut update = None;
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(viewport),
+                ..Default::default()
+            };
+            let mut out = app.context.clone().run_ui(input, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| app.render_ui(ui));
+            });
+            out.textures_delta.clear();
+            update = out.platform_output.accesskit_update;
+        }
+        update.ok_or_else(|| "missing accesskit update".to_owned())
+    };
+
+    let closed_tree = collect_tree(&mut app)?;
+    let (_, closed_toggle) = closed_tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.role() == egui::Role::Button && node.label() == Some("Legend"))
+        .ok_or("missing accessible Legend toggle button while closed")?;
+    assert_eq!(
+        closed_toggle.toggled(),
+        Some(egui::accesskit::Toggled::False)
+    );
+
+    app.map.panel.legend_open = true;
+    let open_tree = collect_tree(&mut app)?;
+    let (_, open_toggle) = open_tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.role() == egui::Role::Button && node.label() == Some("Legend"))
+        .ok_or("missing accessible Legend toggle button while open")?;
+    assert_eq!(open_toggle.toggled(), Some(egui::accesskit::Toggled::True));
+
+    for expected in [
+        "One domain (host)",
+        "Request count (log scale)",
+        "Solid border · same eTLD+1",
+        "Dashed border · other eTLD+1",
+        "Page loads resource (caller → target)",
+        "Cross-origin request (Origin header)",
+        "3xx response Location target",
+        "Hovered or Tree selection",
+        "Same-domain relation",
+        "Move node",
+        "Open host in Tree",
+    ] {
+        assert!(
+            open_tree
+                .nodes
+                .iter()
+                .any(|(_, node)| node.role() == egui::Role::Label && node.value() == Some(expected)),
+            "missing accessible legend label {expected:?}"
+        );
+    }
+
     Ok(())
 }

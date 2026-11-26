@@ -123,8 +123,28 @@ pub(crate) enum ShellText {
     Descending,
     Relayout,
     RelayoutHint,
-    /// The graph menu of edge kinds and node outlines.
+    /// The graph menu of edge visibility toggles.
+    Edges,
+    /// Toggle for the docked relationship graph legend panel.
     Legend,
+    /// Tooltip of the Legend toggle button.
+    LegendHint,
+    LegendNodeDesc,
+    LegendNodeSize,
+    LegendNodeSizeDesc,
+    LegendFirstPartyDesc,
+    LegendThirdPartyDesc,
+    LegendRefererDesc,
+    LegendOriginDesc,
+    LegendRedirectDesc,
+    LegendActive,
+    LegendActiveDesc,
+    LegendSelfLoop,
+    LegendSelfLoopDesc,
+    LegendDrag,
+    LegendDragDesc,
+    LegendClick,
+    LegendClickDesc,
     Export,
     SaveTreeText,
     SaveMapJson,
@@ -284,7 +304,46 @@ impl ShellText {
                 "Recompute the force-directed domain layout.",
                 "도메인 관계 그래프 배치를 다시 계산합니다.",
             ),
-            Self::Legend => lang.pick("Edges", "연결선"),
+            Self::Edges => lang.pick("Edges", "연결선"),
+            Self::Legend => lang.pick("Legend", "범례"),
+            Self::LegendHint => lang.pick(
+                "Show or hide the graph legend.",
+                "그래프 범례 패널을 열거나 닫습니다.",
+            ),
+            Self::LegendNodeDesc => lang.pick("One domain (host)", "도메인(호스트) 하나"),
+            Self::LegendNodeSize => lang.pick("Node size", "노드 크기"),
+            Self::LegendNodeSizeDesc => {
+                lang.pick("Request count (log scale)", "요청 수 비례 (로그 비율)")
+            }
+            Self::LegendFirstPartyDesc => {
+                lang.pick("Solid border · same eTLD+1", "실선 테두리 · 같은 eTLD+1")
+            }
+            Self::LegendThirdPartyDesc => {
+                lang.pick("Dashed border · other eTLD+1", "점선 테두리 · 다른 eTLD+1")
+            }
+            Self::LegendRefererDesc => lang.pick(
+                "Page loads resource (caller → target)",
+                "페이지 리소스 호출 (참조 → 대상)",
+            ),
+            Self::LegendOriginDesc => lang.pick(
+                "Cross-origin request (Origin header)",
+                "Origin 헤더 교차 출처 요청",
+            ),
+            Self::LegendRedirectDesc => {
+                lang.pick("3xx response Location target", "3xx 응답 Location 대상")
+            }
+            Self::LegendActive => lang.pick("Active", "강조"),
+            Self::LegendActiveDesc => {
+                lang.pick("Hovered or Tree selection", "호버·트리 선택 도메인과 선")
+            }
+            Self::LegendSelfLoop => lang.pick("Self-loop", "고리 선"),
+            Self::LegendSelfLoopDesc => lang.pick("Same-domain relation", "같은 도메인 내 관계"),
+            Self::LegendDrag => lang.pick("Drag", "드래그"),
+            Self::LegendDragDesc => lang.pick("Move node", "노드 이동"),
+            Self::LegendClick => lang.pick("Click", "클릭"),
+            Self::LegendClickDesc => {
+                lang.pick("Open host in Tree", "트리에서 해당 호스트로 이동")
+            }
             Self::Export => lang.pick("Export", "내보내기"),
             Self::SaveTreeText => lang.pick("Save tree as Text (.txt)", "트리를 텍스트(.txt)로 저장"),
             Self::SaveMapJson => lang.pick("Save map as JSON (.json)", "맵을 JSON(.json)으로 저장"),

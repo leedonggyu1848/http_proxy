@@ -223,10 +223,24 @@ impl Layout {
     pub(crate) const GRAPH_ARROW_TIP_PADDING: f32 = 3.0;
     /// Dash and gap of a secondary graph path (D19).
     pub(crate) const GRAPH_DASH: f32 = 3.0;
-    /// Width of a line sample in the graph legend.
-    pub(crate) const LEGEND_SAMPLE_WIDTH: f32 = 24.0;
-    /// Size of a node outline sample in the graph legend.
-    pub(crate) const LEGEND_NODE_SIZE: f32 = 12.0;
+    /// Default width of the docked graph legend panel.
+    pub(crate) const GRAPH_LEGEND_DEFAULT_WIDTH: f32 = 260.0;
+    /// Minimum preferred width of the docked graph legend panel when space allows.
+    pub(crate) const GRAPH_LEGEND_MIN_WIDTH: f32 = 180.0;
+    /// Maximum width of the docked graph legend panel.
+    pub(crate) const GRAPH_LEGEND_MAX_WIDTH: f32 = 360.0;
+    /// Width of the left visual swatch / action key column in the graph legend.
+    pub(crate) const GRAPH_LEGEND_SWATCH_WIDTH: f32 = 44.0;
+    /// Height of one visual swatch inside the graph legend panel.
+    pub(crate) const GRAPH_LEGEND_SWATCH_HEIGHT: f32 = 20.0;
+    /// Radius of the standard and large node swatches in the graph legend.
+    pub(crate) const GRAPH_LEGEND_NODE_RADIUS: f32 = 7.5;
+    /// Radius of the smaller node in the node-size swatch.
+    pub(crate) const GRAPH_LEGEND_SMALL_RADIUS: f32 = 3.5;
+    /// Radius of the 1st-party and 3rd-party node outline swatches.
+    pub(crate) const GRAPH_LEGEND_PARTY_RADIUS: f32 = 6.0;
+    /// Radius of the compact node/loop circles in the active and self-loop swatches.
+    pub(crate) const GRAPH_LEGEND_COMPACT_RADIUS: f32 = 4.5;
     pub(crate) const GRAPH_LABEL_PADDING: egui::Vec2 = egui::vec2(3.0, 1.0);
     pub(crate) const BODY_MIN_WRAP_TEXT: f32 = 80.0;
     pub(crate) const BODY_LINE_VIEW_HEIGHT: f32 = 480.0;

@@ -202,6 +202,10 @@ pub(crate) fn ghost_toggle(
     height: f32,
 ) -> egui::Response {
     let response = ui.add(ghost(label, height).selected(on));
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_label(label);
+        node.set_toggled(accesskit::Toggled::from(on));
+    });
     if on {
         let inset = response.rect.shrink2(egui::vec2(Space::XS, 0.0));
         paint_active_bar(ui, inset.x_range(), response.rect.bottom());

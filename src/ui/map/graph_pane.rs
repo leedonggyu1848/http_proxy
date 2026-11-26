@@ -143,7 +143,7 @@ pub(super) fn summary_text(
 
 /// How an edge kind is drawn when it is not on the active path: Referer
 /// solid, Origin dashed 3-3, Redirect dotted (D19).
-const fn edge_dash(kind: EdgeKind) -> Option<(f32, f32)> {
+pub(super) const fn edge_dash(kind: EdgeKind) -> Option<(f32, f32)> {
     match kind {
         EdgeKind::Referer => None,
         EdgeKind::Origin => Some((Layout::GRAPH_DASH, Layout::GRAPH_DASH)),
@@ -151,16 +151,16 @@ const fn edge_dash(kind: EdgeKind) -> Option<(f32, f32)> {
     }
 }
 
-/// Stroke of an inactive graph edge and its sample in the `Edges` menu.
-const fn inactive_edge_stroke(tokens: &ThemeTokens) -> Stroke {
+/// Stroke of an inactive graph edge and its swatch in [`super::legend_pane`].
+pub(super) const fn inactive_edge_stroke(tokens: &ThemeTokens) -> Stroke {
     Stroke {
         width: StrokeWidth::GRAPH_EDGE,
         color: tokens.text.muted,
     }
 }
 
-/// Stroke of an inactive node outline and its sample in the `Edges` menu.
-const fn inactive_node_stroke(tokens: &ThemeTokens) -> Stroke {
+/// Stroke of an inactive node outline and its swatch in [`super::legend_pane`].
+pub(super) const fn inactive_node_stroke(tokens: &ThemeTokens) -> Stroke {
     Stroke {
         width: StrokeWidth::STRUCTURAL,
         color: tokens.text.muted,
@@ -168,69 +168,24 @@ const fn inactive_node_stroke(tokens: &ThemeTokens) -> Stroke {
 }
 
 /// Stroke of an active node outline and edges touching an active node (D19).
-const fn active_stroke(tokens: &ThemeTokens) -> Stroke {
+pub(super) const fn active_stroke(tokens: &ThemeTokens) -> Stroke {
     Stroke {
         width: StrokeWidth::GRAPH_ACTIVE,
         color: tokens.accent.primary,
     }
 }
 
-/// The edge toggles with a sample of each line, then the node outlines, in
-/// the graph's legend menu.
-pub(super) fn legend_menu(ui: &mut egui::Ui, visibility: &mut EdgeVisibility, lang: Language) {
-    let tokens = ThemeTokens::for_theme(ui.ctx().theme());
-    let edge_stroke = inactive_edge_stroke(&tokens);
-    let node_stroke = inactive_node_stroke(&tokens);
-    for (kind, shown, label) in [
-        (
-            EdgeKind::Referer,
-            &mut visibility.referer,
-            ShellText::Referer,
-        ),
-        (
-            EdgeKind::Origin,
-            &mut visibility.origin,
-            ShellText::OriginCors,
-        ),
-        (
-            EdgeKind::Redirect,
-            &mut visibility.redirect,
-            ShellText::Redirect,
-        ),
+/// Edge kind visibility toggles in the graph's **Edges ▼** menu.
+///
+/// Swatches and descriptions live in [`super::legend_pane`] so the menu and
+/// the legend panel do not repeat the same samples (S15).
+pub(super) fn edges_menu(ui: &mut egui::Ui, visibility: &mut EdgeVisibility, lang: Language) {
+    for (shown, label) in [
+        (&mut visibility.referer, ShellText::Referer),
+        (&mut visibility.origin, ShellText::OriginCors),
+        (&mut visibility.redirect, ShellText::Redirect),
     ] {
-        ui.horizontal(|ui| {
-            ui.checkbox(shown, label.text(lang));
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(Layout::LEGEND_SAMPLE_WIDTH, ui.spacing().interact_size.y),
-                Sense::hover(),
-            );
-            let (start, end) = (rect.left_center(), rect.right_center());
-            match edge_dash(kind) {
-                Some((dash, gap)) => {
-                    paint_dashed_line(ui.painter(), start, end, edge_stroke, dash, gap);
-                }
-                None => {
-                    ui.painter().line_segment([start, end], edge_stroke);
-                }
-            }
-        });
-    }
-    ui.separator();
-    for (third_party, label) in [
-        (false, ShellText::FirstParty),
-        (true, ShellText::ThirdParty),
-    ] {
-        ui.horizontal(|ui| {
-            let size = Layout::LEGEND_NODE_SIZE;
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), Sense::hover());
-            if third_party {
-                paint_dashed_circle(ui.painter(), rect.center(), size / 2.0 - 1.0, node_stroke);
-            } else {
-                ui.painter()
-                    .circle_stroke(rect.center(), size / 2.0 - 1.0, node_stroke);
-            }
-            ui.label(label.text(lang));
-        });
+        ui.checkbox(shown, label.text(lang));
     }
 }
 
@@ -338,7 +293,7 @@ fn paint_edges(
     }
 }
 
-fn paint_dashed_line(
+pub(super) fn paint_dashed_line(
     painter: &egui::Painter,
     start: Pos2,
     end: Pos2,
@@ -370,7 +325,7 @@ fn paint_dashed_line(
     }
 }
 
-fn paint_arrowhead(painter: &egui::Painter, tip: Pos2, dir: Vec2, color: Color32) {
+pub(super) fn paint_arrowhead(painter: &egui::Painter, tip: Pos2, dir: Vec2, color: Color32) {
     let perp = Vec2::new(-dir.y, dir.x);
     let base = tip - dir * Layout::GRAPH_ARROW_LENGTH;
     let left = base + perp * Layout::GRAPH_ARROW_HALF_WIDTH;
@@ -468,7 +423,12 @@ fn paint_nodes(
     }
 }
 
-fn paint_dashed_circle(painter: &egui::Painter, center: Pos2, radius: f32, stroke: Stroke) {
+pub(super) fn paint_dashed_circle(
+    painter: &egui::Painter,
+    center: Pos2,
+    radius: f32,
+    stroke: Stroke,
+) {
     const SEGMENTS: usize = 16;
     let step = std::f32::consts::TAU / 16.0;
     for i in 0..SEGMENTS {
