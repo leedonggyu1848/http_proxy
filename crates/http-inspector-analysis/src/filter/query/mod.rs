@@ -57,6 +57,20 @@ impl FilterKey {
         ("is", Self::Is),
     ];
 
+    /// Recognizes a complete key and colon at a standalone term's byte range.
+    /// The returned flag indicates an exclusion.
+    #[must_use]
+    pub fn for_completion(input: &str, span: Range<usize>) -> Option<(Self, bool)> {
+        parse::key_for_completion(input, span)
+    }
+
+    fn from_name(key: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(key))
+            .map(|(_, key)| key)
+    }
+
     /// Canonical spelling of the filter key.
     #[must_use]
     pub const fn name(self) -> &'static str {

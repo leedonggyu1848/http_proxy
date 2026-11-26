@@ -1685,3 +1685,86 @@ fn measure_structured_filter_at_scale() -> Result<(), Box<dyn std::error::Error>
     }
     Ok(())
 }
+
+fn filter_key_event(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    }
+}
+
+fn type_request_filter(app: &mut InspectorApp, text: &str) {
+    let _ = render_frame(
+        app,
+        Layout::WINDOW,
+        vec![
+            filter_key_event(egui::Key::F, egui::Modifiers::COMMAND),
+            egui::Event::Text(text.to_owned()),
+        ],
+    );
+}
+
+#[test]
+fn filter_completion_leaves_tab_to_focus_navigation_inside_a_quote() {
+    let mut app = test_app(egui::Context::default());
+    let _ = render_settled(&mut app, Layout::WINDOW);
+    let phrase = r#""connection status:""#;
+    type_request_filter(&mut app, phrase);
+    let _ = render_settled(&mut app, Layout::WINDOW);
+    let filter_focus = app.context.memory(egui::Memory::focused);
+    assert!(filter_focus.is_some());
+
+    let (drawn, _) = render_frame(
+        &mut app,
+        Layout::WINDOW,
+        vec![filter_key_event(
+            egui::Key::ArrowLeft,
+            egui::Modifiers::NONE,
+        )],
+    );
+    assert!(drawn.iter().any(|item| item.text == phrase));
+    assert!(
+        !drawn.iter().any(|item| item.text == "status:2xx"),
+        "field suggestions appeared inside the quoted phrase"
+    );
+    for key in [egui::Key::ArrowDown, egui::Key::Tab] {
+        let _ = render_frame(
+            &mut app,
+            Layout::WINDOW,
+            vec![filter_key_event(key, egui::Modifiers::NONE)],
+        );
+    }
+    let drawn = render_settled(&mut app, Layout::WINDOW);
+    assert!(drawn.iter().any(|item| item.text == phrase));
+    assert_ne!(app.context.memory(egui::Memory::focused), filter_focus);
+}
+
+#[test]
+fn standalone_field_completion_accepts_enter_and_tab_after_a_phrase() {
+    for (arrow, accept, expected) in [
+        (egui::Key::ArrowDown, egui::Key::Enter, "4xx"),
+        (egui::Key::ArrowUp, egui::Key::Tab, "5xx"),
+    ] {
+        let mut app = test_app(egui::Context::default());
+        let _ = render_settled(&mut app, Layout::WINDOW);
+        let phrase = r#""한글 status:""#;
+        type_request_filter(&mut app, &format!("{phrase} status:"));
+        let drawn = render_settled(&mut app, Layout::WINDOW);
+        assert!(drawn.iter().any(|item| item.text == "status:2xx"));
+
+        for key in [arrow, accept] {
+            let _ = render_frame(
+                &mut app,
+                Layout::WINDOW,
+                vec![filter_key_event(key, egui::Modifiers::NONE)],
+            );
+        }
+        let drawn = render_settled(&mut app, Layout::WINDOW);
+        let input = format!("{phrase} status:{expected}");
+        assert!(drawn.iter().any(|item| item.text == input), "{input}");
+        assert!(!drawn.iter().any(|item| item.text == "status:2xx"));
+    }
+}

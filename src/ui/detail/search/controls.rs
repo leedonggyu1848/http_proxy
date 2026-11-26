@@ -233,18 +233,16 @@ fn suggestions(
     query: &egui::CompletionQuery<'_>,
     records: &RecordList<Exchange>,
 ) -> Vec<egui::Suggestion> {
-    let (word, excluded) = query
-        .word
-        .strip_prefix('-')
-        .map_or((query.word, false), |word| (word, true));
-    let Some((key, "")) = word.split_once(':') else {
+    if !query.word.ends_with(':') {
+        return Vec::new();
+    }
+    // egui counts characters for its replacement range. The filter lexer uses UTF-8 offsets.
+    let Some((start, _)) = query.text.char_indices().nth(query.word_range.start.0) else {
         return Vec::new();
     };
-    let key = match key.to_ascii_lowercase().as_str() {
-        "method" => FilterKey::Method,
-        "host" | "domain" => FilterKey::Host,
-        "status" => FilterKey::Status,
-        _ => return Vec::new(),
+    let span = start..start + query.word.len();
+    let Some((key, excluded)) = FilterKey::for_completion(query.text, span) else {
+        return Vec::new();
     };
     let candidates: BTreeSet<_> = match key {
         FilterKey::Method => records

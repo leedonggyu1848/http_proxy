@@ -4,7 +4,7 @@ use http_inspector_exchange::{
     BodyLifecycle, ExchangeBuilder, FailureStage, ResponseFixture, TunnelState,
 };
 
-use super::{FilterQuery, TextTerm};
+use super::{FilterKey, FilterQuery, TextTerm};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -182,5 +182,26 @@ fn matches_outcome_types_connection_targets_and_replays() -> TestResult {
         assert!(FilterQuery::parse(yes).matches(record), "{yes}");
         assert!(!FilterQuery::parse(no).matches(record), "{no}");
     }
+    Ok(())
+}
+
+#[test]
+fn completion_requires_a_whole_unquoted_key() -> TestResult {
+    let text = r#"header:"한글 \"quoted status:" -DOMAIN:"#;
+    let inside = text.find("status:").ok_or("missing quoted status")?;
+    assert_eq!(
+        FilterKey::for_completion(text, inside..inside + "status:".len()),
+        None
+    );
+    let hostname = text.find("-DOMAIN:").ok_or("missing host key")?;
+    assert_eq!(
+        FilterKey::for_completion(text, hostname..text.len()),
+        Some((FilterKey::Host, true))
+    );
+    assert_eq!(FilterKey::for_completion("status:404", 0..7), None);
+    assert_eq!(
+        FilterKey::for_completion(r#""unclosed status:"#, 10..17),
+        None
+    );
     Ok(())
 }

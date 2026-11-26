@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use super::predicate::Predicate;
 use super::{FieldTerm, FilterDiagnostic, FilterKey, FilterQuery, TextTerm};
 
@@ -21,10 +23,7 @@ pub(super) fn query(input: &str) -> FilterQuery {
 }
 
 fn parse_term(query: &mut FilterQuery, term: &str) -> Result<(), String> {
-    let (term, excluded) = term
-        .strip_prefix('-')
-        .filter(|rest| !rest.is_empty())
-        .map_or((term, false), |rest| (rest, true));
+    let (term, excluded) = split_exclusion(term);
     if let Some((key, values)) = term.split_once(':')
         && key_token(key, values)
     {
@@ -34,10 +33,7 @@ fn parse_term(query: &mut FilterQuery, term: &str) -> Result<(), String> {
         {
             return Err(format!("Reserved filter key `{key}`"));
         }
-        let Some((_, field)) = FilterKey::ALL
-            .into_iter()
-            .find(|(name, _)| name.eq_ignore_ascii_case(key))
-        else {
+        let Some(field) = FilterKey::from_name(key) else {
             return Err(format!("Unknown filter key `{key}`"));
         };
         let alternatives = spans(values, |c| c == ',')
@@ -59,10 +55,23 @@ fn parse_term(query: &mut FilterQuery, term: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub(super) fn key_for_completion(input: &str, span: Range<usize>) -> Option<(FilterKey, bool)> {
+    let (term, excluded) = split_exclusion(input.get(span.clone())?);
+    let key = FilterKey::from_name(term.strip_suffix(':')?)?;
+    spans(input, char::is_whitespace)
+        .take_while(|(found, _)| found.start <= span.start)
+        .any(|(found, closed)| closed && found == span)
+        .then_some((key, excluded))
+}
+
+fn split_exclusion(term: &str) -> (&str, bool) {
+    term.strip_prefix('-')
+        .filter(|rest| !rest.is_empty())
+        .map_or((term, false), |rest| (rest, true))
+}
+
 fn key_token(key: &str, value: &str) -> bool {
-    let known = FilterKey::ALL
-        .iter()
-        .any(|(name, _)| name.eq_ignore_ascii_case(key))
+    let known = FilterKey::from_name(key).is_some()
         || ["body", "req-body", "res-body"]
             .iter()
             .any(|name| name.eq_ignore_ascii_case(key));
@@ -80,7 +89,7 @@ fn key_token(key: &str, value: &str) -> bool {
 fn spans(
     input: &str,
     separator: impl Fn(char) -> bool,
-) -> impl Iterator<Item = (std::ops::Range<usize>, bool)> {
+) -> impl Iterator<Item = (Range<usize>, bool)> {
     let mut start = 0;
     let mut quoted = false;
     let mut escaped = false;
