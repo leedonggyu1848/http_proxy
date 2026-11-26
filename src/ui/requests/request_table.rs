@@ -459,7 +459,6 @@ impl RequestTable {
                 })
                 .inner;
         }
-        let cell_width = ui.available_width();
         ui.add_space(field.lead());
         let clicked = ui.add(button).clicked();
         if let Some(host) = meta.shared_host {
@@ -476,22 +475,23 @@ impl RequestTable {
                     }
                 });
         }
-        if let Some(scale) = meta.waterfall_scale
-            && cell_width >= Layout::WATERFALL_HEADER_SCALE_MIN
-            && ui.available_width() >= Layout::REQUEST_COLUMNS.duration_min
-        {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(Space::XS);
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(scale)
-                            .monospace()
-                            .size(TypeScale::STATUS)
-                            .color(secondary),
-                    )
-                    .truncate(),
-                );
-            });
+        if let Some(scale) = meta.waterfall_scale {
+            let scale_text = RichText::new(scale)
+                .monospace()
+                .size(TypeScale::STATUS)
+                .color(secondary);
+            let galley = egui::WidgetText::from(scale_text.clone()).into_galley(
+                ui,
+                Some(egui::TextWrapMode::Extend),
+                f32::INFINITY,
+                egui::TextStyle::Monospace,
+            );
+            if ui.available_width() >= galley.size().x + Space::XS {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(Space::XS);
+                    ui.add(egui::Label::new(scale_text).truncate());
+                });
+            }
         }
         clicked
     }
@@ -1325,6 +1325,48 @@ mod tests {
             }],
         );
         assert_eq!(selected, Some(record.id()));
+        Ok(())
+    }
+
+    #[test]
+    fn waterfall_header_keeps_scale_when_sorted_at_default_width()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use http::{Method, StatusCode};
+        use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
+
+        let record = ExchangeBuilder::http(Method::GET, "http://fixture.test/sorted-scale")?
+            .connect_time(Duration::from_millis(120))
+            .respond(ResponseFixture::new(StatusCode::OK))?;
+
+        let ctx = egui::Context::default();
+        let mut table = RequestTable::new();
+        table.sort = table.sort.toggled(Field::Waterfall);
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(780.0, 200.0));
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(viewport),
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE)
+                        .show(ui, |ui| {
+                            let _ =
+                                table.show(ui, vec![&record], None, false, TableMenus::default());
+                        });
+                },
+            );
+            output.textures_delta.clear();
+            shapes = output.shapes;
+        }
+
+        assert!(has_text(&shapes, "Waterfall ▲"));
+        assert!(
+            has_text(&shapes, "120 ms") || has_text(&shapes, " ms"),
+            "expected Waterfall scale label to remain visible beside sorted title at default 120pt width"
+        );
         Ok(())
     }
 }

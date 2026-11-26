@@ -249,8 +249,6 @@ impl Layout {
     pub(crate) const WATERFALL_MIN_BAR_WIDTH: f32 = 2.0;
     /// Width of one phase bar sample inside the waterfall hover table.
     pub(crate) const WATERFALL_LEGEND_WIDTH: f32 = 12.0;
-    /// Minimum Waterfall header width needed before showing the total timeline scale beside the title.
-    pub(crate) const WATERFALL_HEADER_SCALE_MIN: f32 = 112.0;
     pub(crate) const REQUEST_COLUMNS: RequestColumns = RequestColumns {
         method: 72.0,
         path_min: 140.0,

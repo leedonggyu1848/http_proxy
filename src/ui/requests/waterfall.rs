@@ -212,9 +212,9 @@ pub(super) fn attach_hover(
     let Some(timeline) = timeline else {
         return cell;
     };
-    let start_offset = timeline.start_offset(record.started());
-    let timing = ExchangeTiming::from_exchange(record, now);
     cell.on_hover_ui(|ui| {
+        let start_offset = timeline.start_offset(record.started());
+        let timing = ExchangeTiming::from_exchange(record, now);
         hover_table(ui, start_offset, &timing, record.outcome(), lang);
     })
 }
@@ -293,14 +293,15 @@ fn paint_grid(painter: &egui::Painter, track: Rect, tokens: &ThemeTokens) {
     }
 }
 
-/// Draws a faint dashed baseline through an unobserved interval so it reads as
-/// an empty gap while still marking the request's overall time range.
+/// Draws a dashed baseline through an unobserved interval so it reads as an
+/// empty gap while meeting the 3:1 non-text contrast requirement on every row
+/// surface (D7).
 fn paint_dashed_gap(painter: &egui::Painter, x0: f32, x1: f32, cy: f32, tokens: &ThemeTokens) {
     let span = x1 - x0;
     if span <= StrokeWidth::STRUCTURAL {
         return;
     }
-    let stroke = Stroke::new(StrokeWidth::STRUCTURAL, tokens.borders.control);
+    let stroke = Stroke::new(StrokeWidth::STRUCTURAL, tokens.text.secondary);
     let stride = Layout::GRAPH_DASH * 2.0;
     #[expect(
         clippy::cast_possible_truncation,
@@ -657,5 +658,77 @@ mod tests {
         let (end_x0, end_x1) = segment_pixel_range(track, 0.999, 1.0);
         assert!((end_x1 - 110.0).abs() < 1e-3);
         assert!((end_x0 - 108.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn unobserved_dashed_gap_uses_contrast_verified_secondary_color() {
+        fn collect_horizontal_lines(shape: &egui::Shape, out: &mut Vec<egui::Color32>) {
+            match shape {
+                egui::Shape::LineSegment { points, stroke }
+                    if (points[0].y - points[1].y).abs() < 1e-3
+                        && (points[1].x - points[0].x).abs() > 0.5 =>
+                {
+                    out.push(stroke.color);
+                }
+                egui::Shape::Vec(items) => {
+                    for item in items {
+                        collect_horizontal_lines(item, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let timing = ExchangeTiming::from_parts(
+            None,
+            None,
+            None,
+            None,
+            Some(Duration::from_millis(60)),
+            Some(Duration::from_millis(60)),
+            false,
+            None,
+        );
+        let layout = WaterfallLayout::compute(
+            Duration::from_millis(10),
+            &timing,
+            Duration::from_millis(100),
+        );
+
+        for theme in [egui::Theme::Dark, egui::Theme::Light] {
+            let tokens = ThemeTokens::for_theme(theme);
+            let ctx = egui::Context::default();
+            let viewport =
+                Rect::from_min_size(Pos2::ZERO, egui::vec2(120.0, Layout::TABLE_ROW_HEIGHT));
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(viewport),
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE)
+                        .show(ui, |ui| {
+                            paint_cell(ui.painter(), viewport, &layout, false, &tokens);
+                        });
+                },
+            );
+            output.textures_delta.clear();
+
+            let mut dash_colors = Vec::new();
+            for clipped in &output.shapes {
+                collect_horizontal_lines(&clipped.shape, &mut dash_colors);
+            }
+            assert!(
+                !dash_colors.is_empty(),
+                "expected dashed gap segments for {theme:?}"
+            );
+            assert!(
+                dash_colors
+                    .iter()
+                    .all(|&color| color == tokens.text.secondary),
+                "expected all dashed gap segments to use tokens.text.secondary for {theme:?}, got {dash_colors:?}"
+            );
+        }
     }
 }
