@@ -56,7 +56,7 @@ impl SaveFailure {
 }
 
 /// Formats an I/O error returned by [`SaveControls::directory`] in the active UI language.
-pub(super) fn localize_directory_error(error: &io::Error, lang: Language) -> String {
+pub(crate) fn localize_directory_error(error: &io::Error, lang: Language) -> String {
     if error.kind() == io::ErrorKind::NotADirectory && error.to_string() == MISSING_SAVE_DIR_MSG {
         lang.pick(
             MISSING_SAVE_DIR_MSG,

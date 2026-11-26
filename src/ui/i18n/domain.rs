@@ -1091,6 +1091,19 @@ fn localize_port_error_text_ko(raw: &str) -> String {
     raw.to_owned()
 }
 
+/// Translates [`http_inspector_content::format::FormatError`] into the active UI language.
+#[must_use]
+pub(crate) fn format_error(
+    lang: Language,
+    error: &http_inspector_content::format::FormatError,
+) -> String {
+    let raw = error.to_string();
+    match lang {
+        Language::English => raw,
+        Language::Korean => localize_format_reason_ko(&raw),
+    }
+}
+
 /// Translates full session log initialization errors.
 #[must_use]
 pub(crate) fn full_log_error(lang: Language, error: &io::Error) -> String {
@@ -1121,7 +1134,7 @@ pub(crate) fn localize_full_log_runtime_error(lang: Language, raw: &str) -> Stri
                 return format!("세션 로깅에 실패하여 로그가 불완전합니다: {detail}");
             }
             if raw == "Session logging is busy; retry saving the log shortly" {
-                return "세션 로깅이 사용 중입니다. 잠시 후 다시 저장하세요".to_owned();
+                return "세션 로깅이 사용 중이므로 잠시 후 다시 저장하세요".to_owned();
             }
             if raw == "The session journal snapshot ended early" {
                 return "세션 저널 스냅샷이 예상보다 일찍 끝났습니다".to_owned();
@@ -1379,6 +1392,70 @@ fn hls_download_error_ko(error: &HlsDownloadError) -> String {
     }
 }
 
+/// Translates [`http_inspector_core::hls::SegmentStatus::Failed`] messages into
+/// the active UI language without adding UI language awareness to core crates.
+#[must_use]
+pub(crate) fn localize_hls_segment_failure(lang: Language, raw: &str) -> String {
+    match lang {
+        Language::English => raw.to_owned(),
+        Language::Korean => localize_hls_segment_failure_ko(raw),
+    }
+}
+
+fn split_segment_tag(text: &str) -> Option<(&str, &str)> {
+    let (number, rest) = text.split_once(" (")?;
+    let name = rest.strip_suffix(')')?;
+    Some((number, name))
+}
+
+fn split_segment_tag_with_detail(text: &str) -> Option<(&str, &str, &str)> {
+    let (tag, detail) = text.split_once("): ")?;
+    let (number, name) = tag.split_once(" (")?;
+    Some((number, name, detail))
+}
+
+fn localize_hls_segment_failure_ko(raw: &str) -> String {
+    if let Some(rest) = raw.strip_prefix("HTTP ")
+        && let Some((status_reason, seg)) = rest.split_once(" on segment #")
+        && let Some((num, name)) = split_segment_tag(seg)
+    {
+        return format!("세그먼트 #{num}({name})에서 HTTP {status_reason} 오류");
+    }
+    if let Some(seg) = raw.strip_prefix("Too many redirects on segment #")
+        && let Some((num, name)) = split_segment_tag(seg)
+    {
+        return format!("세그먼트 #{num}({name})에서 리다이렉트가 너무 많습니다");
+    }
+    if let Some(rest) = raw.strip_prefix("Invalid redirect on segment #")
+        && let Some((num, name, detail)) = split_segment_tag_with_detail(rest)
+    {
+        return format!("세그먼트 #{num}({name})의 리다이렉트가 올바르지 않습니다: {detail}");
+    }
+    if let Some(rest) = raw.strip_prefix("Network error on segment #")
+        && let Some((num, name, detail)) = split_segment_tag_with_detail(rest)
+    {
+        return format!("세그먼트 #{num}({name}) 네트워크 오류: {detail}");
+    }
+    if let Some(rest) = raw.strip_prefix("Decoding failed on segment #")
+        && let Some((num, name, detail)) = split_segment_tag_with_detail(rest)
+    {
+        return format!("세그먼트 #{num}({name}) 디코딩 실패: {detail}");
+    }
+    if let Some(rest) = raw.strip_prefix("Cached segment #")
+        && let Some((tag, detail)) = rest.split_once(") could not be read: ")
+        && let Some((num, name)) = tag.split_once(" (")
+    {
+        return format!("캐시된 세그먼트 #{num}({name})를 읽지 못했습니다: {detail}");
+    }
+    if let Some(detail) = raw.strip_prefix("TLS setup failed: ") {
+        return format!("TLS 설정 실패: {detail}");
+    }
+    if let Some(detail) = raw.strip_prefix("File write failed: ") {
+        return format!("파일 쓰기 실패: {detail}");
+    }
+    raw.to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
@@ -1537,6 +1614,84 @@ mod tests {
             assert!(
                 ko.contains(expected_substring),
                 "input={input:?}, diag={diag:?}, ko={ko:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn format_error_localizes_json_and_xml_errors() {
+        use http_inspector_content::format::{FormatError, JsonFormatError, XmlFormatError};
+
+        let cases: [(FormatError, &str); 3] = [
+            (
+                FormatError::Json(JsonFormatError::PreviewNestingTooDeep),
+                "JSON 미리보기 중첩이 64단계를 초과했습니다",
+            ),
+            (
+                FormatError::Json(JsonFormatError::TrailingData),
+                "JSON 값 뒤에 예상치 못한 데이터가 있습니다",
+            ),
+            (
+                FormatError::Xml(XmlFormatError::NoElements),
+                "요소를 찾을 수 없습니다",
+            ),
+        ];
+        for (err, expected_ko) in cases {
+            assert_eq!(format_error(Language::English, &err), err.to_string());
+            assert_eq!(format_error(Language::Korean, &err), expected_ko);
+        }
+    }
+
+    #[test]
+    fn localize_hls_segment_failure_matches_download_error_translations() {
+        let errors = [
+            HlsDownloadError::HttpStatus {
+                segment_index: 1,
+                segment_number: 2,
+                segment_name: "seg2.ts".to_owned(),
+                segment_url: "http://cdn.test/seg2.ts".to_owned(),
+                status: 403,
+                reason: "Forbidden".to_owned(),
+            },
+            HlsDownloadError::TooManyRedirects {
+                segment_index: 2,
+                segment_number: 3,
+                segment_name: "seg3.ts".to_owned(),
+            },
+            HlsDownloadError::InvalidRedirect {
+                segment_index: 3,
+                segment_number: 4,
+                segment_name: "seg4.ts".to_owned(),
+                detail: "missing Location".to_owned(),
+            },
+            HlsDownloadError::Network {
+                segment_index: 4,
+                segment_number: 5,
+                segment_name: "seg5.ts".to_owned(),
+                detail: "connection reset".to_owned(),
+            },
+            HlsDownloadError::Decode {
+                segment_index: 5,
+                segment_number: 6,
+                segment_name: "seg6.ts".to_owned(),
+                detail: "corrupt gzip".to_owned(),
+            },
+            HlsDownloadError::CacheRead {
+                segment_index: 6,
+                segment_number: 7,
+                segment_name: "seg7.ts".to_owned(),
+                detail: "missing file".to_owned(),
+            },
+            HlsDownloadError::TlsSetup("bad root".to_owned()),
+            HlsDownloadError::Io("disk full".to_owned()),
+        ];
+
+        for error in &errors {
+            let raw = error.to_string();
+            assert_eq!(localize_hls_segment_failure(Language::English, &raw), raw);
+            assert_eq!(
+                localize_hls_segment_failure(Language::Korean, &raw),
+                hls_download_error(Language::Korean, error)
             );
         }
     }

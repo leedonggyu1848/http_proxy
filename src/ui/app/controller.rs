@@ -19,7 +19,7 @@ use http_inspector_interop::map_export::{
     export_graph_dot, export_graph_mermaid, export_tree_json, export_tree_text,
 };
 
-use super::state::SessionError;
+use super::state::{HlsSessionError, SessionError};
 use super::{InspectorApp, MainView};
 use crate::ui::dialogs::{
     browser_panel::BrowserAction, bulk_save::BulkAction, ca_panel, har_dialog,
@@ -313,7 +313,9 @@ impl InspectorApp {
                         .hls
                         .start_download(directory, store, proxy_addr, context);
                 }
-                Err(error) => self.report_error(SessionError::HlsDownload(error.to_string())),
+                Err(error) => {
+                    self.report_error(SessionError::HlsDownload(HlsSessionError::Directory(error)));
+                }
             },
             HlsAction::CancelDownload => self.dialogs.hls.cancel_download(),
             HlsAction::Close => self.dialogs.hls.close(),

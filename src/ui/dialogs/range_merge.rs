@@ -1,12 +1,10 @@
 //! Showing the byte range of a `206` response and merging range responses.
 
-use crate::ui::app::state::SessionError;
+use crate::ui::app::state::{RangeMergeError, SessionError};
 use crate::ui::dialogs::body_saving::privacy_notice;
-use crate::ui::dialogs::save::localize_directory_error;
 use crate::ui::i18n::{Language, Text, domain};
 use crate::ui::style::theme::Palette;
 use crate::ui::style::tokens::Layout;
-use std::io;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -224,24 +222,15 @@ impl InspectorApp {
         if !save {
             return;
         }
-        let lang = self.language();
         let directory = match self.dialogs.save.directory() {
             Ok(directory) => directory,
             Err(error) => {
-                self.report_error(SessionError::RangeMerge(localize_directory_error(
-                    &error, lang,
-                )));
+                self.report_error(SessionError::RangeMerge(RangeMergeError::Directory(error)));
                 return;
             }
         };
         let Some(store) = self.session.body_saving.store() else {
-            self.report_error(SessionError::RangeMerge(
-                lang.pick(
-                    "Saving bodies is unavailable",
-                    "본문 저장을 사용할 수 없습니다",
-                )
-                .to_owned(),
-            ));
+            self.report_error(SessionError::RangeMerge(RangeMergeError::SavingUnavailable));
             return;
         };
         match store.save_ranges(plan, directory) {
@@ -249,7 +238,7 @@ impl InspectorApp {
                 .session
                 .body_saving
                 .track(BackgroundTask::track(receiver)),
-            Err(error) => self.report_error(SessionError::RangeMerge(error.to_string())),
+            Err(error) => self.report_error(SessionError::RangeMerge(RangeMergeError::Io(error))),
         }
     }
 }
@@ -277,7 +266,7 @@ impl InspectorApp {
             Ok(receiver) => {
                 self.session.body_saving.merge.planning = Some(BackgroundTask::track(receiver));
             }
-            Err(error) => self.report_error(SessionError::RangeMerge(error.to_string())),
+            Err(error) => self.report_error(SessionError::RangeMerge(RangeMergeError::Io(error))),
         }
     }
 
@@ -286,22 +275,22 @@ impl InspectorApp {
         let Some(task) = self.session.body_saving.merge.planning.as_ref() else {
             return;
         };
-        let lang = self.language();
         let result = match task.poll() {
             TaskPoll::Ready(result) => result,
             TaskPoll::Pending => {
                 context.request_repaint_after(Duration::from_millis(100));
                 return;
             }
-            TaskPoll::Disconnected => Err(io::Error::other(lang.pick(
-                "The range planning worker stopped unexpectedly",
-                "범위 병합 계획 작업자가 예기치 않게 중지되었습니다",
-            ))),
+            TaskPoll::Disconnected => {
+                self.session.body_saving.merge.planning = None;
+                self.report_error(SessionError::RangeMerge(RangeMergeError::WorkerStopped));
+                return;
+            }
         };
         self.session.body_saving.merge.planning = None;
         match result {
             Ok(plan) => self.session.body_saving.merge.plan = plan,
-            Err(error) => self.report_error(SessionError::RangeMerge(error.to_string())),
+            Err(error) => self.report_error(SessionError::RangeMerge(RangeMergeError::Io(error))),
         }
     }
 }

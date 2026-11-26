@@ -220,12 +220,13 @@ impl<S: Clone + PartialEq> BodyCache<S> {
                     };
                 }
                 Some(Err(reason)) => {
+                    let detail = domain::format_error(lang, reason);
                     let message = match lang {
                         Language::English => {
-                            format!("Showing Pretty: could not read a tree: {reason}.")
+                            format!("Showing Pretty: could not read a tree: {detail}.")
                         }
                         Language::Korean => {
-                            format!("서식 보기로 표시: 트리를 읽을 수 없습니다({reason}).")
+                            format!("서식 보기로 표시: 트리를 읽을 수 없습니다({detail}).")
                         }
                     };
                     notices.push(Notice::warning(message));
@@ -608,5 +609,53 @@ mod tests {
                 "{capture:?}"
             );
         }
+    }
+
+    #[test]
+    fn localizes_tree_fallback_format_errors_in_korean() {
+        let mut cache = BodyCache::<()>::default();
+        let trailing = source(10, br#"{"a":1} {"b":2}"#);
+        let shown = notices(cache.update(&trailing, ViewMode::Tree, &(), Language::Korean));
+        assert!(
+            shown.iter().any(|notice| {
+                notice
+                    .text
+                    .contains("서식 보기로 표시: 트리를 읽을 수 없습니다")
+                    && notice
+                        .text
+                        .contains("JSON 값 뒤에 예상치 못한 데이터가 있습니다")
+            }),
+            "{shown:?}"
+        );
+
+        let unexpected = source(11, br#"{"a":1} trailing"#);
+        let unexpected_shown =
+            notices(cache.update(&unexpected, ViewMode::Tree, &(), Language::Korean));
+        assert!(
+            unexpected_shown.iter().any(|notice| {
+                notice
+                    .text
+                    .contains("서식 보기로 표시: 트리를 읽을 수 없습니다")
+                    && notice
+                        .text
+                        .contains("8바이트에서 예상치 못한 토큰 \"trailing\"")
+            }),
+            "{unexpected_shown:?}"
+        );
+
+        let xml_empty = BodySource {
+            media_type: media("application/xml"),
+            ..source(12, b"plain text without tags")
+        };
+        let xml_shown = notices(cache.update(&xml_empty, ViewMode::Tree, &(), Language::Korean));
+        assert!(
+            xml_shown.iter().any(|notice| {
+                notice
+                    .text
+                    .contains("서식 보기로 표시: 트리를 읽을 수 없습니다")
+                    && notice.text.contains("요소를 찾을 수 없습니다")
+            }),
+            "{xml_shown:?}"
+        );
     }
 }

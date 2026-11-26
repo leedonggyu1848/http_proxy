@@ -3,7 +3,8 @@
 use crate::ui::app::capture::CaptureNotice;
 #[cfg(test)]
 use crate::ui::app::capture::PortChoice;
-use crate::ui::app::state::{MainView, SessionError};
+use crate::ui::app::state::{HlsSessionError, MainView, RangeMergeError, SessionError};
+use crate::ui::dialogs::save::localize_directory_error;
 use crate::ui::i18n::{Language, Text, domain};
 use crate::ui::style::theme::Palette;
 use crate::ui::style::{
@@ -60,14 +61,37 @@ pub(crate) fn notice_text(notice: &CaptureNotice, lang: Language) -> Cow<'_, str
 fn session_error_text(error: &SessionError, lang: Language) -> String {
     match error {
         SessionError::Replay(err) => domain::replay_error(lang, err),
-        SessionError::RangeMerge(detail) => match lang {
-            Language::English => format!("Merging ranges failed: {detail}"),
-            Language::Korean => format!("범위 응답 병합 실패: {detail}"),
-        },
-        SessionError::HlsDownload(detail) => match lang {
-            Language::English => format!("HLS download failed: {detail}"),
-            Language::Korean => format!("HLS 다운로드 실패: {detail}"),
-        },
+        SessionError::RangeMerge(err) => {
+            let detail = match err {
+                RangeMergeError::Directory(io_err) => localize_directory_error(io_err, lang),
+                RangeMergeError::SavingUnavailable => lang
+                    .pick(
+                        "Saving bodies is unavailable",
+                        "본문 저장을 사용할 수 없습니다",
+                    )
+                    .to_owned(),
+                RangeMergeError::WorkerStopped => lang
+                    .pick(
+                        "The range planning worker stopped unexpectedly",
+                        "범위 병합 계획 작업자가 예기치 않게 중지되었습니다",
+                    )
+                    .to_owned(),
+                RangeMergeError::Io(io_err) => io_err.to_string(),
+            };
+            match lang {
+                Language::English => format!("Merging ranges failed: {detail}"),
+                Language::Korean => format!("범위 응답 병합 실패: {detail}"),
+            }
+        }
+        SessionError::HlsDownload(err) => {
+            let detail = match err {
+                HlsSessionError::Directory(io_err) => localize_directory_error(io_err, lang),
+            };
+            match lang {
+                Language::English => format!("HLS download failed: {detail}"),
+                Language::Korean => format!("HLS 다운로드 실패: {detail}"),
+            }
+        }
     }
 }
 
@@ -617,7 +641,11 @@ mod copy_tests {
 
 #[cfg(test)]
 mod authorization_tests {
-    use super::AuthorizationNotice;
+    use std::io;
+
+    use super::{AuthorizationNotice, session_error_text};
+    use crate::ui::app::state::{HlsSessionError, RangeMergeError, SessionError};
+    use crate::ui::i18n::Language;
 
     #[test]
     fn warning_shows_only_the_first_time() {
@@ -626,6 +654,56 @@ mod authorization_tests {
         assert_eq!(
             AuthorizationNotice::Dismissed.inspection_enabled(),
             AuthorizationNotice::Dismissed
+        );
+    }
+
+    #[test]
+    fn session_errors_retranslate_when_language_switches() {
+        let missing_dir = || {
+            io::Error::new(
+                io::ErrorKind::NotADirectory,
+                "Choose an existing save directory in the Save menu",
+            )
+        };
+
+        let hls = SessionError::HlsDownload(HlsSessionError::Directory(missing_dir()));
+        assert_eq!(
+            session_error_text(&hls, Language::English),
+            "HLS download failed: Choose an existing save directory in the Save menu"
+        );
+        assert_eq!(
+            session_error_text(&hls, Language::Korean),
+            "HLS 다운로드 실패: 저장 메뉴에서 존재하는 저장 폴더를 선택하세요"
+        );
+
+        let merge_dir = SessionError::RangeMerge(RangeMergeError::Directory(missing_dir()));
+        assert_eq!(
+            session_error_text(&merge_dir, Language::English),
+            "Merging ranges failed: Choose an existing save directory in the Save menu"
+        );
+        assert_eq!(
+            session_error_text(&merge_dir, Language::Korean),
+            "범위 응답 병합 실패: 저장 메뉴에서 존재하는 저장 폴더를 선택하세요"
+        );
+
+        let unavailable = SessionError::RangeMerge(RangeMergeError::SavingUnavailable);
+        assert_eq!(
+            session_error_text(&unavailable, Language::English),
+            "Merging ranges failed: Saving bodies is unavailable"
+        );
+        assert_eq!(
+            session_error_text(&unavailable, Language::Korean),
+            "범위 응답 병합 실패: 본문 저장을 사용할 수 없습니다"
+        );
+
+        let stopped = SessionError::RangeMerge(RangeMergeError::WorkerStopped);
+        assert_eq!(
+            session_error_text(&stopped, Language::English),
+            "Merging ranges failed: The range planning worker stopped unexpectedly"
+        );
+        assert_eq!(
+            session_error_text(&stopped, Language::Korean),
+            "범위 응답 병합 실패: 범위 병합 계획 작업자가 예기치 않게 중지되었습니다"
         );
     }
 }

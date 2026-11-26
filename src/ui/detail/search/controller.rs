@@ -487,7 +487,7 @@ fn coverage_text(summary: Summary, lang: Language) -> Option<Coverage> {
                 "Captured previews were searched after decompression ({joined}); the full-session log keeps the rest."
             ),
             Language::Korean => format!(
-                "압축 해제 후 캡처된 미리보기에서 검색했습니다({joined}). 나머지는 전체 세션 로그에 보관됩니다."
+                "압축 해제 후 캡처된 미리보기에서 검색했으며({joined}), 나머지는 전체 세션 로그에 보관됩니다."
             ),
         };
         Coverage {
@@ -668,5 +668,26 @@ mod tests {
                 .is_some_and(|query| Arc::ptr_eq(query, &active_query))
         );
         Ok(())
+    }
+
+    #[test]
+    fn coverage_tooltip_is_single_sentence_in_both_languages() {
+        let summary = Summary {
+            partial: 2,
+            binary: 1,
+            undecodable: 1,
+            ..Summary::default()
+        };
+        for lang in [Language::English, Language::Korean] {
+            let coverage = coverage_text(summary, lang);
+            assert!(coverage.is_some());
+            if let Some(coverage) = coverage {
+                assert!(
+                    !coverage.detail.contains(". "),
+                    "tooltip must stay one sentence (S1): {}",
+                    coverage.detail
+                );
+            }
+        }
     }
 }

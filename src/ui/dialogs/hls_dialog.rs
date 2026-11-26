@@ -920,7 +920,11 @@ fn segment_status_cell(
                 Some(code) => (format!("HTTP {code}"), palette.warning),
                 None => (lang.pick("Failed", "실패").to_owned(), palette.error),
             };
-            (label, color, Some(message.clone()))
+            (
+                label,
+                color,
+                Some(domain::localize_hls_segment_failure(lang, message)),
+            )
         }
         None => {
             if plan.is_cached() {

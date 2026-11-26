@@ -33,10 +33,21 @@ use crate::ui::style::tokens::Layout;
 use super::MAX_RECORDS;
 use super::capture::CaptureSession;
 
+pub(crate) enum RangeMergeError {
+    Directory(std::io::Error),
+    SavingUnavailable,
+    WorkerStopped,
+    Io(std::io::Error),
+}
+
+pub(crate) enum HlsSessionError {
+    Directory(std::io::Error),
+}
+
 pub(crate) enum SessionError {
     Replay(ReplayError),
-    RangeMerge(String),
-    HlsDownload(String),
+    RangeMerge(RangeMergeError),
+    HlsDownload(HlsSessionError),
 }
 
 pub(crate) struct SessionState {
