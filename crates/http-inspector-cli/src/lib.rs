@@ -45,6 +45,11 @@ mod error;
     clippy::redundant_pub_crate,
     reason = "crate-wide items of a private module; `pub` would trip `unreachable_pub`"
 )]
+mod local;
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-wide items of a private module; `pub` would trip `unreachable_pub`"
+)]
 mod output;
 #[expect(
     clippy::redundant_pub_crate,
@@ -73,17 +78,18 @@ use std::process::ExitCode;
 
 use clap::Parser as _;
 
-use args::{Cli, Command, LogCommand, ProxyCommand, RecordsCommand};
+use args::{CaCommand, Cli, Command, LogCommand, ProxyCommand, RecordsCommand};
 use control::ControlPath;
 use error::{CliError, ErrorCode};
 use output::{Kind, Output};
 use protocol::Request;
 
 /// First arguments that select the command line instead of the desktop app.
-const COMMANDS: [&str; 11] = [
+const COMMANDS: [&str; 12] = [
     "proxy",
     "records",
     "log",
+    "ca",
     "schema",
     "help",
     "__daemon",
@@ -143,8 +149,22 @@ fn execute(command: &Command, control: &ControlPath, output: Output) -> Result<u
             let status = client::call(control, &Request::SetHttpsInspection(enabled))?;
             output.document(Kind::Status, &status);
         }
+        Command::Proxy(ProxyCommand::Env(env)) => {
+            let status = client::call(control, &Request::Status)?;
+            output.document(Kind::Env, &local::proxy_env(&status, env.ca_bundle)?);
+        }
+        Command::Ca(CaCommand::Info) => output.document(Kind::CaInfo, &local::ca_info()?),
         Command::Records(records @ RecordsCommand::Watch(_)) => {
             client::stream(control, &records.request(), |event| output.event(event))?;
+        }
+        Command::Records(records @ RecordsCommand::Replay(_)) => {
+            let mut request = records.request();
+            if let Request::Replay(replay) = &mut request
+                && let Some(path) = replay.body_file.take()
+            {
+                replay.body_file = Some(absolute(&path)?);
+            }
+            output.document(Kind::Replay, &client::call(control, &request)?);
         }
         Command::Records(records) => {
             let kind = match records {
@@ -152,7 +172,10 @@ fn execute(command: &Command, control: &ControlPath, output: Output) -> Result<u
                 RecordsCommand::Show(_) => Kind::Show,
                 RecordsCommand::Body(_) => Kind::Body,
                 RecordsCommand::Wait(_) => Kind::Wait,
-                RecordsCommand::Watch(_) | RecordsCommand::Clear => Kind::Cleared,
+                RecordsCommand::Curl(_) => Kind::Curl,
+                RecordsCommand::Watch(_) | RecordsCommand::Replay(_) | RecordsCommand::Clear => {
+                    Kind::Cleared
+                }
             };
             output.document(kind, &client::call(control, &records.request())?);
         }

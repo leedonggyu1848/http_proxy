@@ -126,14 +126,17 @@ HTTPS 복호화를 끈 상태에서는 호스트, 포트, 전송 바이트 수�
 
 ```bash
 http-proxy proxy start --port 0 --json      # 빈 포트로 시작하고 주소 출력
-curl -x http://127.0.0.1:<포트> http://example.test/api/users
+eval "$(http-proxy proxy env)"              # 이 셸의 프로그램을 프록시로 보냄
+curl http://example.test/api/users
 http-proxy records wait --filter 'method:GET url:/api/users' --timeout 10s
 http-proxy records body <ID> --view pretty --max-bytes 4096
+http-proxy records replay <ID> --header 'X-Debug: 1'   # 고쳐서 재전송, 새 기록 출력
+http-proxy records curl <ID>                # curl 명령으로 출력
 http-proxy log save ./session.log
 http-proxy proxy stop
 ```
 
-필터 문법, 본문 정리, 헤더 마스킹은 앱과 같은 코드를 쓴다. 제어 채널은 현재 사용자만 열 수 있는 Unix 소켓이다. 전체 명령, 출력 필드, 종료 코드는 [명령줄 인터페이스](docs/cli.md) 또는 `http-proxy schema`에 있다.
+필터 문법, 본문 정리, 헤더 마스킹, 재전송 확인 규칙, cURL 변환은 앱과 같은 코드를 쓴다. 명령줄은 캡처한 요청을 확인하고 고쳐서 재현하는 데 필요한 기능만 제공하며, 검사 브라우저·CA 등록·URL 맵 같은 기능은 앱에서 쓴다. 제어 채널은 현재 사용자만 열 수 있는 Unix 소켓이다. 전체 명령, 출력 필드, 종료 코드는 [명령줄 인터페이스](docs/cli.md) 또는 `http-proxy schema`에 있다.
 
 ## 요청 필터
 

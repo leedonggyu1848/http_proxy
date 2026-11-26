@@ -89,6 +89,31 @@ pub(crate) fn summary(record: &Exchange) -> Value {
     })
 }
 
+/// The default row of `records list` and `records watch`: enough to pick a
+/// record and decide what to read next. `--full` prints [`summary`].
+pub(crate) fn row(record: &Exchange) -> Value {
+    let request = record.request();
+    let status = match record.outcome() {
+        Outcome::Response(response) => Some(response.status().as_u16()),
+        _ => None,
+    };
+    json!({
+        "id": record.id().value(),
+        "method": request.method().as_str(),
+        "url": request.target(),
+        "outcome": outcome_kind(record.outcome()),
+        "status": status,
+        "duration_ms": millis(record.elapsed()),
+        "request_bytes": request.body().map(BodyPreview::observed_bytes),
+        "response_bytes": record.received_bytes(),
+    })
+}
+
+/// One record, as a row or with every summary field.
+pub(crate) fn listed(record: &Exchange, full: bool) -> Value {
+    if full { summary(record) } else { row(record) }
+}
+
 /// Compact change marker for `records watch`: a row is printed again when
 /// this changes.
 pub(crate) fn state_key(record: &Exchange) -> (&'static str, Option<u16>, bool) {

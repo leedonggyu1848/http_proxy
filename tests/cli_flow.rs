@@ -104,26 +104,44 @@ impl Drop for Sandbox {
 
 /// Serves one HTTP/1.1 response and returns the request it received.
 fn serve_once(listener: TcpListener) -> thread::JoinHandle<std::io::Result<String>> {
-    thread::spawn(move || {
-        let (stream, _) = listener.accept()?;
-        let mut reader = BufReader::new(stream.try_clone()?);
-        let mut head = String::new();
-        loop {
-            let mut line = String::new();
-            if reader.read_line(&mut line)? == 0 || line == "\r\n" {
-                break;
-            }
-            head.push_str(&line);
+    thread::spawn(move || answer(&listener))
+}
+
+/// Serves `count` requests and returns their heads and bodies.
+fn serve(listener: TcpListener, count: usize) -> thread::JoinHandle<std::io::Result<Vec<String>>> {
+    thread::spawn(move || (0..count).map(|_| answer(&listener)).collect())
+}
+
+/// Accepts one connection, reads its request including a `Content-Length`
+/// body, and answers with [`BODY`].
+fn answer(listener: &TcpListener) -> std::io::Result<String> {
+    let (stream, _) = listener.accept()?;
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut request = String::new();
+    let mut length = 0;
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line)? == 0 || line == "\r\n" {
+            break;
         }
-        let mut writer = stream;
-        write!(
-            writer,
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nSet-Cookie: id=cli-secret-set\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{BODY}",
-            BODY.len()
-        )?;
-        writer.flush()?;
-        Ok(head)
-    })
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            length = value.trim().parse().unwrap_or(0);
+        }
+        request.push_str(&line);
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body)?;
+    request.push_str(&String::from_utf8_lossy(&body));
+    let mut writer = stream;
+    write!(
+        writer,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nSet-Cookie: id=cli-secret-set\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{BODY}",
+        BODY.len()
+    )?;
+    writer.flush()?;
+    Ok(request)
 }
 
 fn get_through(proxy: SocketAddr, upstream: SocketAddr) -> TestResult<String> {
@@ -418,4 +436,256 @@ fn wait_for_exit(pid: &Value) -> TestResult {
 )]
 fn pause() {
     thread::sleep(std::time::Duration::from_millis(50));
+}
+
+#[test]
+fn env_and_ca_info_describe_the_proxy_without_the_private_key() -> TestResult {
+    let sandbox = Sandbox::new()?;
+    let started = sandbox.json(&["proxy", "start", "--port", "0", "--json"])?;
+    let proxy_url = format!(
+        "http://{}",
+        started["address"].as_str().ok_or("no address")?
+    );
+    let env = sandbox.json(&["proxy", "env", "--ca-bundle", "--json"])?;
+    let names: Vec<&str> = env["variables"]
+        .as_array()
+        .map_or_else(Vec::new, |variables| {
+            variables
+                .iter()
+                .filter_map(|v| v["name"].as_str())
+                .collect()
+        });
+    // Without HTTPS inspection there is no CA to export.
+    assert_eq!(
+        names,
+        ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]
+    );
+    assert_eq!(env["variables"][2]["value"], proxy_url.as_str());
+    let text = String::from_utf8(sandbox.run(&["proxy", "env"])?.stdout)?;
+    assert!(
+        text.contains(&format!("export http_proxy='{proxy_url}'")),
+        "{text}"
+    );
+
+    let ca = sandbox.run(&["ca", "info", "--json"])?;
+    assert!(ca.status.success());
+    let ca_text = String::from_utf8(ca.stdout)?;
+    assert!(
+        !ca_text.contains("PRIVATE KEY") && !ca_text.contains("ca-identity"),
+        "{ca_text}"
+    );
+    let ca: Value = serde_json::from_str(&ca_text)?;
+    let certificate = PathBuf::from(ca["certificate_path"].as_str().ok_or("no path")?);
+    assert!(fs::read_to_string(&certificate)?.starts_with("-----BEGIN CERTIFICATE-----"));
+    assert_eq!(
+        ca["fingerprint_sha256"]
+            .as_str()
+            .map(|text| text.split(':').count()),
+        Some(32)
+    );
+    assert!(ca["valid_from"].as_str() < ca["valid_until"].as_str());
+
+    sandbox.json(&["proxy", "set", "--https-inspection", "on", "--json"])?;
+    let inspected = sandbox.json(&["proxy", "env", "--ca-bundle", "--json"])?;
+    let exported: Vec<(&str, bool)> =
+        inspected["variables"]
+            .as_array()
+            .map_or_else(Vec::new, |variables| {
+                variables
+                    .iter()
+                    .filter(|v| v["value"] == ca["certificate_path"])
+                    .filter_map(|v| {
+                        Some((v["name"].as_str()?, v["replaces_system_roots"].as_bool()?))
+                    })
+                    .collect()
+            });
+    assert_eq!(
+        exported,
+        [
+            ("NODE_EXTRA_CA_CERTS", false),
+            ("SSL_CERT_FILE", true),
+            ("CURL_CA_BUNDLE", true),
+            ("REQUESTS_CA_BUNDLE", true),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn replay_and_curl_reproduce_a_capture_without_its_credentials() -> TestResult {
+    let sandbox = Sandbox::new()?;
+    let proxy = start(&sandbox)?;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let upstream = listener.local_addr()?;
+    let server = serve(listener, 3);
+    get_through(proxy, upstream)?;
+    // The record is listed at once, without waiting for it first.
+    let immediate = sandbox.json(&["records", "list", "--json"])?;
+    assert_eq!(immediate["matched"], 1);
+    let waited = sandbox.json(&["records", "wait", "--filter", "url:/api/users", "--json"])?;
+    let id = waited["record"]["id"].as_u64().ok_or("no id")?.to_string();
+
+    check_list_rows(&sandbox)?;
+    check_curl(&sandbox, &id)?;
+    check_replay_refusals(&sandbox, &id)?;
+    check_replays(&sandbox, &id)?;
+    let received = server.join().map_err(|_| "server panicked")??;
+    let [_, replay, post] = received.as_slice() else {
+        return Err(format!("expected 3 requests, got {received:?}").into());
+    };
+    assert!(
+        replay.to_ascii_lowercase().contains("x-debug: 1"),
+        "{replay}"
+    );
+    assert!(!replay.contains(SECRET), "{replay}");
+    assert!(
+        post.starts_with("POST ") && post.ends_with(r#"{"name":"gamma"}"#),
+        "{post}"
+    );
+    Ok(())
+}
+
+/// The default list row has only the summary fields; `--full` has all.
+fn check_list_rows(sandbox: &Sandbox) -> TestResult {
+    let listed = sandbox.json(&["records", "list", "--json"])?;
+    let row = listed["records"][0].as_object().ok_or("no row")?;
+    let mut keys: Vec<&str> = row.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "duration_ms",
+            "id",
+            "method",
+            "outcome",
+            "request_bytes",
+            "response_bytes",
+            "status",
+            "url"
+        ]
+    );
+    let full = sandbox.json(&["records", "list", "--full", "--json"])?;
+    assert_eq!(full["records"][0]["summary"], "200 OK");
+    Ok(())
+}
+
+/// A dry run prints the request only; a replay and a confirmed POST send.
+fn check_replays(sandbox: &Sandbox, id: &str) -> TestResult {
+    let dry = sandbox.json(&[
+        "records",
+        "replay",
+        id,
+        "--remove-header",
+        "Authorization",
+        "--remove-header",
+        "Cookie",
+        "--header",
+        "X-Debug: 1",
+        "--dry-run",
+        "--json",
+    ])?;
+    assert_eq!(dry["dry_run"], true);
+    assert!(dry.get("record").is_none());
+    assert!(dry["request"]["headers"].as_array().is_some_and(|headers| {
+        headers
+            .iter()
+            .any(|h| h["name"] == "x-debug" && h["value"] == "1")
+            && !headers.iter().any(|h| h["name"] == "authorization")
+    }));
+    let unchanged = sandbox.json(&["records", "list", "--json"])?;
+    assert_eq!(unchanged["matched"], 1, "a dry run must not send");
+
+    let replayed = sandbox.json(&[
+        "records",
+        "replay",
+        id,
+        "--remove-header",
+        "Authorization",
+        "--remove-header",
+        "Cookie",
+        "--header",
+        "X-Debug: 1",
+        "--json",
+    ])?;
+    assert_eq!(replayed["record"]["replay_of"].to_string(), id);
+    assert_eq!(replayed["record"]["status"], 200);
+    assert_ne!(replayed["record"]["id"].to_string(), id);
+
+    let body = sandbox.root.path().join("body.json");
+    fs::write(&body, r#"{"name":"gamma"}"#)?;
+    let posted = sandbox.json(&[
+        "records",
+        "replay",
+        id,
+        "--method",
+        "POST",
+        "--remove-header",
+        "Authorization",
+        "--remove-header",
+        "Cookie",
+        "--body-file",
+        body.to_str().ok_or("path")?,
+        "--yes",
+        "--json",
+    ])?;
+    assert_eq!(posted["record"]["method"], "POST");
+    assert_eq!(posted["request"]["body_bytes"], 16);
+    Ok(())
+}
+
+fn check_curl(sandbox: &Sandbox, id: &str) -> TestResult {
+    let curl = sandbox.json(&["records", "curl", id, "--json"])?;
+    let command = curl["command"].as_str().ok_or("no command")?;
+    assert!(
+        command.starts_with("curl ") && command.contains("/api/users?page=2"),
+        "{command}"
+    );
+    assert_no_secret("records curl", command);
+    assert!(
+        !command.to_ascii_lowercase().contains("authorization"),
+        "{command}"
+    );
+    assert_eq!(
+        curl["redacted_headers"],
+        serde_json::json!(["authorization", "cookie"])
+    );
+    let placeholders = sandbox.json(&["records", "curl", id, "--placeholders", "--json"])?;
+    assert!(
+        placeholders["command"]
+            .as_str()
+            .is_some_and(|text| text.contains("<REDACTED>"))
+    );
+    Ok(())
+}
+
+fn check_replay_refusals(sandbox: &Sandbox, id: &str) -> TestResult {
+    // Redacted credentials cannot be sent as captured.
+    let redacted = sandbox.run(&["records", "replay", id, "--json"])?;
+    assert_eq!(redacted.status.code(), Some(1));
+    let error: Value = serde_json::from_slice(&redacted.stdout)?;
+    assert_eq!(error["error"]["code"], "not_reproducible");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("authorization"))
+    );
+    // A state-changing method needs --yes.
+    let unconfirmed = sandbox.run(&[
+        "records",
+        "replay",
+        id,
+        "--method",
+        "DELETE",
+        "--remove-header",
+        "Authorization",
+        "--remove-header",
+        "Cookie",
+        "--json",
+    ])?;
+    assert_eq!(unconfirmed.status.code(), Some(5));
+    let error: Value = serde_json::from_slice(&unconfirmed.stdout)?;
+    assert_eq!(error["error"]["code"], "confirmation_required");
+    let listed = sandbox.json(&["records", "list", "--json"])?;
+    assert_eq!(listed["matched"], 1, "a refused replay must not send");
+    Ok(())
 }

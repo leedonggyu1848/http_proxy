@@ -58,11 +58,17 @@ pub(super) struct WatchState {
     since: u64,
     generation: u64,
     shown: HashMap<RecordId, StateKey>,
+    full: bool,
 }
 
 impl WatchState {
     /// Starts after `since`, or after the newest retained record.
-    pub(super) fn new(selection: Selection, session: &Session, since: Option<RecordRef>) -> Self {
+    pub(super) fn new(
+        selection: Selection,
+        session: &Session,
+        since: Option<RecordRef>,
+        full: bool,
+    ) -> Self {
         let newest = session
             .records()
             .iter()
@@ -73,6 +79,7 @@ impl WatchState {
             since: since.map_or(newest, RecordRef::value),
             generation: session.generation(),
             shown: HashMap::new(),
+            full,
         }
     }
 
@@ -101,7 +108,7 @@ impl WatchState {
                 } else {
                     "added"
                 };
-                events.push(json!({ "event": event, "record": view::summary(record) }));
+                events.push(json!({ "event": event, "record": view::listed(record, self.full) }));
             }
         }
         let oldest = session.records().iter().next().map(Exchange::id);

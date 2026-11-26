@@ -1,6 +1,7 @@
 //! The headless daemon: it owns the proxy and the captured records and
 //! answers requests on the control socket until `proxy stop`.
 
+mod replay;
 mod select;
 mod session;
 
@@ -40,6 +41,15 @@ struct Shared {
 impl Shared {
     fn lock(&self) -> MutexGuard<'_, Session> {
         self.session.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Locks the session after taking every exchange the proxy has queued,
+    /// so a command run right after a request sees it without waiting for
+    /// the next pump tick.
+    fn current(&self) -> MutexGuard<'_, Session> {
+        let mut session = self.lock();
+        let _arrived = session.drain();
+        session
     }
 
     /// Waits for the next tick or change, releasing the session meanwhile.
@@ -155,9 +165,14 @@ fn serve(shared: &Shared, stream: UnixStream) {
             return;
         }
     };
-    if let Request::Watch { filter, since } = request {
+    if let Request::Watch {
+        filter,
+        since,
+        full,
+    } = request
+    {
         shared.streams.fetch_add(1, Ordering::AcqRel);
-        let _gone = watch(shared, &filter, since, &mut writer).is_err();
+        let _gone = watch(shared, &filter, since, full, &mut writer).is_err();
         shared.streams.fetch_sub(1, Ordering::AcqRel);
         shared.changed.notify_all();
         return;
@@ -193,7 +208,7 @@ fn write_line(writer: &mut impl Write, value: &Value) -> std::io::Result<()> {
 
 fn respond(shared: &Shared, request: Request) -> Result<Value, CliError> {
     match request {
-        Request::Status => Ok(shared.status(&shared.lock())),
+        Request::Status => Ok(shared.status(&shared.current())),
         Request::Start(options) => {
             let mut session = shared.lock();
             let already_running = session.start(options)?;
@@ -222,9 +237,10 @@ fn respond(shared: &Shared, request: Request) -> Result<Value, CliError> {
             filter,
             since,
             limit,
-        } => list(shared, &filter, since, limit),
-        Request::Show { id, part } => Ok(view::detail(shared.lock().find(id)?, part)),
-        Request::Body(request) => body::render(shared.lock().find(request.id)?, &request),
+            full,
+        } => list(shared, &filter, since, limit, full),
+        Request::Show { id, part } => Ok(view::detail(shared.current().find(id)?, part)),
+        Request::Body(request) => body::render(shared.current().find(request.id)?, &request),
         Request::Wait {
             filter,
             since,
@@ -236,6 +252,8 @@ fn respond(shared: &Shared, request: Request) -> Result<Value, CliError> {
             let saved = finish_export(&receiver)?;
             Ok(json!({ "path": saved.to_string_lossy() }))
         }
+        Request::Replay(request) => replay::replay(shared, &request),
+        Request::Curl { id, placeholders } => replay::curl(&shared.current(), id, placeholders),
         Request::Watch { .. } => Err(CliError::new(
             ErrorCode::Usage,
             "records.watch is a streaming command",
@@ -248,15 +266,16 @@ fn list(
     filter: &FilterSpec,
     since: Option<RecordRef>,
     limit: Option<usize>,
+    full: bool,
 ) -> Result<Value, CliError> {
     let mut selection = Selection::compile(filter)?;
-    let session = shared.lock();
+    let session = shared.current();
     let matched: Vec<Value> = session
         .records()
         .iter()
         .filter(|record| since.is_none_or(|since| since.precedes(record.id())))
         .filter(|record| selection.matches(record))
-        .map(view::summary)
+        .map(|record| view::listed(record, full))
         .collect();
     let total = matched.len();
     let skip = limit.map_or(0, |limit| total.saturating_sub(limit));
@@ -275,7 +294,7 @@ fn wait(
 ) -> Result<Value, CliError> {
     let mut selection = Selection::compile(filter)?;
     let deadline = Instant::now() + timeout;
-    let mut session = shared.lock();
+    let mut session = shared.current();
     loop {
         let found = session
             .records()
@@ -307,6 +326,7 @@ fn watch(
     shared: &Shared,
     filter: &FilterSpec,
     since: Option<RecordRef>,
+    full: bool,
     writer: &mut UnixStream,
 ) -> std::io::Result<()> {
     let probe = writer.try_clone()?;
@@ -315,8 +335,8 @@ fn watch(
         Err(error) => return write_line(writer, &error_line(&error)),
     };
     let mut state = {
-        let session = shared.lock();
-        WatchState::new(selection, &session, since)
+        let session = shared.current();
+        WatchState::new(selection, &session, since, full)
     };
     write_line(
         writer,

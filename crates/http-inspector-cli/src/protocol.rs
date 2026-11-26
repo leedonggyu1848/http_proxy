@@ -90,7 +90,6 @@ pub(crate) enum BodyView {
     Raw,
     Tree,
     Hex,
-    Image,
 }
 
 /// A tree row to select instead of printing the whole body.
@@ -108,11 +107,30 @@ impl TreePath {
     }
 }
 
+/// `records replay`: changes to the captured request and how to send it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ReplayRequest {
+    pub(crate) id: RecordRef,
+    pub(crate) method: Option<String>,
+    pub(crate) url: Option<String>,
+    /// Headers that replace every captured header of the same name.
+    pub(crate) headers: Vec<(String, String)>,
+    pub(crate) remove_headers: Vec<String>,
+    /// Absolute path of a complete replacement body.
+    pub(crate) body_file: Option<PathBuf>,
+    /// Confirms a request that may change server state.
+    pub(crate) yes: bool,
+    /// Prints the request without sending it.
+    pub(crate) dry_run: bool,
+    /// How long to wait for the replayed exchange to finish.
+    pub(crate) timeout: Duration,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BodyRequest {
     pub(crate) id: RecordRef,
     pub(crate) side: BodySide,
-    /// `None` picks Image for image bodies and Pretty otherwise.
+    /// `None` picks Pretty.
     pub(crate) view: Option<BodyView>,
     pub(crate) max_bytes: Option<usize>,
     pub(crate) path: Option<TreePath>,
@@ -129,6 +147,7 @@ pub(crate) enum Request {
         filter: FilterSpec,
         since: Option<RecordRef>,
         limit: Option<usize>,
+        full: bool,
     },
     Show {
         id: RecordRef,
@@ -138,6 +157,7 @@ pub(crate) enum Request {
     Watch {
         filter: FilterSpec,
         since: Option<RecordRef>,
+        full: bool,
     },
     Wait {
         filter: FilterSpec,
@@ -146,6 +166,11 @@ pub(crate) enum Request {
     },
     Clear,
     SaveLog(PathBuf),
+    Replay(ReplayRequest),
+    Curl {
+        id: RecordRef,
+        placeholders: bool,
+    },
 }
 
 impl Request {
@@ -163,6 +188,8 @@ impl Request {
             Self::Wait { .. } => "records.wait",
             Self::Clear => "records.clear",
             Self::SaveLog(_) => "log.save",
+            Self::Replay(_) => "records.replay",
+            Self::Curl { .. } => "records.curl",
         }
     }
 
@@ -178,16 +205,23 @@ impl Request {
                 filter,
                 since,
                 limit,
+                full,
             } => json!({
                 "filter": filter_json(filter),
                 "since": since.map(RecordRef::value),
                 "limit": limit,
+                "full": full,
             }),
             Self::Show { id, part } => json!({ "id": id.value(), "part": part_name(*part) }),
             Self::Body(body) => body_json(body),
-            Self::Watch { filter, since } => json!({
+            Self::Watch {
+                filter,
+                since,
+                full,
+            } => json!({
                 "filter": filter_json(filter),
                 "since": since.map(RecordRef::value),
+                "full": full,
             }),
             Self::Wait {
                 filter,
@@ -199,6 +233,10 @@ impl Request {
                 "timeout_ms": u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
             }),
             Self::SaveLog(path) => json!({ "path": path.to_string_lossy() }),
+            Self::Replay(replay) => replay_json(replay),
+            Self::Curl { id, placeholders } => {
+                json!({ "id": id.value(), "placeholders": placeholders })
+            }
         };
         json!({ "schema": SCHEMA_VERSION, "command": self.command(), "args": args })
     }
@@ -232,6 +270,7 @@ impl Request {
                 filter: args.filter()?,
                 since: args.optional_id("since")?,
                 limit: args.optional_usize("limit")?,
+                full: args.flag("full")?,
             },
             "records.show" => Self::Show {
                 id: args.id("id")?,
@@ -241,6 +280,7 @@ impl Request {
             "records.watch" => Self::Watch {
                 filter: args.filter()?,
                 since: args.optional_id("since")?,
+                full: args.flag("full")?,
             },
             "records.wait" => Self::Wait {
                 filter: args.filter()?,
@@ -248,6 +288,11 @@ impl Request {
                 timeout: args.timeout()?,
             },
             "log.save" => Self::SaveLog(args.absolute_path("path")?),
+            "records.replay" => Self::Replay(args.replay()?),
+            "records.curl" => Self::Curl {
+                id: args.id("id")?,
+                placeholders: args.flag("placeholders")?,
+            },
             other => return Err(invalid(&format!("unknown command {other:?}"))),
         })
     }
@@ -264,6 +309,24 @@ fn filter_json(filter: &FilterSpec) -> Value {
         "case_sensitive": filter.options.case_sensitive,
         "regex": filter.options.regex,
         "kind": kind_name(filter.kind.0),
+    })
+}
+
+fn replay_json(replay: &ReplayRequest) -> Value {
+    json!({
+        "id": replay.id.value(),
+        "method": replay.method,
+        "url": replay.url,
+        "headers": replay
+            .headers
+            .iter()
+            .map(|(name, value)| json!([name, value]))
+            .collect::<Vec<_>>(),
+        "remove_headers": replay.remove_headers,
+        "body_file": replay.body_file.as_ref().map(|path| path.to_string_lossy()),
+        "yes": replay.yes,
+        "dry_run": replay.dry_run,
+        "timeout_ms": u64::try_from(replay.timeout.as_millis()).unwrap_or(u64::MAX),
     })
 }
 
@@ -352,6 +415,54 @@ impl Args<'_> {
         } else {
             Err(invalid(&format!("{key} must be an absolute path")))
         }
+    }
+
+    fn optional_absolute_path(&self, key: &str) -> Result<Option<PathBuf>, CliError> {
+        if self.get(key).is_none() {
+            return Ok(None);
+        }
+        self.absolute_path(key).map(Some)
+    }
+
+    fn strings(&self, key: &str) -> Result<Vec<String>, CliError> {
+        self.get(key).map_or(Ok(Vec::new()), |value| {
+            value
+                .as_array()
+                .and_then(|items| {
+                    items
+                        .iter()
+                        .map(|item| item.as_str().map(str::to_owned))
+                        .collect::<Option<Vec<_>>>()
+                })
+                .ok_or_else(|| invalid(&format!("{key} must be a list of strings")))
+        })
+    }
+
+    fn header_pairs(&self, key: &str) -> Result<Vec<(String, String)>, CliError> {
+        let pair = |item: &Value| match item.as_array()?.as_slice() {
+            [name, value] => Some((name.as_str()?.to_owned(), value.as_str()?.to_owned())),
+            _ => None,
+        };
+        self.get(key).map_or(Ok(Vec::new()), |value| {
+            value
+                .as_array()
+                .and_then(|items| items.iter().map(pair).collect::<Option<Vec<_>>>())
+                .ok_or_else(|| invalid(&format!("{key} must be a list of [name, value] pairs")))
+        })
+    }
+
+    fn replay(&self) -> Result<ReplayRequest, CliError> {
+        Ok(ReplayRequest {
+            id: self.id("id")?,
+            method: self.optional_str("method")?.map(str::to_owned),
+            url: self.optional_str("url")?.map(str::to_owned),
+            headers: self.header_pairs("headers")?,
+            remove_headers: self.strings("remove_headers")?,
+            body_file: self.optional_absolute_path("body_file")?,
+            yes: self.flag("yes")?,
+            dry_run: self.flag("dry_run")?,
+            timeout: self.timeout()?,
+        })
     }
 
     fn timeout(&self) -> Result<Duration, CliError> {
@@ -466,7 +577,6 @@ names!(
         (BodyView::Raw, "raw"),
         (BodyView::Tree, "tree"),
         (BodyView::Hex, "hex"),
-        (BodyView::Image, "image"),
     ]
 );
 
@@ -532,6 +642,7 @@ mod tests {
                 filter: filter.clone(),
                 since: Some(RecordRef::new(4)),
                 limit: Some(10),
+                full: true,
             },
             Request::Show {
                 id: RecordRef::new(7),
@@ -547,6 +658,7 @@ mod tests {
             Request::Watch {
                 filter: filter.clone(),
                 since: None,
+                full: false,
             },
             Request::Wait {
                 filter,
@@ -555,6 +667,21 @@ mod tests {
             },
             Request::Clear,
             Request::SaveLog(PathBuf::from("/tmp/session.log")),
+            Request::Replay(ReplayRequest {
+                id: RecordRef::new(3),
+                method: Some("PUT".to_owned()),
+                url: Some("http://example.test/a".to_owned()),
+                headers: vec![("X-Debug".to_owned(), "1".to_owned())],
+                remove_headers: vec!["Cookie".to_owned()],
+                body_file: Some(PathBuf::from("/tmp/body.json")),
+                yes: true,
+                dry_run: false,
+                timeout: Duration::from_secs(5),
+            }),
+            Request::Curl {
+                id: RecordRef::new(3),
+                placeholders: true,
+            },
             Request::Stop,
         ] {
             assert_eq!(Request::from_json(&request.to_json())?, request);

@@ -4,14 +4,9 @@
 use http_inspector_analysis::search::is_binary_media_type;
 use http_inspector_content::format::{BodyFormat, Notice, NoticeLevel, ViewMode, tree::TreeModel};
 use http_inspector_content::hex::{self, HEX_VIEW_BYTES};
-use http_inspector_content::image;
-use http_inspector_content::image_file::{
-    ImageFile, image_text, mismatch_text, received_text, unavailable_reason,
-};
 use http_inspector_content::view::{self, BodyCapture, BodyInput, BodyView as Prepared};
 use http_inspector_exchange::{
-    BodyPreview, BodyRetention, BodySide, BodySnapshot, Exchange, HeaderPreview, ImageFormat,
-    MediaType, Outcome,
+    BodyPreview, BodyRetention, BodySide, BodySnapshot, Exchange, HeaderPreview, MediaType, Outcome,
 };
 use serde_json::{Map, Value, json};
 
@@ -67,17 +62,10 @@ pub(crate) fn render(record: &Exchange, request: &BodyRequest) -> Result<Value, 
         .with_hint("save the full session log with `http-proxy log save`"));
     }
     let encodings: Vec<&str> = selected.headers.get("content-encoding").collect();
-    let image = selected.media_type.and_then(ImageFormat::from_media_type);
     let view = if request.path.is_some() {
         BodyView::Tree
     } else {
-        request.view.unwrap_or_else(|| {
-            if image.is_some() {
-                BodyView::Image
-            } else {
-                BodyView::Pretty
-            }
-        })
+        request.view.unwrap_or(BodyView::Pretty)
     };
     let mut document = json!({
         "id": record.id().value(),
@@ -91,9 +79,8 @@ pub(crate) fn render(record: &Exchange, request: &BodyRequest) -> Result<Value, 
     });
     let content = match view {
         BodyView::Hex => hex_view(&snapshot, request.max_bytes),
-        BodyView::Image => image_view(&snapshot, &encodings, image)?,
         BodyView::Pretty | BodyView::Raw | BodyView::Tree => {
-            if image.is_some() || selected.media_type.is_some_and(is_binary_media_type) {
+            if selected.media_type.is_some_and(is_binary_media_type) {
                 return Err(binary());
             }
             let input = BodyInput {
@@ -113,7 +100,7 @@ pub(crate) fn render(record: &Exchange, request: &BodyRequest) -> Result<Value, 
 
 fn binary() -> CliError {
     CliError::new(ErrorCode::BinaryBody, "The body is binary")
-        .with_hint("use `--view hex`, or `--view image` for images")
+        .with_hint("use `--view hex`, or save the session log with `http-proxy log save`")
 }
 
 /// Cuts `text` to at most `max` bytes at a character boundary.
@@ -152,54 +139,6 @@ fn hex_view(snapshot: &BodySnapshot, max_bytes: Option<usize>) -> Value {
         "shown_bytes": shown.len(),
         "truncated": shown.len() < bytes.len(),
     })
-}
-
-fn image_view(
-    snapshot: &BodySnapshot,
-    encodings: &[&str],
-    declared: Option<ImageFormat>,
-) -> Result<Value, CliError> {
-    let declared = declared.ok_or_else(|| {
-        CliError::new(ErrorCode::ViewUnavailable, "The body is not an image")
-            .with_hint("use `--view pretty`, `--view raw`, or `--view hex`")
-    })?;
-    if let Some(reason) = unavailable_reason(snapshot) {
-        return Ok(json!({
-            "format": declared.name(),
-            "image": Value::Null,
-            "notices": notices(&[Notice::warning(reason)]),
-        }));
-    }
-    let file = ImageFile::decode_body(snapshot.bytes(), encodings, declared)
-        .map_err(|error| CliError::new(ErrorCode::ViewUnavailable, error.to_string()))?;
-    let mut warnings: Vec<Notice> = mismatch_text(declared, file.format)
-        .map(Notice::warning)
-        .into_iter()
-        .collect();
-    let decoded = image::decode(file.format, &file.bytes);
-    let image = match &decoded {
-        Ok(picture) => json!({
-            "format": file.format.name(),
-            "width": picture.width,
-            "height": picture.height,
-            "file_bytes": file.bytes.len(),
-            "notes": picture.notes,
-            "summary": format!(
-                "{}{}",
-                image_text(file.format, picture, file.bytes.len()),
-                received_text(file.bytes.len(), snapshot.observed_bytes())
-            ),
-        }),
-        Err(error) => {
-            warnings.push(Notice::warning(error.to_string()));
-            Value::Null
-        }
-    };
-    Ok(json!({
-        "format": file.format.name(),
-        "image": image,
-        "notices": notices(&warnings),
-    }))
 }
 
 fn text_view(
@@ -438,12 +377,14 @@ mod tests {
     }
 
     #[test]
-    fn refuses_binary_text_and_describes_images() -> Result<(), Box<dyn Error>> {
+    fn refuses_binary_text_and_prints_hex() -> Result<(), Box<dyn Error>> {
         let gif = include_bytes!("../../../tests/fixtures/images/animated.gif");
         let record = response("image/gif", gif)?;
-        let document = render(&record, &request(record.id()))?;
-        assert_eq!(document["view"], "image");
-        assert_eq!(document["image"]["width"], 16);
+        let default = render(&record, &request(record.id()));
+        assert_eq!(
+            default.err().map(|error| error.code),
+            Some(ErrorCode::BinaryBody)
+        );
         let text = render(
             &record,
             &BodyRequest {

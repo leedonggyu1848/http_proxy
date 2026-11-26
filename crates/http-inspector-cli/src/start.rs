@@ -21,6 +21,8 @@ use crate::protocol::{Request, StartOptions, error_line, ok_line, read_reply};
 /// Longest wait for a new daemon to report readiness. HTTPS inspection may
 /// create the CA first.
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
+/// Wait before asking again when a stopping daemon dropped the request.
+const SHUTDOWN_RETRY: Duration = Duration::from_millis(300);
 
 pub(crate) fn start(
     control: &ControlPath,
@@ -28,7 +30,7 @@ pub(crate) fn start(
     output: Output,
 ) -> Result<(), CliError> {
     let options = StartOptions::from(&command.options);
-    match client::call(control, &Request::Start(options)) {
+    match ask_running_daemon(control, options) {
         Ok(status) => {
             output.document(Kind::Status, &status);
             return Ok(());
@@ -55,6 +57,27 @@ pub(crate) fn start(
     };
     output.document(Kind::Status, &status);
     Ok(())
+}
+
+/// Sends `proxy.start` to a running daemon. A daemon in the middle of
+/// `proxy stop` can accept the connection and then close it without a
+/// reply; one retry after it has gone reaches either a new daemon or none.
+fn ask_running_daemon(control: &ControlPath, options: StartOptions) -> Result<Value, CliError> {
+    match client::call(control, &Request::Start(options)) {
+        Err(error) if matches!(error.code, ErrorCode::DaemonUnavailable | ErrorCode::Io) => {
+            pause(SHUTDOWN_RETRY);
+            client::call(control, &Request::Start(options))
+        }
+        result => result,
+    }
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a short-lived command process waits for another process, not async work"
+)]
+fn pause(duration: Duration) {
+    std::thread::sleep(duration);
 }
 
 /// Starts `http-proxy __daemon` detached from this terminal and reads its
