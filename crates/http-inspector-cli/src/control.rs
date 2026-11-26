@@ -156,29 +156,25 @@ impl ControlPath {
         })?;
         fs::set_permissions(&self.socket, Permissions::from_mode(0o600))
             .map_err(|error| CliError::io("Could not restrict the control socket", &error))?;
-        let inode = fs::symlink_metadata(&self.socket)
-            .map_err(|error| CliError::io("Could not read the control socket", &error))?
-            .ino();
-        Ok(Bound { listener, inode })
+        Ok(Bound { listener })
     }
 
-    /// Removes the socket file at exit, unless it is no longer the one this
-    /// daemon bound.
-    pub(crate) fn remove_own_socket(&self, inode: u64) {
-        let Ok(_lock) = self.lock() else {
-            return;
-        };
-        let ours = fs::symlink_metadata(&self.socket).is_ok_and(|metadata| metadata.ino() == inode);
-        if ours {
-            let _already_gone = fs::remove_file(&self.socket).is_err();
-        }
+    /// Removes the socket file, then closes the listener. Both happen under
+    /// the startup lock while the listener still accepts, so any other
+    /// daemon that checks the path meanwhile sees this one alive and backs
+    /// off; once the lock is released the path is free for a new daemon,
+    /// and this daemon never touches it again.
+    pub(crate) fn close(&self, bound: Bound) {
+        let lock = self.lock();
+        let _already_gone = fs::remove_file(&self.socket).is_err();
+        drop(bound.listener);
+        drop(lock);
     }
 }
 
-/// A bound control socket and the inode that identifies its file.
+/// A bound control socket. Release it with [`ControlPath::close`].
 pub(crate) struct Bound {
     pub(crate) listener: UnixListener,
-    pub(crate) inode: u64,
 }
 
 fn current_uid() -> u32 {
@@ -242,22 +238,30 @@ mod tests {
     fn creates_a_private_directory_and_socket() -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let control = ControlPath::in_directory(root.path().join("control"));
-        let bound = control.bind()?;
+        let first = control.bind()?;
         let directory = fs::metadata(root.path().join("control"))?;
         assert_eq!(directory.mode() & 0o777, 0o700);
         assert_eq!(fs::metadata(control.socket())?.mode() & 0o777, 0o600);
         let _client = control.connect()?;
+        // A live daemon keeps its path.
         let second = control.bind().err().map(|error| error.code);
         assert_eq!(second, Some(ErrorCode::DaemonAlreadyRunning));
-        let inode = bound.inode;
-        drop(bound);
-        // A socket nobody listens on is stale and replaced.
-        let replaced = control.bind()?;
-        // The old daemon's exit leaves the new socket alone.
-        control.remove_own_socket(inode);
         assert!(control.socket().exists());
-        control.remove_own_socket(replaced.inode);
+
+        // Closing removes the path before the listener goes away, so a new
+        // daemon can bind and nothing of the old one removes its socket.
+        control.close(first);
         assert!(!control.socket().exists());
+        let replacement = control.bind()?;
+        let _client = control.connect()?;
+
+        // A daemon that died without closing leaves a stale socket, which
+        // the next bind replaces.
+        drop(replacement.listener);
+        assert!(control.socket().exists());
+        let after_crash = control.bind()?;
+        let _client = control.connect()?;
+        control.close(after_crash);
         Ok(())
     }
 

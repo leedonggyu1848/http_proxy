@@ -72,8 +72,7 @@ pub(crate) fn run(
     let bound = control.bind()?;
     let mut session = Session::new();
     if let Err(error) = session.start(options) {
-        drop(bound.listener);
-        control.remove_own_socket(bound.inode);
+        control.close(bound);
         return Err(error);
     }
     let shared = Arc::new(Shared {
@@ -104,14 +103,14 @@ pub(crate) fn run(
             .spawn(move || serve(&connection, stream))
             .is_err();
     }
-    // Refuse new clients before the socket file goes away.
-    drop(bound.listener);
+    // Give up the path while still listening, so no other daemon can take it
+    // in between; then refuse new clients.
+    shared.control.close(bound);
     say_goodbye(&shared);
     let _pump_panicked = pump.join().is_err();
     // `proxy stop` already stopped the proxy; this also covers a proxy that
     // is still running when the accept loop ends for another reason.
     let _stop_failed = shared.lock().stop_proxy().is_err();
-    shared.control.remove_own_socket(bound.inode);
     Ok(())
 }
 
