@@ -1,8 +1,11 @@
 //! Manual replay editor. Sensitive inputs live only as long as the editor.
+use crate::ui::i18n::{Language, Text, domain};
 use crate::ui::style::{theme::Palette, tokens::Layout};
 use eframe::egui;
 use http_inspector_core::interception::ProxyHandle;
-use http_inspector_core::replay::{ReplayDraft, ReplayError, ReplayField, ReplayTask};
+use http_inspector_core::replay::{
+    ReplayBodyFileError, ReplayDraft, ReplayError, ReplayField, ReplayTask,
+};
 use http_inspector_exchange::http_semantics::urlencoded::{self, RawPair};
 use http_inspector_exchange::{Exchange, RecordId};
 use std::fmt::Write as _;
@@ -20,10 +23,24 @@ pub(crate) enum ReplayAction {
     Close,
 }
 
+enum ReplayPanelError {
+    Replay(ReplayError),
+    BodyFile(ReplayBodyFileError),
+}
+
+impl ReplayPanelError {
+    fn localized(&self, lang: Language) -> String {
+        match self {
+            Self::Replay(err) => domain::replay_error(lang, err),
+            Self::BodyFile(err) => domain::replay_body_file_error(lang, err),
+        }
+    }
+}
+
 pub(crate) struct ReplayPanel {
     draft: ReplayDraft,
     task: Option<ReplayTask>,
-    error: Option<String>,
+    error: Option<ReplayPanelError>,
     confirmed: bool,
     skip_confirmation: bool,
     file: String,
@@ -64,13 +81,15 @@ impl ReplayPanel {
         context: &egui::Context,
         proxy_running: bool,
         latest: Option<&Exchange>,
+        lang: Language,
     ) -> Vec<ReplayAction> {
         let mut actions = Vec::new();
         let mut open = true;
         let viewport = context.content_rect();
         let max_width = Layout::REPLAY_WIDTH.fit(viewport.width());
         let max_height = Layout::REPLAY_HEIGHT.fit(viewport.height());
-        egui::Window::new("Edit and Resend")
+        egui::Window::new(lang.text(Text::CtxEditAndResend))
+            .id(egui::Id::unique("edit-and-resend"))
             .open(&mut open)
             .default_width(Layout::REPLAY_DIALOG.x.min(max_width))
             .default_height(Layout::REPLAY_DIALOG.y.min(max_height))
@@ -78,7 +97,7 @@ impl ReplayPanel {
             .max_height(max_height)
             .vscroll(true)
             .show(context, |ui| {
-                self.contents(ui, proxy_running, latest, &mut actions);
+                self.contents(ui, proxy_running, latest, lang, &mut actions);
             });
         if !open {
             actions.push(ReplayAction::Close);
@@ -91,10 +110,19 @@ impl ReplayPanel {
         ui: &mut egui::Ui,
         proxy_running: bool,
         latest: Option<&Exchange>,
+        lang: Language,
         actions: &mut Vec<ReplayAction>,
     ) {
-        ui.label(format!("Original #{}", self.draft.original.id().value()));
-        ui.label("Redacted values must be entered or disabled. Hop-by-hop headers are removed; Content-Length is calculated.");
+        let orig_id = self.draft.original.id().value();
+        let orig_label = match lang {
+            Language::English => format!("Original #{orig_id}"),
+            Language::Korean => format!("원본 #{orig_id}"),
+        };
+        ui.label(orig_label);
+        ui.label(lang.pick(
+            "Redacted values must be entered or disabled. Hop-by-hop headers are removed; Content-Length is calculated.",
+            "가려진 값은 직접 입력하거나 비활성화해야 합니다. Hop-by-hop 헤더는 제거되며 Content-Length는 자동으로 계산됩니다.",
+        ));
         ui.horizontal(|ui| {
             egui::ComboBox::from_id_salt("replay-method")
                 .selected_text(&self.draft.method)
@@ -106,21 +134,35 @@ impl ReplayPanel {
             let url_width = Layout::REPLAY_URL_WIDTH.fit(ui.available_width());
             ui.add(egui::TextEdit::singleline(&mut self.draft.url).desired_width(url_width));
         });
-        self.query_ui(ui);
-        ui.checkbox(&mut self.draft.automatic_host, "Update Host from URL");
-        ui.strong("Headers (Cookie: name=value; name2=value2)");
-        fields(ui, &mut self.draft.headers);
-        ui.collapsing("Cookies", |ui| {
+        self.query_ui(ui, lang);
+        ui.checkbox(
+            &mut self.draft.automatic_host,
+            lang.pick("Update Host from URL", "URL에 맞춰 Host 자동 갱신"),
+        );
+        ui.strong(lang.pick(
+            "Headers (Cookie: name=value; name2=value2)",
+            "헤더 (Cookie: name=value; name2=value2)",
+        ));
+        fields(ui, &mut self.draft.headers, lang);
+        ui.collapsing(lang.pick("Cookies", "쿠키"), |ui| {
             let is_cookie = |field: &ReplayField| field.name.eq_ignore_ascii_case("cookie");
             let count = self.draft.headers.iter().filter(|f| is_cookie(f)).count();
             self.cookies.resize_with(count, PairTable::default);
             let cookies = self.draft.headers.iter_mut().filter(|f| is_cookie(f));
             for (index, (field, table)) in cookies.zip(&mut self.cookies).enumerate() {
                 ui.push_id(("cookie", index), |ui| {
-                    table.show(ui, &mut field.value, PairSyntax::Cookie, "Add cookie");
+                    table.show(
+                        ui,
+                        &mut field.value,
+                        PairSyntax::Cookie,
+                        lang.pick("Add cookie", "쿠키 추가"),
+                    );
                 });
             }
-            if ui.button("Add Cookie header").clicked() {
+            if ui
+                .button(lang.pick("Add Cookie header", "Cookie 헤더 추가"))
+                .clicked()
+            {
                 self.draft.headers.push(ReplayField {
                     enabled: true,
                     name: "cookie".to_owned(),
@@ -128,21 +170,32 @@ impl ReplayPanel {
                 });
             }
         });
-        self.body_ui(ui, actions);
-        self.send_ui(ui, proxy_running, actions);
-        self.comparison_ui(ui, latest);
-    }
-    fn query_ui(&mut self, ui: &mut egui::Ui) {
-        ui.collapsing("Query parameters (URL-encoded)", |ui| {
-            edit_query(&mut self.draft.url, |query| {
-                self.query
-                    .show(ui, query, PairSyntax::UrlEncoded, "Add parameter")
-            });
-        });
+        self.body_ui(ui, lang, actions);
+        self.send_ui(ui, proxy_running, lang, actions);
+        self.comparison_ui(ui, latest, lang);
     }
 
-    fn body_ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<ReplayAction>) {
-        ui.strong("Body");
+    fn query_ui(&mut self, ui: &mut egui::Ui, lang: Language) {
+        ui.collapsing(
+            lang.pick(
+                "Query parameters (URL-encoded)",
+                "쿼리 파라미터 (URL 인코딩)",
+            ),
+            |ui| {
+                edit_query(&mut self.draft.url, |query| {
+                    self.query.show(
+                        ui,
+                        query,
+                        PairSyntax::UrlEncoded,
+                        lang.pick("Add parameter", "파라미터 추가"),
+                    )
+                });
+            },
+        );
+    }
+
+    fn body_ui(&mut self, ui: &mut egui::Ui, lang: Language, actions: &mut Vec<ReplayAction>) {
+        ui.strong(lang.pick("Body", "본문"));
         let content_type = self
             .draft
             .headers
@@ -152,7 +205,7 @@ impl ReplayPanel {
         if content_type.starts_with("application/json") {
             match self.body.json_error(&self.draft.body) {
                 None => {
-                    ui.label("Valid JSON");
+                    ui.label(lang.pick("Valid JSON", "유효한 JSON"));
                 }
                 Some(error) => {
                     ui.colored_label(crate::ui::style::theme::Palette::of(ui).warning, error);
@@ -162,11 +215,17 @@ impl ReplayPanel {
         let mut edited = false;
         if let Some(text) = &mut self.body.text {
             if content_type.starts_with("application/x-www-form-urlencoded") {
-                ui.collapsing("Form fields (URL-encoded)", |ui| {
-                    edited |= self
-                        .form
-                        .show(ui, text, PairSyntax::UrlEncoded, "Add field");
-                });
+                ui.collapsing(
+                    lang.pick("Form fields (URL-encoded)", "폼 필드 (URL 인코딩)"),
+                    |ui| {
+                        edited |= self.form.show(
+                            ui,
+                            text,
+                            PairSyntax::UrlEncoded,
+                            lang.pick("Add field", "필드 추가"),
+                        );
+                    },
+                );
             }
             edited |= ui
                 .add(
@@ -176,16 +235,7 @@ impl ReplayPanel {
                 )
                 .changed();
         } else {
-            let size = self.draft.body.len();
-            let origin = self
-                .body_source
-                .as_ref()
-                .map_or_default(|file| format!(" loaded from {file}"));
-            ui.label(if size > EDITABLE_BODY_BYTES {
-                format!("{size} bytes{origin}. Too large to edit here; it is sent as loaded.")
-            } else {
-                format!("Binary body: {size} bytes{origin}. Load a replacement file to edit.")
-            });
+            ui.label(self.non_editable_body_note(lang));
         }
         if edited && let Some(text) = &self.body.text {
             self.draft.body = text.clone().into();
@@ -195,24 +245,76 @@ impl ReplayPanel {
         ui.horizontal_wrapped(|ui| {
             let file_width = Layout::REPLAY_FILE_WIDTH.fit(ui.available_width());
             ui.add(egui::TextEdit::singleline(&mut self.file).desired_width(file_width));
-            if ui.button("Load complete body file").clicked() {
+            if ui
+                .button(lang.pick("Load complete body file", "전체 본문 파일 불러오기"))
+                .clicked()
+            {
                 actions.push(ReplayAction::LoadBody);
             }
         });
         if self.draft.body_missing {
-            ui.colored_label(crate::ui::style::theme::Palette::of(ui).warning, "Capture is incomplete. Load the full body; omitted headers require another complete capture.");
+            ui.colored_label(
+                crate::ui::style::theme::Palette::of(ui).warning,
+                lang.pick(
+                    "Capture is incomplete. Load the full body; omitted headers require another complete capture.",
+                    "캡처가 불완전합니다. 전체 본문 파일을 불러오세요. 누락된 헤더는 완전한 캡처가 필요합니다.",
+                ),
+            );
         }
     }
-    fn send_ui(&mut self, ui: &mut egui::Ui, proxy_running: bool, actions: &mut Vec<ReplayAction>) {
+
+    fn non_editable_body_note(&self, lang: Language) -> String {
+        let size = self.draft.body.len();
+        match (lang, self.body_source.as_deref()) {
+            (Language::English, Some(file)) if size > EDITABLE_BODY_BYTES => format!(
+                "{size} bytes loaded from {file}. Too large to edit here; it is sent as loaded."
+            ),
+            (Language::English, None) if size > EDITABLE_BODY_BYTES => {
+                format!("{size} bytes. Too large to edit here; it is sent as loaded.")
+            }
+            (Language::Korean, Some(file)) if size > EDITABLE_BODY_BYTES => format!(
+                "{file}에서 불러온 {size}바이트입니다. 여기서 편집하기엔 크기가 커서 불러온 그대로 전송됩니다."
+            ),
+            (Language::Korean, None) if size > EDITABLE_BODY_BYTES => format!(
+                "{size}바이트입니다. 여기서 편집하기엔 크기가 커서 불러온 그대로 전송됩니다."
+            ),
+            (Language::English, Some(file)) => format!(
+                "Binary body: {size} bytes loaded from {file}. Load a replacement file to edit."
+            ),
+            (Language::English, None) => {
+                format!("Binary body: {size} bytes. Load a replacement file to edit.")
+            }
+            (Language::Korean, Some(file)) => format!(
+                "바이너리 본문: {file}에서 불러온 {size}바이트. 변경하려면 대체 파일을 불러오세요."
+            ),
+            (Language::Korean, None) => {
+                format!("바이너리 본문: {size}바이트. 변경하려면 대체 파일을 불러오세요.")
+            }
+        }
+    }
+
+    fn send_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        proxy_running: bool,
+        lang: Language,
+        actions: &mut Vec<ReplayAction>,
+    ) {
         if self.draft.needs_confirmation() && !self.skip_confirmation {
             ui.checkbox(
                 &mut self.confirmed,
-                "I confirm this request may change server state",
+                lang.pick(
+                    "I confirm this request may change server state",
+                    "이 요청이 서버 상태를 변경할 수 있음을 확인했습니다",
+                ),
             );
             if self.confirmed {
                 ui.checkbox(
                     &mut self.skip_confirmation,
-                    "Do not ask again while this editor is open",
+                    lang.pick(
+                        "Do not ask again while this editor is open",
+                        "이 편집기가 열려 있는 동안 다시 묻지 않기",
+                    ),
                 );
             }
         }
@@ -223,24 +325,34 @@ impl ReplayPanel {
             if ui
                 .add_enabled(
                     !running && approved && proxy_running,
-                    egui::Button::new("Send"),
+                    egui::Button::new(lang.pick("Send", "전송")),
                 )
                 .clicked()
             {
                 actions.push(ReplayAction::Send);
             }
-            if running && ui.button("Cancel").clicked() {
+            if running && ui.button(lang.text(Text::Cancel)).clicked() {
                 actions.push(ReplayAction::Cancel);
             }
-            if ui.button("Reset to original").clicked() {
+            if ui
+                .button(lang.pick("Reset to original", "원본으로 되돌리기"))
+                .clicked()
+            {
                 actions.push(ReplayAction::Reset);
             }
-            ui.checkbox(&mut self.compare, "Compare with original");
+            ui.checkbox(
+                &mut self.compare,
+                lang.pick("Compare with original", "원본과 비교"),
+            );
         });
         if let Some(error) = &self.error {
-            ui.colored_label(crate::ui::style::theme::Palette::of(ui).error, error);
+            ui.colored_label(
+                crate::ui::style::theme::Palette::of(ui).error,
+                error.localized(lang),
+            );
         }
     }
+
     pub(crate) fn apply(&mut self, action: ReplayAction, proxy: Option<&ProxyHandle>) {
         match action {
             ReplayAction::LoadBody => match self.draft.load_body_file(Path::new(&self.file)) {
@@ -249,7 +361,7 @@ impl ReplayPanel {
                     self.body_source = Some(self.file.clone());
                     self.error = None;
                 }
-                Err(error) => self.error = Some(error.to_string()),
+                Err(error) => self.error = Some(ReplayPanelError::BodyFile(error)),
             },
             ReplayAction::Send => {
                 if let Some(proxy) = proxy {
@@ -259,7 +371,7 @@ impl ReplayPanel {
                             self.error = None;
                             self.confirmed = false;
                         }
-                        Err(error) => self.error = Some(error.to_string()),
+                        Err(error) => self.error = Some(ReplayPanelError::Replay(error)),
                     }
                 }
             }
@@ -274,13 +386,13 @@ impl ReplayPanel {
                     self.body_source = None;
                     self.draft = draft;
                 }
-                Err(error) => self.error = Some(error.to_string()),
+                Err(error) => self.error = Some(ReplayPanelError::Replay(error)),
             },
             ReplayAction::Close => {}
         }
     }
 
-    fn comparison_ui(&self, ui: &mut egui::Ui, latest: Option<&Exchange>) {
+    fn comparison_ui(&self, ui: &mut egui::Ui, latest: Option<&Exchange>, lang: Language) {
         if self.compare {
             let original = &self.draft.original;
             if let Some(result) = latest {
@@ -291,12 +403,15 @@ impl ReplayPanel {
                             record.id().value(),
                             record.elapsed().as_secs_f64() * 1000.0
                         ));
-                        let original_text = summary(if record.id() == original.id() {
-                            result
-                        } else {
-                            original
-                        });
-                        let text = summary(record);
+                        let original_text = summary(
+                            if record.id() == original.id() {
+                                result
+                            } else {
+                                original
+                            },
+                            lang,
+                        );
+                        let text = summary(record, lang);
                         for (index, line) in text.lines().enumerate() {
                             let changed = original_text.lines().nth(index) != Some(line);
                             column.colored_label(
@@ -311,7 +426,10 @@ impl ReplayPanel {
                     }
                 });
             } else {
-                ui.label("Send a request to compare its captured result.");
+                ui.label(lang.pick(
+                    "Send a request to compare its captured result.",
+                    "요청을 전송하면 캡처된 결과를 원본과 비교합니다.",
+                ));
             }
         }
     }
@@ -337,7 +455,7 @@ fn pair_input_widths(ui: &egui::Ui) -> (f32, f32) {
     (name_width, value_width)
 }
 
-fn fields(ui: &mut egui::Ui, fields: &mut Vec<ReplayField>) {
+fn fields(ui: &mut egui::Ui, fields: &mut Vec<ReplayField>, lang: Language) {
     let (name_width, value_width) = pair_input_widths(ui);
     let mut remove = None;
     for (index, field) in fields.iter_mut().enumerate() {
@@ -362,7 +480,7 @@ fn fields(ui: &mut egui::Ui, fields: &mut Vec<ReplayField>) {
     if let Some(index) = remove {
         fields.remove(index);
     }
-    if ui.button("Add header").clicked() {
+    if ui.button(lang.pick("Add header", "헤더 추가")).clicked() {
         fields.push(ReplayField {
             enabled: true,
             name: String::new(),
@@ -371,7 +489,7 @@ fn fields(ui: &mut egui::Ui, fields: &mut Vec<ReplayField>) {
     }
 }
 
-fn summary(record: &Exchange) -> String {
+fn summary(record: &Exchange, lang: Language) -> String {
     let mut text = format!(
         "{} {}\n",
         record.request().method(),
@@ -381,29 +499,38 @@ fn summary(record: &Exchange) -> String {
         let _ = writeln!(text, "{}: {}", field.name(), field.value());
     }
     if let Some(body) = record.request().body() {
-        append_body_preview(&mut text, body);
+        append_body_preview(&mut text, body, lang);
         text.push('\n');
     }
     if let http_inspector_exchange::Outcome::Response(response) = record.outcome() {
-        let _ = writeln!(text, "Status {}", response.status());
+        let status_label = lang.pick("Status", "상태");
+        let _ = writeln!(text, "{status_label} {}", response.status());
         for field in response.headers().entries() {
             let _ = writeln!(text, "{}: {}", field.name(), field.value());
         }
-        append_body_preview(&mut text, response.body());
+        append_body_preview(&mut text, response.body(), lang);
     } else {
-        let _ = write!(text, "{:?}", record.outcome());
+        let _ = write!(
+            text,
+            "{}",
+            crate::ui::requests::outcome_view::outcome_text(record.outcome(), lang).0
+        );
     }
     text
 }
 
-fn append_body_preview(text: &mut String, preview: &http_inspector_exchange::BodyPreview) {
+fn append_body_preview(
+    text: &mut String,
+    preview: &http_inspector_exchange::BodyPreview,
+    lang: Language,
+) {
     if let Some(body) = preview.snapshot() {
         text.push_str(&String::from_utf8_lossy(body.bytes()));
         if !body.is_complete() {
-            text.push_str("\n[Partial body preview]");
+            text.push_str(lang.pick("\n[Partial body preview]", "\n[부분 본문 미리보기]"));
         }
     } else {
-        text.push_str("[Preview is updating]");
+        text.push_str(lang.pick("[Preview is updating]", "[미리보기 업데이트 중]"));
     }
 }
 

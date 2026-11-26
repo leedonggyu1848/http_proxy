@@ -7,6 +7,7 @@ mod tree_pane;
 
 pub(crate) use detail_pane::RecordMatchCache;
 
+use crate::ui::i18n::{Language, domain};
 use crate::ui::style::tokens::Layout;
 use std::collections::{HashMap, HashSet};
 
@@ -216,22 +217,26 @@ impl MapPanel {
         ui: &mut egui::Ui,
         map: &UrlMap,
         save_busy: bool,
+        lang: Language,
     ) -> Option<MapAction> {
         let mut action = None;
         ui.horizontal_wrapped(|ui| {
-            self.sub_view_toggle(ui);
+            self.sub_view_toggle(ui, lang);
             ui.separator();
             match self.sub_view {
-                MapSubView::Tree => self.tree_controls(ui),
-                MapSubView::Graph => self.graph_controls(ui),
+                MapSubView::Tree => self.tree_controls(ui, lang),
+                MapSubView::Graph => self.graph_controls(ui, lang),
             }
             ui.separator();
-            if let Some(export_action) = Self::export_menu(ui, map, save_busy) {
+            if let Some(export_action) = Self::export_menu(ui, map, save_busy, lang) {
                 action = Some(export_action);
             }
             if ui
-                .button("Clear")
-                .on_hover_text("Clear captured requests and reset the URL map.")
+                .button(lang.pick("Clear", "지우기"))
+                .on_hover_text(lang.pick(
+                    "Clear captured requests and reset the URL map.",
+                    "캡처된 요청을 지우고 URL 맵을 초기화합니다.",
+                ))
                 .clicked()
             {
                 action = Some(MapAction::ClearAll);
@@ -246,9 +251,10 @@ impl MapPanel {
         ui: &mut egui::Ui,
         map: &UrlMap,
         shortcuts_allowed: bool,
+        lang: Language,
     ) {
         self.ensure_projection(map);
-        tree_pane::show(self, ui, map, shortcuts_allowed);
+        tree_pane::show(self, ui, map, shortcuts_allowed, lang);
     }
 
     /// Renders the right detail pane for the selected tree node.
@@ -258,6 +264,7 @@ impl MapPanel {
         map: &UrlMap,
         records: &RecordList<Exchange>,
         schemas: &EndpointSchemas,
+        lang: Language,
     ) -> Option<MapAction> {
         self.ensure_projection(map);
         let selected_node = self
@@ -274,17 +281,19 @@ impl MapPanel {
             records,
             &mut self.detail_match_cache,
             &endpoints,
+            lang,
         )
     }
 
     /// Renders the interactive domain relationship graph.
-    pub(super) fn show_graph_pane(&mut self, ui: &mut egui::Ui, map: &UrlMap) {
+    pub(super) fn show_graph_pane(&mut self, ui: &mut egui::Ui, map: &UrlMap, lang: Language) {
         if let Some(host) = graph_pane::show(
             ui,
             map.graph(),
             &mut self.layout,
             self.edge_visibility,
             &mut self.dragged_node,
+            lang,
         ) {
             self.jump_to_host(map, &host);
         }
@@ -349,114 +358,200 @@ impl MapPanel {
         self.rows_dirty = true;
     }
 
-    fn sub_view_toggle(&mut self, ui: &mut egui::Ui) {
-        ui.selectable_value(&mut self.sub_view, MapSubView::Tree, "Tree");
-        ui.selectable_value(&mut self.sub_view, MapSubView::Graph, "Relationships");
+    fn sub_view_toggle(&mut self, ui: &mut egui::Ui, lang: Language) {
+        ui.selectable_value(
+            &mut self.sub_view,
+            MapSubView::Tree,
+            lang.pick("Tree", "트리"),
+        );
+        ui.selectable_value(
+            &mut self.sub_view,
+            MapSubView::Graph,
+            lang.pick("Relationships", "관계 그래프"),
+        );
     }
 
-    fn tree_controls(&mut self, ui: &mut egui::Ui) {
+    fn tree_controls(&mut self, ui: &mut egui::Ui, lang: Language) {
         let width = Layout::MAP_SEARCH_WIDTH.fit(ui.available_width());
         ui.add(
             egui::TextEdit::singleline(&mut self.filter.host_query)
                 .desired_width(width)
-                .hint_text("Filter host…"),
+                .hint_text(lang.pick("Filter host…", "호스트 필터…")),
         );
         egui::ComboBox::from_id_salt("map-status-filter")
-            .selected_text(self.filter.status.label())
+            .selected_text(domain::status_filter(lang, self.filter.status))
             .show_ui(ui, |ui| {
                 for option in StatusFilter::ALL {
-                    ui.selectable_value(&mut self.filter.status, option, option.label());
+                    ui.selectable_value(
+                        &mut self.filter.status,
+                        option,
+                        domain::status_filter(lang, option),
+                    );
                 }
             });
         egui::ComboBox::from_id_salt("map-type-filter")
-            .selected_text(self.filter.content_type.label())
+            .selected_text(domain::content_type_filter(lang, self.filter.content_type))
             .show_ui(ui, |ui| {
                 for option in ContentTypeFilter::ALL {
-                    ui.selectable_value(&mut self.filter.content_type, option, option.label());
+                    ui.selectable_value(
+                        &mut self.filter.content_type,
+                        option,
+                        domain::content_type_filter(lang, option),
+                    );
                 }
             });
         egui::ComboBox::from_id_salt("map-party-filter")
-            .selected_text(self.filter.party.label())
+            .selected_text(domain::party_filter(lang, self.filter.party))
             .show_ui(ui, |ui| {
                 for option in PartyFilter::ALL {
-                    ui.selectable_value(&mut self.filter.party, option, option.label());
+                    ui.selectable_value(
+                        &mut self.filter.party,
+                        option,
+                        domain::party_filter(lang, option),
+                    );
                 }
             });
-        ui.checkbox(&mut self.filter.fold_ids, "Fold IDs")
-            .on_hover_text("Group sibling ID segments (integers, UUIDs, hex tokens) into /{id}.");
+        ui.checkbox(&mut self.filter.fold_ids, lang.pick("Fold IDs", "ID 묶기"))
+            .on_hover_text(lang.pick(
+                "Group sibling ID segments (integers, UUIDs, hex tokens) into /{id}.",
+                "같은 위치의 ID 경로 세그먼트(정수, UUID, 16진수 토큰)를 /{id}로 묶습니다.",
+            ));
+        self.tree_sort_controls(ui, lang);
+    }
+
+    fn tree_sort_controls(&mut self, ui: &mut egui::Ui, lang: Language) {
+        let sort_label = match lang {
+            Language::English => format!("Sort: {}", domain::tree_sort_field(lang, self.sort)),
+            Language::Korean => format!("정렬: {}", domain::tree_sort_field(lang, self.sort)),
+        };
         egui::ComboBox::from_id_salt("map-sort-field")
-            .selected_text(format!("Sort: {}", self.sort.label()))
+            .selected_text(sort_label)
             .show_ui(ui, |ui| {
                 for option in TreeSortField::ALL {
-                    ui.selectable_value(&mut self.sort, option, option.label());
+                    ui.selectable_value(
+                        &mut self.sort,
+                        option,
+                        domain::tree_sort_field(lang, option),
+                    );
                 }
             });
         if ui
             .button(self.direction.arrow())
-            .on_hover_text("Toggle ascending / descending sort order.")
+            .on_hover_text(lang.pick(
+                "Toggle ascending / descending sort order.",
+                "오름차순 / 내림차순 정렬 방향을 전환합니다.",
+            ))
             .clicked()
         {
             self.direction = self.direction.toggled();
         }
-        if ui.small_button("Expand all").clicked() {
+        if ui
+            .small_button(lang.pick("Expand all", "모두 펼치기"))
+            .clicked()
+        {
             self.set_all_expanded(true);
         }
-        if ui.small_button("Collapse all").clicked() {
+        if ui
+            .small_button(lang.pick("Collapse all", "모두 접기"))
+            .clicked()
+        {
             self.set_all_expanded(false);
         }
     }
 
-    fn graph_controls(&mut self, ui: &mut egui::Ui) {
+    fn graph_controls(&mut self, ui: &mut egui::Ui, lang: Language) {
         ui.checkbox(&mut self.edge_visibility.referer, "Referer");
         ui.checkbox(&mut self.edge_visibility.origin, "Origin (CORS)");
-        ui.checkbox(&mut self.edge_visibility.redirect, "Redirect (3xx)");
+        ui.checkbox(
+            &mut self.edge_visibility.redirect,
+            lang.pick("Redirect (3xx)", "리다이렉트 (3xx)"),
+        );
         let mut limit = self.layout.max_domains();
+        let top_label = |count: usize| match lang {
+            Language::English => format!("Top {count} domains"),
+            Language::Korean => format!("상위 {count}개 도메인"),
+        };
         egui::ComboBox::from_id_salt("map-graph-limit")
-            .selected_text(format!("Top {limit} domains"))
+            .selected_text(top_label(limit))
             .show_ui(ui, |ui| {
                 for count in [15_usize, 40, 80, 150] {
-                    ui.selectable_value(&mut limit, count, format!("Top {count} domains"));
+                    ui.selectable_value(&mut limit, count, top_label(count));
                 }
             });
         self.layout.set_max_domains(limit);
         if ui
-            .button("Relayout")
-            .on_hover_text("Recompute the force-directed domain layout.")
+            .button(lang.pick("Relayout", "다시 배치"))
+            .on_hover_text(lang.pick(
+                "Recompute the force-directed domain layout.",
+                "도메인 관계 그래프의 배치를 다시 계산합니다.",
+            ))
             .clicked()
         {
             self.layout = ForceLayout::new(self.layout.max_domains());
         }
     }
 
-    fn export_menu(ui: &mut egui::Ui, map: &UrlMap, save_busy: bool) -> Option<MapAction> {
+    fn export_menu(
+        ui: &mut egui::Ui,
+        map: &UrlMap,
+        save_busy: bool,
+        lang: Language,
+    ) -> Option<MapAction> {
         let mut action = None;
         let has_data = map.node_count() > 0;
         ui.add_enabled_ui(!save_busy && has_data, |ui| {
-            ui.menu_button("Export ▼", |ui| {
-                ui.weak("Files save into Save directory without overwriting.");
-                if ui.button("Save tree as Text (.txt)").clicked() {
+            ui.menu_button(lang.pick("Export ▼", "내보내기 ▼"), |ui| {
+                ui.weak(lang.pick(
+                    "Files save into Save directory without overwriting.",
+                    "파일은 기존 파일을 덮어쓰지 않고 저장 폴더에 저장됩니다.",
+                ));
+                if ui
+                    .button(lang.pick("Save tree as Text (.txt)", "트리를 텍스트로 저장 (.txt)"))
+                    .clicked()
+                {
                     action = Some(MapAction::Export(MapExportFormat::TreeText));
                     ui.close();
                 }
-                if ui.button("Save map as JSON (.json)").clicked() {
+                if ui
+                    .button(lang.pick("Save map as JSON (.json)", "맵을 JSON으로 저장 (.json)"))
+                    .clicked()
+                {
                     action = Some(MapAction::Export(MapExportFormat::TreeJson));
                     ui.close();
                 }
                 ui.separator();
-                if ui.button("Save graph as Mermaid (.mmd)").clicked() {
+                if ui
+                    .button(lang.pick(
+                        "Save graph as Mermaid (.mmd)",
+                        "그래프를 Mermaid로 저장 (.mmd)",
+                    ))
+                    .clicked()
+                {
                     action = Some(MapAction::Export(MapExportFormat::GraphMermaid));
                     ui.close();
                 }
-                if ui.button("Save graph as Graphviz DOT (.dot)").clicked() {
+                if ui
+                    .button(lang.pick(
+                        "Save graph as Graphviz DOT (.dot)",
+                        "그래프를 Graphviz DOT로 저장 (.dot)",
+                    ))
+                    .clicked()
+                {
                     action = Some(MapAction::Export(MapExportFormat::GraphDot));
                     ui.close();
                 }
                 ui.separator();
-                if ui.button("Copy Mermaid to clipboard").clicked() {
+                if ui
+                    .button(lang.pick("Copy Mermaid to clipboard", "Mermaid를 클립보드에 복사"))
+                    .clicked()
+                {
                     action = Some(MapAction::Copy(MapExportFormat::GraphMermaid));
                     ui.close();
                 }
-                if ui.button("Copy DOT to clipboard").clicked() {
+                if ui
+                    .button(lang.pick("Copy DOT to clipboard", "DOT를 클립보드에 복사"))
+                    .clicked()
+                {
                     action = Some(MapAction::Copy(MapExportFormat::GraphDot));
                     ui.close();
                 }

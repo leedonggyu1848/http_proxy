@@ -9,6 +9,7 @@ use crate::ui::detail::search::Query;
 use crate::ui::detail::search::highlight;
 use crate::ui::dialogs::scope_help;
 use crate::ui::dialogs::{body_saving::BodySaving, copy_curl::CurlCopy};
+use crate::ui::i18n::{Language, domain};
 use crate::ui::requests::outcome_view;
 use crate::ui::style::theme::MatchColors;
 use crate::ui::style::theme::Palette;
@@ -36,6 +37,7 @@ pub(crate) struct DetailView<'a> {
     pub(crate) body_mode: ViewMode,
     pub(crate) curl: &'a CurlCopy,
     pub(crate) body_saving: &'a BodySaving,
+    pub(crate) lang: Language,
 }
 
 impl DetailView<'_> {
@@ -46,9 +48,18 @@ impl DetailView<'_> {
         shortcuts_allowed: bool,
         actions: &mut Vec<AppAction>,
     ) {
+        let lang = self.lang;
         let Some(record) = self.record else {
             ui.centered_and_justified(|ui| {
-                ui.add(egui::Label::new(egui::RichText::new("No request selected").weak()).wrap());
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(
+                            lang.pick("No request selected", "선택된 요청이 없습니다"),
+                        )
+                        .weak(),
+                    )
+                    .wrap(),
+                );
             });
             return;
         };
@@ -59,8 +70,8 @@ impl DetailView<'_> {
         let request = record.request();
         let search = self.search;
         render_title(ui, record, search);
-        detail_actions(ui, record, self.curl, actions);
-        detail_tabs::show(ui, &mut tab);
+        detail_actions(ui, record, self.curl, lang, actions);
+        detail_tabs::show(ui, &mut tab, lang);
         if tab != self.tab {
             actions.push(AppAction::DetailTab(tab));
         }
@@ -70,7 +81,7 @@ impl DetailView<'_> {
             .id_salt(("details-scroll", tab))
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                render_timing(ui, record);
+                render_timing(ui, record, lang);
                 ui.separator();
                 let mut body = BodyPanel {
                     record: record.id(),
@@ -78,16 +89,18 @@ impl DetailView<'_> {
                     cache: &mut widgets.body,
                     copied: None,
                     search,
+                    lang,
                 };
                 match tab {
                     DetailTab::Headers => {
-                        render_query(ui, request.target());
-                        ui.strong("Request headers");
+                        render_query(ui, request.target(), lang);
+                        ui.strong(lang.pick("Request headers", "요청 헤더"));
                         render_headers(
                             ui,
                             "request-headers",
                             request.headers(),
                             body.headers_search(),
+                            lang,
                         );
                         ui.separator();
                         render_outcome(ui, record, &mut body, None);
@@ -98,7 +111,7 @@ impl DetailView<'_> {
                         &mut body,
                         &mut body_mode,
                         &mut widgets.image,
-                        |ui| actions.extend(self.body_saving.menus(ui, record)),
+                        |ui| actions.extend(self.body_saving.menus(ui, record, lang)),
                     ),
                 }
                 body.copied
@@ -115,23 +128,24 @@ fn detail_actions(
     ui: &mut egui::Ui,
     record: &Exchange,
     curl: &CurlCopy,
+    lang: Language,
     actions: &mut Vec<AppAction>,
 ) {
     ui.horizontal_wrapped(|ui| {
-        let (status, tone) = outcome_view::outcome_text(record.outcome());
+        let (status, tone) = outcome_view::outcome_text(record.outcome(), lang);
         ui.colored_label(Palette::of(ui).status(tone), status);
         if ui
             .add_enabled(
                 record.source() != http_inspector_exchange::CaptureSource::Connect,
-                egui::Button::new("Edit and Resend"),
+                egui::Button::new(lang.pick("Edit and Resend", "편집 후 재전송")),
             )
             .clicked()
         {
             actions.push(AppAction::OpenReplay(record.id()));
         }
-        curl.controls(ui, record, actions);
+        curl.controls(ui, record, lang, actions);
         if let Some(original) = record.replay_of()
-            && ui.link(replay_link(original)).clicked()
+            && ui.link(replay_link(original, lang)).clicked()
         {
             actions.push(AppAction::SelectRecord(original));
         }
@@ -146,6 +160,7 @@ struct BodyPanel<'a> {
     copied: Option<String>,
     /// The active search, whose matches are marked.
     search: Option<&'a Query>,
+    lang: Language,
 }
 
 impl BodyPanel<'_> {
@@ -180,18 +195,26 @@ fn has_tree(media_type: Option<&MediaType>) -> bool {
 }
 
 /// Shows Tree only as an enabled option when either body may be JSON or XML.
-fn view_mode_bar(ui: &mut egui::Ui, mode: &mut ViewMode, has_tree: bool) -> ViewMode {
+fn view_mode_bar(
+    ui: &mut egui::Ui,
+    mode: &mut ViewMode,
+    has_tree: bool,
+    lang: Language,
+) -> ViewMode {
     if !has_tree && *mode == ViewMode::Tree {
         *mode = ViewMode::Pretty;
     }
     ui.horizontal_wrapped(|ui| {
-        ui.label("View:");
+        ui.label(lang.pick("View:", "보기:"));
         for option in ViewMode::ALL {
             ui.add_enabled_ui(option != ViewMode::Tree || has_tree, |ui| {
-                ui.selectable_value(mode, option, option.label())
+                ui.selectable_value(mode, option, domain::view_mode(lang, option))
             })
             .inner
-            .on_disabled_hover_text("Tree requires a JSON or XML request or response body");
+            .on_disabled_hover_text(lang.pick(
+                "Tree requires a JSON or XML request or response body",
+                "트리 보기는 JSON 또는 XML 요청·응답 본문에서만 사용할 수 있습니다",
+            ));
         }
     });
     *mode
@@ -244,7 +267,7 @@ fn wrapped_highlight(
 }
 
 /// Lists decoded query parameters of the request target, if it has any.
-fn render_query(ui: &mut egui::Ui, target: &str) {
+fn render_query(ui: &mut egui::Ui, target: &str, lang: Language) {
     let Some(query) = urlencoded::split_target(target).query else {
         return;
     };
@@ -252,7 +275,7 @@ fn render_query(ui: &mut egui::Ui, target: &str) {
     if pairs.is_empty() {
         return;
     }
-    ui.strong("Query parameters");
+    ui.strong(lang.pick("Query parameters", "쿼리 매개변수"));
     let key_color = Palette::of(ui).secondary;
     let bounds = GridBounds::from_ui(ui);
     egui::Grid::new("query-parameters")
@@ -281,7 +304,13 @@ fn render_query(ui: &mut egui::Ui, target: &str) {
 
 /// Header names in secondary text so that the values, which matter more,
 /// stand out; the `:` after each name keeps them apart without color.
-fn render_headers(ui: &mut egui::Ui, id: &str, headers: &HeaderPreview, search: Option<&Query>) {
+fn render_headers(
+    ui: &mut egui::Ui,
+    id: &str,
+    headers: &HeaderPreview,
+    search: Option<&Query>,
+    lang: Language,
+) {
     let name_color = Palette::of(ui).secondary;
     let font = egui::TextStyle::Monospace.resolve(ui.style());
     let text_color = Palette::of(ui).text;
@@ -330,10 +359,16 @@ fn render_headers(ui: &mut egui::Ui, id: &str, headers: &HeaderPreview, search: 
             }
         });
     if headers.entries().is_empty() {
-        ui.weak("No headers captured.");
+        ui.weak(lang.pick("No headers captured.", "캡처된 헤더가 없습니다."));
     }
     if headers.omitted() {
-        ui.colored_label(Palette::of(ui).warning, "Additional headers were omitted.");
+        ui.colored_label(
+            Palette::of(ui).warning,
+            lang.pick(
+                "Additional headers were omitted.",
+                "추가 헤더가 생략되었습니다.",
+            ),
+        );
     }
 }
 
@@ -345,6 +380,7 @@ fn render_body_tab(
     image: &mut image_view::ImagePanel,
     show_save_menus: impl FnOnce(&mut egui::Ui),
 ) {
+    let lang = panel.lang;
     let request = record.request();
     let mut request_body = request
         .body()
@@ -371,14 +407,14 @@ fn render_body_tab(
             .into_iter()
             .flatten()
             .any(|body| has_tree(body.media_type));
-        panel.mode = view_mode_bar(ui, mode, has_tree);
+        panel.mode = view_mode_bar(ui, mode, has_tree, lang);
     }
     show_save_menus(ui);
-    ui.strong("Request body");
+    ui.strong(lang.pick("Request body", "요청 본문"));
     if let Some(request_body) = request_body.as_mut() {
         render_body(ui, request_body, panel, BodySide::Request);
     } else {
-        ui.weak("Body was not observed.");
+        ui.weak(lang.pick("Body was not observed.", "본문이 관측되지 않았습니다."));
     }
     ui.separator();
     render_outcome(ui, record, panel, response_body.as_mut());
@@ -420,30 +456,52 @@ fn render_body(
     panel: &mut BodyPanel<'_>,
     side: BodySide,
 ) {
+    let lang = panel.lang;
     let Some(snapshot) = body.snapshot.as_ref() else {
-        ui.weak("Preview is updating.");
+        ui.weak(lang.pick("Preview is updating.", "미리보기를 업데이트하는 중입니다."));
         return;
     };
-    ui.label(format!(
-        "{} bytes observed · {} · {}",
-        snapshot.observed_bytes(),
-        lifecycle_text(snapshot.lifecycle()),
-        retention_text(snapshot)
-    ));
+    let summary = match lang {
+        Language::English => format!(
+            "{} bytes observed · {} · {}",
+            snapshot.observed_bytes(),
+            lifecycle_text(snapshot.lifecycle(), lang),
+            retention_text(snapshot, lang)
+        ),
+        Language::Korean => format!(
+            "{}바이트 관측 · {} · {}",
+            snapshot.observed_bytes(),
+            lifecycle_text(snapshot.lifecycle(), lang),
+            retention_text(snapshot, lang)
+        ),
+    };
+    ui.label(summary);
     if snapshot.retention() == BodyRetention::Omitted {
         ui.colored_label(
             Palette::of(ui).warning,
-            "Preview was omitted to keep forwarding nonblocking.",
+            lang.pick(
+                "Preview was omitted to keep forwarding nonblocking.",
+                "전달 지연을 막기 위해 미리보기가 생략되었습니다.",
+            ),
         );
         return;
     }
     if snapshot.is_complete() && snapshot.bytes().is_empty() {
-        ui.weak("Empty body.");
+        ui.weak(lang.pick("Empty body.", "빈 본문입니다."));
         return;
     }
     let encodings = body.headers.get("content-encoding").collect::<Vec<_>>();
     if let Some((image, format)) = body.image.as_mut() {
-        image.show(ui, panel.record, snapshot, &encodings, *format);
+        image.show(
+            ui,
+            &super::image_view::ImageBody {
+                record: panel.record,
+                snapshot,
+                encodings: &encodings,
+                declared: *format,
+            },
+            lang,
+        );
         return;
     }
     let source = BodySource {
@@ -455,26 +513,28 @@ fn render_body(
         capture: Capture::of(snapshot),
         search: panel.search.filter(|query| query.scope.covers_body(side)),
     };
-    if let Some(text) = panel.cache.show(ui, &source, panel.mode) {
+    if let Some(text) = panel.cache.show(ui, &source, panel.mode, lang) {
         panel.copied = Some(text);
     }
 }
 
-const fn lifecycle_text(lifecycle: BodyLifecycle) -> &'static str {
+const fn lifecycle_text(lifecycle: BodyLifecycle, lang: Language) -> &'static str {
     match lifecycle {
-        BodyLifecycle::Streaming => "streaming",
-        BodyLifecycle::Complete => "complete",
-        BodyLifecycle::Interrupted => "interrupted by the sender",
-        BodyLifecycle::Cancelled => "cancelled by the receiver",
+        BodyLifecycle::Streaming => lang.pick("streaming", "스트리밍 중"),
+        BodyLifecycle::Complete => lang.pick("complete", "완료"),
+        BodyLifecycle::Interrupted => lang.pick("interrupted by the sender", "송신 측에서 중단됨"),
+        BodyLifecycle::Cancelled => lang.pick("cancelled by the receiver", "수신 측에서 취소됨"),
     }
 }
 
-fn retention_text(snapshot: &BodySnapshot) -> &'static str {
+fn retention_text(snapshot: &BodySnapshot, lang: Language) -> &'static str {
     match snapshot.retention() {
-        BodyRetention::Prefix if snapshot.is_complete() => "full preview",
-        BodyRetention::Prefix => "partial preview",
-        BodyRetention::Truncated => "truncated preview",
-        BodyRetention::Omitted => "preview omitted",
+        BodyRetention::Prefix if snapshot.is_complete() => {
+            lang.pick("full preview", "전체 미리보기")
+        }
+        BodyRetention::Prefix => lang.pick("partial preview", "일부 미리보기"),
+        BodyRetention::Truncated => lang.pick("truncated preview", "잘린 미리보기"),
+        BodyRetention::Omitted => lang.pick("preview omitted", "미리보기 생략"),
     }
 }
 
@@ -484,30 +544,41 @@ fn render_outcome(
     body: &mut BodyPanel<'_>,
     response_body: Option<&mut BodyDetail<'_>>,
 ) {
+    let lang = body.lang;
     match record.outcome() {
         Outcome::Response(response) => match response_body {
             None => {
-                ui.strong(format!(
-                    "Response headers · {} {} ({}) · {:?}",
-                    response.status().as_str(),
-                    response.reason(),
-                    outcome_view::status_class(response.status().as_u16()),
-                    response.version()
-                ));
+                let heading = match lang {
+                    Language::English => format!(
+                        "Response headers · {} {} ({}) · {:?}",
+                        response.status().as_str(),
+                        response.reason(),
+                        outcome_view::status_class(response.status().as_u16(), lang),
+                        response.version()
+                    ),
+                    Language::Korean => format!(
+                        "응답 헤더 · {} {} ({}) · {:?}",
+                        response.status().as_str(),
+                        response.reason(),
+                        outcome_view::status_class(response.status().as_u16(), lang),
+                        response.version()
+                    ),
+                };
+                ui.strong(heading);
                 let search = body.headers_search();
-                render_headers(ui, "response-headers", response.headers(), search);
+                render_headers(ui, "response-headers", response.headers(), search, lang);
             }
             Some(response_body) => {
-                ui.strong("Response body");
+                ui.strong(lang.pick("Response body", "응답 본문"));
                 render_body(ui, response_body, body, BodySide::Response);
             }
         },
         Outcome::Tunnel(tunnel) => {
-            ui.label(scope_help::TUNNEL_NOTE);
-            render_tunnel(ui, tunnel);
+            ui.label(scope_help::tunnel_note(lang));
+            render_tunnel(ui, tunnel, lang);
         }
         outcome => {
-            let (text, tone) = outcome_view::detail_text(outcome);
+            let (text, tone) = outcome_view::detail_text(outcome, lang);
             let color = Palette::of(ui).status(tone);
             if outcome.is_in_flight() {
                 ui.weak(text);
@@ -522,29 +593,45 @@ fn render_outcome(
 
 /// Link to the request a replay was sent from. Links keep the text color
 /// and are told apart by their underline.
-fn replay_link(original: RecordId) -> egui::RichText {
-    egui::RichText::new(format!("Replay of #{} — show original", original.value())).underline()
+fn replay_link(original: RecordId, lang: Language) -> egui::RichText {
+    let label = match lang {
+        Language::English => format!("Replay of #{} — show original", original.value()),
+        Language::Korean => format!("#{} 재전송 — 원본 보기", original.value()),
+    };
+    egui::RichText::new(label).underline()
 }
 
-fn render_timing(ui: &mut egui::Ui, record: &Exchange) {
+fn render_timing(ui: &mut egui::Ui, record: &Exchange, lang: Language) {
     let timing = record.timing();
-    let settled_label = outcome_view::timing_label(record.outcome());
+    let settled_label = outcome_view::timing_label(record.outcome(), lang);
     let settled_value = if record.outcome().is_in_flight() {
         elapsed_text(record)
     } else {
-        optional_millis(timing.settled())
+        optional_millis(timing.settled(), lang)
     };
     let total = timing.complete().map_or_else(
-        || "in progress".to_owned(),
+        || lang.pick("in progress", "진행 중").to_owned(),
         |duration| format!("{:.1} ms", outcome_view::elapsed_millis(duration)),
     );
     let rows = [
-        ("Connect", optional_millis(timing.connect())),
-        ("Send", optional_millis(timing.send())),
-        ("Wait (TTFB)", optional_millis(timing.wait())),
-        ("Receive", optional_millis(timing.receive())),
+        (
+            lang.pick("Connect", "연결"),
+            optional_millis(timing.connect(), lang),
+        ),
+        (
+            lang.pick("Send", "전송"),
+            optional_millis(timing.send(), lang),
+        ),
+        (
+            lang.pick("Wait (TTFB)", "대기 (TTFB)"),
+            optional_millis(timing.wait(), lang),
+        ),
+        (
+            lang.pick("Receive", "수신"),
+            optional_millis(timing.receive(), lang),
+        ),
         (settled_label, settled_value),
-        ("Total", total),
+        (lang.pick("Total", "합계"), total),
     ];
     let bounds = GridBounds::from_ui(ui);
     egui::Grid::new("timing")
@@ -560,9 +647,9 @@ fn render_timing(ui: &mut egui::Ui, record: &Exchange) {
         });
 }
 
-fn optional_millis(duration: Option<Duration>) -> String {
+fn optional_millis(duration: Option<Duration>, lang: Language) -> String {
     duration.map_or_else(
-        || "not observed".to_owned(),
+        || lang.pick("not observed", "관측되지 않음").to_owned(),
         |duration| format!("{:.1} ms", outcome_view::elapsed_millis(duration)),
     )
 }
@@ -576,35 +663,43 @@ fn elapsed_text(record: &Exchange) -> String {
     }
 }
 
-fn render_tunnel(ui: &mut egui::Ui, tunnel: &TunnelPreview) {
+fn render_tunnel(ui: &mut egui::Ui, tunnel: &TunnelPreview, lang: Language) {
     let snapshot = tunnel.snapshot();
-    let state = snapshot.state().to_string();
+    let state = domain::tunnel_state(lang, snapshot.state());
     let bounds = GridBounds::from_ui(ui);
     egui::Grid::new("tunnel-details")
         .num_columns(2)
         .max_col_width(bounds.available)
         .show(ui, |ui| {
-            wrapped_cell(ui, bounds.key_max, "State");
+            wrapped_cell(ui, bounds.key_max, lang.pick("State", "상태"));
             let value_max = bounds.value_max(ui);
             wrapped_cell(ui, value_max, state);
             ui.end_row();
-            wrapped_cell(ui, bounds.key_max, "Sent to upstream");
-            let value_max = bounds.value_max(ui);
             wrapped_cell(
                 ui,
-                value_max,
-                egui::RichText::new(format!("{} bytes", snapshot.client_to_upstream())).monospace(),
+                bounds.key_max,
+                lang.pick("Sent to upstream", "업스트림으로 보낸 양"),
             );
-            ui.end_row();
-            wrapped_cell(ui, bounds.key_max, "Received from upstream");
             let value_max = bounds.value_max(ui);
+            let sent = match lang {
+                Language::English => format!("{} bytes", snapshot.client_to_upstream()),
+                Language::Korean => format!("{}바이트", snapshot.client_to_upstream()),
+            };
+            wrapped_cell(ui, value_max, egui::RichText::new(sent).monospace());
+            ui.end_row();
             wrapped_cell(
                 ui,
-                value_max,
-                egui::RichText::new(format!("{} bytes", snapshot.upstream_to_client())).monospace(),
+                bounds.key_max,
+                lang.pick("Received from upstream", "업스트림에서 받은 양"),
             );
+            let value_max = bounds.value_max(ui);
+            let received = match lang {
+                Language::English => format!("{} bytes", snapshot.upstream_to_client()),
+                Language::Korean => format!("{}바이트", snapshot.upstream_to_client()),
+            };
+            wrapped_cell(ui, value_max, egui::RichText::new(received).monospace());
             ui.end_row();
-            wrapped_cell(ui, bounds.key_max, "Duration");
+            wrapped_cell(ui, bounds.key_max, lang.pick("Duration", "소요 시간"));
             let value_max = bounds.value_max(ui);
             wrapped_cell(
                 ui,

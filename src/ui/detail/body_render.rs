@@ -15,6 +15,7 @@ use http_inspector_exchange::BodySide;
 use crate::ui::detail::body_cache::BodySource;
 use crate::ui::detail::body_matches::Hit;
 use crate::ui::detail::tree_view::TreeView;
+use crate::ui::i18n::{Language, domain};
 use crate::ui::style::theme::Palette;
 use crate::ui::style::tokens::Layout;
 
@@ -27,10 +28,12 @@ impl BodyViewCache {
         ui: &mut egui::Ui,
         source: &BodySource<'_>,
         mode: ViewMode,
+        lang: Language,
     ) -> Option<String> {
         let style = RenderStyle {
             theme: ui.ctx().theme(),
             font: egui::TextStyle::Monospace.resolve(ui.style()),
+            language: lang,
         };
         let side = self.side(source.side);
         if side.update(ui.ctx(), source, mode, &style) {
@@ -55,16 +58,17 @@ fn render(
     style: &RenderStyle,
     tree: Option<&mut TreeView>,
 ) -> Option<String> {
+    let lang = style.language;
     let (format, notices, job, lines, matches, galley) = match content {
         Content::Unavailable(message) => {
             ui.colored_label(Palette::of(ui).warning, message.as_str());
             return None;
         }
         Content::Tree { format, notices } => {
-            render_header(ui, *format, notices, mode);
+            render_header(ui, *format, notices, mode, lang);
             return ui
                 .push_id(("body-tree", side), |ui| {
-                    tree.and_then(|view| view.show(ui, style.theme, &style.font))
+                    tree.and_then(|view| view.show(ui, style.theme, &style.font, lang))
                 })
                 .inner;
         }
@@ -77,9 +81,9 @@ fn render(
             galley,
         } => (*format, &*notices, job, lines, matches, galley),
     };
-    render_header(ui, format, notices, mode);
+    render_header(ui, format, notices, mode, lang);
     let scroll = matches.as_mut().and_then(|marked| {
-        if marked.matches.controls(ui) {
+        if marked.matches.controls(ui, lang) {
             (*job, *lines) = marked.matches.mark(&marked.job, marked.lines.as_deref());
             *galley = None;
         }
@@ -148,8 +152,26 @@ fn scroll_to_hit(ui: &egui::Ui, output: &egui::text_edit::TextEditOutput, text: 
 }
 
 /// The format and view mode, then each notice in order.
-fn render_header(ui: &mut egui::Ui, format: BodyFormat, notices: &[Notice], mode: ViewMode) {
-    ui.weak(format!("Format: {} · {}", format.label(), mode.label()));
+fn render_header(
+    ui: &mut egui::Ui,
+    format: BodyFormat,
+    notices: &[Notice],
+    mode: ViewMode,
+    lang: Language,
+) {
+    let label = match lang {
+        Language::English => format!(
+            "Format: {} · {}",
+            domain::body_format(lang, format),
+            domain::view_mode(lang, mode)
+        ),
+        Language::Korean => format!(
+            "형식: {} · {}",
+            domain::body_format(lang, format),
+            domain::view_mode(lang, mode)
+        ),
+    };
+    ui.weak(label);
     for notice in notices {
         match notice.level {
             NoticeLevel::Info => {

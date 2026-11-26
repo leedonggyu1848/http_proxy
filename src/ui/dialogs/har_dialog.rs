@@ -1,5 +1,6 @@
 //! The `Export HAR` window: which records, what to include, and where to save.
 
+use crate::ui::i18n::{Language, Text};
 use crate::ui::style::tokens::Layout;
 use std::path::PathBuf;
 
@@ -79,6 +80,7 @@ impl HarDialog {
         counts: ScopeCounts,
         busy: bool,
         escape_enabled: bool,
+        lang: Language,
     ) -> Option<HarAction> {
         if !self.open {
             return None;
@@ -89,7 +91,8 @@ impl HarDialog {
         let center = viewport.center();
         let max_width = Layout::HAR_WIDTH.fit(viewport.width());
         let max_height = Layout::HAR_HEIGHT.fit(viewport.height());
-        egui::Window::new("Export HAR")
+        egui::Window::new(lang.pick("Export HAR", "HAR 내보내기"))
+            .id(egui::Id::unique("export-har"))
             .open(&mut open)
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(center)
@@ -98,7 +101,7 @@ impl HarDialog {
             .vscroll(true)
             .collapsible(false)
             .resizable(false)
-            .show(context, |ui| action = self.contents(ui, counts, busy));
+            .show(context, |ui| action = self.contents(ui, counts, busy, lang));
         let escaped = escape_enabled && context.input(|input| input.key_pressed(egui::Key::Escape));
         action.or_else(|| (!open || escaped).then_some(HarAction::Close))
     }
@@ -108,48 +111,67 @@ impl HarDialog {
         ui: &mut egui::Ui,
         counts: ScopeCounts,
         busy: bool,
+        lang: Language,
     ) -> Option<HarAction> {
-        ui.label("Records");
-        ui.radio_value(
-            &mut self.scope,
-            HarScope::All,
-            format!("All requests in the list ({})", counts.all),
-        );
-        ui.radio_value(
-            &mut self.scope,
-            HarScope::Filtered,
-            format!("Requests matching the filter ({})", counts.filtered),
-        );
-        ui.weak("Only requests kept in the list since the last Clear are exported.");
+        ui.label(lang.pick("Records", "내보낼 기록"));
+        let all_label = match lang {
+            Language::English => format!("All requests in the list ({})", counts.all),
+            Language::Korean => format!("목록의 모든 요청 ({}건)", counts.all),
+        };
+        let filtered_label = match lang {
+            Language::English => format!("Requests matching the filter ({})", counts.filtered),
+            Language::Korean => format!("현재 필터와 일치하는 요청 ({}건)", counts.filtered),
+        };
+        ui.radio_value(&mut self.scope, HarScope::All, all_label);
+        ui.radio_value(&mut self.scope, HarScope::Filtered, filtered_label);
+        ui.weak(lang.pick(
+            "Only requests kept in the list since the last Clear are exported.",
+            "마지막 비우기 이후 목록에 보관된 요청만 내보냅니다.",
+        ));
         ui.separator();
-        ui.label("Include (off by default)");
-        ui.checkbox(&mut self.options.include_bodies, "Request and response bodies")
-            .on_hover_text(
-                "Uses the in-memory preview: 8 KiB per direction, up to 8 MiB for images. A HAR comment marks truncated or partial bodies. Bodies may contain passwords or tokens.",
-            );
+        ui.label(lang.pick("Include (off by default)", "포함 항목 (기본 꺼짐)"));
+        ui.checkbox(
+            &mut self.options.include_bodies,
+            lang.pick("Request and response bodies", "요청 및 응답 본문"),
+        )
+        .on_hover_text(lang.pick(
+            "Includes in-memory previews (8 KiB per direction, 8 MiB for images; truncated bodies are noted in HAR comments and may contain secrets).",
+            "메모리 미리보기(방향당 8 KiB, 이미지 최대 8 MiB)를 포함하며, 잘린 본문은 HAR 주석으로 표시되고 비밀번호·토큰이 포함될 수 있습니다.",
+        ));
         ui.checkbox(
             &mut self.options.include_sensitive_headers,
-            "Authorization and cookie header names",
+            lang.pick(
+                "Authorization and cookie header names",
+                "Authorization 및 Cookie 헤더 이름",
+            ),
         )
-        .on_hover_text(
-            "Adds Authorization, Proxy-Authorization, Cookie, and Set-Cookie with the value [REDACTED]. Their original values are never kept.",
-        );
+        .on_hover_text(lang.pick(
+            "Adds Authorization, Proxy-Authorization, Cookie, and Set-Cookie as [REDACTED] without keeping original values.",
+            "Authorization, Proxy-Authorization, Cookie, Set-Cookie 헤더를 원본 값 없이 [REDACTED]로 추가합니다.",
+        ));
         ui.separator();
-        ui.label("File");
+        ui.label(lang.pick("File", "파일"));
         let path_width = Layout::HAR_PATH_WIDTH.fit(ui.available_width());
         ui.add(
             egui::TextEdit::singleline(&mut self.path)
                 .desired_width(path_width)
-                .hint_text("Path of a new .har file"),
+                .hint_text(lang.pick("Path of a new .har file", "새 .har 파일 경로")),
         );
-        ui.weak("An existing file is never replaced.");
+        ui.weak(lang.pick(
+            "An existing file is never replaced.",
+            "이미 존재하는 파일은 덮어쓰지 않습니다.",
+        ));
         let count = counts.of(self.scope);
         let ready = count > 0 && !self.path.trim().is_empty() && !busy;
+        let export_label = match lang {
+            Language::English => format!("Export {count} requests"),
+            Language::Korean => format!("요청 {count}건 내보내기"),
+        };
         ui.horizontal_wrapped(|ui| {
             let export = ui
-                .add_enabled(ready, egui::Button::new(format!("Export {count} requests")))
+                .add_enabled(ready, egui::Button::new(export_label))
                 .clicked();
-            let cancel = ui.button("Cancel").clicked();
+            let cancel = ui.button(lang.text(Text::Cancel)).clicked();
             if export {
                 Some(HarAction::Export(HarExport {
                     scope: self.scope,
@@ -192,6 +214,7 @@ mod tests {
                 },
                 false,
                 true,
+                Language::English,
             );
             assert!(matches!(action, Some(HarAction::Close)));
             assert!(dialog.is_open());

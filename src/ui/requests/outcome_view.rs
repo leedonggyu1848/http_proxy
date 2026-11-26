@@ -2,6 +2,7 @@
 
 use http_inspector_exchange::{Outcome, TunnelPreview, TunnelState};
 
+use crate::ui::i18n::{Language, domain};
 use crate::ui::style::tokens::Tone;
 
 /// Orders responses by status code, then every other outcome after them.
@@ -18,27 +19,35 @@ pub(super) const fn status_rank(outcome: &Outcome) -> (u8, u16) {
 }
 
 /// Short status text and the tone of an exceptional outcome.
-pub(crate) fn outcome_text(outcome: &Outcome) -> (String, Option<Tone>) {
-    (short_text(outcome), outcome_tone(outcome))
+pub(crate) fn outcome_text(outcome: &Outcome, lang: Language) -> (String, Option<Tone>) {
+    (short_text(outcome, lang), outcome_tone(outcome))
 }
 
 /// Short status text for one outcome, independent of the theme.
-fn short_text(outcome: &Outcome) -> String {
+fn short_text(outcome: &Outcome, lang: Language) -> String {
     match outcome {
-        Outcome::InFlight => "Pending".to_owned(),
+        Outcome::InFlight => lang.pick("Pending", "대기 중").to_owned(),
         Outcome::Response(response) => {
             let status = response.status();
             format!(
                 "{} {}",
                 status.as_str(),
-                status.canonical_reason().unwrap_or("Unknown status")
+                status
+                    .canonical_reason()
+                    .unwrap_or_else(|| lang.pick("Unknown status", "알 수 없는 상태"))
             )
         }
-        Outcome::Tunnel(tunnel) => tunnel_summary(tunnel),
+        Outcome::Tunnel(tunnel) => tunnel_summary(tunnel, lang),
         Outcome::InspectionEstablished => "HTTPS".to_owned(),
-        Outcome::Failed { stage, message } => format!("{stage}: {message}"),
-        Outcome::Cancelled => "Cancelled by client".to_owned(),
-        Outcome::Incomplete => "Incomplete (proxy stopped)".to_owned(),
+        Outcome::Failed { stage, message } => {
+            format!("{}: {message}", domain::failure_stage(lang, *stage))
+        }
+        Outcome::Cancelled => lang
+            .pick("Cancelled by client", "클라이언트 취소")
+            .to_owned(),
+        Outcome::Incomplete => lang
+            .pick("Incomplete (proxy stopped)", "불완전 (프록시 중지)")
+            .to_owned(),
     }
 }
 
@@ -66,57 +75,80 @@ pub(crate) fn outcome_tone(outcome: &Outcome) -> Option<Tone> {
 
 /// Plain-language class of an HTTP status code, so that success and error do
 /// not depend on the status color alone.
-pub(crate) const fn status_class(code: u16) -> &'static str {
+pub(crate) const fn status_class(code: u16, lang: Language) -> &'static str {
     match code {
-        100..=199 => "informational",
-        200..=299 => "success",
-        300..=399 => "redirect",
-        400..=499 => "client error",
-        500..=599 => "server error",
-        _ => "nonstandard status",
+        100..=199 => lang.pick("informational", "정보 응답"),
+        200..=299 => lang.pick("success", "성공"),
+        300..=399 => lang.pick("redirect", "리다이렉트"),
+        400..=499 => lang.pick("client error", "클라이언트 오류"),
+        500..=599 => lang.pick("server error", "서버 오류"),
+        _ => lang.pick("nonstandard status", "비표준 상태"),
     }
 }
 
 /// Status text with the response class appended, for tooltips and screen
 /// readers. Other outcomes already name their state in the text.
-pub(super) fn outcome_summary(outcome: &Outcome) -> String {
-    let text = short_text(outcome);
+pub(super) fn outcome_summary(outcome: &Outcome, lang: Language) -> String {
+    let text = short_text(outcome, lang);
     match outcome {
         Outcome::Response(response) => {
-            format!("{text} ({})", status_class(response.status().as_u16()))
+            format!(
+                "{text} ({})",
+                status_class(response.status().as_u16(), lang)
+            )
         }
         _ => text,
     }
 }
 
-fn tunnel_summary(tunnel: &TunnelPreview) -> String {
+fn tunnel_summary(tunnel: &TunnelPreview, lang: Language) -> String {
     match tunnel.snapshot().state() {
-        TunnelState::Open => "Tunnel · open".to_owned(),
-        TunnelState::Closed => "Tunnel · closed".to_owned(),
-        TunnelState::Failed { stage, .. } => format!("Tunnel · failed ({stage})"),
-        TunnelState::Incomplete => "Tunnel · incomplete".to_owned(),
+        TunnelState::Open => lang.pick("Tunnel · open", "터널 · 열림").to_owned(),
+        TunnelState::Closed => lang.pick("Tunnel · closed", "터널 · 닫힘").to_owned(),
+        TunnelState::Failed { stage, .. } => {
+            let stage_label = domain::failure_stage(lang, *stage);
+            match lang {
+                Language::English => format!("Tunnel · failed ({stage_label})"),
+                Language::Korean => format!("터널 · 실패 ({stage_label})"),
+            }
+        }
+        TunnelState::Incomplete => lang.pick("Tunnel · incomplete", "터널 · 불완전").to_owned(),
     }
 }
 
 /// Status sentence for the details panel and the tone of an exceptional
 /// outcome.
-pub(crate) fn detail_text(outcome: &Outcome) -> (String, Option<Tone>) {
+pub(crate) fn detail_text(outcome: &Outcome, lang: Language) -> (String, Option<Tone>) {
     let text = match outcome {
-        Outcome::InFlight => "Waiting for the upstream server.",
-        Outcome::InspectionEstablished => "HTTPS inspection session established.",
-        Outcome::Cancelled => "The client closed the connection before a response arrived.",
-        Outcome::Incomplete => "The proxy stopped before a response arrived.",
-        _ => return outcome_text(outcome),
+        Outcome::InFlight => lang.pick(
+            "Waiting for the upstream server.",
+            "업스트림 서버의 응답을 기다리는 중입니다.",
+        ),
+        Outcome::InspectionEstablished => lang.pick(
+            "HTTPS inspection session established.",
+            "HTTPS 복호화 세션이 연결되었습니다.",
+        ),
+        Outcome::Cancelled => lang.pick(
+            "The client closed the connection before a response arrived.",
+            "응답이 도착하기 전에 클라이언트가 연결을 닫았습니다.",
+        ),
+        Outcome::Incomplete => lang.pick(
+            "The proxy stopped before a response arrived.",
+            "응답이 도착하기 전에 프록시가 중지되었습니다.",
+        ),
+        _ => return outcome_text(outcome, lang),
     };
     (text.to_owned(), outcome_tone(outcome))
 }
 
-pub(crate) const fn timing_label(outcome: &Outcome) -> &'static str {
+pub(crate) const fn timing_label(outcome: &Outcome, lang: Language) -> &'static str {
     match outcome {
-        Outcome::InFlight => "Waiting",
-        Outcome::Response(_) => "Response headers",
-        Outcome::Tunnel(_) | Outcome::InspectionEstablished => "Established",
-        Outcome::Failed { .. } | Outcome::Cancelled | Outcome::Incomplete => "Ended",
+        Outcome::InFlight => lang.pick("Waiting", "대기"),
+        Outcome::Response(_) => lang.pick("Response headers", "응답 헤더"),
+        Outcome::Tunnel(_) | Outcome::InspectionEstablished => lang.pick("Established", "연결됨"),
+        Outcome::Failed { .. } | Outcome::Cancelled | Outcome::Incomplete => {
+            lang.pick("Ended", "종료됨")
+        }
     }
 }
 
@@ -132,13 +164,15 @@ mod tests {
 
     #[test]
     fn names_every_status_class() {
-        assert_eq!(status_class(101), "informational");
-        assert_eq!(status_class(200), "success");
-        assert_eq!(status_class(204), "success");
-        assert_eq!(status_class(304), "redirect");
-        assert_eq!(status_class(404), "client error");
-        assert_eq!(status_class(503), "server error");
-        assert_eq!(status_class(999), "nonstandard status");
+        assert_eq!(status_class(101, Language::English), "informational");
+        assert_eq!(status_class(200, Language::English), "success");
+        assert_eq!(status_class(204, Language::English), "success");
+        assert_eq!(status_class(304, Language::English), "redirect");
+        assert_eq!(status_class(404, Language::English), "client error");
+        assert_eq!(status_class(503, Language::English), "server error");
+        assert_eq!(status_class(999, Language::English), "nonstandard status");
+        assert_eq!(status_class(200, Language::Korean), "성공");
+        assert_eq!(status_class(404, Language::Korean), "클라이언트 오류");
     }
 
     #[test]
@@ -170,8 +204,18 @@ mod tests {
 
     #[test]
     fn summary_keeps_non_response_text() {
-        assert_eq!(outcome_summary(&Outcome::InFlight), "Pending");
-        assert_eq!(outcome_summary(&Outcome::Cancelled), "Cancelled by client");
+        assert_eq!(
+            outcome_summary(&Outcome::InFlight, Language::English),
+            "Pending"
+        );
+        assert_eq!(
+            outcome_summary(&Outcome::Cancelled, Language::English),
+            "Cancelled by client"
+        );
+        assert_eq!(
+            outcome_summary(&Outcome::InFlight, Language::Korean),
+            "대기 중"
+        );
     }
 
     #[test]
@@ -180,8 +224,18 @@ mod tests {
             stage: FailureStage::UpstreamTls,
             message: "certificate rejected".to_owned(),
         };
-        assert_eq!(outcome_text(&outcome), detail_text(&outcome));
-        assert_eq!(outcome_text(&outcome).1, Some(Tone::Danger));
+        assert_eq!(
+            outcome_text(&outcome, Language::English),
+            detail_text(&outcome, Language::English)
+        );
+        assert_eq!(
+            outcome_text(&outcome, Language::Korean),
+            detail_text(&outcome, Language::Korean)
+        );
+        assert_eq!(
+            outcome_text(&outcome, Language::English).1,
+            Some(Tone::Danger)
+        );
         let matches = |query: &str| {
             http_inspector_analysis::search::Matcher::new(
                 query,

@@ -70,7 +70,7 @@ xattr -d com.apple.quarantine ./http-proxy-v0.1.0-aarch64-apple-darwin/http-prox
 | HTTPS CA 등록 도구 | `libnss3-tools`(NSS `certutil`, 필수 패키지에 포함) | Firefox 검사 창에만 `brew install nss` |
 | 한자·가나 표시 | 선택: `fonts-noto-cjk` | 시스템의 Apple SD Gothic Neo 사용 |
 
-한글은 앱에 내장한 폰트로 표시하므로 폰트 패키지가 필요하지 않다.
+한글은 앱에 내장한 폰트로 표시하므로 폰트 패키지가 필요하지 않다. 화면 언어는 영어와 한국어를 지원하며 툴바의 **Settings**(**설정**) 메뉴에서 즉시 전환할 수 있다([화면과 조작](docs/guide/interface.md#화면-언어)).
 
 **Linux (Ubuntu 계열)**
 

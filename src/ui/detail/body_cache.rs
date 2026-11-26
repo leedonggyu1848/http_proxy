@@ -10,6 +10,8 @@ use http_inspector_content::format::{
 use http_inspector_exchange::{BodyLifecycle, BodyRetention, BodySide, BodySnapshot, MediaType};
 use std::sync::Arc;
 
+use crate::ui::i18n::{Language, domain};
+
 /// A captured body preview to show.
 pub(super) struct BodySource<'a> {
     /// [`http_inspector_exchange::RecordId::value`] of the exchange the body belongs to.
@@ -61,21 +63,30 @@ impl Capture {
     }
 
     /// Why the view ends before the body does; `None` for a whole body.
-    fn notice(self) -> Option<Notice> {
+    fn notice(self, lang: Language) -> Option<Notice> {
+        let preview_kib = http_inspector_exchange::capture::BODY_PREVIEW_BYTES / 1024;
         let text = match self {
             Self::Whole => return None,
-            Self::Truncated => format!(
-                "Only part of the body was captured (at most {} KiB is kept); the view ends where the capture ends.",
-                http_inspector_exchange::capture::BODY_PREVIEW_BYTES / 1024
-            ),
-            Self::Streaming => {
-                "The body is still being received; the view shows what has arrived so far."
-                    .to_owned()
-            }
-            Self::Ended => {
-                "The body ended early (interrupted or cancelled); the view shows what was received."
-                    .to_owned()
-            }
+            Self::Truncated => match lang {
+                Language::English => format!(
+                    "Only part of the body was captured (at most {preview_kib} KiB is kept); the view ends where the capture ends."
+                ),
+                Language::Korean => format!(
+                    "본문의 일부만 캡처되었습니다(최대 {preview_kib} KiB 보관). 캡처된 지점까지만 표시됩니다."
+                ),
+            },
+            Self::Streaming => lang
+                .pick(
+                    "The body is still being received; the view shows what has arrived so far.",
+                    "본문을 아직 수신 중입니다. 지금까지 도착한 내용만 표시됩니다.",
+                )
+                .to_owned(),
+            Self::Ended => lang
+                .pick(
+                    "The body ended early (interrupted or cancelled); the view shows what was received.",
+                    "본문이 중간에 종료되었습니다(중단 또는 취소). 수신된 내용만 표시됩니다.",
+                )
+                .to_owned(),
         };
         Some(Notice::warning(text))
     }
@@ -94,6 +105,7 @@ struct Key {
     body: BodyKey,
     mode: ViewMode,
     search: Option<u64>,
+    lang: Language,
 }
 
 pub(super) enum PreparedBody {
@@ -150,6 +162,7 @@ impl<S: Clone + PartialEq> BodyCache<S> {
         source: &BodySource<'_>,
         mode: ViewMode,
         style: &S,
+        lang: Language,
     ) -> Option<BodyUpdate> {
         let key = Key {
             body: BodyKey {
@@ -159,6 +172,7 @@ impl<S: Clone + PartialEq> BodyCache<S> {
             },
             mode,
             search: source.search.map(|query| query.generation),
+            lang,
         };
         if self
             .shown
@@ -174,7 +188,7 @@ impl<S: Clone + PartialEq> BodyCache<S> {
         {
             self.builds += 1;
         }
-        let content = self.prepare(source, key.body, mode);
+        let content = self.prepare(source, key.body, mode, lang);
         self.shown = Some((key, style.clone()));
         Some(BodyUpdate {
             content,
@@ -182,20 +196,38 @@ impl<S: Clone + PartialEq> BodyCache<S> {
         })
     }
 
-    fn prepare(&mut self, source: &BodySource<'_>, key: BodyKey, mode: ViewMode) -> PreparedBody {
+    fn prepare(
+        &mut self,
+        source: &BodySource<'_>,
+        key: BodyKey,
+        mode: ViewMode,
+        lang: Language,
+    ) -> PreparedBody {
         let (text, decoding) =
             match decode::decode(source.bytes, source.encodings, source.capture.is_whole()) {
                 BodyText::Ready { text, notice } => (text, notice),
-                BodyText::Unavailable(message) => return PreparedBody::Unavailable(message),
+                BodyText::Unavailable(message) => {
+                    return PreparedBody::Unavailable(domain::localize_content_notice(
+                        lang, &message,
+                    ));
+                }
             };
         let format = detect::settle(source.media_type, text.as_bytes());
-        let mut notices = capture_notices(decoding, source.capture);
+        let mut notices = capture_notices(decoding, source.capture, lang);
         if mode == ViewMode::Tree {
             match self.tree(key, format, &text) {
                 Some(Ok(model)) => {
-                    notices.extend(model.incomplete.as_deref().map(Notice::warning));
+                    notices.extend(
+                        model
+                            .incomplete
+                            .as_deref()
+                            .map(|msg| Notice::warning(domain::localize_content_notice(lang, msg))),
+                    );
                     if source.search.is_some() {
-                        notices.push(Notice::info("Search matches are marked in Pretty and Raw."));
+                        notices.push(Notice::info(lang.pick(
+                            "Search matches are marked in Pretty and Raw.",
+                            "검색 일치 항목은 정렬(Pretty) 및 원문(Raw) 보기에서 표시됩니다.",
+                        )));
                     }
                     return PreparedBody::Tree {
                         format,
@@ -203,17 +235,36 @@ impl<S: Clone + PartialEq> BodyCache<S> {
                         model: Arc::clone(model),
                     };
                 }
-                Some(Err(reason)) => notices.push(Notice::warning(format!(
-                    "Showing Pretty: could not read a tree: {reason}."
-                ))),
-                None => notices.push(Notice::warning(format!(
-                    "Tree view is not available for {}; showing Pretty.",
-                    format.label()
-                ))),
+                Some(Err(reason)) => {
+                    let message = match lang {
+                        Language::English => {
+                            format!("Showing Pretty: could not read a tree: {reason}.")
+                        }
+                        Language::Korean => {
+                            format!("정렬 보기로 표시: 트리를 읽을 수 없습니다({reason}).")
+                        }
+                    };
+                    notices.push(Notice::warning(message));
+                }
+                None => {
+                    let format_name = domain::body_format(lang, format);
+                    let message = match lang {
+                        Language::English => {
+                            format!("Tree view is not available for {format_name}; showing Pretty.")
+                        }
+                        Language::Korean => format!(
+                            "{format_name} 형식에는 트리 보기를 사용할 수 없어 정렬 보기로 표시합니다."
+                        ),
+                    };
+                    notices.push(Notice::warning(message));
+                }
             }
         }
         let formatted = body_format::format(format, mode, &text);
-        notices.extend(formatted.notices);
+        notices.extend(formatted.notices.into_iter().map(|notice| Notice {
+            level: notice.level,
+            text: domain::localize_content_notice(lang, &notice.text),
+        }));
         PreparedBody::Text {
             format,
             notices,
@@ -242,11 +293,11 @@ impl<S: Clone + PartialEq> BodyCache<S> {
 
 /// What every format says about how the body was captured: the decoding
 /// used, and why the view ends early when only part of the body was kept.
-fn capture_notices(decoding: Option<String>, capture: Capture) -> Vec<Notice> {
+fn capture_notices(decoding: Option<String>, capture: Capture, lang: Language) -> Vec<Notice> {
     decoding
-        .map(Notice::info)
+        .map(|text| Notice::info(domain::localize_content_notice(lang, &text)))
         .into_iter()
-        .chain(capture.notice())
+        .chain(capture.notice(lang))
         .collect()
 }
 
@@ -333,7 +384,7 @@ mod tests {
         ] {
             assert_eq!(
                 cache
-                    .update(source, mode, &style)
+                    .update(source, mode, &style, Language::English)
                     .map(|update| update.reset_selection),
                 reset
             );
@@ -361,7 +412,7 @@ mod tests {
                 notices, styled, ..
             },
             ..
-        }) = cache.update(&css, ViewMode::Pretty, &())
+        }) = cache.update(&css, ViewMode::Pretty, &(), Language::English)
         else {
             return Err("expected prepared CSS content".into());
         };
@@ -385,11 +436,11 @@ mod tests {
         };
         let body = source(1, body);
         assert_eq!(
-            shown(cache.update(&body, ViewMode::Pretty, &())),
+            shown(cache.update(&body, ViewMode::Pretty, &(), Language::English)),
             "{\n  \"a\": true\n}"
         );
         assert_eq!(
-            shown(cache.update(&body, ViewMode::Raw, &())).as_bytes(),
+            shown(cache.update(&body, ViewMode::Raw, &(), Language::English)).as_bytes(),
             body.bytes
         );
     }
@@ -402,7 +453,7 @@ mod tests {
             ..source(1, b"<rss><channel><title>A</title></channel></rss>")
         };
         assert!(matches!(
-            cache.update(&xml, ViewMode::Tree, &()),
+            cache.update(&xml, ViewMode::Tree, &(), Language::English),
             Some(BodyUpdate {
                 content: PreparedBody::Tree { .. },
                 ..
@@ -413,7 +464,7 @@ mod tests {
             ..source(2, b"plain text")
         };
         let fallback = match cache
-            .update(&text, ViewMode::Tree, &())
+            .update(&text, ViewMode::Tree, &(), Language::English)
             .map(|update| update.content)
         {
             Some(PreparedBody::Text {
@@ -450,7 +501,7 @@ mod tests {
                     capture: Capture::Truncated,
                     ..source(1, body)
                 };
-                let shown = notices(cache.update(&partial, mode, &()));
+                let shown = notices(cache.update(&partial, mode, &(), Language::English));
                 assert_eq!(
                     shown
                         .iter()
@@ -464,7 +515,8 @@ mod tests {
                     ..partial
                 };
                 assert!(
-                    !notices(cache.update(&whole, mode, &())).contains(&partial_capture()),
+                    !notices(cache.update(&whole, mode, &(), Language::English))
+                        .contains(&partial_capture()),
                     "{content_type} {mode:?}"
                 );
             }
@@ -479,7 +531,7 @@ mod tests {
             capture: Capture::Truncated,
             ..source(1, b"f(\"unfinished")
         };
-        let shown = notices(cache.update(&script, ViewMode::Tree, &()));
+        let shown = notices(cache.update(&script, ViewMode::Tree, &(), Language::English));
         let levels: Vec<_> = shown.iter().map(|notice| notice.level).collect();
         assert_eq!(levels, [NoticeLevel::Warning; 3], "{shown:?}");
         assert_eq!(shown.first(), Some(&partial_capture()));
@@ -500,7 +552,7 @@ mod tests {
             capture: Capture::Truncated,
             ..source(2, b"<a><b>1</b>")
         };
-        let update = cache.update(&xml, ViewMode::Tree, &());
+        let update = cache.update(&xml, ViewMode::Tree, &(), Language::English);
         assert!(matches!(
             update.as_ref(),
             Some(BodyUpdate {
@@ -570,7 +622,7 @@ mod tests {
                 ..source(record, br#"{"a":1}"#)
             };
             assert_eq!(
-                notices(cache.update(&body, ViewMode::Pretty, &())),
+                notices(cache.update(&body, ViewMode::Pretty, &(), Language::English)),
                 expected.into_iter().collect::<Vec<_>>(),
                 "{capture:?}"
             );

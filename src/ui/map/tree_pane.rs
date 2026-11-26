@@ -8,17 +8,30 @@ use http_inspector_analysis::url_map::{NodeStats, RowKind, UrlMap, ViewNodeKey, 
 
 use super::MapPanel;
 use crate::ui::detail::tree_view;
+use crate::ui::i18n::Language;
 use crate::ui::style::theme::Palette;
 use crate::ui::style::tokens::{Layout, Radius, Space, StrokeWidth};
 
 const NEW_NODE_HIGHLIGHT: Duration = Duration::from_secs(2);
 
-pub(super) fn show(panel: &mut MapPanel, ui: &mut egui::Ui, map: &UrlMap, shortcuts_allowed: bool) {
+pub(super) fn show(
+    panel: &mut MapPanel,
+    ui: &mut egui::Ui,
+    map: &UrlMap,
+    shortcuts_allowed: bool,
+    lang: Language,
+) {
     if panel.cached_rows.is_empty() {
         let message = if map.node_count() == 0 {
-            "No URLs captured yet.\nSend HTTP/HTTPS traffic through the proxy to build the URL map."
+            lang.pick(
+                "No URLs captured yet.\nSend HTTP/HTTPS traffic through the proxy to build the URL map.",
+                "아직 캡처된 URL이 없습니다.\n프록시를 통해 HTTP/HTTPS 트래픽을 보내면 URL 맵이 만들어집니다.",
+            )
         } else {
-            "No nodes match the current map filters."
+            lang.pick(
+                "No nodes match the current map filters.",
+                "현재 맵 필터와 일치하는 노드가 없습니다.",
+            )
         };
         ui.centered_and_justified(|ui| {
             ui.add(egui::Label::new(RichText::new(message).weak()).wrap());
@@ -63,7 +76,7 @@ pub(super) fn show(panel: &mut MapPanel, ui: &mut egui::Ui, map: &UrlMap, shortc
                 continue;
             };
             let is_selected = panel.selected.as_ref() == Some(&row.key);
-            let outcome = render_row(ui, row, is_selected);
+            let outcome = render_row(ui, row, is_selected, lang);
             if outcome.toggled {
                 toggle_key = Some((row.key.clone(), !row.expansion.is_expanded()));
             }
@@ -92,7 +105,12 @@ struct RowOutcome {
     fading: bool,
 }
 
-fn render_row(ui: &mut egui::Ui, row: &VisibleRow, is_selected: bool) -> RowOutcome {
+fn render_row(
+    ui: &mut egui::Ui,
+    row: &VisibleRow,
+    is_selected: bool,
+    lang: Language,
+) -> RowOutcome {
     let palette = Palette::of(ui);
     let age = row.created_at.elapsed();
     let fading = age < NEW_NODE_HIGHLIGHT;
@@ -117,7 +135,7 @@ fn render_row(ui: &mut egui::Ui, row: &VisibleRow, is_selected: bool) -> RowOutc
                 row.expansion.is_expanded(),
             );
 
-            let label_text = format_row_label(row, &palette);
+            let label_text = format_row_label(row, &palette, lang);
             let response = ui.add(
                 egui::Label::new(label_text)
                     .wrap_mode(egui::TextWrapMode::Extend)
@@ -130,7 +148,7 @@ fn render_row(ui: &mut egui::Ui, row: &VisibleRow, is_selected: bool) -> RowOutc
                 toggled = true;
             }
 
-            render_row_badges(ui, row, &palette);
+            render_row_badges(ui, row, &palette, lang);
         });
     });
 
@@ -141,43 +159,48 @@ fn render_row(ui: &mut egui::Ui, row: &VisibleRow, is_selected: bool) -> RowOutc
     }
 }
 
-fn format_row_label(row: &VisibleRow, palette: &Palette) -> RichText {
+fn format_row_label(row: &VisibleRow, palette: &Palette, lang: Language) -> RichText {
     match row.kind {
         RowKind::Origin => RichText::new(&row.label).strong(),
-        RowKind::FoldedId { count } => RichText::new(format!("{} ({count} IDs)", row.label))
-            .monospace()
-            .color(palette.secondary),
+        RowKind::FoldedId { count } => {
+            let text = match lang {
+                Language::English => format!("{} ({count} IDs)", row.label),
+                Language::Korean => format!("{} (ID {count}개)", row.label),
+            };
+            RichText::new(text).monospace().color(palette.secondary)
+        }
         RowKind::Segment => RichText::new(&row.label).monospace(),
     }
 }
 
-fn render_row_badges(ui: &mut egui::Ui, row: &VisibleRow, palette: &Palette) {
+fn render_row_badges(ui: &mut egui::Ui, row: &VisibleRow, palette: &Palette, lang: Language) {
     let stats = &row.subtree;
     if stats.is_tunnel_only() {
-        ui.label(
-            RichText::new(format!(
-                "[Tunnel] No path info · {} req",
-                stats.request_count
-            ))
-            .color(palette.secondary)
-            .small(),
-        );
+        let text = match lang {
+            Language::English => format!("[Tunnel] No path info · {} req", stats.request_count),
+            Language::Korean => format!("[터널] 경로 정보 없음 · {}건", stats.request_count),
+        };
+        ui.label(RichText::new(text).color(palette.secondary).small());
         return;
     }
 
     if stats.has_tunnel {
-        ui.label(RichText::new("[Tunnel]").color(palette.secondary).small());
+        ui.label(
+            RichText::new(lang.pick("[Tunnel]", "[터널]"))
+                .color(palette.secondary)
+                .small(),
+        );
     }
 
-    ui.label(
-        RichText::new(format!("{} req", stats.request_count))
-            .color(palette.secondary)
-            .small(),
-    );
+    let req_label = match lang {
+        Language::English => format!("{} req", stats.request_count),
+        Language::Korean => format!("{}건", stats.request_count),
+    };
+    ui.label(RichText::new(req_label).color(palette.secondary).small());
 
-    paint_status_bar(ui, stats, palette);
+    paint_status_bar(ui, stats, palette, lang);
 
-    let numeric_status = compact_status_numbers(stats);
+    let numeric_status = compact_status_numbers(stats, lang);
     if !numeric_status.is_empty() {
         let color = if stats.status.errors() > 0 {
             palette.error
@@ -201,7 +224,7 @@ fn render_row_badges(ui: &mut egui::Ui, row: &VisibleRow, palette: &Palette) {
 
     if stats.is_third_party() {
         ui.label(
-            RichText::new("[3rd]")
+            RichText::new(lang.pick("[3rd]", "[서드파티]"))
                 .color(palette.warning)
                 .small()
                 .strong(),
@@ -209,7 +232,7 @@ fn render_row_badges(ui: &mut egui::Ui, row: &VisibleRow, palette: &Palette) {
     }
 }
 
-fn paint_status_bar(ui: &mut egui::Ui, stats: &NodeStats, palette: &Palette) {
+fn paint_status_bar(ui: &mut egui::Ui, stats: &NodeStats, palette: &Palette, lang: Language) {
     let total = stats.status.total();
     if total == 0 {
         return;
@@ -266,19 +289,32 @@ fn paint_status_bar(ui: &mut egui::Ui, stats: &NodeStats, palette: &Palette) {
         egui::StrokeKind::Inside,
     );
 
-    let _ = response.on_hover_text(format!(
-        "2xx: {} · 3xx: {} · 4xx: {} · 5xx: {} · Failed: {} · Tunnel: {} · Pending: {}",
-        stats.status.s2xx,
-        stats.status.s3xx,
-        stats.status.s4xx,
-        stats.status.s5xx,
-        stats.status.failed,
-        stats.status.tunnel,
-        stats.status.pending,
-    ));
+    let hover = match lang {
+        Language::English => format!(
+            "2xx: {} · 3xx: {} · 4xx: {} · 5xx: {} · Failed: {} · Tunnel: {} · Pending: {}",
+            stats.status.s2xx,
+            stats.status.s3xx,
+            stats.status.s4xx,
+            stats.status.s5xx,
+            stats.status.failed,
+            stats.status.tunnel,
+            stats.status.pending,
+        ),
+        Language::Korean => format!(
+            "2xx: {} · 3xx: {} · 4xx: {} · 5xx: {} · 실패: {} · 터널: {} · 대기 중: {}",
+            stats.status.s2xx,
+            stats.status.s3xx,
+            stats.status.s4xx,
+            stats.status.s5xx,
+            stats.status.failed,
+            stats.status.tunnel,
+            stats.status.pending,
+        ),
+    };
+    let _ = response.on_hover_text(hover);
 }
 
-fn compact_status_numbers(stats: &NodeStats) -> String {
+fn compact_status_numbers(stats: &NodeStats, lang: Language) -> String {
     let mut parts = Vec::new();
     if stats.status.s2xx > 0 {
         parts.push(format!("2xx:{}", stats.status.s2xx));
@@ -288,13 +324,21 @@ fn compact_status_numbers(stats: &NodeStats) -> String {
     }
     let errs = stats.status.errors();
     if errs > 0 {
-        parts.push(format!("err:{errs}"));
+        parts.push(format!("{}:{errs}", lang.pick("err", "오류")));
     }
     if stats.status.tunnel > 0 {
-        parts.push(format!("tun:{}", stats.status.tunnel));
+        parts.push(format!(
+            "{}:{}",
+            lang.pick("tun", "터널"),
+            stats.status.tunnel
+        ));
     }
     if stats.status.pending > 0 {
-        parts.push(format!("pend:{}", stats.status.pending));
+        parts.push(format!(
+            "{}:{}",
+            lang.pick("pend", "대기"),
+            stats.status.pending
+        ));
     }
     parts.join(" ")
 }
@@ -437,6 +481,9 @@ mod tests {
         stats.record_request(&Method::CONNECT, StatusBucket::Tunnel, now, false, true);
         stats.record_request(&Method::GET, StatusBucket::Pending, now, false, false);
         stats.record_request(&Method::CONNECT, StatusBucket::Failed, now, false, true);
-        assert_eq!(compact_status_numbers(&stats), "2xx:1 err:1 tun:1 pend:1");
+        assert_eq!(
+            compact_status_numbers(&stats, Language::English),
+            "2xx:1 err:1 tun:1 pend:1"
+        );
     }
 }

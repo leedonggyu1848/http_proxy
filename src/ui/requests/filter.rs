@@ -14,6 +14,7 @@ use super::request_table::RequestTable;
 use crate::ui::AppAction;
 use crate::ui::app::state::RequestsState;
 use crate::ui::detail::search::RequestSearch;
+use crate::ui::i18n::{Language, Text, domain};
 use crate::ui::map::RecordMatchCache;
 use crate::ui::style::indicator;
 use crate::ui::style::tokens::Tone;
@@ -23,6 +24,7 @@ pub(crate) struct ListView<'a> {
     pub(crate) analysis: &'a AnalysisPipeline,
     pub(crate) proxy: Option<SocketAddr>,
     pub(crate) saving_body: bool,
+    pub(crate) lang: Language,
 }
 
 impl ListView<'_> {
@@ -33,45 +35,58 @@ impl ListView<'_> {
         table: &mut RequestTable,
         actions: &mut Vec<AppAction>,
     ) {
+        let lang = self.lang;
         ui.horizontal_wrapped(|ui| {
-            actions.extend(self.requests.search.controls(ui).map(AppAction::Search));
+            actions.extend(
+                self.requests
+                    .search
+                    .controls(ui, lang)
+                    .map(AppAction::Search),
+            );
             let mut filter_choice = self.requests.record_filter;
             egui::ComboBox::from_id_salt("record-filter")
-                .selected_text(self.requests.record_filter.label())
+                .selected_text(domain::record_filter(lang, self.requests.record_filter))
                 .show_ui(ui, |ui| {
                     for filter in RecordFilter::ALL {
-                        ui.selectable_value(&mut filter_choice, filter, filter.label());
+                        ui.selectable_value(
+                            &mut filter_choice,
+                            filter,
+                            domain::record_filter(lang, filter),
+                        );
                     }
                 });
             if filter_choice != self.requests.record_filter {
                 actions.push(AppAction::Filter(filter_choice));
             }
-            table.controls(ui);
+            table.controls(ui, lang);
             if ui
-                .button("Clear")
-                .on_hover_text(
-                    "Clear the displayed requests and reset the URL map. The full-session log is retained.",
-                )
+                .button(lang.text(Text::Clear))
+                .on_hover_text(lang.pick(
+                    "Clear the displayed requests and reset the URL map while retaining the full-session log.",
+                    "전체 세션 로그는 유지한 채 표시된 요청 목록과 URL 맵을 비웁니다.",
+                ))
                 .clicked()
             {
                 actions.push(AppAction::ClearSession);
             }
         });
         self.map_filter_banner(ui, actions);
-        self.requests.search.status(ui);
+        self.requests.search.status(ui, lang);
     }
 
     fn map_filter_banner(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
         let Some(key) = self.requests.map_path_filter.as_ref() else {
             return;
         };
+        let lang = self.lang;
         let retained = self.requests.map_filter_cache.matched_count();
         let counted = self.map_scope_total(key);
         let evicted = counted.saturating_sub(u64::try_from(retained).unwrap_or(u64::MAX));
         let approximate = key.method.is_some() && self.requests.records.evicted() > 0;
         ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new(format!("Map filter: {}", key.display())).monospace());
-            let retention = map_retention_label(retained, evicted, approximate);
+            let prefix = lang.pick("Map filter", "맵 필터");
+            ui.label(egui::RichText::new(format!("{prefix}: {}", key.display())).monospace());
+            let retention = map_retention_label(retained, evicted, approximate, lang);
             // The filter row is chrome, where warning text is not readable,
             // so a dot marks counts that are partial.
             let count = if evicted > 0 || approximate {
@@ -80,9 +95,15 @@ impl ListView<'_> {
                 ui.label(egui::RichText::new(retention).weak())
             };
             if approximate {
-                count.on_hover_text("Estimate based on requests included in endpoint analysis.");
+                count.on_hover_text(lang.pick(
+                    "Estimate based on requests included in endpoint analysis.",
+                    "엔드포인트 분석에 포함된 요청을 기준으로 추정한 값입니다.",
+                ));
             }
-            if ui.small_button("Clear map filter").clicked() {
+            if ui
+                .small_button(lang.pick("Clear map filter", "맵 필터 해제"))
+                .clicked()
+            {
                 actions.push(AppAction::ClearMapFilter);
             }
         });
@@ -117,7 +138,7 @@ impl ListView<'_> {
             Some(&requests.map_filter_cache),
         );
         if rows.is_empty() {
-            let message = empty_list_text(requests.records.len(), self.proxy);
+            let message = empty_list_text(requests.records.len(), self.proxy, self.lang);
             ui.centered_and_justified(|ui| {
                 ui.add(egui::Label::new(egui::RichText::new(message).weak()).wrap());
             });
@@ -126,9 +147,12 @@ impl ListView<'_> {
         let result = table.show(
             ui,
             rows,
-            requests.selected,
-            shortcuts_allowed,
-            self.saving_body,
+            super::request_table::TableViewOptions {
+                selected: requests.selected,
+                shortcuts_allowed,
+                saving_body: self.saving_body,
+                lang: self.lang,
+            },
         );
         actions.extend(result.selected.map(AppAction::SelectRecord));
         actions.extend(result.action);
@@ -136,13 +160,26 @@ impl ListView<'_> {
     }
 }
 
-fn map_retention_label(retained: usize, evicted: u64, approximate: bool) -> String {
-    if approximate {
-        format!("({retained} retained · ≈{evicted} older removed)")
-    } else if evicted > 0 {
-        format!("({retained} retained · {evicted} older removed)")
-    } else {
-        format!("({retained} matching)")
+fn map_retention_label(retained: usize, evicted: u64, approximate: bool, lang: Language) -> String {
+    match lang {
+        Language::English => {
+            if approximate {
+                format!("({retained} retained · ≈{evicted} older removed)")
+            } else if evicted > 0 {
+                format!("({retained} retained · {evicted} older removed)")
+            } else {
+                format!("({retained} matching)")
+            }
+        }
+        Language::Korean => {
+            if approximate {
+                format!("({retained}건 유지 · 오래된 기록 ≈{evicted}건 정리됨)")
+            } else if evicted > 0 {
+                format!("({retained}건 유지 · 오래된 기록 {evicted}건 정리됨)")
+            } else {
+                format!("({retained}건 일치)")
+            }
+        }
     }
 }
 
@@ -164,11 +201,21 @@ pub(crate) fn visible_records<'a>(
 
 /// One line for a list without rows: why it is empty and, while capturing,
 /// the proxy address to point a client at.
-fn empty_list_text(captured: usize, proxy: Option<std::net::SocketAddr>) -> String {
+fn empty_list_text(captured: usize, proxy: Option<std::net::SocketAddr>, lang: Language) -> String {
     match proxy {
-        _ if captured > 0 => "No requests match the filter".to_owned(),
-        Some(address) => format!("No requests yet · proxy http://{address}"),
-        None => "No requests · proxy stopped".to_owned(),
+        _ if captured > 0 => lang
+            .pick(
+                "No requests match the filter",
+                "필터와 일치하는 요청이 없습니다",
+            )
+            .to_owned(),
+        Some(address) => match lang {
+            Language::English => format!("No requests yet · proxy http://{address}"),
+            Language::Korean => format!("요청 없음 · 프록시 http://{address}"),
+        },
+        None => lang
+            .pick("No requests · proxy stopped", "요청 없음 · 프록시 중지됨")
+            .to_owned(),
     }
 }
 
@@ -187,26 +234,39 @@ mod tests {
     #[test]
     fn endpoint_evictions_are_marked_as_estimates_even_at_zero() {
         assert_eq!(
-            map_retention_label(5, 0, true),
+            map_retention_label(5, 0, true, Language::English),
             "(5 retained · ≈0 older removed)"
         );
         assert_eq!(
-            map_retention_label(5, 2, true),
+            map_retention_label(5, 2, true, Language::English),
             "(5 retained · ≈2 older removed)"
         );
         assert_eq!(
-            map_retention_label(5, 2, false),
+            map_retention_label(5, 2, false, Language::English),
             "(5 retained · 2 older removed)"
         );
-        assert_eq!(map_retention_label(5, 0, false), "(5 matching)");
+        assert_eq!(
+            map_retention_label(5, 0, false, Language::English),
+            "(5 matching)"
+        );
+        assert_eq!(
+            map_retention_label(5, 0, false, Language::Korean),
+            "(5건 일치)"
+        );
     }
 
     #[test]
     fn empty_list_explains_the_next_step() {
         let address = std::net::SocketAddr::from(([127, 0, 0, 1], 18080));
-        assert!(empty_list_text(0, Some(address)).contains("http://127.0.0.1:18080"));
-        assert!(empty_list_text(0, None).contains("stopped"));
-        assert!(empty_list_text(3, Some(address)).contains("match the filter"));
+        assert!(
+            empty_list_text(0, Some(address), Language::English).contains("http://127.0.0.1:18080")
+        );
+        assert!(empty_list_text(0, None, Language::English).contains("stopped"));
+        assert!(empty_list_text(3, Some(address), Language::English).contains("match the filter"));
+        assert!(
+            empty_list_text(0, Some(address), Language::Korean).contains("http://127.0.0.1:18080")
+        );
+        assert!(empty_list_text(0, None, Language::Korean).contains("중지됨"));
     }
 
     #[test]

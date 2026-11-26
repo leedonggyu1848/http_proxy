@@ -160,16 +160,20 @@ impl TreeView {
         ui: &mut egui::Ui,
         theme: Theme,
         font: &FontId,
+        lang: crate::ui::i18n::Language,
     ) -> Option<String> {
-        ui.weak("Right-click a node to copy its path or value.");
+        ui.weak(lang.pick(
+            "Right-click a node to copy its path or value.",
+            "노드를 마우스 오른쪽 버튼으로 클릭해 경로나 값을 복사할 수 있습니다.",
+        ));
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Expand all").clicked() {
+            if ui.button(lang.pick("Expand all", "모두 펼치기")).clicked() {
                 self.set_all(true);
             }
-            if ui.button("Collapse all").clicked() {
+            if ui.button(lang.pick("Collapse all", "모두 접기")).clicked() {
                 self.set_all(false);
             }
-            ui.label("Search:");
+            ui.label(lang.pick("Search:", "검색:"));
             let mut query = self.query.clone();
             let search_width = Layout::TREE_SEARCH_WIDTH.fit(ui.available_width());
             if ui
@@ -193,7 +197,7 @@ impl TreeView {
             .show_rows(ui, height, visible.len(), |ui, range| {
                 for row in range {
                     if let Some(&index) = visible.get(row)
-                        && let Some(text) = self.row(ui, index)
+                        && let Some(text) = self.row(ui, index, lang)
                     {
                         copied = Some(text);
                     }
@@ -202,7 +206,12 @@ impl TreeView {
         copied
     }
 
-    fn row(&mut self, ui: &mut egui::Ui, index: usize) -> Option<String> {
+    fn row(
+        &mut self,
+        ui: &mut egui::Ui,
+        index: usize,
+        lang: crate::ui::i18n::Language,
+    ) -> Option<String> {
         let node = self.model.node(index)?;
         let job = self.labels.as_ref()?.jobs.get(index)?;
         let expandable = self.expandable(index);
@@ -234,12 +243,12 @@ impl TreeView {
             response.context_menu(|ui| {
                 if let Some(path) = &node.path {
                     ui.weak(path.as_str());
-                    if ui.button(copy.path).clicked() {
+                    if ui.button(tree_copy_label(lang, copy.path)).clicked() {
                         copied = Some(path.clone());
                         ui.close();
                     }
                 }
-                if ui.button(copy.value).clicked() {
+                if ui.button(tree_copy_label(lang, copy.value)).clicked() {
                     copied = Some(node.value.clone());
                     ui.close();
                 }
@@ -249,6 +258,19 @@ impl TreeView {
             self.toggle(index);
         }
         copied
+    }
+}
+
+fn tree_copy_label(lang: crate::ui::i18n::Language, raw: &'static str) -> &'static str {
+    if lang == crate::ui::i18n::Language::English {
+        return raw;
+    }
+    match raw {
+        "Copy JSONPath" => "JSONPath 복사",
+        "Copy XPath" => "XPath 복사",
+        "Copy path" => "경로 복사",
+        "Copy value" => "값 복사",
+        other => other,
     }
 }
 

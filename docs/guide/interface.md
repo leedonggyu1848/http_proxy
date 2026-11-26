@@ -2,13 +2,13 @@
 
 [사용자 가이드 목록](README.md) · [README](../../README.md)
 
-이 문서는 화면 구성, 요청 목록 단축키, 테마, 화면 읽기 프로그램 지원과 글꼴 표시를 설명한다.
+이 문서는 화면 구성, 요청 목록 단축키, 언어와 테마, 화면 읽기 프로그램 지원과 글꼴 표시를 설명한다.
 
 ## 화면 구성
 
 화면은 위에서 아래로 다음 순서로 놓인다. 요청 목록과 상세가 남은 높이를 모두 쓴다.
 
-- **툴바:** 프록시 상태·주소·`Copy`·`Stop`, **Decrypt HTTPS**와 CA 상태, **Open Browser**, **Save**, **Settings**(테마와 본문 저장 한도), **?**(캡처 범위 안내). 창이 좁으면 다음 줄로 넘어간다.
+- **툴바:** 프록시 상태·주소·`Copy`·`Stop`, **Decrypt HTTPS**와 CA 상태, **Open Browser**, **Save**, **Settings**(언어·테마와 본문 저장 한도), **?**(캡처 범위 안내). 창이 좁으면 다음 줄로 넘어간다.
 - **알림:** 포트 충돌, 브라우저·CA 오류처럼 확인해야 할 오류와 경고는 툴바 바로 아래에 표시한다.
 - **보기 전환:** **Requests**에서 요청 목록을 보고 **Map**에서 [URL 맵과 관계 그래프](url-map.md)를 확인한다.
 - **필터 줄:** 검색어, 검색 범위(All·URL·Headers·Request body·Response body), **Aa**(대소문자 구분), **.\***(정규식), 종류(All·Responses·Failures·Tunnels), **Follow newest**, **Clear**.
@@ -69,6 +69,17 @@
 - macOS: `~/Library/Application Support/http-inspector/theme`.
 
 설정 파일이 없거나 값이 잘못되면 System으로 시작한다.
+
+## 화면 언어
+
+툴바의 **Settings**(**설정**) 메뉴에서 **System**(**시스템**), **English**, **한국어** 중 하나를 고른다. 언어 이름(`English`, `한국어`)은 현재 UI 언어와 관계없이 고유 표기를 유지한다. 기본값은 **System**이며, 실행 시 POSIX 로케일 환경 변수(`LC_ALL` → `LC_MESSAGES` → `LANG`)를 순서대로 확인해 `ko` 계열이면 한국어로, 그 외에는 영어로 표시한다.
+
+선택은 앱을 다시 시작하지 않고 즉시 반영되며 포트·테마 설정과 같은 디렉터리의 `language` 파일에 저장된다.
+
+- Linux: `$XDG_CONFIG_HOME/http-inspector/language`. `XDG_CONFIG_HOME`이 없으면 `~/.config/http-inspector/language`를 사용한다.
+- macOS: `~/Library/Application Support/http-inspector/language`.
+
+설정 파일이 없거나 알 수 없는 값이 들어 있으면 오류 없이 System으로 시작한다. 저장에 실패하면 상태 바에 오류를 표시한다. 프로토콜·표준·고유 기술 용어(`HTTP`, `HTTPS`, `CONNECT`, `CA`, `HAR`, `cURL`, `URL`, `JSON`, `XML`, HTTP 메서드·헤더 이름, `200 OK` 등)와 내보내기 형식(HAR·cURL·URL 맵)·캡처된 트래픽 내용은 원문을 유지한다.
 
 ## 화면 읽기 프로그램
 

@@ -104,12 +104,17 @@ impl InspectorApp {
         self.dispatch(ui.ctx(), actions);
     }
 
+    pub(crate) const fn language(&self) -> crate::ui::i18n::Language {
+        self.layout.language.language()
+    }
+
     fn view(
         &mut self,
         ui: &mut egui::Ui,
         body_dialog_open: bool,
         dialog_open: bool,
     ) -> Vec<AppAction> {
+        let lang = self.language();
         let mut actions = Vec::new();
         self.dialog_actions(ui.ctx(), body_dialog_open, &mut actions);
         let shortcuts_allowed = !dialog_open && request_shortcuts_allowed(ui.ctx());
@@ -139,6 +144,7 @@ impl InspectorApp {
                             ui,
                             self.map.analysis.url_map(),
                             self.dialogs.save.is_busy(),
+                            lang,
                         ) {
                             pending_map_action = Some(action);
                         }
@@ -161,15 +167,25 @@ impl InspectorApp {
     }
 
     fn view_switcher(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+        let lang = self.language();
         ui.horizontal_wrapped(|ui| {
-            let req_label = format!("Requests ({})", self.requests.records.len());
+            let count = self.requests.records.len();
+            let req_label = match lang {
+                crate::ui::i18n::Language::English => format!("Requests ({count})"),
+                crate::ui::i18n::Language::Korean => format!("요청 ({count})"),
+            };
             let mut view = self.layout.main_view;
             ui.selectable_value(&mut view, MainView::Requests, req_label);
-            let map_label = format!(
-                "Map ({} hosts · {} nodes)",
-                self.map.analysis.url_map().origins().len(),
-                self.map.analysis.url_map().node_count()
-            );
+            let hosts = self.map.analysis.url_map().origins().len();
+            let nodes = self.map.analysis.url_map().node_count();
+            let map_label = match lang {
+                crate::ui::i18n::Language::English => {
+                    format!("Map ({hosts} hosts · {nodes} nodes)")
+                }
+                crate::ui::i18n::Language::Korean => {
+                    format!("맵 (호스트 {hosts} · 노드 {nodes})")
+                }
+            };
             ui.selectable_value(&mut view, MainView::Map, map_label);
             if view != self.layout.main_view {
                 actions.push(AppAction::SwitchView(view));
@@ -186,6 +202,7 @@ impl InspectorApp {
         shortcuts_allowed: bool,
         actions: &mut Vec<AppAction>,
     ) {
+        let lang = self.language();
         let requests = ListView {
             requests: &self.requests,
             analysis: &self.map.analysis,
@@ -196,6 +213,7 @@ impl InspectorApp {
                 .as_ref()
                 .map(ProxyHandle::local_addr),
             saving_body: self.session.body_saving.is_busy(),
+            lang,
         };
         requests.filters(ui, &mut self.request_table, actions);
         let used = ui.cursor().top() - top + ui.spacing().item_spacing.y;
@@ -222,6 +240,7 @@ impl InspectorApp {
                     body_mode: self.detail.body_mode,
                     curl: &self.detail.curl,
                     body_saving: &self.session.body_saving,
+                    lang,
                 };
                 detail.show(
                     right_ui,
@@ -241,6 +260,7 @@ impl InspectorApp {
         height: f32,
         shortcuts_allowed: bool,
     ) -> Option<MapAction> {
+        let lang = self.language();
         if self.map.panel.sub_view == MapSubView::Graph {
             let size = egui::vec2(ui.available_width(), height);
             let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
@@ -253,7 +273,7 @@ impl InspectorApp {
             main.shrink_clip_rect(rect);
             self.map
                 .panel
-                .show_graph_pane(&mut main, self.map.analysis.url_map());
+                .show_graph_pane(&mut main, self.map.analysis.url_map(), lang);
             return None;
         }
 
@@ -273,12 +293,14 @@ impl InspectorApp {
                     left_ui,
                     self.map.analysis.url_map(),
                     shortcuts_allowed,
+                    lang,
                 );
                 self.map.panel.show_detail_pane(
                     right_ui,
                     self.map.analysis.url_map(),
                     &self.requests.records,
                     self.map.analysis.endpoint_schemas(),
+                    lang,
                 )
             },
         );

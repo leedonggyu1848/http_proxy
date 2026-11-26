@@ -3,6 +3,8 @@
 
 use eframe::egui::{self, Key, Modifiers};
 
+use crate::ui::i18n::Language;
+
 /// Section of the selected request shown in the detail panel.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum DetailTab {
@@ -20,10 +22,10 @@ enum TabStep {
 impl DetailTab {
     const ALL: [Self; 2] = [Self::Headers, Self::Body];
 
-    const fn title(self) -> &'static str {
+    const fn title(self, lang: Language) -> &'static str {
         match self {
-            Self::Headers => "Headers",
-            Self::Body => "Body",
+            Self::Headers => lang.pick("Headers", "헤더"),
+            Self::Body => lang.pick("Body", "본문"),
         }
     }
 
@@ -78,15 +80,15 @@ pub(super) fn apply_shortcuts(ui: &egui::Ui, tab: &mut DetailTab) {
 ///
 /// The tab list scope sits inside `horizontal` so the bar stays one row tall;
 /// a scope with its own horizontal layout would claim the rest of the panel.
-pub(super) fn show(ui: &mut egui::Ui, current: &mut DetailTab) -> egui::Rect {
+pub(super) fn show(ui: &mut egui::Ui, current: &mut DetailTab, lang: Language) -> egui::Rect {
     ui.horizontal(|ui| {
         ui.scope_builder(
             egui::UiBuilder::new()
                 .accessibility_role(egui::accesskit::Role::TabList)
-                .accessibility_label("Request details"),
+                .accessibility_label(lang.pick("Request details", "요청 상세")),
             |ui| {
                 for tab in DetailTab::ALL {
-                    show_tab(ui, current, tab);
+                    show_tab(ui, current, tab, lang);
                 }
             },
         );
@@ -95,11 +97,12 @@ pub(super) fn show(ui: &mut egui::Ui, current: &mut DetailTab) -> egui::Rect {
     .rect
 }
 
-fn show_tab(ui: &mut egui::Ui, current: &mut DetailTab, tab: DetailTab) {
+fn show_tab(ui: &mut egui::Ui, current: &mut DetailTab, tab: DetailTab, lang: Language) {
     let selected = *current == tab;
-    let response = ui.selectable_label(selected, tab.title());
+    let title = tab.title(lang);
+    let response = ui.selectable_label(selected, title);
     response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::Role::Tab, ui.is_enabled(), selected, tab.title())
+        egui::WidgetInfo::selected(egui::Role::Tab, ui.is_enabled(), selected, title)
     });
     ui.ctx().accesskit_node_builder(response.id, |node| {
         node.clear_toggled();
@@ -184,7 +187,7 @@ mod tests {
             apply_shortcuts(ui, &mut tab);
             remaining = ui.input(|input| input.events.clone());
             row_height = ui.spacing().interact_size.y;
-            bar = show(ui, &mut tab);
+            bar = show(ui, &mut tab, Language::English);
         });
         // The bar must leave the rest of the panel to the details below it.
         assert!(bar.height() <= row_height + 1.0, "tab bar is {bar:?}");

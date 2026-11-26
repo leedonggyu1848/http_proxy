@@ -1,3 +1,4 @@
+use crate::ui::i18n::Language;
 use crate::ui::style::tokens::Layout;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -14,7 +15,57 @@ use super::background_task::{BackgroundTask, TaskPoll};
 
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 
-type SaveCompletion = io::Result<PathBuf>;
+const MISSING_SAVE_DIR_MSG: &str = "Choose an existing save directory in the Save menu";
+
+enum SaveFailure {
+    MissingDirectory,
+    WorkerStopped,
+    Io(io::Error),
+}
+
+impl SaveFailure {
+    fn from_io(error: io::Error) -> Self {
+        if error.kind() == io::ErrorKind::NotADirectory && error.to_string() == MISSING_SAVE_DIR_MSG
+        {
+            Self::MissingDirectory
+        } else {
+            Self::Io(error)
+        }
+    }
+
+    fn localized(&self, lang: Language) -> String {
+        match self {
+            Self::MissingDirectory => lang
+                .pick(
+                    MISSING_SAVE_DIR_MSG,
+                    "저장 메뉴에서 존재하는 저장 폴더를 선택하세요",
+                )
+                .to_owned(),
+            Self::WorkerStopped => lang
+                .pick(
+                    "The save worker stopped unexpectedly",
+                    "저장 작업자가 예기치 않게 중지되었습니다",
+                )
+                .to_owned(),
+            Self::Io(error) => error.to_string(),
+        }
+    }
+}
+
+/// Formats an I/O error returned by [`SaveControls::directory`] in the active UI language.
+pub(super) fn localize_directory_error(error: &io::Error, lang: Language) -> String {
+    if error.kind() == io::ErrorKind::NotADirectory && error.to_string() == MISSING_SAVE_DIR_MSG {
+        lang.pick(
+            MISSING_SAVE_DIR_MSG,
+            "저장 메뉴에서 존재하는 저장 폴더를 선택하세요",
+        )
+        .to_owned()
+    } else {
+        error.to_string()
+    }
+}
+
+type SaveCompletion = Result<PathBuf, SaveFailure>;
 
 /// A `Save` menu item that opens a dialog owned by the app.
 #[derive(Debug, Eq, PartialEq)]
@@ -43,15 +94,22 @@ impl SaveControls {
     }
 
     /// Shows the save controls and returns any edits or requested operations.
-    pub(crate) fn menu(&self, ui: &mut egui::Ui, log_available: bool) -> Vec<SaveMenuAction> {
+    pub(crate) fn menu(
+        &self,
+        ui: &mut egui::Ui,
+        log_available: bool,
+        lang: Language,
+    ) -> Vec<SaveMenuAction> {
         if self.pending.is_some() {
             ui.spinner();
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
         ui.add_enabled_ui(self.pending.is_none(), |ui| {
-            ui.menu_button("Save ▼", |ui| self.menu_items(ui, log_available))
-                .inner
-                .unwrap_or_default()
+            ui.menu_button(lang.pick("Save ▼", "저장 ▼"), |ui| {
+                self.menu_items(ui, log_available, lang)
+            })
+            .inner
+            .unwrap_or_default()
         })
         .inner
     }
@@ -64,7 +122,7 @@ impl SaveControls {
         self.status = None;
         match self.destination("log").and_then(|path| log.export(path)) {
             Ok(receiver) => self.pending = Some(BackgroundTask::track(receiver)),
-            Err(error) => self.status = Some(Err(error)),
+            Err(error) => self.status = Some(Err(SaveFailure::from_io(error))),
         }
     }
 
@@ -108,7 +166,7 @@ impl SaveControls {
         let path = match self.destination_with_prefix(prefix, extension) {
             Ok(path) => path,
             Err(error) => {
-                self.status = Some(Err(error));
+                self.status = Some(Err(SaveFailure::from_io(error)));
                 return;
             }
         };
@@ -117,52 +175,68 @@ impl SaveControls {
         }));
     }
 
-    fn menu_items(&self, ui: &mut egui::Ui, log_available: bool) -> Vec<SaveMenuAction> {
+    fn menu_items(
+        &self,
+        ui: &mut egui::Ui,
+        log_available: bool,
+        lang: Language,
+    ) -> Vec<SaveMenuAction> {
         let mut actions = Vec::new();
-        ui.label("Save directory");
+        ui.label(lang.pick("Save directory", "저장 폴더"));
         let input_width = Layout::SAVE_DIRECTORY_WIDTH.fit(ui.ctx().content_rect().width());
         let mut directory = self.directory.clone();
         if ui
             .add(
                 egui::TextEdit::singleline(&mut directory)
                     .desired_width(input_width)
-                    .hint_text("Existing directory"),
+                    .hint_text(lang.pick("Existing directory", "존재하는 폴더 경로")),
             )
             .changed()
         {
             actions.push(SaveMenuAction::Directory(directory));
         }
         if ui
-            .button("Save window PNG")
-            .on_hover_text("Save the visible app content, without the OS window border.")
+            .button(lang.pick("Save window PNG", "창 화면 PNG 저장"))
+            .on_hover_text(lang.pick(
+                "Save the visible app content, without the OS window border.",
+                "OS 창 테두리를 제외한 현재 앱 화면을 PNG로 저장합니다.",
+            ))
             .clicked()
         {
             actions.push(SaveMenuAction::SavePng);
             ui.close();
         }
         if ui
-            .add_enabled(log_available, egui::Button::new("Save all logs"))
-            .on_hover_text("Save all captured records and full bodies, regardless of the filter.")
+            .add_enabled(
+                log_available,
+                egui::Button::new(lang.pick("Save all logs", "전체 로그 저장")),
+            )
+            .on_hover_text(lang.pick(
+                "Save all captured records and full bodies, regardless of the filter.",
+                "필터와 관계없이 캡처된 모든 기록과 전체 본문을 저장합니다.",
+            ))
             .clicked()
         {
             actions.push(SaveMenuAction::SaveLogs);
             ui.close();
         }
         if ui
-            .button("Export HAR…")
-            .on_hover_text(
-                "Save the requests in the list as a HAR 1.2 file. Bodies and sensitive headers are left out unless you include them.",
-            )
+            .button(lang.pick("Export HAR…", "HAR 내보내기…"))
+            .on_hover_text(lang.pick(
+                "Save the listed requests as a HAR 1.2 file, excluding bodies and sensitive headers unless selected.",
+                "목록의 요청을 HAR 1.2 파일로 저장하며, 본문과 민감 헤더는 직접 선택하지 않으면 제외됩니다.",
+            ))
             .clicked()
         {
             actions.push(SaveMenuAction::ExportHar);
             ui.close();
         }
         if ui
-            .button("Save bodies…")
-            .on_hover_text(
+            .button(lang.pick("Save bodies…", "본문 일괄 저장…"))
+            .on_hover_text(lang.pick(
                 "Save the request and response bodies of many requests into a new folder with a manifest.json.",
-            )
+                "여러 요청의 요청·응답 본문을 manifest.json과 함께 새 폴더에 저장합니다.",
+            ))
             .clicked()
         {
             actions.push(SaveMenuAction::SaveBodies);
@@ -172,16 +246,25 @@ impl SaveControls {
     }
 
     /// Shows the result of the last save in the status bar.
-    pub(crate) fn status(&self, ui: &mut egui::Ui) {
+    pub(crate) fn status(&self, ui: &mut egui::Ui, lang: Language) {
         match &self.status {
             Some(Ok(path)) => {
-                ui.label(format!("Saved: {}", path.display()));
+                let text = match lang {
+                    Language::English => format!("Saved: {}", path.display()),
+                    Language::Korean => format!("저장됨: {}", path.display()),
+                };
+                ui.label(text);
             }
             Some(Err(error)) => {
+                let detail = error.localized(lang);
+                let text = match lang {
+                    Language::English => format!("Save failed: {detail}"),
+                    Language::Korean => format!("저장 실패: {detail}"),
+                };
                 crate::ui::style::indicator::dot_label(
                     ui,
                     crate::ui::style::tokens::Tone::Danger,
-                    format!("Save failed: {error}"),
+                    text,
                 );
             }
             None => {}
@@ -193,9 +276,10 @@ impl SaveControls {
             return;
         };
         let result = match task.poll() {
-            TaskPoll::Ready(result) => result,
+            TaskPoll::Ready(Ok(path)) => Ok(path),
+            TaskPoll::Ready(Err(error)) => Err(SaveFailure::from_io(error)),
             TaskPoll::Pending => return,
-            TaskPoll::Disconnected => Err(io::Error::other("The save worker stopped unexpectedly")),
+            TaskPoll::Disconnected => Err(SaveFailure::WorkerStopped),
         };
         self.pending = None;
         self.status = Some(result);
@@ -207,7 +291,7 @@ impl SaveControls {
         if !directory.is_dir() {
             return Err(io::Error::new(
                 io::ErrorKind::NotADirectory,
-                "Choose an existing save directory in the Save menu",
+                MISSING_SAVE_DIR_MSG,
             ));
         }
         Ok(directory.to_path_buf())
@@ -236,7 +320,7 @@ impl SaveControls {
         let path = match self.destination("png") {
             Ok(path) => path,
             Err(error) => {
-                self.status = Some(Err(error));
+                self.status = Some(Err(SaveFailure::from_io(error)));
                 return;
             }
         };

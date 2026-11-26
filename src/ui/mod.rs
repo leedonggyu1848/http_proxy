@@ -17,6 +17,11 @@ mod dialogs;
     clippy::redundant_pub_crate,
     reason = "cross-screen items in a private module; `pub` triggers `unreachable_pub`"
 )]
+mod i18n;
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "cross-screen items in a private module; `pub` triggers `unreachable_pub`"
+)]
 mod map;
 #[expect(
     clippy::redundant_pub_crate,

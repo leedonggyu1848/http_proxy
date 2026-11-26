@@ -11,12 +11,14 @@ use crate::ui::detail::body_cache::{BodyCache, BodySource, PreparedBody};
 use crate::ui::detail::body_matches::BodyMatches;
 use crate::ui::detail::highlight;
 use crate::ui::detail::tree_view::TreeView;
+use crate::ui::i18n::Language;
 use crate::ui::style::theme::{self, MatchColors, SyntaxPalette, Theme};
 
 #[derive(Clone, PartialEq)]
 pub(super) struct RenderStyle {
     pub(super) theme: Theme,
     pub(super) font: egui::FontId,
+    pub(super) language: Language,
 }
 
 pub(super) enum Content {
@@ -80,7 +82,7 @@ impl SideView {
         mode: ViewMode,
         style: &RenderStyle,
     ) -> bool {
-        let Some(update) = self.cache.update(source, mode, style) else {
+        let Some(update) = self.cache.update(source, mode, style, style.language) else {
             return false;
         };
         self.shown = Some(match update.content {

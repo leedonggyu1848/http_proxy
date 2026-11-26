@@ -8,6 +8,7 @@ use http_inspector_analysis::url_map::{
 use http_inspector_exchange::ByteSize;
 
 use super::EdgeVisibility;
+use crate::ui::i18n::Language;
 use crate::ui::style::tokens::{Category, Layout, Radius, Space, StrokeWidth, ThemeTokens};
 use crate::ui::style::{
     fonts,
@@ -22,6 +23,7 @@ pub(super) fn show(
     layout: &mut ForceLayout,
     visibility: EdgeVisibility,
     dragged_node: &mut Option<usize>,
+    lang: Language,
 ) -> Option<String> {
     layout.sync(graph);
     if !layout.is_settled() && layout.step(STEPS_PER_FRAME) {
@@ -29,20 +31,10 @@ pub(super) fn show(
     }
 
     let palette = Palette::of(ui);
-    render_legend(ui, layout, visibility, &palette);
+    render_legend(ui, layout, visibility, &palette, lang);
 
     if layout.nodes().is_empty() {
-        ui.centered_and_justified(|ui| {
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(
-                        "No domain relationships yet.\nPages loading scripts, APIs, CORS requests, or redirects appear here.",
-                    )
-                    .weak(),
-                )
-                .wrap(),
-            );
-        });
+        render_empty_state(ui, lang);
         return None;
     }
 
@@ -103,20 +95,40 @@ pub(super) fn show(
         layout.nodes(),
         &positions,
         hovered,
+        lang,
     );
 
     if let Some(idx) = hovered
         && let Some(node) = layout.nodes().get(idx)
     {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        let tooltip = format_node_tooltip(graph, node);
+        let tooltip = format_node_tooltip(graph, node, lang);
         let _ = response.on_hover_text(tooltip);
     }
 
     clicked_host
 }
 
-fn legend_summary_text(layout: &ForceLayout, visibility: EdgeVisibility) -> (String, bool) {
+fn render_empty_state(ui: &mut egui::Ui, lang: Language) {
+    ui.centered_and_justified(|ui| {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(lang.pick(
+                    "No domain relationships yet.\nPages loading scripts, APIs, CORS requests, or redirects appear here.",
+                    "아직 도메인 관계가 없습니다.\n스크립트·API·CORS 요청이나 리다이렉트가 발생하면 여기에 표시됩니다.",
+                ))
+                .weak(),
+            )
+            .wrap(),
+        );
+    });
+}
+
+fn legend_summary_text(
+    layout: &ForceLayout,
+    visibility: EdgeVisibility,
+    lang: Language,
+) -> (String, bool) {
     let shown = layout.nodes().len();
     let total = layout.total_domains();
     let total_edges = layout.edges().len();
@@ -125,18 +137,34 @@ fn legend_summary_text(layout: &ForceLayout, visibility: EdgeVisibility) -> (Str
         .iter()
         .filter(|edge| visibility.allows(edge.kind))
         .count();
-    let edge_text = if visible_edges == total_edges {
-        format!("{total_edges} edges")
-    } else {
-        format!("{visible_edges}/{total_edges} edges")
+    let edge_text = match lang {
+        Language::English => {
+            if visible_edges == total_edges {
+                format!("{total_edges} edges")
+            } else {
+                format!("{visible_edges}/{total_edges} edges")
+            }
+        }
+        Language::Korean => {
+            if visible_edges == total_edges {
+                format!("연결 {total_edges}개")
+            } else {
+                format!("연결 {visible_edges}/{total_edges}개")
+            }
+        }
     };
     if total > shown {
-        (
-            format!("Showing top {shown} of {total} domains · {edge_text}"),
-            true,
-        )
+        let text = match lang {
+            Language::English => format!("Showing top {shown} of {total} domains · {edge_text}"),
+            Language::Korean => format!("도메인 {total}개 중 상위 {shown}개 표시 · {edge_text}"),
+        };
+        (text, true)
     } else {
-        (format!("{shown} domains · {edge_text}"), false)
+        let text = match lang {
+            Language::English => format!("{shown} domains · {edge_text}"),
+            Language::Korean => format!("도메인 {shown}개 · {edge_text}"),
+        };
+        (text, false)
     }
 }
 
@@ -145,12 +173,13 @@ fn render_legend(
     layout: &ForceLayout,
     visibility: EdgeVisibility,
     palette: &Palette,
+    lang: Language,
 ) {
     let tokens = ThemeTokens::for_theme(ui.ctx().theme());
     let chip = |ui: &mut egui::Ui, text: egui::RichText| {
         ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend));
     };
-    let (summary, capped) = legend_summary_text(layout, visibility);
+    let (summary, capped) = legend_summary_text(layout, visibility, lang);
     let summary_color = if capped {
         palette.warning
     } else {
@@ -164,41 +193,44 @@ fn render_legend(
         ui.separator();
         chip(
             ui,
-            egui::RichText::new("1st-party (solid)")
+            egui::RichText::new(lang.pick("1st-party (solid)", "퍼스트파티 (실선)"))
                 .color(tokens.category(Category::BlueSlate))
                 .small(),
         );
         chip(
             ui,
-            egui::RichText::new("3rd-party (dashed)")
+            egui::RichText::new(lang.pick("3rd-party (dashed)", "서드파티 (점선)"))
                 .color(palette.warning)
                 .small(),
         );
         ui.separator();
         chip(
             ui,
-            egui::RichText::new("Referer (solid)")
+            egui::RichText::new(lang.pick("Referer (solid)", "Referer (실선)"))
                 .color(tokens.category(Category::BlueSlate))
                 .small(),
         );
         chip(
             ui,
-            egui::RichText::new("Origin (dashed)")
+            egui::RichText::new(lang.pick("Origin (dashed)", "Origin (점선)"))
                 .color(tokens.category(Category::Ochre))
                 .small(),
         );
         chip(
             ui,
-            egui::RichText::new("Redirect (thick)")
+            egui::RichText::new(lang.pick("Redirect (thick)", "리다이렉트 (굵은 선)"))
                 .color(tokens.category(Category::Teal))
                 .small(),
         );
         ui.separator();
         chip(
             ui,
-            egui::RichText::new("Click a domain to open Tree view.")
-                .color(palette.secondary)
-                .small(),
+            egui::RichText::new(lang.pick(
+                "Click a domain to open Tree view.",
+                "도메인을 클릭하면 트리 보기로 이동합니다.",
+            ))
+            .color(palette.secondary)
+            .small(),
         );
     });
 }
@@ -358,6 +390,7 @@ fn paint_nodes(
     nodes: &[GraphNode],
     positions: &[(Pos2, f32)],
     hovered: Option<usize>,
+    lang: Language,
 ) {
     let painter = canvas.painter;
     let palette = canvas.palette;
@@ -403,7 +436,7 @@ fn paint_nodes(
         );
 
         let tag = if node.third_party {
-            format!("{} [3rd]", node.host)
+            format!("{} {}", node.host, lang.pick("[3rd]", "[서드파티]"))
         } else {
             node.host.clone()
         };
@@ -509,11 +542,11 @@ fn hit_test(positions: &[(Pos2, f32)], pointer: Pos2) -> Option<usize> {
         .map(|(index, _)| index)
 }
 
-fn format_node_tooltip(graph: &RelationshipGraph, node: &GraphNode) -> String {
+fn format_node_tooltip(graph: &RelationshipGraph, node: &GraphNode, lang: Language) -> String {
     let party = if node.third_party {
-        "3rd-party"
+        lang.pick("3rd-party", "서드파티")
     } else {
-        "1st-party"
+        lang.pick("1st-party", "퍼스트파티")
     };
     let bytes = graph
         .domains()
@@ -529,14 +562,17 @@ fn format_node_tooltip(graph: &RelationshipGraph, node: &GraphNode) -> String {
         .keys()
         .filter(|key| key.to_host == node.host)
         .count();
-    format!(
-        "{}\nSite (eTLD+1): {}\nParty: {party}\nRequests: {} · Errors: {} · Size: {}\nEdges: {outgoing} outgoing, {incoming} incoming\nClick to open in Tree view",
-        node.host,
-        node.site,
-        node.request_count,
-        node.error_count,
-        ByteSize::new(bytes),
-    )
+    let size = ByteSize::new(bytes);
+    match lang {
+        Language::English => format!(
+            "{}\nSite (eTLD+1): {}\nParty: {party}\nRequests: {} · Errors: {} · Size: {size}\nEdges: {outgoing} outgoing, {incoming} incoming\nClick to open in Tree view",
+            node.host, node.site, node.request_count, node.error_count,
+        ),
+        Language::Korean => format!(
+            "{}\n사이트 (eTLD+1): {}\n구분: {party}\n요청: {} · 오류: {} · 크기: {size}\n연결: 발신 {outgoing}, 수신 {incoming}\n클릭하면 트리 보기로 이동합니다",
+            node.host, node.site, node.request_count, node.error_count,
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -569,7 +605,8 @@ mod tests {
         let mut layout = ForceLayout::new(40);
         layout.sync(&graph);
 
-        let (all_text, capped) = legend_summary_text(&layout, EdgeVisibility::default());
+        let (all_text, capped) =
+            legend_summary_text(&layout, EdgeVisibility::default(), Language::English);
         assert!(!capped);
         assert_eq!(all_text, "2 domains · 2 edges");
 
@@ -578,7 +615,7 @@ mod tests {
             origin: false,
             redirect: false,
         };
-        let (filtered_text, _) = legend_summary_text(&layout, only_referer);
+        let (filtered_text, _) = legend_summary_text(&layout, only_referer, Language::English);
         assert_eq!(filtered_text, "2 domains · 1/2 edges");
     }
 }

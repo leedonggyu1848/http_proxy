@@ -9,6 +9,7 @@ use http_inspector_exchange::{ByteSize, Exchange, Outcome, RecordId};
 
 use crate::ui::AppAction;
 use crate::ui::dialogs::copy_curl;
+use crate::ui::i18n::{Language, Text};
 use crate::ui::requests::outcome_view::{outcome_summary, outcome_text, status_rank};
 use crate::ui::requests::target_view::{TargetParts, host_fits, middle_ellipsis, shared_host};
 use crate::ui::style::tokens::{Layout, Radius, Space, StrokeWidth, ThemeTokens, TypeScale};
@@ -41,14 +42,14 @@ impl Field {
         Self::Duration,
     ];
 
-    const fn title(self) -> &'static str {
+    const fn title(self, lang: Language) -> &'static str {
         match self {
-            Self::Method => "Method",
-            Self::Target => "Path",
-            Self::Status => "Status",
-            Self::Type => "Type",
-            Self::Size => "Size",
-            Self::Duration => "Duration",
+            Self::Method => lang.text(Text::ColMethod),
+            Self::Target => lang.text(Text::ColPath),
+            Self::Status => lang.text(Text::ColStatus),
+            Self::Type => lang.text(Text::ColType),
+            Self::Size => lang.text(Text::ColSize),
+            Self::Duration => lang.pick("Duration", "시간"),
         }
     }
 
@@ -196,6 +197,15 @@ pub(super) struct TableResult {
     pub(super) action: Option<AppAction>,
 }
 
+/// Rendering options for [`RequestTable::show`].
+#[derive(Clone, Copy)]
+pub(super) struct TableViewOptions {
+    pub(super) selected: Option<RecordId>,
+    pub(super) shortcuts_allowed: bool,
+    pub(super) saving_body: bool,
+    pub(super) lang: Language,
+}
+
 impl RequestTable {
     pub(crate) const fn new() -> Self {
         Self {
@@ -211,13 +221,20 @@ impl RequestTable {
     }
 
     /// Shows the list options inline in the filter row.
-    pub(super) fn controls(&mut self, ui: &mut egui::Ui) {
-        ui.checkbox(&mut self.follow_newest, "Follow newest")
-            .on_hover_text("Keep the newest request in view while sorted by arrival.");
+    pub(super) fn controls(&mut self, ui: &mut egui::Ui, lang: Language) {
+        ui.checkbox(
+            &mut self.follow_newest,
+            lang.pick("Follow newest", "최신 항목 따라가기"),
+        )
+        .on_hover_text(lang.pick(
+            "Keep the newest request in view while sorted by arrival.",
+            "도착순으로 정렬된 동안 가장 최근 요청이 보이도록 유지합니다.",
+        ));
         if self.follow_newest {
             self.keyboard_row = None;
         }
-        if self.sort.field.is_some() && ui.button("Arrival order").clicked() {
+        if self.sort.field.is_some() && ui.button(lang.pick("Arrival order", "도착순")).clicked()
+        {
             self.sort = Self::new().sort;
         }
     }
@@ -240,10 +257,14 @@ impl RequestTable {
         &mut self,
         ui: &mut egui::Ui,
         mut rows: Vec<&Exchange>,
-        mut selected: Option<RecordId>,
-        shortcuts_allowed: bool,
-        saving_body: bool,
+        options: TableViewOptions,
     ) -> TableResult {
+        let TableViewOptions {
+            mut selected,
+            shortcuts_allowed,
+            saving_body,
+            lang,
+        } = options;
         self.sort_rows(&mut rows);
         let mut result = TableResult::default();
         let mut scroll_to = None;
@@ -287,6 +308,7 @@ impl RequestTable {
                     width_changed,
                     &mut result,
                     saving_body,
+                    lang,
                 )
             })
             .inner;
@@ -314,6 +336,7 @@ impl RequestTable {
         width_changed: bool,
         result: &mut TableResult,
         saving_body: bool,
+        lang: Language,
     ) -> f32 {
         // Rows touch each other; the row line separates them.
         ui.spacing_mut().item_spacing.y = 0.0;
@@ -342,7 +365,7 @@ impl RequestTable {
                     header.col(|ui| {
                         paint_header_cell(ui, field == Field::Duration);
                         let host = shared_host.filter(|_| field == Field::Target);
-                        if self.header_cell(ui, field, host) {
+                        if self.header_cell(ui, field, host, lang) {
                             self.sort = self.sort.toggled(field);
                         }
                     });
@@ -359,12 +382,12 @@ impl RequestTable {
                     let selected_row = selected == Some(record.id());
                     let focus_row = scroll_to == Some(row.index());
                     let show_host = shared_host.is_none();
-                    if show_cells(&mut row, record, selected_row, focus_row, show_host) {
+                    if show_cells(&mut row, record, selected_row, focus_row, show_host, lang) {
                         self.follow_newest = false;
                         self.keyboard_row = None;
                         result.selected = Some(record.id());
                     }
-                    if let Some(action) = row_menu(&row.response(), record, saving_body) {
+                    if let Some(action) = row_menu(&row.response(), record, saving_body, lang) {
                         result.action = Some(action);
                     }
                     if row.response().clicked() {
@@ -378,9 +401,15 @@ impl RequestTable {
 
     /// The column title, which sorts by the column when clicked, and the
     /// host shared by every row. Returns whether the title was clicked.
-    fn header_cell(&self, ui: &mut egui::Ui, field: Field, shared_host: Option<&str>) -> bool {
+    fn header_cell(
+        &self,
+        ui: &mut egui::Ui,
+        field: Field,
+        shared_host: Option<&str>,
+        lang: Language,
+    ) -> bool {
         let secondary = ThemeTokens::for_theme(ui.ctx().theme()).text.secondary;
-        let title = RichText::new(format!("{}{}", field.title(), self.sort.arrow(field)))
+        let title = RichText::new(format!("{}{}", field.title(lang), self.sort.arrow(field)))
             .size(TypeScale::COLUMN_HEADER)
             .color(secondary);
         let button = egui::Button::new(title).frame(false).truncate();
@@ -395,7 +424,10 @@ impl RequestTable {
         let clicked = ui.add(button).clicked();
         if let Some(host) = shared_host {
             ui.add(egui::Label::new(RichText::new(host).monospace().weak()).truncate())
-                .on_hover_text("Every request in the list goes to this host.");
+                .on_hover_text(lang.pick(
+                    "Every request in the list goes to this host.",
+                    "목록의 모든 요청이 이 호스트로 향합니다.",
+                ));
         }
         clicked
     }
@@ -523,25 +555,30 @@ fn column_widths(viewport_width: f32, spacing_x: f32, scroll_gutter: f32) -> [f3
 }
 
 /// Offers resending, copying, or saving a body of the row's request on right click.
-fn row_menu(response: &egui::Response, record: &Exchange, saving_body: bool) -> Option<AppAction> {
+fn row_menu(
+    response: &egui::Response,
+    record: &Exchange,
+    saving_body: bool,
+    lang: Language,
+) -> Option<AppAction> {
     let mut action = None;
     response.context_menu(|ui| {
         if ui
             .add_enabled(
                 record.source() != http_inspector_exchange::CaptureSource::Connect,
-                egui::Button::new("Edit and Resend"),
+                egui::Button::new(lang.pick("Edit and Resend", "수정 후 재전송")),
             )
             .clicked()
         {
             action = Some(AppAction::OpenReplay(record.id()));
             ui.close();
         }
-        if copy_curl::copy_button(ui, record).clicked() {
+        if copy_curl::copy_button(ui, record, lang).clicked() {
             action = Some(AppAction::CopyCurl(record.id()));
             ui.close();
         }
         ui.separator();
-        if let Some(side) = save_body_items(ui, record, !saving_body) {
+        if let Some(side) = save_body_items(ui, record, !saving_body, lang) {
             action = Some(AppAction::SaveBody(record.id(), side, SaveFormat::Decoded));
             ui.close();
         }
@@ -553,6 +590,7 @@ fn save_body_items(
     ui: &mut egui::Ui,
     record: &Exchange,
     idle: bool,
+    lang: Language,
 ) -> Option<http_inspector_exchange::BodySide> {
     let has_response = matches!(
         record.outcome(),
@@ -562,21 +600,25 @@ fn save_body_items(
     for (side, label, enabled) in [
         (
             http_inspector_exchange::BodySide::Response,
-            "Save response body",
+            lang.pick("Save response body", "응답 본문 저장"),
             has_response,
         ),
         (
             http_inspector_exchange::BodySide::Request,
-            "Save request body",
+            lang.pick("Save request body", "요청 본문 저장"),
             record.request().body().is_some(),
         ),
     ] {
         if ui
             .add_enabled(enabled && idle, egui::Button::new(label))
-            .on_hover_text("Save the decoded body to the Save directory.")
-            .on_disabled_hover_text(
+            .on_hover_text(lang.pick(
+                "Save the decoded body to the Save directory.",
+                "디코딩된 본문을 저장 폴더에 저장합니다.",
+            ))
+            .on_disabled_hover_text(lang.pick(
                 "Unavailable while another body is being saved, or when the body was not observed.",
-            )
+                "다른 본문을 저장 중이거나 관찰된 본문이 없을 때는 사용할 수 없습니다.",
+            ))
             .clicked()
         {
             chosen = Some(side);
@@ -592,6 +634,7 @@ fn show_cells(
     selected: bool,
     focus: bool,
     show_host: bool,
+    lang: Language,
 ) -> bool {
     let mut clicked = false;
     for field in Field::ALL {
@@ -602,9 +645,9 @@ fn show_cells(
                 field == Field::Duration,
             );
             match field {
-                Field::Method => clicked = method_cell(ui, record, selected, focus),
-                Field::Target => target_cell(ui, record, show_host),
-                Field::Status => status_cell(ui, record),
+                Field::Method => clicked = method_cell(ui, record, selected, focus, lang),
+                Field::Target => target_cell(ui, record, show_host, lang),
+                Field::Status => status_cell(ui, record, lang),
                 Field::Type => data_cell(ui, content_type(record).unwrap_or("—")),
                 Field::Size => numeric_cell(ui, &size_text(record)),
                 Field::Duration => numeric_cell(ui, &duration_text(record)),
@@ -628,7 +671,13 @@ fn numeric_cell(ui: &mut egui::Ui, text: &str) {
 
 /// The method, which also carries the row's keyboard focus and its screen
 /// reader name.
-fn method_cell(ui: &mut egui::Ui, record: &Exchange, selected: bool, focus: bool) -> bool {
+fn method_cell(
+    ui: &mut egui::Ui,
+    record: &Exchange,
+    selected: bool,
+    focus: bool,
+    lang: Language,
+) -> bool {
     ui.add_space(ROW_LEAD);
     ui.push_id(record.id(), |ui| {
         let response = method_text(ui, record.request().method().as_str());
@@ -641,7 +690,7 @@ fn method_cell(ui: &mut egui::Ui, record: &Exchange, selected: bool, focus: bool
                     "{} {} · {}",
                     record.request().method(),
                     record.request().target(),
-                    outcome_summary(record.outcome()),
+                    outcome_summary(record.outcome(), lang),
                 ),
             )
         });
@@ -689,13 +738,15 @@ fn method_text(ui: &mut egui::Ui, method: &str) -> egui::Response {
 
 /// The path, elided in the middle when it does not fit, then the host in
 /// secondary text when the list shows several hosts.
-fn target_cell(ui: &mut egui::Ui, record: &Exchange, show_host: bool) {
+fn target_cell(ui: &mut egui::Ui, record: &Exchange, show_host: bool, lang: Language) {
     let target = record.request().target();
     if let Some(original) = record.replay_of() {
-        ui.add(egui::Label::new(
-            RichText::new(format!("Replay of #{} ·", original.value())).weak(),
-        ))
-        .on_hover_text(target);
+        let label = match lang {
+            Language::English => format!("Replay of #{} ·", original.value()),
+            Language::Korean => format!("재전송 #{} ·", original.value()),
+        };
+        ui.add(egui::Label::new(RichText::new(label).weak()))
+            .on_hover_text(target);
     }
     let parts = TargetParts::of(target);
     let font = egui::TextStyle::Monospace.resolve(ui.style());
@@ -727,15 +778,15 @@ fn target_cell(ui: &mut egui::Ui, record: &Exchange, show_host: bool) {
 /// The status text after the failure tick, with the status class or tunnel
 /// note on hover. The tick alone marks exceptions; the text keeps the
 /// default color.
-fn status_cell(ui: &mut egui::Ui, record: &Exchange) {
-    let (text, tone) = outcome_text(record.outcome());
+fn status_cell(ui: &mut egui::Ui, record: &Exchange, lang: Language) {
+    let (text, tone) = outcome_text(record.outcome(), lang);
     ui.spacing_mut().item_spacing.x = Space::S;
     indicator::tick(ui, tone);
     let status = ui.add(egui::Label::new(RichText::new(text).monospace()).truncate());
     if matches!(record.outcome(), Outcome::Tunnel(_)) {
-        status.on_hover_text(crate::ui::dialogs::scope_help::TUNNEL_NOTE);
+        status.on_hover_text(crate::ui::dialogs::scope_help::tunnel_note(lang));
     } else {
-        status.on_hover_text(outcome_summary(record.outcome()));
+        status.on_hover_text(outcome_summary(record.outcome(), lang));
     }
 }
 
@@ -865,11 +916,13 @@ mod tests {
                     .iter()
                     .filter(|record| record.request().target().contains(query.as_str()))
                     .collect();
-                let shortcuts_allowed = crate::ui::request_shortcuts_allowed(ui.ctx());
-                if let Some(id) = table
-                    .show(ui, rows, selected, shortcuts_allowed, false)
-                    .selected
-                {
+                let opts = TableViewOptions {
+                    selected,
+                    shortcuts_allowed: crate::ui::request_shortcuts_allowed(ui.ctx()),
+                    saving_body: false,
+                    lang: Language::English,
+                };
+                if let Some(id) = table.show(ui, rows, opts).selected {
                     selected = Some(id);
                 }
             });
@@ -978,7 +1031,16 @@ mod tests {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
                     .show(ui, |ui| {
-                        let _ = table.show(ui, Vec::new(), None, false, false);
+                        let _ = table.show(
+                            ui,
+                            Vec::new(),
+                            TableViewOptions {
+                                selected: None,
+                                shortcuts_allowed: false,
+                                saving_body: false,
+                                lang: Language::English,
+                            },
+                        );
                     });
             });
             output.textures_delta.clear();

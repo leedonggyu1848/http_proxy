@@ -4,6 +4,7 @@ use std::sync::mpsc::SendError;
 use std::time::Duration;
 
 use crate::ui::AppAction;
+use crate::ui::i18n::{Language, Text, domain};
 use crate::ui::style::indicator;
 use crate::ui::style::tokens::Tone;
 
@@ -20,13 +21,28 @@ pub(crate) struct CaPanel {
     registration: Option<Registration>,
     pending: Option<BackgroundTask<Event>>,
     pending_action: Option<Action>,
-    error: Option<String>,
-    notice: Option<&'static str>,
+    error: Option<CaRegistrationError>,
+    notice: Option<NoticeKind>,
     checked: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NoticeKind {
+    RestartBrowser,
+}
+
+impl NoticeKind {
+    const fn text(self, lang: Language) -> &'static str {
+        match self {
+            Self::RestartBrowser => lang.pick(
+                "Restart Chrome/Chromium after changing CA registration.",
+                "CA 등록을 변경한 뒤에는 Chrome/Chromium을 다시 시작하세요.",
+            ),
+        }
+    }
+}
+
 struct Registration {
-    target: &'static str,
     location: PathBuf,
     status: CaTrustStatus,
 }
@@ -54,6 +70,27 @@ enum CaRegistrationError {
     WorkerStopped,
 }
 
+impl CaRegistrationError {
+    fn localized(&self, lang: Language) -> String {
+        match self {
+            Self::Setup(err) => domain::https_setup_error(lang, err),
+            Self::Trust(err) => domain::ca_trust_error(lang, err),
+            Self::Io(err) => err.to_string(),
+            Self::Start(err) => match lang {
+                Language::English => format!("Could not start CA registration: {err}"),
+                Language::Korean => format!("CA 등록 작업을 시작하지 못했습니다: {err}"),
+            },
+            Self::PreparedSend(err) => err.to_string(),
+            Self::WorkerStopped => lang
+                .pick(
+                    "CA registration worker stopped",
+                    "CA 등록 작업자가 예기치 않게 중지되었습니다",
+                )
+                .to_owned(),
+        }
+    }
+}
+
 enum Event {
     Prepared(CaInfo),
     Finished(Action, Result<Registration, CaRegistrationError>),
@@ -69,16 +106,18 @@ enum Badge {
 }
 
 impl Badge {
-    const fn text(self) -> &'static str {
+    const fn text(self, lang: Language) -> &'static str {
         match self {
-            Self::Busy(Action::Check) => "Checking…",
-            Self::Busy(Action::Install) => "Registering…",
-            Self::Busy(Action::Remove) => "Removing…",
-            Self::Unknown => "Not checked",
-            Self::Failed => "Error",
-            Self::Status(CaTrustStatus::NotInstalled) => "Not registered",
-            Self::Status(CaTrustStatus::Trusted) => "Trusted",
-            Self::Status(CaTrustStatus::Untrusted) => "Registered, not trusted",
+            Self::Busy(Action::Check) => lang.pick("Checking…", "확인 중…"),
+            Self::Busy(Action::Install) => lang.pick("Registering…", "등록 중…"),
+            Self::Busy(Action::Remove) => lang.pick("Removing…", "제거 중…"),
+            Self::Unknown => lang.pick("Not checked", "미확인"),
+            Self::Failed => lang.pick("Error", "오류"),
+            Self::Status(CaTrustStatus::NotInstalled) => lang.pick("Not registered", "미등록"),
+            Self::Status(CaTrustStatus::Trusted) => lang.pick("Trusted", "신뢰됨"),
+            Self::Status(CaTrustStatus::Untrusted) => {
+                lang.pick("Registered, not trusted", "등록됨(신뢰 안 됨)")
+            }
         }
     }
 
@@ -103,11 +142,22 @@ impl Badge {
     }
 }
 
-const REGISTER_HELP: &str = "Trust the public CA for HTTPS in Chrome/Chromium for your current user. \
-     Other browsers and apps may require separate CA registration.";
+const fn register_help(lang: Language) -> &'static str {
+    lang.pick(
+        "Trust the public CA for HTTPS in Chrome/Chromium for your current user. \
+         Other browsers and apps may require separate CA registration.",
+        "현재 사용자의 Chrome/Chromium에서 HTTPS 복호화용 공개 CA를 신뢰하도록 등록합니다. \
+         다른 브라우저나 앱은 별도의 CA 등록이 필요할 수 있습니다.",
+    )
+}
 
 #[cfg(target_os = "macos")]
-const KEYCHAIN_HELP: &str = "macOS may request authorization. Approve the keychain dialog; cancellation leaves registration incomplete.";
+const fn keychain_help(lang: Language) -> &'static str {
+    lang.pick(
+        "macOS may request authorization. Approve the keychain dialog; cancellation leaves registration incomplete.",
+        "macOS가 인증을 요청할 수 있습니다. 키체인 대화상자를 승인하세요. 취소하면 등록이 완료되지 않습니다.",
+    )
+}
 
 impl CaPanel {
     pub(crate) const fn refresh(&mut self) {
@@ -135,10 +185,22 @@ impl CaPanel {
     }
 
     /// Shows the registration badge and the available CA actions.
-    pub(crate) fn summary(&self, ui: &mut egui::Ui, directory: Option<&Path>) -> Option<AppAction> {
+    pub(crate) fn summary(
+        &self,
+        ui: &mut egui::Ui,
+        directory: Option<&Path>,
+        lang: Language,
+    ) -> Option<AppAction> {
         let Some(directory) = directory else {
-            indicator::dot_label(ui, Tone::Danger, "CA storage unavailable")
-                .on_hover_text("Check HOME and platform storage settings.");
+            indicator::dot_label(
+                ui,
+                Tone::Danger,
+                lang.pick("CA storage unavailable", "CA 저장소를 사용할 수 없음"),
+            )
+            .on_hover_text(lang.pick(
+                "Check HOME and platform storage settings.",
+                "HOME 및 플랫폼 저장소 설정을 확인하세요.",
+            ));
             return None;
         };
         let mut action = None;
@@ -151,10 +213,13 @@ impl CaPanel {
         if let Some(tone) = badge.tone() {
             indicator::dot(ui, tone);
         }
-        let badge_button = egui::Button::new(badge.text()).frame(false);
+        let badge_button = egui::Button::new(badge.text(lang)).frame(false);
         if ui
             .add_enabled(!matches!(badge, Badge::Busy(_)), badge_button)
-            .on_hover_text("CA registration status. Click to check again.")
+            .on_hover_text(lang.pick(
+                "CA registration status; click to check again.",
+                "CA 등록 상태이며, 클릭하면 다시 확인합니다.",
+            ))
             .clicked()
         {
             action = Some(AppAction::Ca(Action::Check));
@@ -162,8 +227,8 @@ impl CaPanel {
         match badge.primary() {
             Some(Action::Install) => {
                 if ui
-                    .button("Register CA")
-                    .on_hover_text(REGISTER_HELP)
+                    .button(lang.pick("Register CA", "CA 등록"))
+                    .on_hover_text(register_help(lang))
                     .clicked()
                 {
                     action = Some(AppAction::Ca(Action::Install));
@@ -171,8 +236,11 @@ impl CaPanel {
             }
             Some(Action::Remove) => {
                 if ui
-                    .small_button("Remove CA")
-                    .on_hover_text("Remove the CA that HTTP Inspector registered.")
+                    .small_button(lang.pick("Remove CA", "CA 제거"))
+                    .on_hover_text(lang.pick(
+                        "Remove the CA that HTTP Inspector registered.",
+                        "HTTP Inspector가 등록한 CA를 제거합니다.",
+                    ))
                     .clicked()
                 {
                     action = Some(AppAction::Ca(Action::Remove));
@@ -180,12 +248,14 @@ impl CaPanel {
             }
             Some(Action::Check) | None => {}
         }
-        let menu = ui.menu_button("CA details", |ui| self.details(ui, directory));
+        let menu = ui.menu_button(lang.pick("CA details", "CA 정보"), |ui| {
+            self.details(ui, directory, lang)
+        });
         action.or_else(|| menu.inner.flatten())
     }
 
     /// Paths, fingerprint, and less frequent actions, shown only on request.
-    fn details(&self, ui: &mut egui::Ui, directory: &Path) -> Option<AppAction> {
+    fn details(&self, ui: &mut egui::Ui, directory: &Path, lang: Language) -> Option<AppAction> {
         let mut action = None;
         let viewport = ui.ctx().content_rect();
         let max_width = Layout::CA_DETAILS_WIDTH.fit(viewport.width());
@@ -197,28 +267,43 @@ impl CaPanel {
                 .show(ui, |ui| {
                     action = copyable(
                         ui,
-                        "Public CA certificate",
+                        lang.pick("Public CA certificate", "공개 CA 인증서"),
                         &directory.join("root-ca.pem").display().to_string(),
+                        lang,
                     );
                     if let Some(info) = &self.info {
-                        action = copyable(ui, "SHA-256 fingerprint", info.fingerprint_sha256())
-                            .or_else(|| action.take());
-                    }
-                    if let Some(registration) = &self.registration {
                         action = copyable(
                             ui,
-                            &format!("Trust store: {}", registration.target),
+                            lang.pick("SHA-256 fingerprint", "SHA-256 지문"),
+                            info.fingerprint_sha256(),
+                            lang,
+                        )
+                        .or_else(|| action.take());
+                    }
+                    if let Some(registration) = &self.registration {
+                        let target = domain::ca_trust_store_description(lang);
+                        let label = match lang {
+                            Language::English => format!("Trust store: {target}"),
+                            Language::Korean => format!("신뢰 저장소: {target}"),
+                        };
+                        action = copyable(
+                            ui,
+                            &label,
                             &registration.location.display().to_string(),
+                            lang,
                         )
                         .or_else(|| action.take());
                     }
                     ui.separator();
-                    ui.weak(REGISTER_HELP);
+                    ui.weak(register_help(lang));
                     #[cfg(target_os = "macos")]
-                    ui.weak(KEYCHAIN_HELP);
+                    ui.weak(keychain_help(lang));
                     ui.add_enabled_ui(self.pending_action.is_none(), |ui| {
                         ui.horizontal_wrapped(|ui| {
-                            if ui.button("Check registration").clicked() {
+                            if ui
+                                .button(lang.pick("Check registration", "등록 상태 확인"))
+                                .clicked()
+                            {
                                 action = Some(AppAction::Ca(Action::Check));
                             }
                             let registered =
@@ -226,7 +311,10 @@ impl CaPanel {
                                     registration.status != CaTrustStatus::NotInstalled
                                 });
                             if ui
-                                .add_enabled(registered, egui::Button::new("Remove CA"))
+                                .add_enabled(
+                                    registered,
+                                    egui::Button::new(lang.pick("Remove CA", "CA 제거")),
+                                )
                                 .clicked()
                             {
                                 action = Some(AppAction::Ca(Action::Remove));
@@ -240,16 +328,16 @@ impl CaPanel {
 
     /// Errors and follow-up guidance shown right below the toolbar so they
     /// are never hidden in the details menu.
-    pub(crate) fn messages(&self, ui: &mut egui::Ui) {
+    pub(crate) fn messages(&self, ui: &mut egui::Ui, lang: Language) {
         if let Some(error) = &self.error {
-            indicator::dot_label(ui, Tone::Danger, format!("CA: {error}"));
+            indicator::dot_label(ui, Tone::Danger, format!("CA: {}", error.localized(lang)));
         }
         #[cfg(target_os = "macos")]
         if matches!(self.pending_action, Some(Action::Install | Action::Remove)) {
-            ui.label(KEYCHAIN_HELP);
+            ui.label(keychain_help(lang));
         }
         if let Some(notice) = self.notice {
-            ui.label(notice);
+            ui.label(notice.text(lang));
         }
     }
 
@@ -295,12 +383,10 @@ impl CaPanel {
                 self.registration = Some(registration);
                 self.notice = match action {
                     Action::Check => None,
-                    Action::Install | Action::Remove => {
-                        Some("Restart Chrome/Chromium after changing CA registration.")
-                    }
+                    Action::Install | Action::Remove => Some(NoticeKind::RestartBrowser),
                 };
             }
-            Err(error) => self.error = Some(error.to_string()),
+            Err(error) => self.error = Some(error),
         }
         false
     }
@@ -325,18 +411,17 @@ fn registration(
         }
     })?;
     Ok(Registration {
-        target: CaTrustStore::DESCRIPTION,
         location: store.location().to_owned(),
         status,
     })
 }
 
 /// One labelled value and the clipboard action offered beside it.
-fn copyable(ui: &mut egui::Ui, label: &str, value: &str) -> Option<AppAction> {
+fn copyable(ui: &mut egui::Ui, label: &str, value: &str, lang: Language) -> Option<AppAction> {
     let copied = ui
         .horizontal_wrapped(|ui| {
             ui.strong(label);
-            ui.small_button("Copy").clicked()
+            ui.small_button(lang.text(Text::Copy)).clicked()
         })
         .inner;
     ui.add(egui::Label::new(RichText::new(value).monospace()).wrap());
@@ -413,7 +498,6 @@ mod tests {
     fn details_popup_text_is_not_justified_inside_menu_layout() {
         let panel = CaPanel {
             registration: Some(Registration {
-                target: "NSS database",
                 location: PathBuf::from(
                     "/tmp/http-inspector-test-trust-store/very/long/path/pki/nssdb",
                 ),
@@ -425,7 +509,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
-                panel.details(ui, &directory);
+                panel.details(ui, &directory, Language::English);
             });
         });
         output.textures_delta.clear();

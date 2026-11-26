@@ -114,25 +114,34 @@ impl BodyMatches {
 
     /// Shows the position among matches with Previous and Next buttons.
     /// Returns `true` when the current match changed.
-    pub(super) fn controls(&mut self, ui: &mut egui::Ui) -> bool {
+    pub(super) fn controls(&mut self, ui: &mut egui::Ui, lang: crate::ui::i18n::Language) -> bool {
         let count = self.hits.len();
         if count == 0 {
-            ui.weak("No search matches in the shown text.");
+            ui.weak(lang.pick(
+                "No search matches in the shown text.",
+                "표시된 텍스트에 검색 일치 항목이 없습니다.",
+            ));
             return false;
         }
         let mut step = None;
         ui.horizontal_wrapped(|ui| {
-            ui.label(format!("Match {} of {count}", self.current + 1));
+            let position = match lang {
+                crate::ui::i18n::Language::English => {
+                    format!("Match {} of {count}", self.current + 1)
+                }
+                crate::ui::i18n::Language::Korean => format!("일치 {} / {count}", self.current + 1),
+            };
+            ui.label(position);
             if ui
-                .small_button("◀ Previous")
-                .on_hover_text("Previous match")
+                .small_button(lang.pick("◀ Previous", "◀ 이전"))
+                .on_hover_text(lang.pick("Previous match", "이전 일치 항목"))
                 .clicked()
             {
                 step = Some(count - 1);
             }
             if ui
-                .small_button("Next ▶")
-                .on_hover_text("Next match")
+                .small_button(lang.pick("Next ▶", "다음 ▶"))
+                .on_hover_text(lang.pick("Next match", "다음 일치 항목"))
                 .clicked()
             {
                 step = Some(1);

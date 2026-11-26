@@ -12,6 +12,7 @@ use http_inspector_analysis::search::document::{self, BodyCache, Checked};
 use http_inspector_analysis::search::{MatchOptions, Matcher, Query, SearchScope, SearchWorker};
 use http_inspector_exchange::{Exchange, RecordId};
 
+use crate::ui::i18n::{Language, domain};
 use crate::ui::style::indicator;
 use crate::ui::style::tokens::Tone;
 
@@ -80,7 +81,7 @@ struct Summary {
 /// Background search worker, or an inline fallback when thread creation fails.
 enum SearchBackend {
     Worker(SearchWorker),
-    Inline { notice: String, cache: BodyCache },
+    Inline { reason: String, cache: BodyCache },
 }
 
 pub(crate) struct RequestSearch {
@@ -91,7 +92,7 @@ pub(crate) struct RequestSearch {
     seen: SearchSettings,
     changed_at: Option<Instant>,
     active: Option<Active>,
-    error: Option<String>,
+    error: Option<http_inspector_analysis::search::MatcherError>,
     generation: u64,
     results: HashMap<RecordId, SearchResult>,
     /// Records sent to the worker for the active query and not reported yet.
@@ -106,9 +107,7 @@ impl RequestSearch {
         let backend = match SearchWorker::spawn(move || context.request_repaint()) {
             Ok(worker) => SearchBackend::Worker(worker),
             Err(error) => SearchBackend::Inline {
-                notice: format!(
-                    "Background search is unavailable ({error}); searching on the UI thread."
-                ),
+                reason: error.to_string(),
                 cache: BodyCache::default(),
             },
         };
@@ -129,27 +128,34 @@ impl RequestSearch {
     }
 
     /// The search text box, scope, and options.
-    pub(crate) fn controls(&self, ui: &mut egui::Ui) -> Option<SearchSettings> {
+    pub(crate) fn controls(&self, ui: &mut egui::Ui, lang: Language) -> Option<SearchSettings> {
         let mut settings = self.settings();
         let search_width = Layout::REQUEST_SEARCH_WIDTH.fit(ui.available_width());
         ui.add(
             egui::TextEdit::singleline(&mut settings.text)
                 .desired_width(search_width)
-                .hint_text(scope_hint(self.scope)),
+                .hint_text(scope_hint(self.scope, lang)),
         );
         egui::ComboBox::from_id_salt("search-scope")
-            .selected_text(settings.scope.label())
+            .selected_text(domain::search_scope(lang, settings.scope))
             .show_ui(ui, |ui| {
                 for scope in SearchScope::ALL {
-                    ui.selectable_value(&mut settings.scope, scope, scope.label());
+                    ui.selectable_value(
+                        &mut settings.scope,
+                        scope,
+                        domain::search_scope(lang, scope),
+                    );
                 }
             })
             .response
-            .on_hover_text("Where the filter text is looked for");
+            .on_hover_text(lang.pick(
+                "Where the filter text is looked for",
+                "필터 검색어를 찾을 범위",
+            ));
         ui.toggle_value(&mut settings.options.case_sensitive, "Aa")
-            .on_hover_text("Match case");
+            .on_hover_text(lang.pick("Match case", "대소문자 구분"));
         ui.toggle_value(&mut settings.options.regex, ".*")
-            .on_hover_text("Use a regular expression");
+            .on_hover_text(lang.pick("Use a regular expression", "정규식 사용"));
         (settings.text != self.text
             || settings.scope != self.scope
             || settings.options != self.options)
@@ -172,12 +178,22 @@ impl RequestSearch {
 
     /// Progress, match count, and what was not searched. Draws nothing
     /// while no search is active.
-    pub(crate) fn status(&self, ui: &mut egui::Ui) {
-        if let SearchBackend::Inline { notice, .. } = &self.backend {
+    pub(crate) fn status(&self, ui: &mut egui::Ui, lang: Language) {
+        if let SearchBackend::Inline { reason, .. } = &self.backend {
+            let notice = match lang {
+                Language::English => {
+                    format!(
+                        "Background search is unavailable ({reason}); searching on the UI thread."
+                    )
+                }
+                Language::Korean => {
+                    format!("백그라운드 검색을 사용할 수 없어({reason}) UI 스레드에서 검색합니다.")
+                }
+            };
             indicator::dot_label(ui, Tone::Warning, notice);
         }
         if let Some(error) = &self.error {
-            indicator::dot_label(ui, Tone::Danger, error);
+            indicator::dot_label(ui, Tone::Danger, domain::matcher_error(lang, error));
             return;
         }
         let Some(active) = &self.active else {
@@ -187,19 +203,31 @@ impl RequestSearch {
         ui.horizontal_wrapped(|ui| {
             if summary.checked < summary.total {
                 ui.spinner();
-                ui.label(format!(
-                    "Searching… {} of {} checked · {} match",
-                    summary.checked, summary.total, summary.matched
-                ));
+                let label = match lang {
+                    Language::English => format!(
+                        "Searching… {} of {} checked · {} match",
+                        summary.checked, summary.total, summary.matched
+                    ),
+                    Language::Korean => format!(
+                        "검색 중… {}/{}건 확인 · {}건 일치",
+                        summary.checked, summary.total, summary.matched
+                    ),
+                };
+                ui.label(label);
             } else {
-                ui.label(format!(
-                    "{} of {} requests match",
-                    summary.matched, summary.total
-                ));
+                let label = match lang {
+                    Language::English => {
+                        format!("{} of {} requests match", summary.matched, summary.total)
+                    }
+                    Language::Korean => {
+                        format!("요청 {}건 중 {}건 일치", summary.total, summary.matched)
+                    }
+                };
+                ui.label(label);
             }
         });
         if active.settings.scope.covers_bodies()
-            && let Some(text) = coverage_text(summary)
+            && let Some(text) = coverage_text(summary, lang)
         {
             indicator::dot_label(ui, Tone::Warning, text);
         }
@@ -266,7 +294,7 @@ impl RequestSearch {
         let matcher = match Matcher::new(&settings.text, settings.options) {
             Ok(matcher) => matcher,
             Err(error) => {
-                self.error = Some(capitalized(&error.to_string()));
+                self.error = Some(error);
                 self.results.clear();
                 return;
             }
@@ -413,44 +441,54 @@ impl RequestSearch {
 }
 
 /// Says which records that did not match were searched only in part.
-fn coverage_text(summary: Summary) -> Option<String> {
+fn coverage_text(summary: Summary, lang: Language) -> Option<String> {
     let mut parts = Vec::new();
+    let preview_kib = http_inspector_exchange::capture::BODY_PREVIEW_BYTES / 1024;
     if summary.partial > 0 {
-        parts.push(format!(
-            "{} only in their first {} KiB",
-            summary.partial,
-            http_inspector_exchange::capture::BODY_PREVIEW_BYTES / 1024
-        ));
+        parts.push(match lang {
+            Language::English => {
+                format!("{} only in their first {preview_kib} KiB", summary.partial)
+            }
+            Language::Korean => format!("{}건은 처음 {preview_kib} KiB만 검색", summary.partial),
+        });
     }
     if summary.binary > 0 {
-        parts.push(format!("{} binary, skipped", summary.binary));
+        parts.push(match lang {
+            Language::English => format!("{} binary, skipped", summary.binary),
+            Language::Korean => format!("{}건은 바이너리여서 건너뜀", summary.binary),
+        });
     }
     if summary.undecodable > 0 {
-        parts.push(format!("{} could not be decoded", summary.undecodable));
+        parts.push(match lang {
+            Language::English => format!("{} could not be decoded", summary.undecodable),
+            Language::Korean => format!("{}건은 디코딩할 수 없음", summary.undecodable),
+        });
     }
-    (!parts.is_empty()).then(|| {
-        format!(
+    (!parts.is_empty()).then(|| match lang {
+        Language::English => format!(
             "Bodies are searched in the captured preview, after decompression. Requests that did not match but whose bodies were not fully searched: {}. The full-session log keeps the rest.",
             parts.join(", ")
-        )
+        ),
+        Language::Korean => format!(
+            "본문은 압축 해제 후 캡처된 미리보기 범위에서 검색합니다. 일치하지 않았지만 전체 본문을 검색하지 못한 요청: {}. 나머지 내용은 전체 세션 로그에 보관됩니다.",
+            parts.join(", ")
+        ),
     })
 }
 
-const fn scope_hint(scope: SearchScope) -> &'static str {
+const fn scope_hint(scope: SearchScope, lang: Language) -> &'static str {
     match scope {
-        SearchScope::All => "Filter: method, URL, status, header, or body",
-        SearchScope::Url => "Filter: URL",
-        SearchScope::Headers => "Filter: header name or value",
-        SearchScope::RequestBody => "Filter: request body",
-        SearchScope::ResponseBody => "Filter: response body",
+        SearchScope::All => lang.pick(
+            "Filter: method, URL, status, header, or body",
+            "필터: 메서드, URL, 상태, 헤더 또는 본문",
+        ),
+        SearchScope::Url => lang.pick("Filter: URL", "필터: URL"),
+        SearchScope::Headers => {
+            lang.pick("Filter: header name or value", "필터: 헤더 이름 또는 값")
+        }
+        SearchScope::RequestBody => lang.pick("Filter: request body", "필터: 요청 본문"),
+        SearchScope::ResponseBody => lang.pick("Filter: response body", "필터: 응답 본문"),
     }
-}
-
-fn capitalized(text: &str) -> String {
-    let mut characters = text.chars();
-    characters.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(characters).collect()
-    })
 }
 
 #[cfg(test)]
@@ -483,12 +521,15 @@ mod tests {
 
     #[test]
     fn coverage_lists_only_what_was_not_fully_searched() {
-        assert_eq!(coverage_text(Summary::default()), None);
-        let text = coverage_text(Summary {
-            partial: 2,
-            binary: 1,
-            ..Summary::default()
-        })
+        assert_eq!(coverage_text(Summary::default(), Language::English), None);
+        let text = coverage_text(
+            Summary {
+                partial: 2,
+                binary: 1,
+                ..Summary::default()
+            },
+            Language::English,
+        )
         .unwrap_or_default();
         assert!(
             text.contains("2 only in their first 8 KiB, 1 binary, skipped"),
@@ -518,7 +559,7 @@ mod tests {
         let _evicted = records.push(record);
         let mut search = RequestSearch::new(&egui::Context::default());
         search.backend = SearchBackend::Inline {
-            notice: String::new(),
+            reason: String::new(),
             cache: BodyCache::default(),
         };
         let mut query = settings("needle", false, false);
