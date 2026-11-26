@@ -20,7 +20,7 @@ HTTP Inspector는 개발 도구다. 디자인 시스템은 정밀 도킹 워크�
 - **D6.** 색 값은 `src/ui/style/tokens.rs`에만 정의한다. 화면 코드는 토큰 이름이나 `Tone`으로 의미를 고르고 `Color32::from_rgb`·`from_rgba_unmultiplied`를 직접 쓰지 않는다. Clippy의 `disallowed_methods`가 색 생성자를 검사한다. `Color32::BLACK` 같은 상수는 리뷰에서 확인한다.
 - **D7.** 색만으로 의미를 전달하지 않는다. 상태는 `404 Not Found`처럼 글자로도 보인다. 글자와 그 글자가 실제로 놓이는 배경의 대비는 라이트·다크 테마 모두 WCAG AA(4.5:1) 이상이다. 도트, 틱, 바, 포커스 링은 인접 배경과 3:1 이상이다. `src/ui/style/theme.rs`의 `status_text_meets_aa_on_all_widget_backgrounds`가 글자 대비를 검사한다. 새 글자색은 그 테스트의 글자색 목록에, 글자가 놓이는 새 배경은 `text_backgrounds()`에 추가한다. D8로 데이터 표면에만 쓰는 글자색은 `data_backgrounds()`로 검사하고, `marks_meet_three_to_one_on_every_surface`가 도트·틱·바 색의 3:1을 검사한다.
 - **D8.** 다음 토큰은 4.5:1에 못 미치는 배경이 있으므로 정한 용도에만 쓴다. 토큰 값을 바꾸지 않고 용도를 줄인다. 계산값은 [대비](#대비)에 있다.
-  - `text.muted`: 비활성 아이콘, 키-값 콜론, 줄 번호·오프셋 거터, 라벨이나 툴팁이 따로 있는 입력의 힌트
+  - `text.muted`: 비활성 아이콘, 키-값 콜론, 줄 번호·오프셋 거터, 라벨이나 툴팁이 따로 있는 입력의 힌트, 관계도 비활성 노드 테두리와 간선(글자 아님, 3:1 이상)
   - `text.disabled`: 비활성 컨트롤 글자
   - `accent.primary`, `accent.secondary`, `status.ok`: 글자에 쓰지 않는다. 바, 도트, 틱, 링, 선에만 쓴다.
   - `status.warn`, `status.error`, 범주 색 글자: `pane`, `elevated`, `hover`, `selected` 배경에만 쓴다. `chrome`과 `cross_highlight` 위에서는 도트나 틱과 기본 글자색을 쓴다.
@@ -162,7 +162,7 @@ WCAG 2 대비비를 계산했다. 반투명 배경은 `--bg-pane` 위에 합성�
 | --- | --- | --- | --- | --- |
 | `text.primary` | 10.54 | 14.98 | 통과 | 제한 없음 |
 | `text.secondary` | 5.07 | 6.36 | 통과 | 제한 없음 |
-| `text.muted` | 2.73 (pane 3.82) | 2.60 (pane 3.10) | 미달 | 비활성 아이콘(글자 아님, 1.4.11 예외), 키-값 콜론, 줄 번호·오프셋 거터, 라벨이 따로 있는 입력의 힌트 |
+| `text.muted` | 2.73 (pane 3.82, elevated 3.25) | 2.60 (pane·elevated 3.10) | 미달 | 비활성 아이콘·관계도 비활성 노드 테두리와 간선(글자 아님, 1.4.11 3:1 통과), 키-값 콜론, 줄 번호·오프셋 거터, 라벨이 따로 있는 입력의 힌트 |
 | `text.disabled` | 1.71 | 1.62 | 미달 | 비활성 컨트롤 글자(WCAG 1.4.3 예외) |
 | `accent.primary` | 6.98 | 3.14 | 라이트 미달 | 글자 금지, 표시만 |
 | `accent.secondary` | 6.06 | 3.44 | 라이트 미달 | 글자 금지, 표시만 |
@@ -240,6 +240,7 @@ UI 글자는 sans, 데이터는 mono로 나눈다. egui의 `FontFamily::Proporti
 | 쉐브론 | 12 | 12 | `Layout::CHEVRON_SIZE` |
 | 원시 뷰어 행간 | 12/18 | 18 | `TypeScale::DATA_LINE_HEIGHT` |
 | 관계도 보조 경로 대시·간격 | 3-3 | 3 | `Layout::GRAPH_DASH` |
+| 관계도 비활성 간선·범례 선 굵기 | 1.25 | 1.25 | `StrokeWidth::GRAPH_EDGE` |
 | 관계도 활성 경로·차트 선 굵기 | 1.5 | 1.5 | `StrokeWidth::GRAPH_ACTIVE` |
 | 아이콘 | 14, 16 | 14, 16 | `Layout::ICON_SMALL`, `Layout::ICON` |
 
@@ -320,8 +321,8 @@ UI 글자는 sans, 데이터는 mono로 나눈다. egui의 `FontFamily::Proporti
 ### 시각화
 
 - 선 차트: 격자는 최소한의 1px 점선 `borders.subtle`, 데이터 선은 1.5px `accent.primary` 단색이다. 선 아래 면을 채우지 않는다.
-- 관계도: 비활성 노드와 선은 `borders.control`과 `text.muted`로 누른다. 선택·활성 경로만 1.5px `accent.primary` 실선이고 대기·보조 경로는 3-3 점선이다.
-  - 구현: 마우스를 올린 도메인과 Tree에서 고른 노드의 도메인이 활성이다. 비활성 노드 이름과 요청 수는 글자이므로 `text.muted` 대신 `text.secondary`로 쓴다(D8). 간선 종류는 비활성일 때 Referer 1px 실선, Origin(CORS) 3-3 점선, Redirect 1.5-3 점선으로 구분하고, 견본은 패널 머리줄의 **Edges ▼** 메뉴에 둔다. 3rd-party 도메인은 점선 테두리다.
+- 관계도: 비활성 노드와 선은 `text.muted`로 누른다. 선택·활성 경로만 1.5px `accent.primary` 실선이고 대기·보조 경로는 3-3 점선이다.
+  - 구현: 마우스를 올린 도메인과 Tree에서 고른 노드의 도메인이 활성이다. 비활성 노드 이름과 요청 수는 글자이므로 `text.muted` 대신 `text.secondary`로 쓴다(D8). 비활성 노드 테두리는 1px(`StrokeWidth::STRUCTURAL`) `text.muted`, 비활성 간선과 화살표는 1.25px(`StrokeWidth::GRAPH_EDGE`) `text.muted`로 그려 다크·라이트 배경에서 3:1 이상의 대비를 유지한다. 간선 종류는 비활성일 때 Referer 실선, Origin(CORS) 3-3 점선, Redirect 1.5-3 점선으로 구분하며, 패널 머리줄의 **Edges ▼** 메뉴에서 표시 여부를 켜고 끈다. 3rd-party 도메인은 점선 테두리다. 노드·선 견본과 짧은 설명은 패널 머리줄의 **Legend** 토글로 여닫는 오른쪽 도킹 범례 패널에 두어 **Edges ▼** 메뉴와 견본을 중복하지 않는다(S15). 범례 패널은 1px 스플리터(5px 히트 영역)로 나누며 좁은 창에서도 그래프 캔버스 최소 폭(`Layout::GRAPH_CANVAS_MIN`)을 유지한다. 견본은 `graph_pane.rs`의 그리기 함수(`inactive_node_stroke`, `inactive_edge_stroke`, `active_stroke`, `edge_dash`, `paint_dashed_line`, `paint_dashed_circle`, `paint_arrowhead`)와 토큰(`text.muted`, `accent.primary`)을 그대로 공유한다(D6, D7).
 
 ### 아이콘
 

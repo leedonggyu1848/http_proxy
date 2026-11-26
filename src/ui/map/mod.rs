@@ -3,6 +3,7 @@
 mod detail_pane;
 mod endpoint_view;
 mod graph_pane;
+mod legend_pane;
 mod tree_pane;
 
 pub(crate) use detail_pane::RecordMatchCache;
@@ -129,6 +130,8 @@ pub(super) struct MapPanel {
     layout: ForceLayout,
     edge_visibility: EdgeVisibility,
     dragged_node: Option<usize>,
+    pub(super) legend_open: bool,
+    pub(super) legend_width: f32,
     detail_match_cache: RecordMatchCache,
     endpoint_cache: endpoint_view::EndpointCache,
 }
@@ -160,6 +163,8 @@ impl MapPanel {
             layout: ForceLayout::new(DEFAULT_MAX_GRAPH_DOMAINS),
             edge_visibility: EdgeVisibility::default(),
             dragged_node: None,
+            legend_open: false,
+            legend_width: Layout::GRAPH_LEGEND_DEFAULT_WIDTH,
             detail_match_cache: RecordMatchCache::default(),
             endpoint_cache: endpoint_view::EndpointCache::default(),
         }
@@ -322,6 +327,40 @@ impl MapPanel {
         }
     }
 
+    /// Renders the docked relationship graph legend panel.
+    pub(super) fn show_graph_legend(ui: &mut egui::Ui, lang: Language) {
+        legend_pane::show(ui, lang);
+    }
+
+    #[cfg(test)]
+    pub(super) fn graph_node_coords(&self) -> Vec<(String, f32, f32)> {
+        self.layout
+            .nodes()
+            .iter()
+            .map(|node| (node.host.clone(), node.x, node.y))
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(super) const fn edge_visibility(&self) -> EdgeVisibility {
+        self.edge_visibility
+    }
+
+    #[cfg(test)]
+    pub(super) const fn set_edge_visibility(&mut self, visibility: EdgeVisibility) {
+        self.edge_visibility = visibility;
+    }
+
+    #[cfg(test)]
+    pub(super) const fn dragged_node(&self) -> Option<usize> {
+        self.dragged_node
+    }
+
+    #[cfg(test)]
+    pub(super) const fn set_dragged_node(&mut self, node: Option<usize>) {
+        self.dragged_node = node;
+    }
+
     /// Domains and edges the graph shows, and whether the domain limit hid
     /// some, for the status bar.
     pub(super) fn graph_summary(&self, lang: Language) -> (String, bool) {
@@ -474,7 +513,7 @@ impl MapPanel {
         }
     }
 
-    /// Edge kinds with their line samples, the domain limit, and Relayout,
+    /// Legend toggle, edge kind toggles, the domain limit, and Relayout,
     /// laid out right to left in the graph's pane header.
     fn graph_actions(&mut self, ui: &mut egui::Ui, lang: Language) {
         if ui
@@ -501,10 +540,20 @@ impl MapPanel {
         self.layout.set_max_domains(limit);
         let _ = controls::ghost_menu(
             ui,
-            text::menu_label(ShellText::Legend.text(lang)),
+            text::menu_label(ShellText::Edges.text(lang)),
             Layout::PANE_BUTTON_HEIGHT,
-            |ui| graph_pane::legend_menu(ui, &mut self.edge_visibility, lang),
+            |ui| graph_pane::edges_menu(ui, &mut self.edge_visibility, lang),
         );
+        let legend = controls::ghost_toggle(
+            ui,
+            self.legend_open,
+            ShellText::Legend.text(lang),
+            Layout::PANE_BUTTON_HEIGHT,
+        )
+        .on_hover_text(ShellText::LegendHint.text(lang));
+        if legend.clicked() {
+            self.legend_open = !self.legend_open;
+        }
     }
 
     fn export_menu(

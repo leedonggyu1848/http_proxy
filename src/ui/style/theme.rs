@@ -547,10 +547,12 @@ mod tests {
             assert!(text >= 4.5, "{theme:?}: match text {text}");
             let underline = contrast_ratio(colors.current, matched);
             assert!(underline >= 3.0, "{theme:?}: current match {underline}");
-            // Line numbers and chevrons in `text.muted` on the pane, the
-            // uses D8 allows it.
-            let muted = contrast_ratio(tokens.text.muted, pane);
-            assert!(muted >= 3.0, "{theme:?}: gutter {muted}");
+            // Line numbers, chevrons, and inactive graph edges in `text.muted`
+            // on the pane and menu (`elevated`), the uses D8 allows it.
+            for background in [pane, tokens.surfaces.elevated] {
+                let muted = contrast_ratio(tokens.text.muted, background);
+                assert!(muted >= 3.0, "{theme:?}: muted on {background:?} {muted}");
+            }
             // The active path of the relationship graph.
             let active = contrast_ratio(tokens.accent.primary, pane);
             assert!(active >= 3.0, "{theme:?}: active path {active}");

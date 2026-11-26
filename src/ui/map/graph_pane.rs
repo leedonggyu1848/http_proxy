@@ -143,7 +143,7 @@ pub(super) fn summary_text(
 
 /// How an edge kind is drawn when it is not on the active path: Referer
 /// solid, Origin dashed 3-3, Redirect dotted (D19).
-const fn edge_dash(kind: EdgeKind) -> Option<(f32, f32)> {
+pub(super) const fn edge_dash(kind: EdgeKind) -> Option<(f32, f32)> {
     match kind {
         EdgeKind::Referer => None,
         EdgeKind::Origin => Some((Layout::GRAPH_DASH, Layout::GRAPH_DASH)),
@@ -151,59 +151,41 @@ const fn edge_dash(kind: EdgeKind) -> Option<(f32, f32)> {
     }
 }
 
-/// The edge toggles with a sample of each line, then the node outlines, in
-/// the graph's legend menu.
-pub(super) fn legend_menu(ui: &mut egui::Ui, visibility: &mut EdgeVisibility, lang: Language) {
-    for (kind, shown, label) in [
-        (
-            EdgeKind::Referer,
-            &mut visibility.referer,
-            ShellText::Referer,
-        ),
-        (
-            EdgeKind::Origin,
-            &mut visibility.origin,
-            ShellText::OriginCors,
-        ),
-        (
-            EdgeKind::Redirect,
-            &mut visibility.redirect,
-            ShellText::Redirect,
-        ),
-    ] {
-        ui.horizontal(|ui| {
-            ui.checkbox(shown, label.text(lang));
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(Layout::LEGEND_SAMPLE_WIDTH, ui.spacing().interact_size.y),
-                Sense::hover(),
-            );
-            let stroke = Stroke::new(StrokeWidth::STRUCTURAL, ui.visuals().text_color());
-            let (start, end) = (rect.left_center(), rect.right_center());
-            match edge_dash(kind) {
-                Some((dash, gap)) => paint_dashed_line(ui.painter(), start, end, stroke, dash, gap),
-                None => {
-                    ui.painter().line_segment([start, end], stroke);
-                }
-            }
-        });
+/// Stroke of an inactive graph edge and its swatch in [`super::legend_pane`].
+pub(super) const fn inactive_edge_stroke(tokens: &ThemeTokens) -> Stroke {
+    Stroke {
+        width: StrokeWidth::GRAPH_EDGE,
+        color: tokens.text.muted,
     }
-    ui.separator();
-    for (third_party, label) in [
-        (false, ShellText::FirstParty),
-        (true, ShellText::ThirdParty),
+}
+
+/// Stroke of an inactive node outline and its swatch in [`super::legend_pane`].
+pub(super) const fn inactive_node_stroke(tokens: &ThemeTokens) -> Stroke {
+    Stroke {
+        width: StrokeWidth::STRUCTURAL,
+        color: tokens.text.muted,
+    }
+}
+
+/// Stroke of an active node outline and edges touching an active node (D19).
+pub(super) const fn active_stroke(tokens: &ThemeTokens) -> Stroke {
+    Stroke {
+        width: StrokeWidth::GRAPH_ACTIVE,
+        color: tokens.accent.primary,
+    }
+}
+
+/// Edge kind visibility toggles in the graph's **Edges ▼** menu.
+///
+/// Swatches and descriptions live in [`super::legend_pane`] so the menu and
+/// the legend panel do not repeat the same samples (S15).
+pub(super) fn edges_menu(ui: &mut egui::Ui, visibility: &mut EdgeVisibility, lang: Language) {
+    for (shown, label) in [
+        (&mut visibility.referer, ShellText::Referer),
+        (&mut visibility.origin, ShellText::OriginCors),
+        (&mut visibility.redirect, ShellText::Redirect),
     ] {
-        ui.horizontal(|ui| {
-            let size = Layout::LEGEND_NODE_SIZE;
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), Sense::hover());
-            let stroke = Stroke::new(StrokeWidth::STRUCTURAL, ui.visuals().text_color());
-            if third_party {
-                paint_dashed_circle(ui.painter(), rect.center(), size / 2.0 - 1.0, stroke);
-            } else {
-                ui.painter()
-                    .circle_stroke(rect.center(), size / 2.0 - 1.0, stroke);
-            }
-            ui.label(label.text(lang));
-        });
+        ui.checkbox(shown, label.text(lang));
     }
 }
 
@@ -232,7 +214,7 @@ fn handle_drag(
 }
 
 /// Edges touching an active node are 1.5px `accent.primary` solid lines;
-/// every other edge is a 1px `borders.control` line in its kind's dash
+/// every other edge is a 1.25px `text.muted` line in its kind's dash
 /// pattern (D19).
 fn paint_edges(
     painter: &egui::Painter,
@@ -263,15 +245,9 @@ fn paint_edges(
             continue;
         };
         let (stroke, dash) = if is_active(edge) {
-            (
-                Stroke::new(StrokeWidth::GRAPH_ACTIVE, tokens.accent.primary),
-                None,
-            )
+            (active_stroke(&tokens), None)
         } else {
-            (
-                Stroke::new(StrokeWidth::STRUCTURAL, tokens.borders.control),
-                edge_dash(edge.kind),
-            )
+            (inactive_edge_stroke(&tokens), edge_dash(edge.kind))
         };
         if edge.from == edge.to {
             let loop_center =
@@ -317,7 +293,7 @@ fn paint_edges(
     }
 }
 
-fn paint_dashed_line(
+pub(super) fn paint_dashed_line(
     painter: &egui::Painter,
     start: Pos2,
     end: Pos2,
@@ -349,7 +325,7 @@ fn paint_dashed_line(
     }
 }
 
-fn paint_arrowhead(painter: &egui::Painter, tip: Pos2, dir: Vec2, color: Color32) {
+pub(super) fn paint_arrowhead(painter: &egui::Painter, tip: Pos2, dir: Vec2, color: Color32) {
     let perp = Vec2::new(-dir.y, dir.x);
     let base = tip - dir * Layout::GRAPH_ARROW_LENGTH;
     let left = base + perp * Layout::GRAPH_ARROW_HALF_WIDTH;
@@ -368,7 +344,7 @@ struct NodeCanvas<'a> {
 }
 
 /// Nodes are circles on the pane: inactive ones outlined in 1px
-/// `borders.control` with `text.secondary` labels, active ones in 1.5px
+/// `text.muted` with `text.secondary` labels, active ones in 1.5px
 /// `accent.primary` with `text.primary` labels. Third-party domains have a
 /// dashed outline (D19).
 fn paint_nodes(
@@ -393,9 +369,9 @@ fn paint_nodes(
         let is_active = active.get(index).copied().unwrap_or_default();
         painter.circle_filled(center, radius, fill);
         let stroke = if is_active {
-            Stroke::new(StrokeWidth::GRAPH_ACTIVE, tokens.accent.primary)
+            active_stroke(&tokens)
         } else {
-            Stroke::new(StrokeWidth::STRUCTURAL, tokens.borders.control)
+            inactive_node_stroke(&tokens)
         };
         if node.third_party {
             paint_dashed_circle(painter, center, radius, stroke);
@@ -447,7 +423,12 @@ fn paint_nodes(
     }
 }
 
-fn paint_dashed_circle(painter: &egui::Painter, center: Pos2, radius: f32, stroke: Stroke) {
+pub(super) fn paint_dashed_circle(
+    painter: &egui::Painter,
+    center: Pos2,
+    radius: f32,
+    stroke: Stroke,
+) {
     const SEGMENTS: usize = 16;
     let step = std::f32::consts::TAU / 16.0;
     for i in 0..SEGMENTS {
@@ -596,5 +577,43 @@ mod tests {
 
         let (ko_text, _) = summary_text(&layout, only_referer, Language::Korean);
         assert_eq!(ko_text, "도메인 2 · 연결선 1/2");
+    }
+
+    #[test]
+    fn inactive_edges_and_legend_keep_non_text_contrast_and_hierarchy() {
+        use crate::ui::style::tokens::contrast_ratio;
+
+        for theme in [egui::Theme::Dark, egui::Theme::Light] {
+            let tokens = ThemeTokens::for_theme(theme);
+            let edge = inactive_edge_stroke(&tokens);
+            let node = inactive_node_stroke(&tokens);
+            let active = active_stroke(&tokens);
+
+            assert!((edge.width - StrokeWidth::GRAPH_EDGE).abs() < f32::EPSILON);
+            assert!((node.width - StrokeWidth::STRUCTURAL).abs() < f32::EPSILON);
+            assert!(edge.width < active.width, "{theme:?}: active stays thicker");
+            assert_ne!(edge.color, active.color, "{theme:?}: active color differs");
+
+            // Inactive edges and legend samples meet WCAG 1.4.11 (3:1) on both
+            // the graph canvas (`pane`) and the `Edges` menu (`elevated`).
+            for surface in [tokens.surfaces.pane, tokens.surfaces.elevated] {
+                let ratio = contrast_ratio(edge.color, surface);
+                assert!(
+                    ratio >= 3.0,
+                    "{theme:?}: inactive edge contrast {ratio:.2} on {surface:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn edge_kinds_have_distinct_dash_patterns() {
+        let referer = edge_dash(EdgeKind::Referer);
+        let origin = edge_dash(EdgeKind::Origin);
+        let redirect = edge_dash(EdgeKind::Redirect);
+        assert_eq!(referer, None);
+        assert!(origin.is_some());
+        assert!(redirect.is_some());
+        assert_ne!(origin, redirect);
     }
 }
