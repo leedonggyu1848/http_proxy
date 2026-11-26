@@ -16,7 +16,7 @@ cargo run --release -- --port 18080
 HTTP_INSPECTOR_PORT=0 cargo run --release
 ```
 
-`0`은 운영체제가 비어 있는 포트를 고르게 한다. 실제 포트는 툴바 주소에 표시된다. 다른 프로그램이 포트를 쓰고 있으면 앱은 그 사실을 안내하고, 프록시를 멈춘 상태에서 `Port` 칸에 다른 번호를 입력해 `Start`로 다시 시작할 수 있다. 명령줄 인자와 환경 변수는 그 실행에만 적용되며 저장하지 않는다.
+`0`은 운영체제가 비어 있는 포트를 고르게 한다. 실제 포트는 툴바 주소에 표시된다. 다른 프로그램이 포트를 쓰고 있으면 앱은 툴바 아래에 `Port 8080 is already in use; enter another port, or 0 for a free one.`처럼 한 줄로 안내한다. 프록시가 멈춘 동안 툴바의 `Port` 칸에 다른 번호를 입력하고 오른쪽의 **Start**를 눌러 다시 시작한다. 명령줄 인자와 환경 변수는 그 실행에만 적용되며 저장하지 않는다.
 
 HTTP 요청을 확인하려면 `curl`에 프록시 주소를 지정한다.
 
@@ -34,7 +34,7 @@ http_proxy=http://127.0.0.1:8080 https_proxy=http://127.0.0.1:8080 curl http://e
 
 ## 캡처 범위
 
-앱은 클라이언트가 이 프록시로 보낸 HTTP 통신만 기록한다. 컴퓨터의 모든 트래픽을 수집하지 않는다. 툴바의 **?** 버튼을 누르면 같은 안내를 볼 수 있다.
+앱은 클라이언트가 이 프록시로 보낸 HTTP 통신만 기록한다. 컴퓨터의 모든 트래픽을 수집하지 않는다. 툴바 **Settings** 메뉴의 **Capture scope** 하위 메뉴에서 같은 안내를 볼 수 있다.
 
 - HTTP는 메서드, URL, 헤더와 본문을 기록한다.
 - **Decrypt HTTPS**를 끄면 HTTPS는 `Tunnel` 행으로 기록한다. 이 행에는 호스트, 포트, 전송 바이트 수와 연결 시간만 있다. URL 경로, 헤더와 본문은 암호화된 채 전달한다.
@@ -49,6 +49,6 @@ http_proxy=http://127.0.0.1:8080 https_proxy=http://127.0.0.1:8080 curl http://e
 
 **Open Browser**로 연 검사 브라우저는 QUIC을 끈다. 직접 실행하는 Chrome에는 [HTTPS 복호화와 검사 브라우저](https.md#직접-실행한-chrome에서-http3-막기)의 예처럼 `--disable-quic`을 추가한다.
 
-다음은 테스트용 HTTP 요청과 `CONNECT` 터널을 보낸 뒤 캡처 범위 안내(현재는 툴바의 **?** 버튼)를 펼치고 `Tunnel` 행을 선택한 실제 화면이다.
+다음은 테스트용 HTTP 요청과 `CONNECT` 터널을 보낸 뒤 `Tunnel` 행을 선택하고 **Settings** 메뉴의 **Capture scope**를 펼친 실제 화면이다.
 
 ![캡처 범위 안내와 Tunnel 행 상세](../screenshots/capture-scope-help.png)

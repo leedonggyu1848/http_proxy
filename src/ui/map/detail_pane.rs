@@ -116,15 +116,7 @@ pub(super) fn show(
 ) -> Option<MapAction> {
     let Some(node) = node else {
         ui.centered_and_justified(|ui| {
-            ui.add(
-                egui::Label::new(
-                    RichText::new(
-                        "Select a host or path node to inspect its aggregates and requests.",
-                    )
-                    .weak(),
-                )
-                .wrap(),
-            );
+            ui.add(egui::Label::new(RichText::new("No node selected").weak()).wrap());
         });
         return None;
     };

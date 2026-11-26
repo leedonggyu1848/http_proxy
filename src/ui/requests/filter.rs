@@ -16,7 +16,10 @@ use crate::ui::app::state::RequestsState;
 use crate::ui::detail::search::RequestSearch;
 use crate::ui::map::RecordMatchCache;
 use crate::ui::style::indicator;
-use crate::ui::style::tokens::Tone;
+use crate::ui::style::theme::Palette;
+use crate::ui::style::tokens::{Layout, Space, StrokeWidth, Tone};
+use crate::ui::workbench::text::ShellText;
+use crate::ui::workbench::{chrome, controls};
 
 pub(crate) struct ListView<'a> {
     pub(crate) requests: &'a RequestsState,
@@ -26,39 +29,44 @@ pub(crate) struct ListView<'a> {
 }
 
 impl ListView<'_> {
-    /// Filter, list options, and Clear, shown right above the request list.
-    pub(crate) fn filters(
+    /// The request pane header: outcome tabs on the left and the list's own
+    /// actions on the right, then the Map filter row while one is applied.
+    pub(crate) fn header(
         &self,
         ui: &mut egui::Ui,
         table: &mut RequestTable,
         actions: &mut Vec<AppAction>,
     ) {
-        ui.horizontal_wrapped(|ui| {
-            actions.extend(self.requests.search.controls(ui).map(AppAction::Search));
-            let mut filter_choice = self.requests.record_filter;
-            egui::ComboBox::from_id_salt("record-filter")
-                .selected_text(self.requests.record_filter.label())
-                .show_ui(ui, |ui| {
-                    for filter in RecordFilter::ALL {
-                        ui.selectable_value(&mut filter_choice, filter, filter.label());
-                    }
-                });
-            if filter_choice != self.requests.record_filter {
-                actions.push(AppAction::Filter(filter_choice));
+        let fits = chrome::pane_header(ui, "requests-header", |ui| {
+            actions.extend(self.outcome_tabs(ui).map(AppAction::Filter));
+            let fits = ui.available_width() >= list_actions_width(ui, table) + Space::LG;
+            if fits {
+                list_actions(ui, table, actions);
             }
-            table.controls(ui);
-            if ui
-                .button("Clear")
-                .on_hover_text(
-                    "Clear the displayed requests and reset the URL map. The full-session log is retained.",
-                )
-                .clicked()
-            {
-                actions.push(AppAction::ClearSession);
-            }
+            fits
         });
+        if !fits {
+            // Too narrow for both: the actions take a second header row.
+            chrome::pane_header(ui, "requests-actions", |ui| {
+                list_actions(ui, table, actions);
+            });
+        }
         self.map_filter_banner(ui, actions);
-        self.requests.search.status(ui);
+    }
+
+    /// All, Responses, Failures, and Tunnels as text tabs, without counts:
+    /// the status bar has them (S16).
+    fn outcome_tabs(&self, ui: &mut egui::Ui) -> Option<RecordFilter> {
+        controls::tab_list(ui, ShellText::RequestOutcome.text(), |ui| {
+            let mut chosen = None;
+            for filter in RecordFilter::ALL {
+                let selected = filter == self.requests.record_filter;
+                if controls::text_tab(ui, selected, filter.label()).clicked() && !selected {
+                    chosen = Some(filter);
+                }
+            }
+            chosen
+        })
     }
 
     fn map_filter_banner(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
@@ -69,23 +77,34 @@ impl ListView<'_> {
         let counted = self.map_scope_total(key);
         let evicted = counted.saturating_sub(u64::try_from(retained).unwrap_or(u64::MAX));
         let approximate = key.method.is_some() && self.requests.records.evicted() > 0;
-        ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new(format!("Map filter: {}", key.display())).monospace());
-            let retention = map_retention_label(retained, evicted, approximate);
-            // The filter row is chrome, where warning text is not readable,
-            // so a dot marks counts that are partial.
-            let count = if evicted > 0 || approximate {
-                indicator::dot_label(ui, Tone::Warning, retention)
-            } else {
-                ui.label(egui::RichText::new(retention).weak())
-            };
-            if approximate {
-                count.on_hover_text("Estimate based on requests included in endpoint analysis.");
-            }
-            if ui.small_button("Clear map filter").clicked() {
-                actions.push(AppAction::ClearMapFilter);
-            }
+        let frame = egui::Frame::new().inner_margin(Layout::PANE_ROW_MARGIN);
+        let row = frame.show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                let scope = format!("Map filter: {}", key.display());
+                ui.add(egui::Label::new(egui::RichText::new(&scope).monospace()).truncate())
+                    .on_hover_text(scope);
+                let retention = map_retention_label(retained, evicted, approximate);
+                // The filter row is chrome, where warning text is not readable,
+                // so a dot marks counts that are partial.
+                let count = if evicted > 0 || approximate {
+                    indicator::dot_label(ui, Tone::Warning, retention)
+                } else {
+                    ui.label(egui::RichText::new(retention).weak())
+                };
+                if approximate {
+                    count
+                        .on_hover_text("Estimate based on requests included in endpoint analysis.");
+                }
+                if ui.small_button("Clear map filter").clicked() {
+                    actions.push(AppAction::ClearMapFilter);
+                }
+            })
         });
+        ui.painter().hline(
+            ui.max_rect().x_range(),
+            row.response.rect.bottom(),
+            egui::Stroke::new(StrokeWidth::STRUCTURAL, Palette::of(ui).borders.subtle),
+        );
     }
 
     /// Requests the Map counted for `scope` since the last `Clear`.
@@ -134,6 +153,37 @@ impl ListView<'_> {
         actions.extend(result.action);
         result.selected
     }
+}
+
+/// Follow newest, Arrival order, and Clear, right-aligned in the header.
+fn list_actions(ui: &mut egui::Ui, table: &mut RequestTable, actions: &mut Vec<AppAction>) {
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        controls::ghost_style(ui);
+        if ui
+            .add(controls::ghost(CLEAR_LABEL, Layout::PANE_BUTTON_HEIGHT))
+            .on_hover_text(
+                "Clear the listed requests and the URL map; the full-session log is kept.",
+            )
+            .clicked()
+        {
+            actions.push(AppAction::ClearSession);
+        }
+        table.controls(ui);
+    });
+}
+
+const CLEAR_LABEL: &str = "Clear";
+
+/// Width [`list_actions`] takes.
+fn list_actions_width(ui: &egui::Ui, table: &RequestTable) -> f32 {
+    let spacing = ui.spacing().item_spacing.x;
+    let mut width = controls::button_width(ui, CLEAR_LABEL)
+        + controls::checkbox_width(ui, super::request_table::FOLLOW_NEWEST)
+        + spacing;
+    if table.is_sorted() {
+        width += controls::button_width(ui, super::request_table::ARRIVAL_ORDER) + spacing;
+    }
+    width
 }
 
 fn map_retention_label(retained: usize, evicted: u64, approximate: bool) -> String {

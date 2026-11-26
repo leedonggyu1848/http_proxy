@@ -13,7 +13,10 @@ use http_inspector_analysis::search::{MatchOptions, Matcher, Query, SearchScope,
 use http_inspector_exchange::{Exchange, RecordId};
 
 use crate::ui::style::indicator;
-use crate::ui::style::tokens::Tone;
+use crate::ui::style::tokens::{Space, Tone};
+use crate::ui::workbench::controls;
+use crate::ui::workbench::field::{self, Field};
+use crate::ui::workbench::text::{self, ShellText};
 
 /// Wait after the last keystroke before a search starts, so typing a word
 /// does not start a search for every letter.
@@ -128,28 +131,35 @@ impl RequestSearch {
         }
     }
 
-    /// The search text box, scope, and options.
-    pub(crate) fn controls(&self, ui: &mut egui::Ui) -> Option<SearchSettings> {
+    /// The filter input with its scope and match options inside the right
+    /// end. An invalid pattern turns the border red and shows a short note;
+    /// the full parser message is its tooltip.
+    pub(crate) fn controls(&self, ui: &mut egui::Ui, width: f32) -> Option<SearchSettings> {
         let mut settings = self.settings();
-        let search_width = Layout::REQUEST_SEARCH_WIDTH.fit(ui.available_width());
-        ui.add(
-            egui::TextEdit::singleline(&mut settings.text)
-                .desired_width(search_width)
-                .hint_text(scope_hint(self.scope)),
-        );
-        egui::ComboBox::from_id_salt("search-scope")
-            .selected_text(settings.scope.label())
-            .show_ui(ui, |ui| {
-                for scope in SearchScope::ALL {
-                    ui.selectable_value(&mut settings.scope, scope, scope.label());
-                }
-            })
-            .response
-            .on_hover_text("Where the filter text is looked for");
-        ui.toggle_value(&mut settings.options.case_sensitive, "Aa")
-            .on_hover_text("Match case");
-        ui.toggle_value(&mut settings.options.regex, ".*")
-            .on_hover_text("Use a regular expression");
+        let field = Field::new(width)
+            .hint(ShellText::Filter.text())
+            .search_icon()
+            .error(
+                self.error
+                    .is_some()
+                    .then_some(ShellText::InvalidFilter.text()),
+            );
+        let SearchSettings {
+            text,
+            scope,
+            options: match_options,
+        } = &mut settings;
+        let response = field::single_line(ui, text, field, |ui| {
+            options(ui, scope, match_options);
+        });
+        match &self.error {
+            Some(error) => {
+                response.on_hover_text(error);
+            }
+            None => {
+                response.on_hover_text(scope_hint(settings.scope));
+            }
+        }
         (settings.text != self.text
             || settings.scope != self.scope
             || settings.options != self.options)
@@ -170,38 +180,25 @@ impl RequestSearch {
         }
     }
 
-    /// Progress, match count, and what was not searched. Draws nothing
-    /// while no search is active.
+    /// Search progress and what was not searched, for the status bar.
+    /// Matches are counted there with the rest of the list; parser errors
+    /// show in the filter input. Draws nothing while no search is active.
     pub(crate) fn status(&self, ui: &mut egui::Ui) {
         if let SearchBackend::Inline { notice, .. } = &self.backend {
-            indicator::dot_label(ui, Tone::Warning, notice);
-        }
-        if let Some(error) = &self.error {
-            indicator::dot_label(ui, Tone::Danger, error);
-            return;
+            indicator::dot_label(ui, Tone::Warning, "Search on UI thread").on_hover_text(notice);
         }
         let Some(active) = &self.active else {
             return;
         };
         let summary = self.summary;
-        ui.horizontal_wrapped(|ui| {
-            if summary.checked < summary.total {
-                ui.spinner();
-                ui.label(format!(
-                    "Searching… {} of {} checked · {} match",
-                    summary.checked, summary.total, summary.matched
-                ));
-            } else {
-                ui.label(format!(
-                    "{} of {} requests match",
-                    summary.matched, summary.total
-                ));
-            }
-        });
+        if summary.checked < summary.total {
+            ui.spinner();
+            ui.label(text::search_progress(summary.checked, summary.total));
+        }
         if active.settings.scope.covers_bodies()
             && let Some(text) = coverage_text(summary)
         {
-            indicator::dot_label(ui, Tone::Warning, text);
+            indicator::dot_label(ui, Tone::Warning, text.short).on_hover_text(text.detail);
         }
     }
 
@@ -412,8 +409,14 @@ impl RequestSearch {
     }
 }
 
-/// Says which records that did not match were searched only in part.
-fn coverage_text(summary: Summary) -> Option<String> {
+/// Bodies of non-matching requests that were not fully searched: a short
+/// count for the status bar and the breakdown for its tooltip.
+struct Coverage {
+    short: String,
+    detail: String,
+}
+
+fn coverage_text(summary: Summary) -> Option<Coverage> {
     let mut parts = Vec::new();
     if summary.partial > 0 {
         parts.push(format!(
@@ -428,12 +431,58 @@ fn coverage_text(summary: Summary) -> Option<String> {
     if summary.undecodable > 0 {
         parts.push(format!("{} could not be decoded", summary.undecodable));
     }
-    (!parts.is_empty()).then(|| {
-        format!(
-            "Bodies are searched in the captured preview, after decompression. Requests that did not match but whose bodies were not fully searched: {}. The full-session log keeps the rest.",
+    let unsearched = summary.partial + summary.binary + summary.undecodable;
+    (!parts.is_empty()).then(|| Coverage {
+        short: format!("{unsearched} bodies partly searched"),
+        detail: format!(
+            "Captured previews were searched after decompression ({}); the full-session log keeps the rest.",
             parts.join(", ")
-        )
+        ),
     })
+}
+
+/// Search options inside the right end of the filter input: scope, case,
+/// and regular expression.
+fn options(ui: &mut egui::Ui, scope: &mut SearchScope, match_options: &mut MatchOptions) {
+    controls::ghost_scope(ui, |ui| {
+        let height = 2.0f32.mul_add(-Space::XS, Layout::INPUT_HEIGHT);
+        toggle(
+            ui,
+            &mut match_options.regex,
+            ".*",
+            "Use a regular expression",
+            height,
+        );
+        toggle(
+            ui,
+            &mut match_options.case_sensitive,
+            "Aa",
+            "Match case",
+            height,
+        );
+        egui::containers::menu::MenuButton::from_button(controls::ghost(
+            format!("{} ▼", scope.label()),
+            height,
+        ))
+        .ui(ui, |ui| {
+            for option in SearchScope::ALL {
+                if ui.selectable_value(scope, option, option.label()).clicked() {
+                    ui.close();
+                }
+            }
+        })
+        .0
+        .on_hover_text("Where the filter text is looked for");
+    });
+}
+
+fn toggle(ui: &mut egui::Ui, value: &mut bool, label: &str, hover: &str, height: f32) {
+    if controls::ghost_toggle(ui, *value, label, height)
+        .on_hover_text(hover)
+        .clicked()
+    {
+        *value = !*value;
+    }
 }
 
 const fn scope_hint(scope: SearchScope) -> &'static str {
@@ -482,18 +531,22 @@ mod tests {
     }
 
     #[test]
-    fn coverage_lists_only_what_was_not_fully_searched() {
-        assert_eq!(coverage_text(Summary::default()), None);
+    fn coverage_lists_only_what_was_not_fully_searched() -> Result<(), &'static str> {
+        assert!(coverage_text(Summary::default()).is_none());
         let text = coverage_text(Summary {
             partial: 2,
             binary: 1,
             ..Summary::default()
         })
-        .unwrap_or_default();
+        .ok_or("expected a coverage note")?;
+        assert_eq!(text.short, "3 bodies partly searched");
         assert!(
-            text.contains("2 only in their first 8 KiB, 1 binary, skipped"),
-            "{text}"
+            text.detail
+                .contains("2 only in their first 8 KiB, 1 binary, skipped"),
+            "{}",
+            text.detail
         );
+        Ok(())
     }
 
     #[test]

@@ -182,6 +182,9 @@ fn keyboard_selection(
 }
 
 /// Sort state and scrolling preference of the request list.
+pub(super) const FOLLOW_NEWEST: &str = "Follow newest";
+pub(super) const ARRIVAL_ORDER: &str = "Arrival order";
+
 pub(crate) struct RequestTable {
     sort: Sort,
     follow_newest: bool,
@@ -210,14 +213,26 @@ impl RequestTable {
         }
     }
 
-    /// Shows the list options inline in the filter row.
+    /// Reports whether the list is sorted by a column instead of arrival.
+    pub(super) const fn is_sorted(&self) -> bool {
+        self.sort.field.is_some()
+    }
+
+    /// Shows the list options in the request pane header.
     pub(super) fn controls(&mut self, ui: &mut egui::Ui) {
-        ui.checkbox(&mut self.follow_newest, "Follow newest")
+        ui.checkbox(&mut self.follow_newest, FOLLOW_NEWEST)
             .on_hover_text("Keep the newest request in view while sorted by arrival.");
         if self.follow_newest {
             self.keyboard_row = None;
         }
-        if self.sort.field.is_some() && ui.button("Arrival order").clicked() {
+        if self.sort.field.is_some()
+            && ui
+                .add(crate::ui::workbench::controls::ghost(
+                    ARRIVAL_ORDER,
+                    Layout::PANE_BUTTON_HEIGHT,
+                ))
+                .clicked()
+        {
             self.sort = Self::new().sort;
         }
     }

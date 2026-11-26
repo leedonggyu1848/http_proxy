@@ -2,11 +2,11 @@
 
 [사용자 가이드 목록](README.md) · [README](../../README.md)
 
-요청 목록의 우클릭 메뉴나 상세 패널에서 **Copy as cURL**을 누르면 선택한 요청을
+요청 목록의 우클릭 메뉴나 상세 패널 머리줄에서 **Copy as cURL**을 누르면 선택한 요청을
 bash·zsh 같은 POSIX 셸에서 실행할 수 있는 `curl` 명령으로 클립보드에 복사한다.
 복사가 끝나면 알림 줄에 결과가 표시된다.
 
-![상세 패널의 Copy as cURL 버튼과 Redacted placeholders 옵션](../screenshots/copy-as-curl.png)
+![상세 패널 머리줄의 Copy as cURL 버튼과 복사 결과 알림](../screenshots/copy-as-curl.png)
 
 ## 명령에 들어가는 내용
 
@@ -44,7 +44,7 @@ printf '\037\213\000\001' | curl -X PUT 'http://127.0.0.1:8000/upload' \
 `Authorization`, `Cookie`의 원래 값은 저장되지 않는다(화면과 로그에는 `[REDACTED]`로 남는다).
 
 - **기본값:** 이 헤더들을 명령에서 뺀다.
-- **Redacted placeholders 켜기:** 상세 패널의 **Redacted placeholders**를 켜면
+- **Redacted placeholders 켜기:** 툴바 **Settings** 메뉴의 **Redacted placeholders**를 켜면
   `-H 'cookie: <REDACTED>'`처럼 자리 표시자로 넣는다. 실행 전에 실제 값으로 바꾼다.
 
 어느 쪽이든 가려진 헤더가 있었다면 알림 줄에 해당 헤더 이름과 안내가 표시된다.

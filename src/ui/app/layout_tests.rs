@@ -344,16 +344,17 @@ async fn narrow_and_resized_windows_do_not_overlap_text() -> Result<(), Box<dyn 
 
         // At 1100x700 after shrinking to 640px, verify the details pane recovered its width.
         if (size[0] - 1_100.0).abs() < 1.0 {
-            let edit_button = drawn
+            let headers_tab = drawn
                 .iter()
-                .find(|item| item.text == "Edit and Resend")
-                .ok_or("missing Edit and Resend button at 1100x700")?;
-            // 40% detail share on 1100px puts details starting around x ≈ 650,
-            // well left of the cramped ~780px position a stuck narrow panel would keep.
+                .find(|item| item.text == "Headers")
+                .ok_or("missing Headers tab at 1100x700")?;
+            // A 38% detail share on 1100px puts the details pane and its
+            // first tab around x ≈ 690, well left of the cramped ~780px
+            // position a stuck narrow panel would keep.
             assert!(
-                edit_button.rect.left() < 760.0,
+                headers_tab.rect.left() < 760.0,
                 "details pane did not recover width on enlarge: {:#?}",
-                edit_button.rect
+                headers_tab.rect
             );
         }
     }
@@ -432,7 +433,7 @@ async fn split_divider_drag_repaints_and_restores_across_resize()
     }
 
     let wide = [1_100.0, 700.0];
-    let initial_edit_left = text_left(&render_settled(&mut app, wide), "Edit and Resend")?;
+    let initial_tab_left = text_left(&render_settled(&mut app, wide), "Headers")?;
 
     // CentralPanel defaults to 8px horizontal margin on each side.
     let main_width = wide[0] - 16.0;
@@ -462,10 +463,10 @@ async fn split_divider_drag_repaints_and_restores_across_resize()
         app.layout.detail_share
     );
     let dragged_share = app.layout.detail_share;
-    let dragged_edit_left = text_left(&after_drag, "Edit and Resend")?;
+    let dragged_tab_left = text_left(&after_drag, "Headers")?;
     assert!(
-        dragged_edit_left < initial_edit_left - 100.0,
-        "details pane should widen immediately after drag release: before={initial_edit_left}, after={dragged_edit_left}"
+        dragged_tab_left < initial_tab_left - 100.0,
+        "details pane should widen immediately after drag release: before={initial_tab_left}, after={dragged_tab_left}"
     );
 
     // Shrink to minimum size: clamped cleanly without overwriting the user's preferred share.
@@ -481,10 +482,10 @@ async fn split_divider_drag_repaints_and_restores_across_resize()
     let wide_viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(wide[0], wide[1]));
     let restored_drawn = render_settled(&mut app, wide);
     assert_no_text_overlap(&restored_drawn, wide_viewport, "dragged-restored@1100x700");
-    let restored_edit_left = text_left(&restored_drawn, "Edit and Resend")?;
+    let restored_tab_left = text_left(&restored_drawn, "Headers")?;
     assert!(
-        (restored_edit_left - dragged_edit_left).abs() < 4.0,
-        "expected restored detail position near {dragged_edit_left}, got {restored_edit_left}"
+        (restored_tab_left - dragged_tab_left).abs() < 4.0,
+        "expected restored detail position near {dragged_tab_left}, got {restored_tab_left}"
     );
 
     Ok(())
@@ -1381,6 +1382,171 @@ async fn measure_map_ui_frame_time_at_scale() -> Result<(), Box<dyn std::error::
         ms(req_frames.get(30)),
         ms(req_frames.get(57)),
         ms(req_frames.last()),
+    );
+    Ok(())
+}
+
+/// Vertical center of the first drawn text equal to `label`.
+fn text_center_y(drawn: &[DrawnText], label: &str) -> Result<f32, String> {
+    drawn
+        .iter()
+        .find(|item| item.text == label)
+        .map(|item| item.rect.center().y)
+        .ok_or_else(|| format!("missing {label:?} text"))
+}
+
+#[tokio::test]
+async fn shell_bands_keep_their_heights_and_positions_in_both_themes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let exchanges = timeout(Duration::from_secs(5), capture_sample_exchanges()).await??;
+    let mut app = test_app(egui::Context::default());
+    for exchange in exchanges {
+        app.requests.selected = Some(exchange.id());
+        let _evicted = app.requests.records.push(exchange);
+    }
+    let count = format!("{} requests", app.requests.records.len());
+    // `render_frame` wraps the app in a CentralPanel with an 8px margin.
+    let margin = 8.0;
+    let size = Layout::WINDOW;
+    let toolbar = margin..=margin + Layout::TOOLBAR_HEIGHT;
+    let header = *toolbar.end()..=*toolbar.end() + Layout::PANE_HEADER_HEIGHT;
+    let status = size[1] - margin - Layout::STATUS_BAR_HEIGHT..=size[1] - margin;
+
+    let mut positions = Vec::new();
+    for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        app.context.set_theme(theme);
+        let drawn = render_settled(&mut app, size);
+        let placed = [
+            (http_inspector_exchange::APP_NAME, &toolbar),
+            ("Requests", &toolbar),
+            ("Settings", &toolbar),
+            ("All", &header),
+            ("Headers", &header),
+            (count.as_str(), &status),
+        ]
+        .map(|(label, band)| {
+            text_center_y(&drawn, label).inspect(|y| {
+                assert!(
+                    band.contains(y),
+                    "{theme:?}: {label:?} at y={y}, outside {band:?}"
+                );
+            })
+        });
+        positions.push(placed.into_iter().collect::<Result<Vec<_>, _>>()?);
+    }
+    // Light and dark differ in color only (D22).
+    assert_eq!(positions.first(), positions.last());
+    Ok(())
+}
+
+#[test]
+fn narrow_toolbar_moves_the_view_switch_and_filter_to_a_second_row() {
+    let mut app = test_app(egui::Context::default());
+    let drawn = render_settled(&mut app, Layout::MIN_WINDOW);
+    let margin = 8.0;
+    let first_row = margin + Layout::TOOLBAR_HEIGHT;
+    for label in ["Requests", "Filter"] {
+        let y = text_center_y(&drawn, label).unwrap_or_default();
+        assert!(
+            y > first_row && y < first_row + Layout::TOOLBAR_HEIGHT,
+            "{label} at y={y}"
+        );
+    }
+    let viewport = egui::Rect::from_min_size(
+        egui::Pos2::ZERO,
+        egui::vec2(Layout::MIN_WINDOW[0], Layout::MIN_WINDOW[1]),
+    );
+    assert_no_text_overlap(&drawn, viewport, "toolbar@640x420");
+}
+
+#[test]
+fn invalid_pattern_is_reported_inside_the_filter_input() {
+    use http_inspector_analysis::search::{MatchOptions, SearchScope};
+    let mut app = test_app(egui::Context::default());
+    let options = MatchOptions {
+        regex: true,
+        ..MatchOptions::default()
+    };
+    let context = app.context.clone();
+    app.requests.search.search_now(
+        ("users[", SearchScope::All, options),
+        &app.requests.records,
+        &context,
+    );
+    let drawn = render_settled(&mut app, Layout::WINDOW);
+    let error = drawn
+        .iter()
+        .find(|item| item.text == "Invalid pattern")
+        .map(|item| item.rect);
+    let toolbar_bottom = 8.0 + Layout::TOOLBAR_HEIGHT;
+    assert!(
+        error.is_some_and(|rect| rect.bottom() <= toolbar_bottom),
+        "expected the short error inside the toolbar input, got {error:?}"
+    );
+    // The parser message is the input's tooltip, not a line of its own.
+    assert!(!drawn.iter().any(|item| item.text.contains("error parsing")));
+}
+
+#[test]
+fn shell_tabs_are_announced_as_tab_lists() -> Result<(), Box<dyn std::error::Error>> {
+    let mut app = test_app(egui::Context::default());
+    app.context.enable_accesskit();
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1_280.0, 820.0));
+    let mut tree = None;
+    for _ in 0..3 {
+        let input = egui::RawInput {
+            screen_rect: Some(viewport),
+            ..Default::default()
+        };
+        let mut output = app.context.clone().run_ui(input, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| app.render_ui(ui));
+        });
+        output.textures_delta.clear();
+        tree = output.platform_output.accesskit_update;
+    }
+    let tree = tree.ok_or("missing accessibility tree")?;
+    let node = |id| {
+        tree.nodes
+            .iter()
+            .find(|(node_id, _)| *node_id == id)
+            .map(|(_, node)| node)
+    };
+    let tabs_of = |name: &str| -> Option<Vec<(String, Option<bool>)>> {
+        let (_, list) = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == egui::Role::TabList && node.label() == Some(name))?;
+        Some(
+            list.children()
+                .iter()
+                .filter_map(|&id| node(id))
+                .filter(|tab| tab.role() == egui::Role::Tab)
+                .map(|tab| {
+                    (
+                        tab.label().unwrap_or_default().to_owned(),
+                        tab.is_selected(),
+                    )
+                })
+                .collect(),
+        )
+    };
+    let selected = |label: &str, on: bool| (label.to_owned(), Some(on));
+    assert_eq!(
+        tabs_of("View").ok_or("missing View tab list")?,
+        vec![selected("Requests", true), selected("Map", false)]
+    );
+    assert_eq!(
+        tabs_of("Request outcome").ok_or("missing Request outcome tab list")?,
+        vec![
+            selected("All", true),
+            selected("Responses", false),
+            selected("Failures", false),
+            selected("Tunnels", false),
+        ]
+    );
+    assert_eq!(
+        tabs_of("Request details").ok_or("missing Request details tab list")?,
+        vec![selected("Headers", true), selected("Body", false)]
     );
     Ok(())
 }

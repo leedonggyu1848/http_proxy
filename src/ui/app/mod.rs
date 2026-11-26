@@ -2,6 +2,7 @@ pub(super) mod capture;
 mod controller;
 mod dialogs;
 pub(super) mod state;
+mod status_bar;
 
 pub(super) use controller::AppAction;
 
@@ -13,7 +14,8 @@ use crate::ui::map::{MapAction, MapSubView};
 use crate::ui::requests::{filter::ListView, request_table::RequestTable};
 use crate::ui::style::fonts;
 use crate::ui::style::theme::{self, Palette};
-use crate::ui::style::tokens::{Layout, Radius, Space};
+use crate::ui::style::tokens::{Layout, Radius, Space, StrokeWidth};
+use crate::ui::workbench::chrome;
 
 use eframe::egui;
 use http_inspector_analysis::pipeline::AnalysisPipeline;
@@ -119,11 +121,11 @@ impl InspectorApp {
             .id_salt("window-scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                // Bands and panes meet at their 1px lines, with no gaps.
+                ui.spacing_mut().item_spacing.y = 0.0;
                 let top = ui.cursor().top();
                 self.toolbar(ui, &mut actions);
                 self.notices(ui, &mut actions);
-                ui.separator();
-                self.view_switcher(ui, &mut actions);
                 match self.layout.main_view {
                     MainView::Requests => {
                         self.request_area(
@@ -135,46 +137,28 @@ impl InspectorApp {
                         );
                     }
                     MainView::Map => {
-                        if let Some(action) = self.map.panel.controls(
-                            ui,
-                            self.map.analysis.url_map(),
-                            self.dialogs.save.is_busy(),
-                        ) {
+                        let controls = chrome::strip(ui, "map-controls", |ui| {
+                            self.map.panel.controls(
+                                ui,
+                                self.map.analysis.url_map(),
+                                self.dialogs.save.is_busy(),
+                            )
+                        });
+                        if let Some(action) = controls {
                             pending_map_action = Some(action);
                         }
-                        let used = ui.cursor().top() - top + ui.spacing().item_spacing.y;
-                        let height =
-                            main_height(viewport_height, used, self.layout.status_bar_height);
+                        let used = ui.cursor().top() - top;
+                        let height = main_height(viewport_height, used, Layout::STATUS_BAR_HEIGHT);
                         if let Some(action) = self.map_area(ui, height, shortcuts_allowed) {
                             pending_map_action = Some(action);
                         }
                     }
                 }
-                let status_top = ui.cursor().top();
-                ui.separator();
                 self.status_bar(ui, &mut actions);
-                self.layout.status_bar_height = ui.min_rect().bottom() - status_top;
             });
 
         actions.extend(pending_map_action.map(AppAction::Map));
         actions
-    }
-
-    fn view_switcher(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
-        ui.horizontal_wrapped(|ui| {
-            let req_label = format!("Requests ({})", self.requests.records.len());
-            let mut view = self.layout.main_view;
-            ui.selectable_value(&mut view, MainView::Requests, req_label);
-            let map_label = format!(
-                "Map ({} hosts · {} nodes)",
-                self.map.analysis.url_map().origins().len(),
-                self.map.analysis.url_map().node_count()
-            );
-            ui.selectable_value(&mut view, MainView::Map, map_label);
-            if view != self.layout.main_view {
-                actions.push(AppAction::SwitchView(view));
-            }
-        });
     }
 
     /// Requests and details are clipped to disjoint panes.
@@ -197,15 +181,15 @@ impl InspectorApp {
                 .map(ProxyHandle::local_addr),
             saving_body: self.session.body_saving.is_busy(),
         };
-        requests.filters(ui, &mut self.request_table, actions);
-        let used = ui.cursor().top() - top + ui.spacing().item_spacing.y;
-        let height = main_height(viewport_height, used, self.layout.status_bar_height);
+        let used = ui.cursor().top() - top;
+        let height = main_height(viewport_height, used, Layout::STATUS_BAR_HEIGHT);
         split_panes(
             ui,
             height,
             &mut self.layout.detail_share,
             ("main-area", "main-split", "requests-pane", "details-pane"),
             |left_ui, right_ui| {
+                requests.header(left_ui, &mut self.request_table, actions);
                 let selected = requests
                     .table(left_ui, &mut self.request_table, shortcuts_allowed, actions)
                     .or(self.requests.selected);
@@ -220,7 +204,6 @@ impl InspectorApp {
                     search: self.requests.search.active_query().map(AsRef::as_ref),
                     tab: self.detail.tab,
                     body_mode: self.detail.body_mode,
-                    curl: &self.detail.curl,
                     body_saving: &self.session.body_saving,
                 };
                 detail.show(
@@ -274,12 +257,17 @@ impl InspectorApp {
                     self.map.analysis.url_map(),
                     shortcuts_allowed,
                 );
-                self.map.panel.show_detail_pane(
-                    right_ui,
-                    self.map.analysis.url_map(),
-                    &self.requests.records,
-                    self.map.analysis.endpoint_schemas(),
-                )
+                egui::Frame::new()
+                    .inner_margin(Layout::PANE_ROW_MARGIN)
+                    .show(right_ui, |ui| {
+                        self.map.panel.show_detail_pane(
+                            ui,
+                            self.map.analysis.url_map(),
+                            &self.requests.records,
+                            self.map.analysis.endpoint_schemas(),
+                        )
+                    })
+                    .inner
             },
         );
         self.layout.detail_share = share;
@@ -328,26 +316,14 @@ fn split_panes<R>(
     let split_x = (rect.right() - detail_width)
         .round()
         .clamp(rect.left(), rect.right());
-    let left_rect = egui::Rect::from_min_max(
-        rect.min,
+    // The 1px splitter line occupies [split_x, split_x + 1).
+    let left_rect = egui::Rect::from_min_max(rect.min, egui::pos2(split_x, rect.max.y));
+    let right_rect = egui::Rect::from_min_max(
         egui::pos2(
-            (split_x - Layout::SPLIT_GUTTER_HALF_WIDTH).max(rect.left()),
-            rect.max.y,
-        ),
-    );
-    let right_outer = egui::Rect::from_min_max(
-        egui::pos2(
-            (split_x + Layout::SPLIT_GUTTER_HALF_WIDTH).min(rect.right()),
+            (split_x + StrokeWidth::STRUCTURAL).min(rect.right()),
             rect.min.y,
         ),
         rect.max,
-    );
-    let right_rect = egui::Rect::from_min_max(
-        egui::pos2(
-            (right_outer.left() + Space::SM).min(right_outer.right()),
-            right_outer.top(),
-        ),
-        right_outer.max,
     );
 
     let mut left_ui = main.new_child(
@@ -365,12 +341,16 @@ fn split_panes<R>(
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
     right_ui.shrink_clip_rect(right_rect);
-    paint_pane_surfaces(&main, [left_rect, right_outer]);
+    for pane in [&mut left_ui, &mut right_ui] {
+        pane.spacing_mut().item_spacing.y = Space::XS;
+    }
+    paint_pane_surfaces(&main, [left_rect, right_rect]);
     let result = render(&mut left_ui, &mut right_ui);
 
+    let line_x = split_x + StrokeWidth::STRUCTURAL / 2.0;
     let handle_rect = egui::Rect::from_x_y_ranges(
-        (split_x - Layout::SPLIT_HANDLE_HALF_WIDTH).max(rect.left())
-            ..=(split_x + Layout::SPLIT_HANDLE_HALF_WIDTH).min(rect.right()),
+        (line_x - Layout::SPLITTER_HIT / 2.0).max(rect.left())
+            ..=(line_x + Layout::SPLITTER_HIT / 2.0).min(rect.right()),
         rect.y_range(),
     );
     let handle = main.interact(handle_rect, split_id, egui::Sense::drag());
@@ -383,7 +363,7 @@ fn split_panes<R>(
             .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
     }
     let stroke = theme::divider_stroke(&main, &handle);
-    main.painter().vline(split_x, rect.y_range(), stroke);
+    main.painter().vline(line_x, rect.y_range(), stroke);
     result
 }
 

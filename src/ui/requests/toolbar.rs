@@ -3,27 +3,30 @@
 use crate::ui::app::capture::CaptureNotice;
 #[cfg(test)]
 use crate::ui::app::capture::PortChoice;
+use crate::ui::app::state::MainView;
+use crate::ui::style::theme::Palette;
 use crate::ui::style::{
-    indicator,
-    tokens::{Layout, Tone},
+    fonts, indicator,
+    tokens::{Layout, Space, StrokeWidth, Tone, TypeScale},
 };
-use crate::ui::{AppAction, InspectorApp, MAX_RECORDS};
+use crate::ui::workbench::field::{self, Field};
+use crate::ui::workbench::text::ShellText;
+use crate::ui::workbench::{chrome, controls};
+use crate::ui::{AppAction, InspectorApp};
 use eframe::egui;
 use http_inspector_core::interception::{ProxyHandle, StartError};
-use http_inspector_core::recording::FullLog;
 use http_inspector_core::settings;
-use http_inspector_exchange::ByteSize;
 use std::borrow::Cow;
 use std::io;
 
 /// Explains a failed start in terms of what the user can change.
 pub(crate) fn start_error_text(error: &StartError, port: settings::port::ProxyPort) -> String {
     match error {
-        StartError::Bind(bind) if bind.kind() == io::ErrorKind::AddrInUse => format!(
-            "Port {port} is already in use by another program. Enter another port, or 0 to pick a free one, then press Start."
-        ),
+        StartError::Bind(bind) if bind.kind() == io::ErrorKind::AddrInUse => {
+            format!("Port {port} is already in use; enter another port, or 0 for a free one.")
+        }
         StartError::Bind(bind) if bind.kind() == io::ErrorKind::PermissionDenied => format!(
-            "Port {port} needs administrator privileges. Use a port from 1024 to 65535, or 0 to pick a free one."
+            "Port {port} needs administrator privileges; use 1024 to 65535, or 0 for a free one."
         ),
         other => other.to_string(),
     }
@@ -42,7 +45,7 @@ pub(crate) fn notice_text(notice: &CaptureNotice) -> Cow<'_, str> {
             message,
             stop_error,
         } => {
-            let message = format!("The proxy stopped: {message}. Press Start to restart it.");
+            let message = format!("The proxy stopped: {message}");
             match stop_error {
                 Some(error) => Cow::Owned(format!("{message} ({error})")),
                 None => Cow::Owned(message),
@@ -74,24 +77,33 @@ impl AuthorizationNotice {
 }
 
 impl InspectorApp {
-    /// One toolbar row with the controls used while watching requests.
+    /// The toolbar: app name, proxy and HTTPS state, the view switch, the
+    /// request filter, the Save and Settings menus, and the one primary
+    /// action. Windows narrower than [`Layout::TOOLBAR_ONE_ROW_MIN_WIDTH`]
+    /// move the view switch and the filter to a second row.
     pub(crate) fn toolbar(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
-        ui.horizontal_wrapped(|ui| {
-            self.proxy_controls(ui, actions);
-            ui.separator();
-            self.https_controls(ui, actions);
-            ui.separator();
-            actions.extend(
-                self.dialogs
-                    .browsers
-                    .toolbar(
-                        ui,
-                        self.session.capture.proxy.is_some(),
-                        self.session.capture.ca_directory.is_some()
-                            && self.session.capture.https_inspection,
-                    )
-                    .map(AppAction::Browser),
-            );
+        let one_row = ui.available_width() >= Layout::TOOLBAR_ONE_ROW_MIN_WIDTH;
+        let rows = if one_row { 1.0 } else { 2.0 };
+        let rect = chrome::allocate(ui, Layout::TOOLBAR_HEIGHT * rows);
+        chrome::paint(ui, rect, chrome::Edge::Bottom);
+        let (top, bottom) = if one_row {
+            (rect, None)
+        } else {
+            let split = rect.top() + Layout::TOOLBAR_HEIGHT;
+            let (top, bottom) = rect.split_top_bottom_at_y(split);
+            (top, Some(bottom))
+        };
+        let mut row = chrome::row(ui, top, chrome::Inset::BAR, "toolbar");
+        row.spacing_mut().item_spacing.x = Space::MD;
+        if one_row {
+            title(&mut row);
+            chrome::separator(&mut row);
+        }
+        self.proxy_indicator(&mut row, actions);
+        self.https_indicator(&mut row, actions);
+        row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            self.primary_action(ui, actions);
+            self.settings_menu(ui, actions);
             actions.extend(
                 self.dialogs
                     .save
@@ -99,104 +111,287 @@ impl InspectorApp {
                     .into_iter()
                     .map(AppAction::SaveMenu),
             );
-            ui.menu_button("Settings", |ui| {
+            if one_row {
+                let switch_width = view_switch_width(ui);
+                let room = 2.0f32.mul_add(-Space::LG, ui.available_width() - switch_width);
+                self.filter_input(ui, Layout::TOOLBAR_FILTER_WIDTH.fit(room), actions);
+                let free = ui.available_rect_before_wrap();
+                let centered = egui::Rect::from_center_size(
+                    egui::pos2(
+                        free.center().x.max(free.left() + switch_width / 2.0),
+                        free.center().y,
+                    ),
+                    egui::vec2(switch_width, free.height()),
+                );
+                let mut switch = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(centered)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                self.view_switch(&mut switch, actions);
+            }
+        });
+        if let Some(bottom) = bottom {
+            let mut row = chrome::row(ui, bottom, chrome::Inset::BAR, "toolbar-second-row");
+            row.spacing_mut().item_spacing.x = Space::MD;
+            self.view_switch(&mut row, actions);
+            let width = row.available_width();
+            self.filter_input(&mut row, width, actions);
+        }
+    }
+
+    /// Requests and Map. The counts live in the status bar (S16).
+    fn view_switch(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+        actions.extend(
+            controls::segmented(
+                ui,
+                ShellText::ViewSwitch.text(),
+                self.layout.main_view,
+                &VIEWS.map(|(view, label)| (view, label.text())),
+            )
+            .map(AppAction::SwitchView),
+        );
+    }
+
+    /// The request filter. It only filters the request list, so the Map
+    /// view leaves its place empty instead of offering a control that does
+    /// nothing there.
+    fn filter_input(&self, ui: &mut egui::Ui, width: f32, actions: &mut Vec<AppAction>) {
+        if self.layout.main_view == MainView::Requests {
+            actions.extend(
+                self.requests
+                    .search
+                    .controls(ui, width)
+                    .map(AppAction::Search),
+            );
+        } else {
+            ui.add_space(width);
+        }
+    }
+
+    /// The proxy dot and address. While running, the address opens a menu
+    /// with the copy actions and Stop; while stopped, the port to start on
+    /// is edited in place.
+    fn proxy_indicator(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = Space::XS;
+            if let Some(proxy) = self.session.capture.proxy.as_ref() {
+                let address = proxy.local_addr();
+                indicator::dot(ui, Tone::Success);
+                let label = egui::RichText::new(format!("{address} ▼")).font(fonts::data());
+                let menu = controls::ghost_menu(ui, label, Layout::TOOLBAR_BUTTON_HEIGHT, |ui| {
+                    proxy_menu(ui, address)
+                });
+                if let Some(action) = menu.inner.flatten() {
+                    actions.push(action);
+                }
+            } else {
+                indicator::dot(ui, Tone::Danger);
+                ui.label(ShellText::Stopped.text());
+                ui.add_space(Space::SM);
+                ui.label(ShellText::Port.text());
+                let mut port = self.session.capture.port.text.clone();
+                let edited = field::single_line(
+                    ui,
+                    &mut port,
+                    Field::new(Layout::PORT_INPUT_WIDTH).monospace(),
+                    |_| {},
+                )
+                .on_hover_text("Loopback port to listen on; 0 picks a free port.")
+                .changed();
+                if edited {
+                    actions.push(AppAction::SetPort(port));
+                }
+            }
+        });
+    }
+
+    /// HTTPS decryption state; the menu holds the switch and the CA.
+    fn https_indicator(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+        let capture = &self.session.capture;
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = Space::XS;
+            let label = if capture.https_inspection {
+                if let Some(tone) = self.dialogs.ca_panel.tone(capture.ca_directory.as_deref()) {
+                    indicator::dot(ui, tone);
+                }
+                ShellText::HttpsOn
+            } else {
+                ShellText::HttpsOff
+            };
+            let menu = controls::ghost_menu(
+                ui,
+                format!("{} ▼", label.text()),
+                Layout::TOOLBAR_BUTTON_HEIGHT,
+                |ui| self.https_menu(ui),
+            );
+            actions.extend(menu.inner.into_iter().flatten());
+        });
+    }
+
+    fn https_menu(&self, ui: &mut egui::Ui) -> Vec<AppAction> {
+        let capture = &self.session.capture;
+        let mut actions = Vec::new();
+        let hover = if capture.proxy.is_some() {
+            "Stop the proxy to change this setting."
+        } else {
+            "Decrypt HTTPS in new connections with the app CA."
+        };
+        let mut enabled = capture.https_inspection;
+        let toggled = ui
+            .add_enabled(
+                capture.proxy.is_none(),
+                egui::Checkbox::new(&mut enabled, ShellText::DecryptHttps.text()),
+            )
+            .on_hover_text(hover)
+            .on_disabled_hover_text(hover)
+            .changed();
+        if toggled {
+            actions.push(AppAction::SetHttpsInspection(enabled));
+        }
+        if capture.https_inspection {
+            ui.separator();
+            actions.extend(
+                self.dialogs
+                    .ca_panel
+                    .summary(ui, capture.ca_directory.as_deref()),
+            );
+        }
+        actions
+    }
+
+    /// Theme, body storage, cURL redaction, and the capture scope help.
+    fn settings_menu(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+        let menu = controls::ghost_menu(
+            ui,
+            ShellText::Settings.text(),
+            Layout::TOOLBAR_BUTTON_HEIGHT,
+            |ui| {
+                let mut chosen = Vec::new();
                 ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                    actions.extend(self.layout.theme.menu(ui).map(AppAction::SetTheme));
+                    chosen.extend(self.layout.theme.menu(ui).map(AppAction::SetTheme));
                     ui.separator();
-                    actions.extend(
+                    chosen.extend(
                         self.session
                             .body_saving
                             .settings_menu(ui)
                             .map(AppAction::SetBodyStorageLimit),
                     );
+                    ui.separator();
+                    chosen.extend(self.detail.curl.settings(ui));
+                    ui.separator();
+                    crate::ui::dialogs::scope_help::submenu(
+                        ui,
+                        self.session
+                            .capture
+                            .proxy
+                            .as_ref()
+                            .map(ProxyHandle::local_addr),
+                    );
                 });
-            });
-            crate::ui::dialogs::scope_help::button(
-                ui,
-                self.session
-                    .capture
-                    .proxy
-                    .as_ref()
-                    .map(ProxyHandle::local_addr),
-            );
-        });
+                chosen
+            },
+        );
+        actions.extend(menu.inner.into_iter().flatten());
     }
 
-    fn proxy_controls(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
-        if let Some(proxy) = self.session.capture.proxy.as_ref() {
-            let address = proxy.local_addr();
-            indicator::dot_label(ui, Tone::Success, "Running");
-            ui.monospace(address.to_string());
-            actions.extend(copy_menu(ui, address).map(AppAction::CopyText));
-            if ui.button("Stop").clicked() {
-                actions.push(AppAction::StopProxy);
-            }
-        } else {
-            indicator::dot_label(ui, Tone::Danger, "Stopped");
-            ui.label("Port");
-            let mut port = self.session.capture.port.text.clone();
-            let edited = ui
-                .add(egui::TextEdit::singleline(&mut port).desired_width(Layout::PORT_INPUT_WIDTH))
-                .on_hover_text(
-                    "Loopback port for the proxy. 0 picks a free port. A port you type is remembered.",
-                )
-                .changed();
-            if edited {
-                actions.push(AppAction::SetPort(port));
-            }
-            if ui.button("Start").clicked() {
+    /// The one Primary button (S9): Start while the proxy is stopped, since
+    /// nothing is captured until it runs, and Open Browser while it runs,
+    /// since an inspection browser is the shortest way to send traffic
+    /// through it.
+    fn primary_action(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+        if self.session.capture.proxy.is_none() {
+            if ui
+                .add(controls::primary(ui, ShellText::Start.text()))
+                .clicked()
+            {
                 actions.push(AppAction::StartProxy);
             }
+            return;
         }
+        actions.extend(
+            self.dialogs
+                .browsers
+                .toolbar(
+                    ui,
+                    self.session.capture.ca_directory.is_some()
+                        && self.session.capture.https_inspection,
+                )
+                .map(AppAction::Browser),
+        );
     }
 
-    fn https_controls(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
-        let hover = if self.session.capture.proxy.is_some() {
-            format!("Stop the proxy to change this setting. {AUTHORIZATION_WARNING}")
-        } else {
-            format!("Decrypt HTTPS in new connections with the app CA. {AUTHORIZATION_WARNING}")
-        };
-        let mut enabled = self.session.capture.https_inspection;
-        let toggled = ui
-            .add_enabled(
-                self.session.capture.proxy.is_none(),
-                egui::Checkbox::new(&mut enabled, "Decrypt HTTPS"),
-            )
-            .on_hover_text(&hover)
-            .on_disabled_hover_text(&hover)
-            .changed();
-        if toggled {
-            actions.push(AppAction::SetHttpsInspection(enabled));
-        }
-        if self.session.capture.https_inspection {
-            actions.extend(
-                self.dialogs
-                    .ca_panel
-                    .summary(ui, self.session.capture.ca_directory.as_deref()),
-            );
-        }
-    }
-
-    /// Errors and warnings that need attention, shown right below the toolbar.
+    /// Errors and warnings that need attention, one line each, in a chrome
+    /// strip right below the toolbar. Draws nothing when all is well.
     pub(crate) fn notices(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+        let background = ui.painter().add(egui::Shape::Noop);
+        let top = ui.cursor().top();
+        let response = ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            self.notice_lines(ui, actions)
+        });
+        if !response.inner {
+            return;
+        }
+        let rect = egui::Rect::from_x_y_ranges(
+            ui.max_rect().x_range(),
+            top..=response.response.rect.bottom(),
+        );
+        let palette = Palette::of(ui);
+        ui.painter().set(
+            background,
+            egui::Shape::rect_filled(rect, 0.0, palette.surfaces.chrome),
+        );
+        ui.painter().hline(
+            rect.x_range(),
+            rect.bottom() - StrokeWidth::STRUCTURAL / 2.0,
+            egui::Stroke::new(StrokeWidth::STRUCTURAL, palette.borders.structural),
+        );
+    }
+
+    /// Shows each notice on its own line; reports whether any was shown.
+    fn notice_lines(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) -> bool {
+        let mut shown = false;
+        let mut line = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)| {
+            shown = true;
+            notice_row(ui, add);
+        };
         if let Some(warning) = self.session.capture.port.launch_warning.as_ref() {
-            indicator::dot_label(ui, Tone::Warning, warning);
+            line(ui, &mut |ui| {
+                indicator::dot_label(ui, Tone::Warning, warning);
+            });
         }
         if let Some(error) = self.session.capture.error.as_ref() {
-            indicator::dot_label(ui, Tone::Danger, notice_text(error));
+            line(ui, &mut |ui| {
+                indicator::dot_label(ui, Tone::Danger, notice_text(error));
+            });
         } else if let Some(error) = self.session.error.as_ref() {
-            indicator::dot_label(ui, Tone::Danger, error);
+            line(ui, &mut |ui| {
+                indicator::dot_label(ui, Tone::Danger, error);
+            });
         }
         if let Some(error) = self.dialogs.browsers.error() {
-            indicator::dot_label(ui, Tone::Danger, error);
+            line(ui, &mut |ui| {
+                indicator::dot_label(ui, Tone::Danger, error);
+            });
         }
-        if self.detail.curl.notice(ui) {
-            actions.push(AppAction::DismissCurlNotice);
+        if self.detail.curl.has_notice() {
+            line(ui, &mut |ui| {
+                if self.detail.curl.notice(ui) {
+                    actions.push(AppAction::DismissCurlNotice);
+                }
+            });
         }
         if self.session.capture.https_inspection {
-            self.dialogs.ca_panel.messages(ui);
+            if self.dialogs.ca_panel.has_messages() {
+                line(ui, &mut |ui| {
+                    if self.dialogs.ca_panel.messages(ui) {
+                        actions.push(AppAction::DismissCaNotice);
+                    }
+                });
+            }
             if self.dialogs.authorization_notice == AuthorizationNotice::Showing {
-                ui.horizontal_wrapped(|ui| {
+                line(ui, &mut |ui| {
                     indicator::dot_label(ui, Tone::Warning, AUTHORIZATION_WARNING);
                     if ui.small_button("Dismiss").clicked() {
                         actions.push(AppAction::DismissAuthorization);
@@ -204,70 +399,59 @@ impl InspectorApp {
                 });
             }
         }
+        shown
     }
+}
 
-    /// Counters and full-session log state below the request list.
-    pub(crate) fn status_bar(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(format!("{} requests", self.requests.records.len()));
-            let dropped = self.requests.records.dropped(self.session.capture.engine_dropped());
-            if dropped > 0 {
-                ui.separator();
-                indicator::dot_label(ui, Tone::Danger, format!("{dropped} records dropped"))
-                    .on_hover_text(
-                        "The capture queue was full, so these exchanges were forwarded but not shown.",
-                    );
-            }
-            let evicted = self.requests.records.evicted();
-            if evicted > 0 {
-                ui.separator();
-                indicator::dot_label(ui, Tone::Warning, format!("{evicted} older records removed"))
-                    .on_hover_text(format!(
-                        "Only the newest {MAX_RECORDS} requests are kept on screen. The full-session log keeps every record."
-                    ));
-            }
-            if self.map.analysis.url_map().node_limit_reached() {
-                ui.separator();
-                indicator::dot_label(
-                    ui,
-                    Tone::Warning,
-                    format!(
-                        "URL map reached its {} node limit; deeper paths are folded into parent nodes.",
-                        self.map.analysis.url_map().max_nodes()
-                    ),
-                );
-            }
-            if let Some(error) = self
-                .session.capture.log_init_error
-                .as_ref()
-                .map(|error| format!("Full-session logging is unavailable: {error}"))
-                .or_else(|| self.session.capture.full_log.as_ref().and_then(FullLog::error))
-            {
-                ui.separator();
-                indicator::dot_label(ui, Tone::Danger, error);
-            }
-            if let Some(log) = self
-                .session.capture.full_log
-                .as_ref()
-                .filter(|log| log.body_limit_reached())
-            {
-                ui.separator();
-                indicator::dot_label(
-                    ui,
-                    Tone::Warning,
-                    format!(
-                        "The full-session log reached its {} body limit. Later body bytes are omitted; headers and results are still logged.",
-                        ByteSize::new(log.body_limit()).exact()
-                    ),
-                );
-            }
-            self.dialogs.save.status(ui);
-            if self.session.body_saving.status(ui) {
-                actions.push(AppAction::CancelBulkSave);
-            }
-            self.layout.theme.status(ui);
+const VIEWS: [(MainView, ShellText); 2] = [
+    (MainView::Requests, ShellText::Requests),
+    (MainView::Map, ShellText::Map),
+];
+
+/// Width the view switch takes, so the toolbar can center it.
+fn view_switch_width(ui: &egui::Ui) -> f32 {
+    controls::segmented_width(ui, VIEWS.iter().map(|(_, label)| label.text()))
+}
+
+/// The app name at the left end of the toolbar.
+fn title(ui: &mut egui::Ui) {
+    ui.label(
+        egui::RichText::new(http_inspector_exchange::APP_NAME)
+            .font(fonts::panel_title())
+            .extra_letter_spacing(TypeScale::PANEL_TITLE_TRACKING)
+            .strong(),
+    );
+}
+
+/// One notice: [`Layout::STATUS_BAR_HEIGHT`] or taller when it wraps.
+fn notice_row(ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)) {
+    egui::Frame::new()
+        .inner_margin(Layout::NOTICE_MARGIN)
+        .show(ui, |ui| {
+            ui.set_min_height(2.0f32.mul_add(-Space::XXS, Layout::STATUS_BAR_HEIGHT));
+            ui.horizontal_wrapped(|ui| add(ui));
         });
-    }
+}
+
+/// Copy actions and Stop for the running proxy at `address`.
+fn proxy_menu(ui: &mut egui::Ui, address: std::net::SocketAddr) -> Option<AppAction> {
+    let mut action = None;
+    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+        ui.label(egui::RichText::new(ShellText::Copy.text()).color(Palette::of(ui).secondary));
+        for target in CopyTarget::ALL {
+            let text = target.text(address);
+            if ui.button(target.label()).on_hover_text(&text).clicked() {
+                action = Some(AppAction::CopyText(text));
+                ui.close();
+            }
+        }
+        ui.separator();
+        if ui.button(ShellText::Stop.text()).clicked() {
+            action = Some(AppAction::StopProxy);
+            ui.close();
+        }
+    });
+    action
 }
 
 /// Text placed on the clipboard for one of the toolbar copy actions.
@@ -297,21 +481,6 @@ impl CopyTarget {
             Self::Environment => format!("HTTP_PROXY={url} HTTPS_PROXY={url}"),
         }
     }
-}
-
-fn copy_menu(ui: &mut egui::Ui, address: std::net::SocketAddr) -> Option<String> {
-    let menu = ui.menu_button("Copy ▼", |ui| {
-        let mut copied = None;
-        for target in CopyTarget::ALL {
-            let text = target.text(address);
-            if ui.button(target.label()).on_hover_text(&text).clicked() {
-                copied = Some(text);
-                ui.close();
-            }
-        }
-        copied
-    });
-    menu.inner.flatten()
 }
 
 #[cfg(test)]

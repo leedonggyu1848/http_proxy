@@ -36,6 +36,7 @@ pub(crate) enum AppAction {
     SetPort(String),
     SetHttpsInspection(bool),
     DismissAuthorization,
+    DismissCaNotice,
     SaveMenu(SaveMenuAction),
     SetTheme(egui::ThemePreference),
     SetBodyStorageLimit(u64),
@@ -119,6 +120,7 @@ impl InspectorApp {
             AppAction::DismissAuthorization => {
                 self.dialogs.authorization_notice = AuthorizationNotice::Dismissed;
             }
+            AppAction::DismissCaNotice => self.dialogs.ca_panel.dismiss_notice(),
             AppAction::SaveMenu(action) => self.apply_save_menu(context, action),
             AppAction::SetTheme(preference) => {
                 self.layout.theme.set_preference(context, preference);
