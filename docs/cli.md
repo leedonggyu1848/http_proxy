@@ -11,6 +11,10 @@
 - 인자 없이 실행하거나 `--port N`만 주면 지금처럼 데스크톱 앱이 열린다.
 - 첫 인자가 `proxy`, `records`, `log`, `ca`, `schema`, `help`, `--help`, `--version`, `--json`이면 명령줄로 동작한다.
 
+## 에이전트용 안내
+
+AI 에이전트에게는 [`http-inspector-cli` 스킬](../.agents/skills/http-inspector-cli/SKILL.md)을 준다. 명령 요약과 자주 쓰는 흐름(캡처 확인, 재전송, HAR·엔드포인트 구조)을 한 문서에 담았다.
+
 ## 범위
 
 명령줄은 캡처한 요청을 **확인하고 → 이해하고 → 고쳐서 재현하는** 흐름에 직접 필요한 기능만 제공한다(#126의 범위 조정). 명령이 많을수록 에이전트가 사용법을 익히는 비용이 커지므로 효과가 작은 기능은 앱에만 둔다. 앱 전용 기능과 이유는 아래 "화면 기능 대응"에 있다.
@@ -162,7 +166,7 @@ http-proxy proxy stop
 | `tree` | JSON·XML 트리 행(`nodes`: `depth`, `label`, `path`) |
 | `hex` | 받은 그대로의 바이트(압축 해제 전) 16진수 덤프. 기본 8 KiB, `--max-bytes`로 조정 |
 
-- `--json-path '$.data.items[3].id'`, `--xpath '/rss/channel/item[2]/title'`은 Tree 보기의 경로와 같은 형식으로 행 하나를 골라 그 값을 `text`로 출력한다. 경로는 `--view tree`로 확인한다.
+- `--json-path '$.data.items[3].id'`, `--xpath '/rss/channel/item[2]/title'`은 Tree 보기의 경로와 같은 형식으로 행 하나를 골라 그 값의 원문을 `text`로 출력한다. JSON 문자열은 따옴표가 붙은 JSON 원문(`"\"pro\""`)이다. 경로는 `--view tree`로 확인한다. 식별자가 아닌 키는 Tree 보기처럼 `$.echo["x-client"]`로 쓰며, `$.echo.x-client`처럼 점으로 써도 같은 행을 고른다.
 - `notices`는 앱이 본문 위에 보여 주는 안내(압축 방식, 잘림, 수신 중, 정리 실패)다.
 - `--max-bytes N`은 출력 텍스트를 N바이트에서 자른다. `truncated`와 자르기 전 길이 `text_bytes`를 함께 출력한다.
 - 이진 본문(이미지, `application/octet-stream` 같은 형식, 앞부분에 NUL이 있는 본문)을 텍스트 보기로 요청하면 `binary_body`로 실패한다. `--view hex`를 쓰거나 `log save`로 전체 로그를 저장한다.
@@ -181,7 +185,7 @@ http-proxy proxy stop
 
 ### `http-proxy records wait`
 
-조건에 맞는 **완료된** 기록이 나타나면 그 기록(`record`)을 출력하고 끝낸다. 기본값은 보관한 모든 기록을 대상으로 하므로 요청을 보낸 뒤 실행해도 된다. `--since ID`로 그 뒤의 기록만 기다린다. `--timeout`은 `500ms`, `10s`, `2m`, `1h` 형식이며 기본 `30s`, 최대 `1h`다. 시간이 지나면 `timeout`으로 실패한다.
+조건에 맞는 **완료된** 기록이 나타나면 그 기록(`record`)을 출력하고 끝낸다. 기본값은 보관한 모든 기록을 대상으로 하므로 요청을 보낸 뒤 실행해도 된다. `--since ID`로 그 뒤의 기록만 기다린다. `--timeout`은 `500ms`, `10s`, `2m`, `1h` 형식이며 기본 `30s`, 최대 `1h`다. 시간 안에 맞는 기록이 없으면 아무 기록도 출력하지 않고 `timeout`(종료 코드 6)으로 실패한다.
 
 ### `http-proxy records clear`
 
@@ -199,7 +203,7 @@ http-proxy proxy stop
 | `--body-file PATH` | 파일 전체를 본문으로 보낸다(최대 16 MiB). 상대 경로는 명령을 실행한 디렉터리 기준 |
 | `--yes` | 서버 상태를 바꿀 수 있는 요청을 보낸다는 확인 |
 | `--dry-run` | 보내지 않고 보낼 요청(메서드, URL, 헤더, 본문)을 출력한다 |
-| `--timeout` | 새 기록이 끝나기를 기다리는 시간. 지나면 그때까지의 기록을 출력한다 |
+| `--timeout` | 새 기록이 끝나기를 기다리는 시간(기본 `60s`). 시간 안에 새 기록이 나타났으면 끝나지 않았어도 그 기록을 출력하고(`settled: false`), 나타나지 않았으면 `timeout`(종료 코드 6)으로 실패한다 |
 
 확인 규칙은 앱과 같다.
 
@@ -207,6 +211,8 @@ http-proxy proxy stop
 - 캡처할 때 가려진 헤더(`Authorization`, `Cookie` 등)는 값이 없으므로 그대로 보낼 수 없다. `--header`로 값을 주거나 `--remove-header`로 빼지 않으면 `not_reproducible`로 실패하고 해당 헤더 이름을 알려 준다.
 - 본문이나 헤더 일부만 캡처한 요청은 `--body-file`로 완전한 본문을 주어야 한다.
 - HTTPS 요청은 HTTPS 복호화가 켜져 있어야 보낸다(`https_unavailable`). 프록시가 멈췄으면 `proxy_not_running`이다.
+
+요청은 앱과 같이 `Host`와 `Content-Length`를 다시 계산해 보낸다. 본문 없는 `GET`에도 `content-length: 0`이 붙고, hop-by-hop 헤더와 `Expect`는 빠진다.
 
 출력: `replay_of`, `dry_run`, `needs_confirmation`, `request`(보낸 또는 보낼 요청: `method`, `url`, `headers`, `body_bytes`, `body`(UTF-8이 아니면 `null`, 64 KiB까지), `body_truncated`), `record`(보낸 경우 새 기록). `request.headers`의 자격 증명 헤더 값은 직접 입력한 값이라도 `[REDACTED]`로 출력한다.
 
@@ -218,6 +224,33 @@ http-proxy proxy stop
 - URL이나 본문이 잘렸거나 헤더 일부를 캡처하지 못한 요청, `CONNECT` 터널은 다른 요청을 만들지 않도록 `not_reproducible`로 실패한다.
 
 출력: `id`, `command`, `redacted_headers`, `placeholders`.
+
+### `http-proxy records export`
+
+`records export [필터 옵션] [--format har] [--output PATH] [--include-bodies] [--include-redacted-headers]`. 앱의 **Save → Export HAR**와 같은 코드로 조건에 맞는 보관 기록을 HAR 1.2로 만든다. 필터 옵션은 `records list`와 같다.
+
+- `--output PATH`면 새 파일에 쓰고 `entries`, `path`를 출력한다. 파일은 소유자만 읽을 수 있고, 기존 파일은 덮어쓰지 않는다(`file_exists`).
+- `--output`이 없으면 HAR 문서 자체를 stdout에 쓴다. 다른 도구가 바로 읽도록 `--json`이어도 `schema` 필드로 감싸지 않는다.
+- 기본값은 앱과 같이 본문과 자격 증명 헤더를 넣지 않는다. `--include-bodies`는 잘렸을 수 있는 본문 미리보기를, `--include-redacted-headers`는 자격 증명 헤더를 `[REDACTED]` 표시와 함께 넣는다. 원래 값은 어느 경우에도 들어가지 않는다.
+
+### `http-proxy records endpoints`
+
+`records endpoints [필터 옵션] [--format summary|openapi]`. 앱의 **Map** 상세 패널과 같은 코드(URL 맵, ID 접기, 엔드포인트 구조 집계)로 조건에 맞는 기록의 엔드포인트별 요청·응답 구조를 보여 준다. 최상위 `http-proxy schema`는 이 명령줄의 출력 형식을 설명하는 명령이고, 이 명령은 캡처한 API의 구조를 보여 준다.
+
+- `summary`(기본): 엔드포인트마다 경로 패턴(`/users/{id}`), 메서드, 요청 수, 경로 ID 종류, 쿼리 이름과 값 형식, 사용자 정의 헤더 이름, 인증 방식, 요청 본문(Content-Type별)과 응답 본문(상태 코드·Content-Type별)의 필드 이름·형식·등장 횟수를 출력한다.
+- `openapi`: 같은 집계로 OpenAPI 3.1 문서를 만들어 stdout에 쓴다(`schema` 필드로 감싸지 않음). 서버 하나만 표현하므로 기록이 여러 호스트에 걸치면 `usage`로 실패한다. `--filter host:<host>`로 좁힌다. 캡처만으로 서버가 필드를 요구하는지 알 수 없으므로 `required`를 표시하지 않고 관찰 횟수를 `x-observed-requests`, `x-observed-in`으로 남긴다. YAML이 필요하면 JSON을 변환한다(OpenAPI JSON은 그대로 YAML로도 읽힌다).
+- 쿼리 값, 헤더 값, 본문 필드 값은 집계하지 않고 이름·형식·횟수만 남긴다.
+- 앱의 Map은 **Clear** 이후 누적 집계(목록에서 밀려난 요청 포함)를 쓰지만, 이 명령은 지금 보관 중인 기록(최대 2,000건) 중 조건에 맞고 끝난 기록만 쓴다. 본문은 메모리 미리보기에서 읽으므로 미리보기 한도를 넘은 본문은 잘린 것으로 제외한다.
+
+### `http-proxy records hls`
+
+`records hls ID [--variant N] [--output PATH]`. 앱의 HLS 창과 같은 코드로 캡처한 `.m3u8` 재생목록을 확인하고 선택한 화질을 하나의 `.ts` 파일로 받는다.
+
+- `--output`이 없으면 화질 목록(`variants`: `index`, `quality`, `bandwidth`, `resolution`, `state`, 세그먼트 수, `can_download`, `blocked`)과 기본 화질(`default_variant`)을 출력한다.
+- `--output PATH`면 `--variant`(기본은 앱이 고르는 화질)를 받아 PATH에 저장한다. 진행은 NDJSON `progress` 이벤트(단계, 전체·완료·재사용·받은 세그먼트 수, 받은 바이트)로, 끝은 `completed`(경로, 전체 바이트, 세그먼트 수)로 알린다. 실패하면 오류 줄로 끝난다.
+- PATH에 파일이 있으면 시작하지 않고 `file_exists`로 실패한다. 덮어쓰는 옵션은 없다.
+- 앱과 같은 조건이 필요하다. 현재 데몬 세션에 해당 화질의 미디어 재생목록과 Chrome `.ts` 세그먼트 요청이 캡처되어 있어야 하며, 없으면 `hls_unavailable`로 이유(예: `No Chrome .ts segment request captured for this quality`)를 알려 준다. 이미 보관한 세그먼트는 재사용하고 나머지는 프록시를 거쳐 받는다.
+- 진행 중에 명령을 끝내면(Ctrl+C) 다운로드를 취소한다.
 
 ### `http-proxy proxy env`
 
@@ -280,6 +313,7 @@ http-proxy proxy stop
 | `binary_body` | 1 | 이진 본문. `--view hex` |
 | `view_unavailable` | 1 | 이 본문에 쓸 수 없는 보기(트리 없음, 압축 해제 실패) |
 | `confirmation_required` | 5 | `records replay`가 `GET`·`HEAD`·`OPTIONS`가 아닌 요청을 보내려 함. `--dry-run`으로 확인한 뒤 `--yes` |
+| `hls_unavailable` | 1 | HLS 재생목록이 아니거나 선택한 화질을 아직 받을 수 없음. 메시지가 이유를 알려 준다 |
 | `not_reproducible` | 1 | 가려진 헤더 값이 없거나 캡처가 불완전해 그대로 재현할 수 없음. 메시지가 줄 값을 알려 준다 |
 | `proxy_not_running` | 1 | 프록시가 멈춰 있음. `proxy start` |
 | `proxy_start_failed` | 1 | 포트 사용 중 등. `--port 0` 시도 |
@@ -315,9 +349,11 @@ http-proxy proxy stop
 | JSON Tree 경로·XML XPath 복사 | `records body --json-path`, `--xpath` |
 | **Edit and Resend** | `records replay` |
 | **Copy as cURL** | `records curl` |
+| **Save → Export HAR** | `records export --format har` |
+| Map 상세의 엔드포인트 요청·응답 구조 | `records endpoints` (OpenAPI 3.1: `--format openapi`) |
+| HLS 화질 확인·미디어 다운로드 | `records hls` |
 | **Clear** | `records clear` |
 | 전체 로그 저장 | `log save PATH` |
-| HAR 내보내기, 엔드포인트 구조, HLS 다운로드 | 이어지는 PR에서 추가 |
 
 ### 앱 전용
 

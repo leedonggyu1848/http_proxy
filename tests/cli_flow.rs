@@ -689,3 +689,171 @@ fn check_replay_refusals(sandbox: &Sandbox, id: &str) -> TestResult {
     assert_eq!(listed["matched"], 1, "a refused replay must not send");
     Ok(())
 }
+
+#[test]
+fn export_and_endpoints_describe_the_capture() -> TestResult {
+    let sandbox = Sandbox::new()?;
+    let proxy = start(&sandbox)?;
+    let _id = capture(&sandbox, proxy)?;
+
+    let har_path = sandbox.root.path().join("session.har");
+    let har_arg = har_path.to_str().ok_or("path")?;
+    let written = sandbox.json(&["records", "export", "--output", har_arg, "--json"])?;
+    assert_eq!(written["entries"], 1);
+    let har_text = fs::read_to_string(&har_path)?;
+    assert_no_secret("HAR file", &har_text);
+    let har: Value = serde_json::from_str(&har_text)?;
+    assert_eq!(har["log"]["version"], "1.2");
+    assert!(
+        har["log"]["entries"][0]["request"]["url"]
+            .as_str()
+            .is_some_and(|url| url.ends_with("/api/users?page=2"))
+    );
+    let again = sandbox.run(&["records", "export", "--output", har_arg, "--json"])?;
+    assert_eq!(
+        again.status.code(),
+        Some(1),
+        "an existing file is never overwritten"
+    );
+    let printed = sandbox.run(&["records", "export", "--include-redacted-headers"])?;
+    let printed_text = String::from_utf8(printed.stdout)?;
+    assert_no_secret("printed HAR", &printed_text);
+    let printed: Value = serde_json::from_str(&printed_text)?;
+    assert_eq!(printed["log"]["entries"].as_array().map(Vec::len), Some(1));
+
+    let summary = sandbox.json(&["records", "endpoints", "--json"])?;
+    let endpoint = &summary["endpoints"][0];
+    assert_eq!(endpoint["path"], "/api/users");
+    assert_eq!(endpoint["method"], "GET");
+    assert_eq!(endpoint["query"][0]["name"], "page");
+    assert!(
+        !summary.to_string().contains("alpha"),
+        "field values are never kept"
+    );
+    let openapi = sandbox.run(&["records", "endpoints", "--format", "openapi"])?;
+    let openapi: Value = serde_json::from_slice(&openapi.stdout)?;
+    assert_eq!(openapi["openapi"], "3.1.0");
+    let schema = &openapi["paths"]["/api/users"]["get"]["responses"]["200"]["content"]["application/json"]
+        ["schema"];
+    assert_eq!(
+        schema["properties"]["data"]["properties"]["items"]["items"]["properties"]["id"]["type"],
+        "integer"
+    );
+    Ok(())
+}
+
+const CHROME: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+const PLAYLIST: &str = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:2.0,\nseg0.ts\n#EXTINF:2.0,\nseg1.ts\n#EXT-X-ENDLIST\n";
+
+/// One MPEG-TS packet per segment, marked with the segment number.
+fn segment(number: u8) -> Vec<u8> {
+    let mut packet = vec![0; 188];
+    if let Some(first) = packet.first_mut() {
+        *first = 0x47;
+    }
+    if let Some(last) = packet.last_mut() {
+        *last = number;
+    }
+    packet
+}
+
+/// Serves the playlist and segments for `count` requests, by path.
+fn serve_hls(listener: TcpListener, count: usize) -> thread::JoinHandle<std::io::Result<()>> {
+    thread::spawn(move || {
+        for _ in 0..count {
+            let (stream, _) = listener.accept()?;
+            let mut reader = BufReader::new(stream.try_clone()?);
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line)?;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line)? == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            let (content_type, body) = if request_line.contains("index.m3u8") {
+                (
+                    "application/vnd.apple.mpegurl",
+                    PLAYLIST.as_bytes().to_vec(),
+                )
+            } else if request_line.contains("seg0.ts") {
+                ("video/mp2t", segment(0))
+            } else {
+                ("video/mp2t", segment(1))
+            };
+            let mut writer = stream;
+            write!(
+                writer,
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )?;
+            writer.write_all(&body)?;
+            writer.flush()?;
+        }
+        Ok(())
+    })
+}
+
+fn get_as_chrome(proxy: SocketAddr, url: &str, host: SocketAddr) -> TestResult {
+    let mut client = TcpStream::connect(proxy)?;
+    write!(
+        client,
+        "GET {url} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: {CHROME}\r\nConnection: close\r\n\r\n"
+    )?;
+    let _read = client.read_to_end(&mut Vec::new())?;
+    Ok(())
+}
+
+#[test]
+fn hls_downloads_a_variant_into_a_new_file() -> TestResult {
+    let sandbox = Sandbox::new()?;
+    let proxy = start(&sandbox)?;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let upstream = listener.local_addr()?;
+    // Playlist and first segment from "Chrome", then the second segment
+    // fetched by the download itself.
+    let server = serve_hls(listener, 3);
+    get_as_chrome(
+        proxy,
+        &format!("http://{upstream}/live/index.m3u8"),
+        upstream,
+    )?;
+    get_as_chrome(proxy, &format!("http://{upstream}/live/seg0.ts"), upstream)?;
+    let playlist = sandbox.json(&["records", "wait", "--filter", "url:index.m3u8", "--json"])?;
+    sandbox.json(&["records", "wait", "--filter", "url:seg0.ts", "--json"])?;
+    let id = playlist["record"]["id"]
+        .as_u64()
+        .ok_or("no id")?
+        .to_string();
+
+    let inspected = sandbox.json(&["records", "hls", &id, "--json"])?;
+    let variant = &inspected["variants"][0];
+    assert_eq!(variant["can_download"], true, "{inspected}");
+    assert_eq!(variant["segments"]["total"], 2);
+    assert_eq!(variant["segments"]["cached"], 1);
+
+    let output = sandbox.root.path().join("video.ts");
+    let output_arg = output.to_str().ok_or("path")?;
+    let download = sandbox.run(&["records", "hls", &id, "--output", output_arg, "--json"])?;
+    let stdout = String::from_utf8(download.stdout)?;
+    assert!(download.status.success(), "{stdout}");
+    let events: Vec<Value> = stdout
+        .lines()
+        .map(serde_json::from_str)
+        .collect::<Result<_, _>>()?;
+    let last = events.last().ok_or("no events")?;
+    assert_eq!(last["event"], "completed", "{stdout}");
+    assert_eq!(last["path"], output_arg);
+    assert_eq!(last["reused_segments"], 1);
+    assert!(events.iter().any(|event| event["event"] == "progress"));
+    assert_eq!(fs::read(&output)?, [segment(0), segment(1)].concat());
+    server.join().map_err(|_| "server panicked")??;
+
+    let again = sandbox.run(&["records", "hls", &id, "--output", output_arg, "--json"])?;
+    assert_eq!(again.status.code(), Some(1));
+    let error: Value = serde_json::from_slice(&again.stdout)?;
+    assert_eq!(error["error"]["code"], "file_exists");
+    let not_hls = sandbox.run(&["records", "hls", "999999", "--json"])?;
+    assert_eq!(not_hls.status.code(), Some(4));
+    Ok(())
+}

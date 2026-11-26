@@ -171,6 +171,31 @@ pub(crate) enum Request {
         id: RecordRef,
         placeholders: bool,
     },
+    Export(ExportRequest),
+    Endpoints {
+        filter: FilterSpec,
+        openapi: bool,
+    },
+    Hls(HlsRequest),
+}
+
+/// `records export`: which records go into the HAR and where it goes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ExportRequest {
+    pub(crate) filter: FilterSpec,
+    /// Absolute destination; `None` returns the document.
+    pub(crate) output: Option<PathBuf>,
+    pub(crate) include_bodies: bool,
+    pub(crate) include_redacted_headers: bool,
+}
+
+/// `records hls`: inspect a playlist, or download one variant to `output`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct HlsRequest {
+    pub(crate) id: RecordRef,
+    pub(crate) variant: Option<usize>,
+    /// Absolute destination of the merged `.ts` file; `None` only inspects.
+    pub(crate) output: Option<PathBuf>,
 }
 
 impl Request {
@@ -190,6 +215,9 @@ impl Request {
             Self::SaveLog(_) => "log.save",
             Self::Replay(_) => "records.replay",
             Self::Curl { .. } => "records.curl",
+            Self::Export(_) => "records.export",
+            Self::Endpoints { .. } => "records.endpoints",
+            Self::Hls(_) => "records.hls",
         }
     }
 
@@ -237,6 +265,20 @@ impl Request {
             Self::Curl { id, placeholders } => {
                 json!({ "id": id.value(), "placeholders": placeholders })
             }
+            Self::Export(export) => json!({
+                "filter": filter_json(&export.filter),
+                "output": export.output.as_ref().map(|path| path.to_string_lossy()),
+                "include_bodies": export.include_bodies,
+                "include_redacted_headers": export.include_redacted_headers,
+            }),
+            Self::Endpoints { filter, openapi } => {
+                json!({ "filter": filter_json(filter), "openapi": openapi })
+            }
+            Self::Hls(hls) => json!({
+                "id": hls.id.value(),
+                "variant": hls.variant,
+                "output": hls.output.as_ref().map(|path| path.to_string_lossy()),
+            }),
         };
         json!({ "schema": SCHEMA_VERSION, "command": self.command(), "args": args })
     }
@@ -293,6 +335,21 @@ impl Request {
                 id: args.id("id")?,
                 placeholders: args.flag("placeholders")?,
             },
+            "records.export" => Self::Export(ExportRequest {
+                filter: args.filter()?,
+                output: args.optional_absolute_path("output")?,
+                include_bodies: args.flag("include_bodies")?,
+                include_redacted_headers: args.flag("include_redacted_headers")?,
+            }),
+            "records.endpoints" => Self::Endpoints {
+                filter: args.filter()?,
+                openapi: args.flag("openapi")?,
+            },
+            "records.hls" => Self::Hls(HlsRequest {
+                id: args.id("id")?,
+                variant: args.optional_usize("variant")?,
+                output: args.optional_absolute_path("output")?,
+            }),
             other => return Err(invalid(&format!("unknown command {other:?}"))),
         })
     }
@@ -682,6 +739,21 @@ mod tests {
                 id: RecordRef::new(3),
                 placeholders: true,
             },
+            Request::Export(ExportRequest {
+                filter: FilterSpec::default(),
+                output: Some(PathBuf::from("/tmp/session.har")),
+                include_bodies: true,
+                include_redacted_headers: false,
+            }),
+            Request::Endpoints {
+                filter: FilterSpec::default(),
+                openapi: true,
+            },
+            Request::Hls(HlsRequest {
+                id: RecordRef::new(9),
+                variant: Some(1),
+                output: Some(PathBuf::from("/tmp/video.ts")),
+            }),
             Request::Stop,
         ] {
             assert_eq!(Request::from_json(&request.to_json())?, request);

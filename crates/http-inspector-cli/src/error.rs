@@ -42,6 +42,9 @@ pub(crate) enum ErrorCode {
     /// The record cannot be replayed or copied as sent; the message names
     /// what to supply.
     NotReproducible,
+    /// The record is not a usable HLS playlist, or the chosen variant
+    /// cannot be downloaded yet.
+    HlsUnavailable,
     /// No record matched before the timeout.
     Timeout,
     /// A temporary condition; retrying shortly can succeed.
@@ -54,7 +57,7 @@ pub(crate) enum ErrorCode {
 
 impl ErrorCode {
     /// Every code, in documentation order.
-    pub(crate) const ALL: [Self; 21] = [
+    pub(crate) const ALL: [Self; 22] = [
         Self::Usage,
         Self::InvalidFilter,
         Self::DaemonNotRunning,
@@ -72,6 +75,7 @@ impl ErrorCode {
         Self::HttpsUnavailable,
         Self::ConfirmationRequired,
         Self::NotReproducible,
+        Self::HlsUnavailable,
         Self::Timeout,
         Self::Busy,
         Self::FileExists,
@@ -98,6 +102,7 @@ impl ErrorCode {
             Self::HttpsUnavailable => "https_unavailable",
             Self::ConfirmationRequired => "confirmation_required",
             Self::NotReproducible => "not_reproducible",
+            Self::HlsUnavailable => "hls_unavailable",
             Self::Timeout => "timeout",
             Self::Busy => "busy",
             Self::FileExists => "file_exists",
@@ -124,6 +129,7 @@ impl ErrorCode {
             | Self::ProxyConflict
             | Self::HttpsUnavailable
             | Self::NotReproducible
+            | Self::HlsUnavailable
             | Self::FileExists
             | Self::Io => 1,
         }

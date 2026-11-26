@@ -180,6 +180,11 @@ impl Session {
         )
     }
 
+    /// The listening proxy address, if the proxy runs.
+    pub(crate) fn running_address(&self) -> Option<SocketAddr> {
+        self.proxy.as_ref().map(ProxyHandle::local_addr)
+    }
+
     /// Sends a replay through the running proxy.
     pub(crate) fn replay(&self, draft: &ReplayDraft) -> Result<ReplayTask, ReplayError> {
         self.proxy
