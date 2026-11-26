@@ -1,15 +1,17 @@
-//! Headers and Body tabs of the detail panel: keyboard switching and an
+//! Headers, Body, and Timing tabs of the detail panel: keyboard switching and an
 //! accessible tab list.
 
 use eframe::egui::{self, Key, Modifiers};
 
 use crate::ui::workbench::controls;
+use crate::ui::workbench::text::ShellText;
 
 /// Section of the selected request shown in the detail panel.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum DetailTab {
     Headers,
     Body,
+    Timing,
 }
 
 /// Direction of a keyboard tab switch.
@@ -20,12 +22,13 @@ enum TabStep {
 }
 
 impl DetailTab {
-    const ALL: [Self; 2] = [Self::Headers, Self::Body];
+    const ALL: [Self; 3] = [Self::Headers, Self::Body, Self::Timing];
 
     const fn title(self) -> &'static str {
         match self {
-            Self::Headers => "Headers",
-            Self::Body => "Body",
+            Self::Headers => ShellText::Headers.text(),
+            Self::Body => ShellText::Body.text(),
+            Self::Timing => ShellText::Timing.text(),
         }
     }
 
@@ -102,10 +105,11 @@ mod tests {
     #[test]
     fn steps_wrap_around_both_ends() {
         assert_eq!(DetailTab::Headers.stepped(TabStep::Next), DetailTab::Body);
-        assert_eq!(DetailTab::Body.stepped(TabStep::Next), DetailTab::Headers);
+        assert_eq!(DetailTab::Body.stepped(TabStep::Next), DetailTab::Timing);
+        assert_eq!(DetailTab::Timing.stepped(TabStep::Next), DetailTab::Headers);
         assert_eq!(
             DetailTab::Headers.stepped(TabStep::Previous),
-            DetailTab::Body
+            DetailTab::Timing
         );
         assert_eq!(
             DetailTab::Body.stepped(TabStep::Previous),
@@ -220,6 +224,7 @@ mod tests {
             vec![
                 (egui::Role::Tab, "Headers".to_owned(), Some(false), None),
                 (egui::Role::Tab, "Body".to_owned(), Some(true), None),
+                (egui::Role::Tab, "Timing".to_owned(), Some(false), None),
             ]
         );
         Ok(())

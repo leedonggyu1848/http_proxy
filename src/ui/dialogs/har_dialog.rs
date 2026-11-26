@@ -1,6 +1,7 @@
 //! The `Export HAR` window: which records, what to include, and where to save.
 
 use crate::ui::style::tokens::Layout;
+use crate::ui::workbench::field::{self, Field};
 use std::path::PathBuf;
 
 use eframe::egui;
@@ -137,12 +138,15 @@ impl HarDialog {
         ui.separator();
         ui.label("File");
         let path_width = Layout::HAR_PATH_WIDTH.fit(ui.available_width());
-        ui.add(
-            egui::TextEdit::singleline(&mut self.path)
-                .desired_width(path_width)
-                .hint_text("Path of a new .har file"),
-        );
-        ui.weak("An existing file is never replaced.");
+        let _ = field::single_line(
+            ui,
+            &mut self.path,
+            Field::new(path_width)
+                .hint("Path of a new .har file")
+                .monospace(),
+            |_| {},
+        )
+        .on_hover_text("An existing file is never replaced.");
         let count = counts.of(self.scope);
         let ready = count > 0 && !self.path.trim().is_empty() && !busy;
         ui.horizontal_wrapped(|ui| {

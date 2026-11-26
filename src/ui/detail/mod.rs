@@ -1,9 +1,12 @@
 mod body_cache;
 pub(super) mod body_matches;
 pub(super) mod body_render;
+mod body_tab;
 pub(super) mod detail_tabs;
 pub(super) mod detail_view;
+mod headers_tab;
 pub(super) mod highlight;
 pub(super) mod image_view;
 pub(super) mod search;
+mod timing_tab;
 pub(super) mod tree_view;

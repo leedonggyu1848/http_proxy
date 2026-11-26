@@ -7,7 +7,11 @@ mod tree_pane;
 
 pub(crate) use detail_pane::RecordMatchCache;
 
-use crate::ui::style::tokens::Layout;
+use crate::ui::style::theme::Palette;
+use crate::ui::style::tokens::{Layout, Space, StrokeWidth};
+use crate::ui::workbench::field::{self, Field};
+use crate::ui::workbench::text::{self, ShellText};
+use crate::ui::workbench::{chrome, controls};
 use std::collections::{HashMap, HashSet};
 
 use eframe::egui;
@@ -210,34 +214,53 @@ impl MapPanel {
         }
     }
 
-    /// Renders the controls bar above the Map main area.
-    pub(super) fn controls(
+    /// The pane header of the tree pane, or of the whole graph: the Tree
+    /// and Graph tabs on the left and the pane's actions on the right (D22).
+    pub(super) fn header(
         &mut self,
         ui: &mut egui::Ui,
         map: &UrlMap,
         save_busy: bool,
     ) -> Option<MapAction> {
-        let mut action = None;
-        ui.horizontal_wrapped(|ui| {
-            self.sub_view_toggle(ui);
-            ui.separator();
-            match self.sub_view {
-                MapSubView::Tree => self.tree_controls(ui),
-                MapSubView::Graph => self.graph_controls(ui),
-            }
-            ui.separator();
-            if let Some(export_action) = Self::export_menu(ui, map, save_busy) {
-                action = Some(export_action);
-            }
-            if ui
-                .button("Clear")
-                .on_hover_text("Clear captured requests and reset the URL map.")
-                .clicked()
-            {
-                action = Some(MapAction::ClearAll);
-            }
-        });
-        action
+        chrome::pane_header(ui, "map-header", |ui| {
+            self.sub_view_tabs(ui);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                controls::ghost_style(ui);
+                let clear = ui
+                    .add(controls::ghost(
+                        ShellText::Clear.text(),
+                        Layout::PANE_BUTTON_HEIGHT,
+                    ))
+                    .on_hover_text(ShellText::ClearHint.text())
+                    .clicked()
+                    .then_some(MapAction::ClearAll);
+                let action = Self::export_menu(ui, map, save_busy).or(clear);
+                if self.sub_view == MapSubView::Graph {
+                    self.graph_actions(ui);
+                }
+                action
+            })
+            .inner
+        })
+    }
+
+    /// The host filter, filter menus, sort, and expansion of the tree, in
+    /// one pane row under the header. Wraps when the pane is narrow.
+    pub(super) fn tree_filters(&mut self, ui: &mut egui::Ui) {
+        egui::Frame::new()
+            .inner_margin(Layout::PANE_ROW_MARGIN)
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    controls::ghost_style(ui);
+                    ui.spacing_mut().item_spacing = egui::vec2(Space::XS, Space::XS);
+                    self.tree_controls(ui);
+                });
+            });
+        ui.painter().hline(
+            ui.max_rect().x_range(),
+            ui.cursor().top() - StrokeWidth::STRUCTURAL / 2.0,
+            egui::Stroke::new(StrokeWidth::STRUCTURAL, Palette::of(ui).borders.subtle),
+        );
     }
 
     /// Renders the left tree pane (used when `sub_view == MapSubView::Tree`).
@@ -279,15 +302,26 @@ impl MapPanel {
 
     /// Renders the interactive domain relationship graph.
     pub(super) fn show_graph_pane(&mut self, ui: &mut egui::Ui, map: &UrlMap) {
+        let selected_host = self
+            .selected
+            .as_ref()
+            .map(|key| key.origin.host().to_owned());
         if let Some(host) = graph_pane::show(
             ui,
             map.graph(),
             &mut self.layout,
             self.edge_visibility,
             &mut self.dragged_node,
+            selected_host.as_deref(),
         ) {
             self.jump_to_host(map, &host);
         }
+    }
+
+    /// Domains and edges the graph shows, and whether the domain limit hid
+    /// some, for the status bar.
+    pub(super) fn graph_summary(&self) -> (String, bool) {
+        graph_pane::summary_text(&self.layout, self.edge_visibility)
     }
 
     /// Jumps from the relationship graph to the first origin matching `host` in Tree view.
@@ -349,121 +383,196 @@ impl MapPanel {
         self.rows_dirty = true;
     }
 
-    fn sub_view_toggle(&mut self, ui: &mut egui::Ui) {
-        ui.selectable_value(&mut self.sub_view, MapSubView::Tree, "Tree");
-        ui.selectable_value(&mut self.sub_view, MapSubView::Graph, "Relationships");
+    fn sub_view_tabs(&mut self, ui: &mut egui::Ui) {
+        controls::tab_list(ui, ShellText::MapView.text(), |ui| {
+            for (view, label) in [
+                (MapSubView::Tree, ShellText::Tree),
+                (MapSubView::Graph, ShellText::Graph),
+            ] {
+                if controls::text_tab(ui, self.sub_view == view, label.text()).clicked() {
+                    self.sub_view = view;
+                }
+            }
+        });
     }
 
     fn tree_controls(&mut self, ui: &mut egui::Ui) {
         let width = Layout::MAP_SEARCH_WIDTH.fit(ui.available_width());
-        ui.add(
-            egui::TextEdit::singleline(&mut self.filter.host_query)
-                .desired_width(width)
-                .hint_text("Filter host…"),
+        let field = Field::new(width)
+            .hint(ShellText::FilterHosts.text())
+            .search_icon()
+            .monospace();
+        let _ = field::single_line(ui, &mut self.filter.host_query, field, |_| {});
+        choice_menu(
+            ui,
+            &mut self.filter.status,
+            &StatusFilter::ALL,
+            StatusFilter::label,
         );
-        egui::ComboBox::from_id_salt("map-status-filter")
-            .selected_text(self.filter.status.label())
-            .show_ui(ui, |ui| {
-                for option in StatusFilter::ALL {
-                    ui.selectable_value(&mut self.filter.status, option, option.label());
-                }
-            });
-        egui::ComboBox::from_id_salt("map-type-filter")
-            .selected_text(self.filter.content_type.label())
-            .show_ui(ui, |ui| {
-                for option in ContentTypeFilter::ALL {
-                    ui.selectable_value(&mut self.filter.content_type, option, option.label());
-                }
-            });
-        egui::ComboBox::from_id_salt("map-party-filter")
-            .selected_text(self.filter.party.label())
-            .show_ui(ui, |ui| {
-                for option in PartyFilter::ALL {
-                    ui.selectable_value(&mut self.filter.party, option, option.label());
-                }
-            });
-        ui.checkbox(&mut self.filter.fold_ids, "Fold IDs")
-            .on_hover_text("Group sibling ID segments (integers, UUIDs, hex tokens) into /{id}.");
-        egui::ComboBox::from_id_salt("map-sort-field")
-            .selected_text(format!("Sort: {}", self.sort.label()))
-            .show_ui(ui, |ui| {
+        choice_menu(
+            ui,
+            &mut self.filter.content_type,
+            &ContentTypeFilter::ALL,
+            ContentTypeFilter::label,
+        );
+        choice_menu(
+            ui,
+            &mut self.filter.party,
+            &PartyFilter::ALL,
+            PartyFilter::label,
+        );
+        let fold = controls::ghost_toggle(
+            ui,
+            self.filter.fold_ids,
+            ShellText::FoldIds.text(),
+            Layout::PANE_BUTTON_HEIGHT,
+        )
+        .on_hover_text(ShellText::FoldIdsHint.text());
+        if fold.clicked() {
+            self.filter.fold_ids = !self.filter.fold_ids;
+        }
+        let sort = text::sort_label(self.sort.label());
+        let _ = controls::ghost_menu(
+            ui,
+            text::menu_label(&sort),
+            Layout::PANE_BUTTON_HEIGHT,
+            |ui| {
                 for option in TreeSortField::ALL {
                     ui.selectable_value(&mut self.sort, option, option.label());
                 }
-            });
+            },
+        );
+        let direction = match self.direction {
+            SortDirection::Asc => ShellText::Ascending,
+            SortDirection::Desc => ShellText::Descending,
+        };
         if ui
-            .button(self.direction.arrow())
-            .on_hover_text("Toggle ascending / descending sort order.")
+            .add(controls::ghost(
+                self.direction.arrow(),
+                Layout::PANE_BUTTON_HEIGHT,
+            ))
+            .on_hover_text(direction.text())
             .clicked()
         {
             self.direction = self.direction.toggled();
         }
-        if ui.small_button("Expand all").clicked() {
-            self.set_all_expanded(true);
-        }
-        if ui.small_button("Collapse all").clicked() {
-            self.set_all_expanded(false);
+        for (label, expanded) in [
+            (ShellText::ExpandAll, true),
+            (ShellText::CollapseAll, false),
+        ] {
+            if ui
+                .add(controls::ghost(label.text(), Layout::PANE_BUTTON_HEIGHT))
+                .clicked()
+            {
+                self.set_all_expanded(expanded);
+            }
         }
     }
 
-    fn graph_controls(&mut self, ui: &mut egui::Ui) {
-        ui.checkbox(&mut self.edge_visibility.referer, "Referer");
-        ui.checkbox(&mut self.edge_visibility.origin, "Origin (CORS)");
-        ui.checkbox(&mut self.edge_visibility.redirect, "Redirect (3xx)");
-        let mut limit = self.layout.max_domains();
-        egui::ComboBox::from_id_salt("map-graph-limit")
-            .selected_text(format!("Top {limit} domains"))
-            .show_ui(ui, |ui| {
-                for count in [15_usize, 40, 80, 150] {
-                    ui.selectable_value(&mut limit, count, format!("Top {count} domains"));
-                }
-            });
-        self.layout.set_max_domains(limit);
+    /// Edge kinds with their line samples, the domain limit, and Relayout,
+    /// laid out right to left in the graph's pane header.
+    fn graph_actions(&mut self, ui: &mut egui::Ui) {
         if ui
-            .button("Relayout")
-            .on_hover_text("Recompute the force-directed domain layout.")
+            .add(controls::ghost(
+                ShellText::Relayout.text(),
+                Layout::PANE_BUTTON_HEIGHT,
+            ))
+            .on_hover_text(ShellText::RelayoutHint.text())
             .clicked()
         {
             self.layout = ForceLayout::new(self.layout.max_domains());
         }
+        let mut limit = self.layout.max_domains();
+        let _ = controls::ghost_menu(
+            ui,
+            text::menu_label(&text::top_domains(limit)),
+            Layout::PANE_BUTTON_HEIGHT,
+            |ui| {
+                for count in [15_usize, 40, 80, 150] {
+                    ui.selectable_value(&mut limit, count, text::top_domains(count));
+                }
+            },
+        );
+        self.layout.set_max_domains(limit);
+        let _ = controls::ghost_menu(
+            ui,
+            text::menu_label(ShellText::Legend.text()),
+            Layout::PANE_BUTTON_HEIGHT,
+            |ui| graph_pane::legend_menu(ui, &mut self.edge_visibility),
+        );
     }
 
     fn export_menu(ui: &mut egui::Ui, map: &UrlMap, save_busy: bool) -> Option<MapAction> {
-        let mut action = None;
         let has_data = map.node_count() > 0;
         ui.add_enabled_ui(!save_busy && has_data, |ui| {
-            ui.menu_button("Export ▼", |ui| {
-                ui.weak("Files save into Save directory without overwriting.");
-                if ui.button("Save tree as Text (.txt)").clicked() {
-                    action = Some(MapAction::Export(MapExportFormat::TreeText));
-                    ui.close();
-                }
-                if ui.button("Save map as JSON (.json)").clicked() {
-                    action = Some(MapAction::Export(MapExportFormat::TreeJson));
-                    ui.close();
-                }
-                ui.separator();
-                if ui.button("Save graph as Mermaid (.mmd)").clicked() {
-                    action = Some(MapAction::Export(MapExportFormat::GraphMermaid));
-                    ui.close();
-                }
-                if ui.button("Save graph as Graphviz DOT (.dot)").clicked() {
-                    action = Some(MapAction::Export(MapExportFormat::GraphDot));
-                    ui.close();
-                }
-                ui.separator();
-                if ui.button("Copy Mermaid to clipboard").clicked() {
-                    action = Some(MapAction::Copy(MapExportFormat::GraphMermaid));
-                    ui.close();
-                }
-                if ui.button("Copy DOT to clipboard").clicked() {
-                    action = Some(MapAction::Copy(MapExportFormat::GraphDot));
-                    ui.close();
-                }
-            });
-        });
-        action
+            controls::ghost_menu(
+                ui,
+                text::menu_label(ShellText::Export.text()),
+                Layout::PANE_BUTTON_HEIGHT,
+                |ui| {
+                    let mut action = None;
+                    for (label, chosen) in [
+                        (
+                            ShellText::SaveTreeText,
+                            MapAction::Export(MapExportFormat::TreeText),
+                        ),
+                        (
+                            ShellText::SaveMapJson,
+                            MapAction::Export(MapExportFormat::TreeJson),
+                        ),
+                        (
+                            ShellText::SaveGraphMermaid,
+                            MapAction::Export(MapExportFormat::GraphMermaid),
+                        ),
+                        (
+                            ShellText::SaveGraphDot,
+                            MapAction::Export(MapExportFormat::GraphDot),
+                        ),
+                        (
+                            ShellText::CopyMermaid,
+                            MapAction::Copy(MapExportFormat::GraphMermaid),
+                        ),
+                        (
+                            ShellText::CopyDot,
+                            MapAction::Copy(MapExportFormat::GraphDot),
+                        ),
+                    ] {
+                        if matches!(label, ShellText::SaveGraphMermaid | ShellText::CopyMermaid) {
+                            ui.separator();
+                        }
+                        if ui.button(label.text()).clicked() {
+                            action = Some(chosen);
+                            ui.close();
+                        }
+                    }
+                    action
+                },
+            )
+            .inner
+            .flatten()
+        })
+        .inner
     }
+}
+
+/// A Ghost menu that shows the current choice of `value` and lists the
+/// others.
+fn choice_menu<T: Copy + PartialEq>(
+    ui: &mut egui::Ui,
+    value: &mut T,
+    options: &[T],
+    label: impl Fn(T) -> &'static str,
+) {
+    let _ = controls::ghost_menu(
+        ui,
+        text::menu_label(label(*value)),
+        Layout::PANE_BUTTON_HEIGHT,
+        |ui| {
+            for &option in options {
+                ui.selectable_value(value, option, label(option));
+            }
+        },
+    );
 }
 
 fn collect_branch_keys(nodes: &[ViewNode], out: &mut HashSet<ViewNodeKey>) {

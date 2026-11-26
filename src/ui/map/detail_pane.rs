@@ -4,7 +4,6 @@
 //! pane. Matching requests display path-only URLs with query parameter *names*
 //! only.
 
-use crate::ui::style::tokens::Space;
 use std::collections::HashSet;
 use std::time::SystemTime;
 
@@ -17,7 +16,11 @@ use http_inspector_exchange::{ByteSize, Exchange, RecordId};
 
 use super::{MapAction, endpoint_view};
 use crate::ui::requests::outcome_view::outcome_text;
+use crate::ui::style::fonts;
 use crate::ui::style::theme::Palette;
+use crate::ui::style::tokens::Layout;
+use crate::ui::workbench::text::{self, ShellText};
+use crate::ui::workbench::{chrome, controls, tree};
 
 /// Maximum matching retained requests listed directly inside the node detail pane.
 const MAX_INLINE_REQUESTS: usize = 100;
@@ -115,38 +118,37 @@ pub(super) fn show(
     endpoints: &Endpoints<'_>,
 ) -> Option<MapAction> {
     let Some(node) = node else {
+        chrome::pane_header(ui, "map-detail-header", |ui| {
+            pane_title(ui, ShellText::Node.text());
+        });
         ui.centered_and_justified(|ui| {
-            ui.add(egui::Label::new(RichText::new("No node selected").weak()).wrap());
+            ui.add(egui::Label::new(RichText::new(ShellText::NoNodeSelected.text()).weak()).wrap());
         });
         return None;
     };
 
     cache.sync(&RequestScope::subtree(node.key.clone()), records, true);
-    let mut action = None;
+    let mut action = header(ui, node);
     egui::ScrollArea::vertical()
         .id_salt("url-map-detail-scroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
             let retained = cache.matched_count();
             let evicted = node
                 .subtree
                 .request_count
                 .saturating_sub(u64::try_from(retained).unwrap_or(u64::MAX));
-
-            if let Some(header_action) = render_header(ui, node, retained, evicted) {
-                action = Some(header_action);
-            }
-            ui.separator();
-            render_stats_section(ui, node, retained, evicted);
-            ui.separator();
+            let key_width = tree::key_width(ui.available_width());
+            tree::group(ui, "map-summary", ShellText::Summary.text(), None, |ui| {
+                render_stats_section(ui, node, retained, evicted, key_width);
+            });
             if let Some(endpoint_action) =
                 endpoint_view::show(ui, node, endpoints.merged, endpoints.skipped)
             {
                 action = Some(endpoint_action);
             }
-            ui.separator();
-            render_query_params_section(ui, node);
-            ui.separator();
+            render_query_params_section(ui, node, key_width);
             if let Some(req_action) = render_requests_section(ui, records, cache, evicted) {
                 action = Some(req_action);
             }
@@ -154,171 +156,220 @@ pub(super) fn show(
     action
 }
 
-fn render_header(
+/// The pane header: the node's URL as the pane name and Show in Requests at
+/// the right (D22).
+fn header(ui: &mut egui::Ui, node: &ViewNode) -> Option<MapAction> {
+    chrome::pane_header(ui, "map-detail-header", |ui| {
+        let action = ui
+            .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                controls::ghost_style(ui);
+                let clicked = ui
+                    .add(controls::ghost(
+                        ShellText::ShowInRequests.text(),
+                        Layout::PANE_BUTTON_HEIGHT,
+                    ))
+                    .on_hover_text(ShellText::ShowInRequestsHint.text())
+                    .clicked();
+                let url = node.key.display_url();
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(&url)
+                                .font(fonts::data())
+                                .color(Palette::of(ui).text),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text(url);
+                });
+                clicked
+            })
+            .inner;
+        action.then(|| MapAction::ShowInRequests(RequestScope::subtree(node.key.clone())))
+    })
+}
+
+fn pane_title(ui: &mut egui::Ui, title: &str) {
+    ui.label(
+        RichText::new(title)
+            .font(fonts::panel_title())
+            .color(Palette::of(ui).text),
+    );
+}
+
+/// One key-value row under a group.
+fn pair(ui: &mut egui::Ui, key_width: f32, key: &str, value: RichText) {
+    tree::row(ui, tree::TreeRow::new(1, key), |ui| {
+        tree::key_value(ui, key_width, tree::key_text(ui, key), value);
+    });
+}
+
+fn render_stats_section(
     ui: &mut egui::Ui,
     node: &ViewNode,
     retained: usize,
     evicted: u64,
-) -> Option<MapAction> {
-    let palette = Palette::of(ui);
-    let mut action = None;
-
-    ui.add(egui::Label::new(RichText::new(node.key.display_url()).strong().monospace()).wrap());
-
-    ui.horizontal_wrapped(|ui| {
-        if node.subtree.is_tunnel_only() {
-            ui.label(RichText::new("[Tunnel] No path info").color(palette.secondary));
-        }
-        if node.is_folded_id {
-            let kinds: Vec<&str> = node
-                .subtree
-                .observed_id_kinds
-                .iter()
-                .map(|kind| kind.label())
-                .collect();
-            let kind_text = if kinds.is_empty() {
-                String::new()
-            } else {
-                format!(" · types: {}", kinds.join(", "))
-            };
-            ui.label(
-                RichText::new(format!("Folded {} IDs{kind_text}", node.folded_count))
-                    .color(palette.secondary)
-                    .small(),
-            );
-        }
-        if node.subtree.is_third_party() {
-            ui.label(
-                RichText::new(format!(
-                    "3rd-party ({} hits)",
-                    node.subtree.third_party_hits
-                ))
-                .color(palette.warning)
-                .small(),
-            );
-        }
-        if node.subtree.overflow_merged > 0 {
-            ui.label(
-                RichText::new(format!(
-                    "{} deeper requests merged at node cap",
-                    node.subtree.overflow_merged
-                ))
-                .color(palette.warning)
-                .small(),
-            );
-        }
-    });
-
-    ui.add_space(Space::XS);
-    ui.horizontal_wrapped(|ui| {
-        if ui
-            .button("Show in Requests")
-            .on_hover_text("Switch to Requests view filtered to this origin and path prefix.")
-            .clicked()
-        {
-            action = Some(MapAction::ShowInRequests(RequestScope::subtree(
-                node.key.clone(),
-            )));
-        }
-        let retention_note = if evicted > 0 {
-            format!("{retained} retained · {evicted} older removed")
-        } else {
-            format!("{retained} retained")
-        };
-        ui.label(
-            RichText::new(retention_note)
-                .color(palette.secondary)
-                .small(),
-        );
-    });
-    action
-}
-
-fn render_stats_section(ui: &mut egui::Ui, node: &ViewNode, retained: usize, evicted: u64) {
+    key_width: f32,
+) {
     let palette = Palette::of(ui);
     let stats = &node.subtree;
+    let data = |text: String| RichText::new(text).font(fonts::data()).color(palette.text);
 
-    ui.label(RichText::new("Summary").strong());
-    egui::Grid::new("url-map-stats-grid")
-        .num_columns(2)
-        .spacing([Space::MD, Space::XS])
-        .show(ui, |ui| {
-            ui.weak("Requests");
-            let req_text = if node.direct.request_count > 0
-                && node.direct.request_count != stats.request_count
-            {
-                format!(
-                    "{} total ({} direct, {retained} retained, {evicted} evicted)",
-                    stats.request_count, node.direct.request_count
-                )
-            } else if evicted > 0 {
-                format!(
-                    "{} total ({retained} retained, {evicted} evicted)",
-                    stats.request_count
-                )
-            } else {
-                format!("{}", stats.request_count)
-            };
-            ui.add(egui::Label::new(req_text).wrap());
-            ui.end_row();
-
-            ui.weak("Methods");
-            let methods = stats.methods.names().join(", ");
-            ui.add(egui::Label::new(if methods.is_empty() { "—" } else { &methods }).wrap());
-            ui.end_row();
-
-            ui.weak("Status");
-            ui.horizontal_wrapped(|ui| {
-                render_status_counts(ui, stats, &palette);
-            });
-            ui.end_row();
-
-            ui.weak("Content-Type");
-            ui.add(egui::Label::new(format_content_types(stats)).wrap());
-            ui.end_row();
-
-            ui.weak("Transferred");
-            ui.label(ByteSize::new(stats.total_bytes).to_string());
-            ui.end_row();
-
-            ui.weak("Response time");
-            let timing_text = match (stats.avg_duration_ms(), stats.max_duration_ms()) {
-                (Some(avg), Some(max)) => format!("avg {avg:.1} ms · max {max:.1} ms"),
-                _ => "—".to_owned(),
-            };
-            ui.label(timing_text);
-            ui.end_row();
-
-            ui.weak("Observed");
-            ui.label(format!(
-                "{} – {}",
-                format_wall_time(stats.first_seen),
-                format_wall_time(stats.last_seen),
-            ));
-            ui.end_row();
-        });
+    pair(
+        ui,
+        key_width,
+        ShellText::Requests.text(),
+        data(text::node_requests(
+            stats.request_count,
+            node.direct.request_count,
+            retained,
+            evicted,
+        )),
+    );
+    let methods = stats.methods.names().join(" ");
+    pair(
+        ui,
+        key_width,
+        ShellText::Methods.text(),
+        data(if methods.is_empty() {
+            ShellText::NotObserved.text().to_owned()
+        } else {
+            methods
+        }),
+    );
+    let counts = status_counts(ui, stats);
+    tree::row(ui, tree::TreeRow::new(1, ShellText::Status.text()), |ui| {
+        tree::key_value(
+            ui,
+            key_width,
+            tree::key_text(ui, ShellText::Status.text()),
+            counts,
+        );
+    });
+    pair(
+        ui,
+        key_width,
+        ShellText::ContentType.text(),
+        data(format_content_types(stats)),
+    );
+    pair(
+        ui,
+        key_width,
+        ShellText::Transferred.text(),
+        data(ByteSize::new(stats.total_bytes).to_string()),
+    );
+    let timing_text = match (stats.avg_duration_ms(), stats.max_duration_ms()) {
+        (Some(avg), Some(max)) => text::avg_max(avg, max),
+        _ => ShellText::NotObserved.text().to_owned(),
+    };
+    pair(
+        ui,
+        key_width,
+        ShellText::ResponseTime.text(),
+        data(timing_text),
+    );
+    pair(
+        ui,
+        key_width,
+        ShellText::Observed.text(),
+        data(format!(
+            "{} – {}",
+            format_wall_time(stats.first_seen),
+            format_wall_time(stats.last_seen),
+        )),
+    );
+    render_node_flags(ui, node, key_width);
 }
 
-fn render_status_counts(ui: &mut egui::Ui, stats: &NodeStats, palette: &Palette) {
+/// Rows that only some nodes have: party, folded IDs, tunnel, and merged
+/// requests.
+fn render_node_flags(ui: &mut egui::Ui, node: &ViewNode, key_width: f32) {
+    let palette = Palette::of(ui);
+    let stats = &node.subtree;
+    let data = |text: String| RichText::new(text).font(fonts::data()).color(palette.text);
+    if stats.is_third_party() {
+        pair(
+            ui,
+            key_width,
+            ShellText::Party.text(),
+            data(text::third_party_hits(stats.third_party_hits)),
+        );
+    }
+    if node.is_folded_id {
+        let kinds: Vec<&str> = stats
+            .observed_id_kinds
+            .iter()
+            .map(|kind| kind.label())
+            .collect();
+        pair(
+            ui,
+            key_width,
+            ShellText::FoldedIds.text(),
+            data(text::folded_kinds(node.folded_count, &kinds)),
+        );
+    }
+    if stats.is_tunnel_only() {
+        pair(
+            ui,
+            key_width,
+            ShellText::Tunnel.text(),
+            RichText::new(ShellText::NoPathInfo.text())
+                .font(fonts::data())
+                .color(palette.secondary),
+        );
+    }
+    if stats.overflow_merged > 0 {
+        pair(
+            ui,
+            key_width,
+            ShellText::Merged.text(),
+            RichText::new(text::merged_at_cap(stats.overflow_merged))
+                .font(fonts::data())
+                .color(palette.warning),
+        );
+    }
+}
+
+/// Status buckets with requests, such as `2xx 4 · 5xx 2`. Only 4xx and
+/// failures take a status color; the rest keep the text color (S7, D1).
+fn status_counts(ui: &egui::Ui, stats: &NodeStats) -> egui::text::LayoutJob {
+    let palette = Palette::of(ui);
     let buckets = [
         ("2xx", stats.status.s2xx, palette.text),
         ("3xx", stats.status.s3xx, palette.text),
         ("4xx", stats.status.s4xx, palette.warning),
         ("5xx", stats.status.s5xx, palette.error),
-        ("Failed", stats.status.failed, palette.error),
-        ("Tunnel", stats.status.tunnel, palette.text),
-        ("Pending", stats.status.pending, palette.secondary),
+        (ShellText::Failed.text(), stats.status.failed, palette.error),
+        (ShellText::Tunnel.text(), stats.status.tunnel, palette.text),
+        (
+            ShellText::Pending.text(),
+            stats.status.pending,
+            palette.text,
+        ),
     ];
-    let mut shown = false;
-    for (label, count, color) in buckets {
-        if count > 0 {
-            ui.label(RichText::new(format!("{label}: {count}")).color(color));
-            shown = true;
+    let mut job = egui::text::LayoutJob::default();
+    for (label, count, color) in buckets.into_iter().filter(|(_, count, _)| *count > 0) {
+        if !job.text.is_empty() {
+            job.append(
+                " · ",
+                0.0,
+                egui::TextFormat::simple(fonts::data(), palette.secondary),
+            );
         }
+        job.append(
+            &format!("{label} {count}"),
+            0.0,
+            egui::TextFormat::simple(fonts::data(), color),
+        );
     }
-    if !shown {
-        ui.weak("—");
+    if job.text.is_empty() {
+        job.append(
+            ShellText::NotObserved.text(),
+            0.0,
+            egui::TextFormat::simple(fonts::data(), palette.secondary),
+        );
     }
+    job
 }
 
 fn format_content_types(stats: &NodeStats) -> String {
@@ -335,31 +386,46 @@ fn format_content_types(stats: &NodeStats) -> String {
         .join(", ")
 }
 
-fn render_query_params_section(ui: &mut egui::Ui, node: &ViewNode) {
-    ui.label(RichText::new("Query Parameters (names only)").strong());
+/// Query parameter names seen under the node, most frequent first. Values
+/// are never shown.
+fn render_query_params_section(ui: &mut egui::Ui, node: &ViewNode, key_width: f32) {
     let params = if node.direct.query_params.is_empty() {
         &node.subtree.query_params
     } else {
         &node.direct.query_params
     };
-    if params.is_empty() {
-        ui.weak("No query parameters observed.");
-        return;
-    }
     let mut pairs: Vec<(&String, &u64)> = params.iter().collect();
     pairs.sort_by(|left, right| right.1.cmp(left.1).then_with(|| left.0.cmp(right.0)));
-    egui::Grid::new("url-map-query-params")
-        .num_columns(2)
-        .spacing([Space::LG, Space::XXS])
-        .show(ui, |ui| {
-            for (name, count) in pairs.into_iter().take(40) {
-                ui.monospace(percent_decode_display(name));
-                ui.weak(format!("{count}×"));
-                ui.end_row();
+    tree::group(
+        ui,
+        "map-query",
+        ShellText::QueryNames.text(),
+        Some(pairs.len()),
+        |ui| {
+            for (name, count) in pairs.into_iter().take(MAX_QUERY_NAMES) {
+                let value = RichText::new(text::times(*count))
+                    .font(fonts::data())
+                    .color(Palette::of(ui).secondary);
+                tree::row(ui, tree::TreeRow::new(1, name), |ui| {
+                    tree::key_value(
+                        ui,
+                        key_width,
+                        RichText::new(percent_decode_display(name))
+                            .font(fonts::data())
+                            .color(Palette::of(ui).text),
+                        value,
+                    );
+                });
             }
-        });
+        },
+    );
 }
 
+/// Query parameter names listed before the rest are left out.
+const MAX_QUERY_NAMES: usize = 40;
+
+/// The newest retained requests under the node, each opening the request in
+/// the Requests view.
 fn render_requests_section(
     ui: &mut egui::Ui,
     records: &RecordList<Exchange>,
@@ -368,49 +434,50 @@ fn render_requests_section(
 ) -> Option<MapAction> {
     let palette = Palette::of(ui);
     let total_retained = cache.matched_count();
-    ui.label(RichText::new(format!("Requests under this node ({total_retained})")).strong());
-    if evicted > 0 {
-        ui.label(
-            RichText::new(format!(
-                "{evicted} older request(s) were evicted from the screen buffer; aggregates above still include them."
-            ))
-            .color(palette.warning)
-            .small(),
-        );
-    }
-    if total_retained == 0 {
-        ui.weak("No retained requests remain for this node.");
-        return None;
-    }
-
     let mut action = None;
-    for (idx, safe_path) in &cache.newest_previews {
-        let Some(record) = records.get(*idx) else {
-            continue;
-        };
-        let (status_label, status_tone) = outcome_text(record.outcome());
-        let status_color = palette.status(status_tone);
-        ui.horizontal(|ui| {
-            ui.monospace(record.request().method().as_str());
-            ui.label(RichText::new(status_label).color(status_color).small());
-            let link = ui.add(
-                egui::Label::new(RichText::new(safe_path.as_str()).monospace())
-                    .wrap_mode(egui::TextWrapMode::Truncate)
-                    .sense(egui::Sense::click()),
-            );
-            if link
-                .on_hover_text("Open this request in Requests view.")
-                .clicked()
-            {
-                action = Some(MapAction::SelectRequest(record.id()));
+    tree::group(
+        ui,
+        "map-requests",
+        ShellText::Requests.text(),
+        Some(total_retained),
+        |ui| {
+            if evicted > 0 {
+                tree::row(ui, tree::TreeRow::new(1, ""), |ui| {
+                    ui.label(RichText::new(text::older_removed(evicted)).color(palette.warning));
+                });
             }
-        });
-    }
-    if total_retained > MAX_INLINE_REQUESTS {
-        ui.weak(format!(
-            "Showing newest {MAX_INLINE_REQUESTS} of {total_retained} retained requests. Use Show in Requests to inspect all."
-        ));
-    }
+            for (idx, safe_path) in &cache.newest_previews {
+                let Some(record) = records.get(*idx) else {
+                    continue;
+                };
+                let (status_label, status_tone) = outcome_text(record.outcome());
+                let shown = tree::row(ui, tree::TreeRow::new(1, safe_path).clickable(), |ui| {
+                    let data = |text: &str, color| {
+                        egui::Label::new(RichText::new(text).font(fonts::data()).color(color))
+                            .selectable(false)
+                    };
+                    ui.add(data(record.request().method().as_str(), palette.secondary));
+                    ui.add(data(&status_label, palette.status(status_tone)));
+                    ui.add(data(safe_path, palette.text).truncate());
+                });
+                if shown
+                    .response
+                    .on_hover_text(ShellText::OpenInRequests.text())
+                    .clicked()
+                {
+                    action = Some(MapAction::SelectRequest(record.id()));
+                }
+            }
+            if total_retained > MAX_INLINE_REQUESTS {
+                tree::row(ui, tree::TreeRow::new(1, ""), |ui| {
+                    ui.label(
+                        RichText::new(text::newest_of(MAX_INLINE_REQUESTS, total_retained))
+                            .color(palette.secondary),
+                    );
+                });
+            }
+        },
+    );
     action
 }
 

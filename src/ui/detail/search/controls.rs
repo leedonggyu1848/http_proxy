@@ -14,7 +14,7 @@ use crate::ui::style::{
 };
 use crate::ui::workbench::controls;
 use crate::ui::workbench::field::{self, Field};
-use crate::ui::workbench::text::ShellText;
+use crate::ui::workbench::text::{self, ShellText};
 
 const MAX_SUGGESTIONS: usize = 32;
 
@@ -40,7 +40,7 @@ impl RequestSearch {
         let can_clear = !settings.text.is_empty();
         let field = Field::new(width)
             .hint(if regex {
-                "Filter with regex"
+                ShellText::FilterRegex.text()
             } else {
                 ShellText::Filter.text()
             })
@@ -70,8 +70,8 @@ impl RequestSearch {
                 let height = 2.0f32.mul_add(-Space::XS, Layout::INPUT_HEIGHT);
                 clear = ui
                     .add_enabled(can_clear, controls::ghost("×", height))
-                    .accessible_name("Clear filter")
-                    .on_hover_text("Clear filter")
+                    .accessible_name(ShellText::ClearFilter.text())
+                    .on_hover_text(ShellText::ClearFilter.text())
                     .clicked();
                 filter_help(ui, height);
                 options(ui, &mut settings.scope, &mut settings.options);
@@ -103,14 +103,11 @@ impl RequestSearch {
         response: egui::Response,
         diagnostics: &[FilterDiagnostic],
     ) {
-        let response = response.accessible_name("Filter requests");
+        let response = response.accessible_name(ShellText::FilterRequests.text());
         if let Some(error) = self.regex_error() {
             response.on_hover_text(error);
         } else if diagnostics.is_empty() {
-            response.on_hover_text(format!(
-                "Focus filter ({})",
-                ui.ctx().format_shortcut(&FOCUS_FILTER)
-            ));
+            response.on_hover_text(text::focus_filter(&ui.ctx().format_shortcut(&FOCUS_FILTER)));
         } else {
             response.on_hover_ui(|ui| {
                 for diagnostic in diagnostics {
@@ -171,8 +168,8 @@ fn filter_help(ui: &mut egui::Ui, height: f32) {
             ("size", "size:>10kb"),
             ("duration, time", "duration:>500ms"),
             ("is", "is:failed,pending,tunnel,replay,https"),
-            ("Exclude", "-url:/static/"),
-            ("Phrase", "\"connection refused\""),
+            (ShellText::Exclude.text(), "-url:/static/"),
+            (ShellText::Phrase.text(), "\"connection refused\""),
         ] {
             ui.horizontal(|ui| {
                 ui.label(keys);
@@ -181,8 +178,8 @@ fn filter_help(ui: &mut egui::Ui, height: f32) {
         }
     })
     .response
-    .accessible_name("Filter syntax")
-    .on_hover_text("Filter syntax");
+    .accessible_name(ShellText::FilterSyntax.text())
+    .on_hover_text(ShellText::FilterSyntax.text());
 }
 
 /// Search options inside the right end of the filter input: scope, case,
@@ -194,18 +191,18 @@ fn options(ui: &mut egui::Ui, scope: &mut SearchScope, match_options: &mut Match
             ui,
             &mut match_options.regex,
             ".*",
-            "Use a regular expression",
+            ShellText::UseRegex.text(),
             height,
         );
         toggle(
             ui,
             &mut match_options.case_sensitive,
             "Aa",
-            "Match free-text case",
+            ShellText::MatchCase.text(),
             height,
         );
         egui::containers::menu::MenuButton::from_button(controls::ghost(
-            format!("{} ▼", scope.label()),
+            text::menu_label(scope.label()),
             height,
         ))
         .ui(ui, |ui| {
@@ -216,7 +213,7 @@ fn options(ui: &mut egui::Ui, scope: &mut SearchScope, match_options: &mut Match
             }
         })
         .0
-        .on_hover_text("Search scope for free text");
+        .on_hover_text(ShellText::SearchScope.text());
     });
 }
 

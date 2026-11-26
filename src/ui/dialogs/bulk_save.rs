@@ -156,6 +156,11 @@ impl BulkControls {
     }
 
     /// Shows progress with a Cancel button, or the last result, in the status bar.
+    /// Whether [`Self::status`] has a running save or a result to show.
+    pub(super) const fn has_status(&self) -> bool {
+        self.running.is_some() || self.result.is_some()
+    }
+
     pub(super) fn status(&self, ui: &mut egui::Ui) -> bool {
         if let Some(running) = self.running.as_ref() {
             let progress = running.progress();

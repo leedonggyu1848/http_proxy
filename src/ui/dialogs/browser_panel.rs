@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use crate::ui::style::tokens::Layout;
 use crate::ui::workbench::controls;
+use crate::ui::workbench::text::ShellText;
 use eframe::egui;
 use http_inspector_core::launcher::{Browser, BrowserEvent, BrowserSession};
 
@@ -42,14 +43,14 @@ impl BrowserPanel {
             ui.ctx().request_repaint_after(Duration::from_millis(100));
             let close = controls::ghost_scope(ui, |ui| {
                 ui.add(controls::ghost(
-                    "Close browser",
+                    ShellText::CloseBrowser.text(),
                     Layout::TOOLBAR_BUTTON_HEIGHT,
                 ))
                 .on_hover_text(PROFILE_NOTE)
                 .clicked()
             });
             if self.opened {
-                ui.label("Browser open");
+                ui.label(ShellText::BrowserOpen.text());
             } else {
                 ui.label("Opening browser…");
                 ui.spinner();

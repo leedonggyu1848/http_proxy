@@ -118,33 +118,6 @@ pub(crate) fn pane_header<R>(
     )
 }
 
-/// A chrome strip as tall as its contents, such as the Map controls under
-/// the toolbar. Contents wrap onto more lines when the window is narrow.
-pub(crate) fn strip<R>(
-    ui: &mut egui::Ui,
-    id_salt: &str,
-    add: impl FnOnce(&mut egui::Ui) -> R,
-) -> R {
-    let palette = Palette::of(ui);
-    let inner = ui.push_id(id_salt, |ui| {
-        egui::Frame::new()
-            .fill(palette.surfaces.chrome)
-            .inner_margin(Layout::NOTICE_MARGIN)
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.spacing_mut().item_spacing.y = Space::XS;
-                add(ui)
-            })
-    });
-    let rect = inner.inner.response.rect;
-    ui.painter().hline(
-        rect.x_range(),
-        rect.bottom() - StrokeWidth::STRUCTURAL / 2.0,
-        egui::Stroke::new(StrokeWidth::STRUCTURAL, palette.borders.structural),
-    );
-    inner.inner.inner
-}
-
 /// The 1px vertical line between toolbar groups.
 pub(crate) fn separator(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(

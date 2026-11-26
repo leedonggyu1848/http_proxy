@@ -1,5 +1,6 @@
 //! Manual replay editor. Sensitive inputs live only as long as the editor.
 use crate::ui::style::{theme::Palette, tokens::Layout};
+use crate::ui::workbench::field::{self as input, Field};
 use eframe::egui;
 use http_inspector_core::interception::ProxyHandle;
 use http_inspector_core::replay::{ReplayDraft, ReplayError, ReplayField, ReplayTask};
@@ -94,7 +95,6 @@ impl ReplayPanel {
         actions: &mut Vec<ReplayAction>,
     ) {
         ui.label(format!("Original #{}", self.draft.original.id().value()));
-        ui.label("Redacted values must be entered or disabled. Hop-by-hop headers are removed; Content-Length is calculated.");
         ui.horizontal(|ui| {
             egui::ComboBox::from_id_salt("replay-method")
                 .selected_text(&self.draft.method)
@@ -104,11 +104,18 @@ impl ReplayPanel {
                     }
                 });
             let url_width = Layout::REPLAY_URL_WIDTH.fit(ui.available_width());
-            ui.add(egui::TextEdit::singleline(&mut self.draft.url).desired_width(url_width));
+            let _ = input::single_line(
+                ui,
+                &mut self.draft.url,
+                Field::new(url_width).hint("URL").monospace(),
+                |_| {},
+            );
         });
         self.query_ui(ui);
         ui.checkbox(&mut self.draft.automatic_host, "Update Host from URL");
-        ui.strong("Headers (Cookie: name=value; name2=value2)");
+        ui.strong("Headers").on_hover_text(
+            "Cookies are written as Cookie: name=value; name2=value2, hop-by-hop headers are removed, and Content-Length is recalculated.",
+        );
         fields(ui, &mut self.draft.headers);
         ui.collapsing("Cookies", |ui| {
             let is_cookie = |field: &ReplayField| field.name.eq_ignore_ascii_case("cookie");
@@ -168,13 +175,7 @@ impl ReplayPanel {
                         .show(ui, text, PairSyntax::UrlEncoded, "Add field");
                 });
             }
-            edited |= ui
-                .add(
-                    egui::TextEdit::multiline(text)
-                        .desired_rows(6)
-                        .desired_width(f32::INFINITY),
-                )
-                .changed();
+            edited |= input::multi_line(ui, text, 6).changed();
         } else {
             let size = self.draft.body.len();
             let origin = self
@@ -194,13 +195,18 @@ impl ReplayPanel {
         }
         ui.horizontal_wrapped(|ui| {
             let file_width = Layout::REPLAY_FILE_WIDTH.fit(ui.available_width());
-            ui.add(egui::TextEdit::singleline(&mut self.file).desired_width(file_width));
+            let _ = input::single_line(
+                ui,
+                &mut self.file,
+                Field::new(file_width).hint("Body file path").monospace(),
+                |_| {},
+            );
             if ui.button("Load complete body file").clicked() {
                 actions.push(ReplayAction::LoadBody);
             }
         });
         if self.draft.body_missing {
-            ui.colored_label(crate::ui::style::theme::Palette::of(ui).warning, "Capture is incomplete. Load the full body; omitted headers require another complete capture.");
+            ui.colored_label(crate::ui::style::theme::Palette::of(ui).warning, "Capture incomplete; load the full body file, and capture again for omitted headers.");
         }
     }
     fn send_ui(&mut self, ui: &mut egui::Ui, proxy_running: bool, actions: &mut Vec<ReplayAction>) {
@@ -344,14 +350,24 @@ fn fields(ui: &mut egui::Ui, fields: &mut Vec<ReplayField>) {
         ui.push_id(index, |ui| {
             ui.horizontal(|ui| {
                 ui.checkbox(&mut field.enabled, "");
-                ui.add(egui::TextEdit::singleline(&mut field.name).desired_width(name_width));
-                ui.add(
-                    egui::TextEdit::singleline(&mut field.value)
-                        .desired_width(value_width)
-                        .password(matches!(
-                            field.name.to_lowercase().as_str(),
-                            "authorization" | "cookie" | "proxy-authorization" | "set-cookie"
-                        )),
+                let masked = matches!(
+                    field.name.to_lowercase().as_str(),
+                    "authorization" | "cookie" | "proxy-authorization" | "set-cookie"
+                );
+                let _ = input::single_line(
+                    ui,
+                    &mut field.name,
+                    Field::new(name_width).hint("Name").monospace(),
+                    |_| {},
+                );
+                let _ = input::single_line(
+                    ui,
+                    &mut field.value,
+                    Field::new(value_width)
+                        .hint("Value")
+                        .monospace()
+                        .password(masked),
+                    |_| {},
                 );
                 if ui.button("−").clicked() {
                     remove = Some(index);
@@ -540,16 +556,23 @@ fn pair_rows(ui: &mut egui::Ui, rows: &mut Vec<PairRow>, mask: bool, add: &str) 
         ui.push_id(index, |ui| {
             ui.horizontal(|ui| {
                 changed |= ui.checkbox(&mut row.enabled, "").changed();
-                let mut edited = ui
-                    .add(egui::TextEdit::singleline(&mut row.name).desired_width(name_width))
-                    .changed();
-                edited |= ui
-                    .add(
-                        egui::TextEdit::singleline(&mut row.value)
-                            .desired_width(value_width)
-                            .password(mask),
-                    )
-                    .changed();
+                let mut edited = input::single_line(
+                    ui,
+                    &mut row.name,
+                    Field::new(name_width).hint("Name").monospace(),
+                    |_| {},
+                )
+                .changed();
+                edited |= input::single_line(
+                    ui,
+                    &mut row.value,
+                    Field::new(value_width)
+                        .hint("Value")
+                        .monospace()
+                        .password(mask),
+                    |_| {},
+                )
+                .changed();
                 if edited {
                     row.raw = None;
                     changed = true;

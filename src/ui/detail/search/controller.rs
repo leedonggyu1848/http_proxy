@@ -11,9 +11,9 @@ use http_inspector_analysis::search::document::{self, BodyCache, Checked};
 use http_inspector_analysis::search::{MatchOptions, Query, SearchScope, SearchWorker, TextTerms};
 use http_inspector_exchange::{Exchange, RecordId};
 
-use crate::ui::style::indicator;
 use crate::ui::style::tokens::Tone;
-use crate::ui::workbench::text;
+use crate::ui::workbench::status::StatusItem;
+use crate::ui::workbench::text::{self, ShellText};
 
 /// Wait after the last keystroke before a search starts, so typing a word
 /// does not start a search for every letter.
@@ -191,24 +191,38 @@ impl RequestSearch {
         self.set_settings(settings);
     }
 
-    /// Search progress and preview coverage for the status bar.
-    pub(crate) fn status(&self, ui: &mut egui::Ui) {
+    /// Search progress and what was not searched, for the status bar.
+    /// Matches are counted there with the rest of the list; parser errors
+    /// show in the filter input. Empty while no search is active.
+    pub(crate) fn status_items(&self) -> Vec<StatusItem> {
+        let mut items = Vec::new();
         if let SearchBackend::Inline { notice, .. } = &self.backend {
-            indicator::dot_label(ui, Tone::Warning, "Search on UI thread").on_hover_text(notice);
+            items.push(StatusItem::marked(
+                Tone::Warning,
+                ShellText::SearchOnUiThread.text(),
+                notice.clone(),
+            ));
         }
         let Some(active) = &self.active else {
-            return;
+            return items;
         };
         let summary = self.summary;
         if summary.checked < summary.total {
-            ui.spinner();
-            ui.label(text::search_progress(summary.checked, summary.total));
+            items.push(StatusItem::progress(text::search_progress(
+                summary.checked,
+                summary.total,
+            )));
         }
         if active.settings.scope.covers_bodies()
-            && let Some(text) = coverage_text(summary)
+            && let Some(coverage) = coverage_text(summary)
         {
-            indicator::dot_label(ui, Tone::Warning, text.short).on_hover_text(text.detail);
+            items.push(StatusItem::marked(
+                Tone::Warning,
+                coverage.short,
+                coverage.detail,
+            ));
         }
+        items
     }
 
     /// Applies edits after the debounce, collects results, and queues new
@@ -447,7 +461,7 @@ fn coverage_text(summary: Summary) -> Option<Coverage> {
     }
     let unsearched = summary.partial + summary.binary + summary.undecodable;
     (!parts.is_empty()).then(|| Coverage {
-        short: format!("{unsearched} bodies partly searched"),
+        short: text::partly_searched(unsearched),
         detail: format!(
             "Captured previews were searched after decompression ({}); the full-session log keeps the rest.",
             parts.join(", ")

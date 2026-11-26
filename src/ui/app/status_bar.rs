@@ -2,7 +2,9 @@
 //! [`Layout::STATUS_BAR_HEIGHT`] row of monospace secondary text (D22).
 //!
 //! Every value here appears nowhere else on screen (S16): the view switch
-//! and the outcome tabs carry no counts.
+//! and the outcome tabs carry no counts. When the row is too narrow, the
+//! least important entries give way to a `+N` entry (see
+//! [`crate::ui::workbench::status`]).
 
 use eframe::egui;
 use http_inspector_analysis::filter::{self as analysis_filter, RecordFilter};
@@ -11,10 +13,14 @@ use http_inspector_exchange::ByteSize;
 
 use super::state::MainView;
 use super::{AppAction, InspectorApp, MAX_RECORDS};
-use crate::ui::style::indicator;
+use crate::ui::map::MapSubView;
 use crate::ui::style::tokens::{Layout, Tone};
 use crate::ui::workbench::chrome;
-use crate::ui::workbench::text;
+use crate::ui::workbench::status::{self, StatusItem};
+use crate::ui::workbench::text::{self, ShellText};
+
+/// Share of the row kept for save results and errors after the entries.
+const RESULT_SHARE: f32 = 0.4;
 
 impl InspectorApp {
     pub(super) fn status_bar(
@@ -31,8 +37,17 @@ impl InspectorApp {
             chrome::Inset::BAR,
             |ui| {
                 chrome::status_text(ui);
-                self.counts(ui, shown);
-                self.limits(ui);
+                let mut items = self.counts(shown);
+                items.extend(self.limits());
+                let results = self.dialogs.save.has_status()
+                    || self.session.body_saving.has_status()
+                    || self.layout.theme.has_error();
+                let available = if results {
+                    ui.available_width() * (1.0 - RESULT_SHARE)
+                } else {
+                    ui.available_width()
+                };
+                status::show(ui, &items, available);
                 self.dialogs.save.status(ui);
                 if self.session.body_saving.status(ui) {
                     actions.push(AppAction::CancelBulkSave);
@@ -42,13 +57,19 @@ impl InspectorApp {
         );
     }
 
-    /// Requests and failures, or hosts and nodes in the Map view.
-    fn counts(&self, ui: &mut egui::Ui, shown: Option<usize>) {
+    /// Requests and failures, hosts and nodes in the Map tree, or domains
+    /// and edges in the Map graph.
+    fn counts(&self, shown: Option<usize>) -> Vec<StatusItem> {
         let records = &self.requests.records;
+        let mut items = Vec::new();
         match self.layout.main_view {
             MainView::Requests => {
+                // The request area counted the rows it showed this frame.
                 let shown = shown.unwrap_or(records.len());
-                ui.label(text::request_count(shown, records.len()));
+                items.push(StatusItem::count(text::request_count(shown, records.len())));
+                // Outcomes change in place without a new list revision, so
+                // failures are counted again each frame; the list holds at
+                // most `MAX_RECORDS`.
                 let failed = records
                     .iter()
                     .filter(|record| {
@@ -56,41 +77,66 @@ impl InspectorApp {
                     })
                     .count();
                 if failed > 0 {
-                    ui.label(text::failure_count(failed));
+                    items.push(StatusItem::count(text::failure_count(failed)));
                 }
-                self.requests.search.status(ui);
+                items.extend(self.requests.search.status_items());
             }
             MainView::Map => {
                 let map = self.map.analysis.url_map();
-                ui.label(text::request_count(records.len(), records.len()));
-                ui.label(text::map_count(map.origins().len(), map.node_count()));
+                items.push(StatusItem::count(text::request_count(
+                    records.len(),
+                    records.len(),
+                )));
+                if self.map.panel.sub_view == MapSubView::Graph {
+                    let (summary, capped) = self.map.panel.graph_summary();
+                    items.push(if capped {
+                        StatusItem::marked(
+                            Tone::Warning,
+                            summary,
+                            ShellText::DomainLimitHint.text(),
+                        )
+                    } else {
+                        StatusItem::count(summary)
+                    });
+                } else {
+                    items.push(StatusItem::count(text::map_count(
+                        map.origins().len(),
+                        map.node_count(),
+                    )));
+                }
             }
         }
+        items
     }
 
     /// Records the capture could not keep, and logging limits.
-    fn limits(&self, ui: &mut egui::Ui) {
+    fn limits(&self) -> Vec<StatusItem> {
+        let mut items = Vec::new();
         let dropped = self
             .requests
             .records
             .dropped(self.session.capture.engine_dropped());
         if dropped > 0 {
-            indicator::dot_label(ui, Tone::Danger, format!("{dropped} dropped")).on_hover_text(
-                "The capture queue was full, so these exchanges were forwarded but not shown.",
-            );
+            items.push(StatusItem::marked(
+                Tone::Danger,
+                text::dropped(dropped),
+                text::DROPPED_HINT,
+            ));
         }
         let evicted = self.requests.records.evicted();
         if evicted > 0 {
-            indicator::dot_label(ui, Tone::Warning, format!("{evicted} older removed"))
-                .on_hover_text(format!(
-                    "Only the newest {MAX_RECORDS} requests stay on screen; the full-session log keeps every record."
-                ));
+            items.push(StatusItem::marked(
+                Tone::Warning,
+                text::older_removed(evicted),
+                text::older_removed_hint(MAX_RECORDS),
+            ));
         }
         let map = self.map.analysis.url_map();
         if map.node_limit_reached() {
-            indicator::dot_label(ui, Tone::Warning, "URL map limit").on_hover_text(format!(
-                "The URL map reached {} nodes; deeper paths are folded into parent nodes.",
-                map.max_nodes()
+            items.push(StatusItem::marked(
+                Tone::Warning,
+                ShellText::UrlMapLimit.text(),
+                text::url_map_limit_hint(map.max_nodes()),
             ));
         }
         let log_error = self
@@ -107,7 +153,11 @@ impl InspectorApp {
                     .and_then(FullLog::error)
             });
         if let Some(error) = log_error {
-            indicator::dot_label(ui, Tone::Danger, "Full log unavailable").on_hover_text(error);
+            items.push(StatusItem::marked(
+                Tone::Danger,
+                ShellText::FullLogUnavailable.text(),
+                error,
+            ));
         }
         if let Some(log) = self
             .session
@@ -116,10 +166,12 @@ impl InspectorApp {
             .as_ref()
             .filter(|log| log.body_limit_reached())
         {
-            indicator::dot_label(ui, Tone::Warning, "Log body limit").on_hover_text(format!(
-                "Body bytes after {} are left out of the full-session log; headers and results are still logged.",
-                ByteSize::new(log.body_limit()).exact()
+            items.push(StatusItem::marked(
+                Tone::Warning,
+                ShellText::LogBodyLimit.text(),
+                text::log_body_limit_hint(&ByteSize::new(log.body_limit()).exact().to_string()),
             ));
         }
+        items
     }
 }

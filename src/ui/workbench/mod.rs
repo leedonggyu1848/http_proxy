@@ -8,4 +8,6 @@
 pub(crate) mod chrome;
 pub(crate) mod controls;
 pub(crate) mod field;
+pub(crate) mod status;
 pub(crate) mod text;
+pub(crate) mod tree;

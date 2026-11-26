@@ -175,10 +175,17 @@ impl SaveControls {
     }
 
     /// Shows the result of the last save in the status bar.
+    /// Whether [`Self::status`] has a save result to show.
+    pub(crate) const fn has_status(&self) -> bool {
+        self.status.is_some()
+    }
+
     pub(crate) fn status(&self, ui: &mut egui::Ui) {
         match &self.status {
             Some(Ok(path)) => {
-                ui.label(format!("Saved: {}", path.display()));
+                let saved = format!("Saved: {}", path.display());
+                ui.add(egui::Label::new(saved.as_str()).truncate())
+                    .on_hover_text(saved);
             }
             Some(Err(error)) => {
                 crate::ui::style::indicator::dot_label(

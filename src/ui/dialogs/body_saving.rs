@@ -17,6 +17,8 @@ use crate::ui::AppAction;
 use crate::ui::style::indicator;
 use crate::ui::style::theme::Palette;
 use crate::ui::style::tokens::Tone;
+use crate::ui::workbench::controls;
+use crate::ui::workbench::text::{self, ShellText};
 
 use super::background_task::{BackgroundTask, TaskPoll};
 
@@ -130,49 +132,49 @@ impl BodySaving {
     }
 
     /// The request and response `Save … body ▼` menus of the Body tab.
-    pub(crate) fn menus(&self, ui: &mut egui::Ui, record: &Exchange) -> Option<AppAction> {
-        ui.horizontal_wrapped(|ui| {
-            let request = self.menu(ui, record, BodySide::Request);
-            let response = self.menu(ui, record, BodySide::Response);
-            request.or(response)
-        })
-        .inner
-    }
-
-    /// One `Save … body ▼` menu of the Body tab.
-    fn menu(&self, ui: &mut egui::Ui, record: &Exchange, side: BodySide) -> Option<AppAction> {
+    /// The `Save` menu in the header of one body section of the Body tab.
+    pub(crate) fn menu(
+        &self,
+        ui: &mut egui::Ui,
+        record: &Exchange,
+        side: BodySide,
+    ) -> Option<AppAction> {
         let stored = self
             .store
             .as_ref()
             .and_then(|store| store.body(record.id(), side));
-        let label = match side {
-            BodySide::Request => "Save request body ▼",
-            BodySide::Response => "Save response body ▼",
-        };
         let enabled = stored.is_some() && !self.is_busy();
-        let response = ui.add_enabled_ui(enabled, |ui| {
-            ui.menu_button(label, |ui| {
-                if let Some(stored) = stored {
-                    ui.weak(stored_text(&stored));
-                }
-                for format in [SaveFormat::Decoded, SaveFormat::AsReceived] {
-                    let (text, hover) = format_text(format);
-                    if ui.button(text).on_hover_text(hover).clicked() {
-                        ui.close();
-                        return Some(AppAction::SaveBody(record.id(), side, format));
-                    }
-                }
-                if side == BodySide::Response && super::range_merge::menu_items(ui, record) {
-                    ui.close();
-                    return Some(AppAction::PlanRanges(record.id()));
-                }
-                None
+        let shown = ui
+            .add_enabled_ui(enabled, |ui| {
+                controls::ghost_menu(
+                    ui,
+                    text::menu_label(ShellText::Save.text()),
+                    Layout::PANE_BUTTON_HEIGHT,
+                    |ui| {
+                        if let Some(stored) = stored {
+                            ui.weak(stored_text(&stored));
+                        }
+                        for format in [SaveFormat::Decoded, SaveFormat::AsReceived] {
+                            let (text, hover) = format_text(format);
+                            if ui.button(text).on_hover_text(hover).clicked() {
+                                ui.close();
+                                return Some(AppAction::SaveBody(record.id(), side, format));
+                            }
+                        }
+                        if side == BodySide::Response && super::range_merge::menu_items(ui, record)
+                        {
+                            ui.close();
+                            return Some(AppAction::PlanRanges(record.id()));
+                        }
+                        None
+                    },
+                )
             })
-        });
-        response
+            .inner;
+        let _ = shown
             .response
             .on_disabled_hover_text(self.unavailable_text());
-        response.inner.inner.flatten()
+        shown.inner.flatten()
     }
 
     fn unavailable_text(&self) -> &str {
@@ -363,6 +365,16 @@ impl BodySaving {
         publish(path, ExistingFile::Replace, |file| {
             writeln!(file, "{LIMIT_KEY}={}", self.limit_mib)
         })
+    }
+
+    /// Whether [`Self::status`] has anything to show.
+    pub(crate) fn has_status(&self) -> bool {
+        !self.warnings().is_empty()
+            || self.init_error.is_some()
+            || self.settings_error.is_some()
+            || self.pending.is_some()
+            || self.status.is_some()
+            || self.bulk.has_status()
     }
 
     /// Body store warnings and the result of the last body save, for the status bar.

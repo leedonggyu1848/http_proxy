@@ -15,7 +15,6 @@ use crate::ui::requests::{filter::ListView, request_table::RequestTable};
 use crate::ui::style::fonts;
 use crate::ui::style::theme::{self, Palette};
 use crate::ui::style::tokens::{Layout, Radius, Space, StrokeWidth};
-use crate::ui::workbench::chrome;
 
 use eframe::egui;
 use http_inspector_analysis::pipeline::AnalysisPipeline;
@@ -135,16 +134,6 @@ impl InspectorApp {
                         &mut actions,
                     )),
                     MainView::Map => {
-                        let controls = chrome::strip(ui, "map-controls", |ui| {
-                            self.map.panel.controls(
-                                ui,
-                                self.map.analysis.url_map(),
-                                self.dialogs.save.is_busy(),
-                            )
-                        });
-                        if let Some(action) = controls {
-                            pending_map_action = Some(action);
-                        }
                         let used = ui.cursor().top() - top;
                         let height = main_height(viewport_height, used, Layout::STATUS_BAR_HEIGHT);
                         if let Some(action) = self.map_area(ui, height, shortcuts_allowed) {
@@ -226,13 +215,15 @@ impl InspectorApp {
     }
 
     /// Map main area: split tree + detail panes in Tree sub-view, or full-width
-    /// relationship graph canvas in Graph sub-view.
+    /// relationship graph canvas in Graph sub-view. The pane header of the
+    /// tree, or of the graph, holds the view tabs and the map actions.
     fn map_area(
         &mut self,
         ui: &mut egui::Ui,
         height: f32,
         shortcuts_allowed: bool,
     ) -> Option<MapAction> {
+        let save_busy = self.dialogs.save.is_busy();
         if self.map.panel.sub_view == MapSubView::Graph {
             let size = egui::vec2(ui.available_width(), height);
             let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
@@ -243,10 +234,15 @@ impl InspectorApp {
                     .layout(egui::Layout::top_down(egui::Align::Min)),
             );
             main.shrink_clip_rect(rect);
+            paint_pane_surfaces(&main, [rect, egui::Rect::NOTHING]);
+            let action = self
+                .map
+                .panel
+                .header(&mut main, self.map.analysis.url_map(), save_busy);
             self.map
                 .panel
                 .show_graph_pane(&mut main, self.map.analysis.url_map());
-            return None;
+            return action;
         }
 
         let mut share = self.layout.detail_share;
@@ -261,22 +257,23 @@ impl InspectorApp {
                 "map-detail-pane",
             ),
             |left_ui, right_ui| {
+                let header = self
+                    .map
+                    .panel
+                    .header(left_ui, self.map.analysis.url_map(), save_busy);
+                self.map.panel.tree_filters(left_ui);
                 self.map.panel.show_tree_pane(
                     left_ui,
                     self.map.analysis.url_map(),
                     shortcuts_allowed,
                 );
-                egui::Frame::new()
-                    .inner_margin(Layout::PANE_ROW_MARGIN)
-                    .show(right_ui, |ui| {
-                        self.map.panel.show_detail_pane(
-                            ui,
-                            self.map.analysis.url_map(),
-                            &self.requests.records,
-                            self.map.analysis.endpoint_schemas(),
-                        )
-                    })
-                    .inner
+                let detail = self.map.panel.show_detail_pane(
+                    right_ui,
+                    self.map.analysis.url_map(),
+                    &self.requests.records,
+                    self.map.analysis.endpoint_schemas(),
+                );
+                detail.or(header)
             },
         );
         self.layout.detail_share = share;
