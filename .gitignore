@@ -21,3 +21,5 @@ Thumbs.db
 /dist/
 /downloaded/
 /scripts/__pycache__/
+
+graphify-out/
