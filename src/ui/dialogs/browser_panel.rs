@@ -137,7 +137,7 @@ const fn ca_note(browser: &Browser, decrypt: bool) -> &'static str {
     if !decrypt {
         PROFILE_NOTE
     } else if browser.uses_shared_ca_store() {
-        "Registers the CA in your user's shared Chrome/Chromium store. Remove it with Remove CA."
+        "Registers the CA in your user's shared Chrome/Chromium store until you remove it in CA details."
     } else {
         "Firefox trusts the CA only in the temporary inspection profile."
     }
