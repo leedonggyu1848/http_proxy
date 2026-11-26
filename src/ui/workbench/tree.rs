@@ -359,14 +359,14 @@ pub(crate) fn key_value(
                 .selectable(false),
         );
         let width = (ui.available_width() - Space::MD).max(Layout::DETAIL_VALUE_MIN_WIDTH);
-        // Values such as URLs and tokens have no spaces, so they may break
-        // anywhere rather than run past the pane.
-        let mut job = std::sync::Arc::unwrap_or_clone(value.into().into_layout_job(
+        // Values wrap at spaces; a token without spaces, such as a URL,
+        // still breaks inside the value column because egui falls back to
+        // any position when a word does not fit on its row.
+        let job = value.into().into_layout_job(
             ui.style(),
             egui::FontSelection::Default,
             egui::Align::Min,
-        ));
-        job.wrap.break_anywhere = true;
+        );
         ui.allocate_ui_with_layout(
             egui::vec2(width, 0.0),
             egui::Layout::top_down(egui::Align::Min),
@@ -459,5 +459,65 @@ mod tests {
         items.sort_unstable();
         assert_eq!(items, [None, Some(true)]);
         Ok(())
+    }
+
+    /// Rows of the painted galley whose text is `text`, as strings.
+    fn painted_rows(shapes: &[egui::epaint::ClippedShape], text: &str) -> Vec<(String, f32)> {
+        shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(shape) if shape.galley.text() == text => Some(shape),
+                _ => None,
+            })
+            .flat_map(|shape| {
+                shape.galley.rows.iter().map(|row| {
+                    let line: String = row.row.glyphs.iter().map(|glyph| glyph.chr).collect();
+                    (line, shape.pos.x + row.rect().right())
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn values_wrap_at_spaces_and_long_tokens_stay_in_the_column() {
+        const SPACED: &str = "Failed at Tunnel relay: Connection reset by peer (os error 104)";
+        const TOKEN: &str = "span-0123456789abcdefspan0123456789abcdefspan0123456789abcdef";
+        let ctx = egui::Context::default();
+        let mut value_column = 0.0;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.allocate_ui(egui::vec2(320.0, 400.0), |ui| {
+                ui.set_width(320.0);
+                for value in [SPACED, TOKEN] {
+                    key_value(
+                        ui,
+                        96.0,
+                        "key",
+                        egui::RichText::new(value).font(fonts::data()),
+                    );
+                }
+                value_column = ui.max_rect().right();
+            });
+        });
+        output.textures_delta.clear();
+        let spaced = painted_rows(&output.shapes, SPACED);
+        assert!(spaced.len() > 1, "the value wraps: {spaced:?}");
+        let mut consumed = 0;
+        for (line, _) in &spaced {
+            consumed += line.len();
+            let next = SPACED.get(consumed..consumed + 1).unwrap_or(" ");
+            let last = line.chars().last().unwrap_or(' ');
+            assert!(
+                last == ' ' || next == " ",
+                "row {line:?} breaks inside a word"
+            );
+        }
+        let token = painted_rows(&output.shapes, TOKEN);
+        assert!(token.len() > 1, "a long token wraps: {token:?}");
+        for (line, right) in &token {
+            assert!(
+                *right <= value_column + 0.5,
+                "{line:?} runs past the column"
+            );
+        }
     }
 }

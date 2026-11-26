@@ -120,7 +120,7 @@ impl InspectorApp {
             items.push(StatusItem::marked(
                 Tone::Danger,
                 text::dropped(dropped),
-                "The capture queue was full, so these exchanges were forwarded but not shown.",
+                text::DROPPED_HINT,
             ));
         }
         let evicted = self.requests.records.evicted();
@@ -128,9 +128,7 @@ impl InspectorApp {
             items.push(StatusItem::marked(
                 Tone::Warning,
                 text::older_removed(evicted),
-                format!(
-                    "Only the newest {MAX_RECORDS} requests stay on screen; the full-session log keeps every record."
-                ),
+                text::older_removed_hint(MAX_RECORDS),
             ));
         }
         let map = self.map.analysis.url_map();
@@ -138,10 +136,7 @@ impl InspectorApp {
             items.push(StatusItem::marked(
                 Tone::Warning,
                 ShellText::UrlMapLimit.text(),
-                format!(
-                    "The URL map reached {} nodes; deeper paths are folded into parent nodes.",
-                    map.max_nodes()
-                ),
+                text::url_map_limit_hint(map.max_nodes()),
             ));
         }
         let log_error = self
@@ -174,10 +169,7 @@ impl InspectorApp {
             items.push(StatusItem::marked(
                 Tone::Warning,
                 ShellText::LogBodyLimit.text(),
-                format!(
-                    "Body bytes after {} are left out of the full-session log; headers and results are still logged.",
-                    ByteSize::new(log.body_limit()).exact()
-                ),
+                text::log_body_limit_hint(&ByteSize::new(log.body_limit()).exact().to_string()),
             ));
         }
         items

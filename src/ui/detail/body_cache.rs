@@ -10,6 +10,8 @@ use http_inspector_content::format::{
 use http_inspector_exchange::{BodyLifecycle, BodyRetention, BodySide, BodySnapshot, MediaType};
 use std::sync::Arc;
 
+use crate::ui::workbench::text;
+
 /// A captured body preview to show.
 pub(super) struct BodySource<'a> {
     /// [`http_inspector_exchange::RecordId::value`] of the exchange the body belongs to.
@@ -64,12 +66,11 @@ impl Capture {
     fn notice(self) -> Option<Notice> {
         let text = match self {
             Self::Whole => return None,
-            Self::Truncated => format!(
-                "Showing the first {} KiB captured",
-                http_inspector_exchange::capture::BODY_PREVIEW_BYTES / 1024
-            ),
-            Self::Streaming => "Still receiving; showing what arrived".to_owned(),
-            Self::Ended => "Ended early; showing what arrived".to_owned(),
+            Self::Truncated => {
+                text::body_truncated(http_inspector_exchange::capture::BODY_PREVIEW_BYTES / 1024)
+            }
+            Self::Streaming => text::BODY_STREAMING.to_owned(),
+            Self::Ended => text::BODY_ENDED.to_owned(),
         };
         Some(Notice::warning(text))
     }

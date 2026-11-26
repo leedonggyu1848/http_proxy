@@ -1797,6 +1797,8 @@ async fn inspector_rows_follow_the_tree_grid_in_every_tab() -> Result<(), Box<dy
     for group in ["Query", "Request", "Response"] {
         text_top(&drawn, group)?;
     }
+    // The result line names the status and HTTP version the server sent.
+    text_top(&drawn, "200 OK · HTTP/1.1")?;
     // Query parameters are one-line key-value rows, one tree row apart.
     // One-line key-value rows are one tree row apart, and their colons
     // line up in one column after the keys.

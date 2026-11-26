@@ -190,7 +190,7 @@ fn summary_row(
     actions: &mut Vec<AppAction>,
 ) {
     ui.horizontal_wrapped(|ui| {
-        let (status, tone) = outcome_view::outcome_text(record.outcome());
+        let (status, tone) = outcome_view::detail_status(record.outcome());
         ui.label(
             egui::RichText::new(status)
                 .font(fonts::data())
