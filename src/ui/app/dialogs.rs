@@ -50,5 +50,13 @@ impl InspectorApp {
         }
         actions.extend(self.show_bulk_save(context).map(AppAction::BulkSave));
         actions.extend(self.show_range_merge(context).map(AppAction::Range));
+        if self.dialogs.hls.is_open() {
+            actions.extend(
+                self.dialogs
+                    .hls
+                    .show(context, !body_dialog_open, lang)
+                    .map(AppAction::Hls),
+            );
+        }
     }
 }

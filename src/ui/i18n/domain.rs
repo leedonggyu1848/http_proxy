@@ -16,6 +16,9 @@ use http_inspector_analysis::url_map::{
 use http_inspector_content::decode::DecodeError;
 use http_inspector_content::format::{BodyFormat, ViewMode};
 use http_inspector_content::image::ImageError;
+use http_inspector_core::hls::{
+    HlsBlockedReason, HlsDownloadError, HlsInspectError, UnsupportedHlsFeature,
+};
 use http_inspector_core::https::{CaTrustError, HttpsSetupError};
 use http_inspector_core::interception::{StartError, StopError};
 use http_inspector_core::launcher::BrowserLaunchError;
@@ -1163,6 +1166,216 @@ pub(crate) fn localize_filter_diagnostic(lang: Language, message: &str) -> Strin
             }
             message.to_owned()
         }
+    }
+}
+
+/// Translates unsupported HLS playlist feature reasons.
+#[must_use]
+pub(crate) fn hls_unsupported_feature(lang: Language, feature: &UnsupportedHlsFeature) -> String {
+    match feature {
+        UnsupportedHlsFeature::Encrypted(method) => match lang {
+            Language::English => format!("encrypted segments (#EXT-X-KEY METHOD={method})"),
+            Language::Korean => format!("암호화된 세그먼트(#EXT-X-KEY METHOD={method})"),
+        },
+        UnsupportedHlsFeature::InitMap => lang
+            .pick(
+                "fMP4 initialization map (#EXT-X-MAP)",
+                "fMP4 초기화 맵(#EXT-X-MAP)",
+            )
+            .to_owned(),
+        UnsupportedHlsFeature::ByteRange => lang
+            .pick(
+                "byte-range segments (#EXT-X-BYTERANGE)",
+                "바이트 범위 세그먼트(#EXT-X-BYTERANGE)",
+            )
+            .to_owned(),
+        UnsupportedHlsFeature::NonMpegTsSegment(ext) => match lang {
+            Language::English => format!("non-MPEG-TS segment ({ext})"),
+            Language::Korean => format!("MPEG-TS가 아닌 세그먼트({ext})"),
+        },
+    }
+}
+
+/// Translates [`HlsBlockedReason`] into the active UI language.
+#[must_use]
+pub(crate) fn hls_blocked_reason(lang: Language, reason: &HlsBlockedReason) -> String {
+    match reason {
+        HlsBlockedReason::PlaylistNotCaptured => lang
+            .pick(
+                "Media playlist not captured yet. Play this quality in Chrome, then refresh.",
+                "미디어 재생목록이 아직 캡처되지 않았습니다. Chrome에서 이 화질을 재생한 뒤 새로고침하세요.",
+            )
+            .to_owned(),
+        HlsBlockedReason::PlaylistParseFailed(err) => match lang {
+            Language::English => format!("Media playlist could not be parsed: {err}"),
+            Language::Korean => format!("미디어 재생목록을 해석하지 못했습니다: {err}"),
+        },
+        HlsBlockedReason::Unsupported(feature) => {
+            let detail = hls_unsupported_feature(lang, feature);
+            match lang {
+                Language::English => format!("Unsupported HLS stream: {detail}."),
+                Language::Korean => format!("지원하지 않는 HLS 스트림입니다: {detail}."),
+            }
+        }
+        HlsBlockedReason::NoSegments => lang
+            .pick(
+                "Media playlist lists no segments.",
+                "미디어 재생목록에 세그먼트가 없습니다.",
+            )
+            .to_owned(),
+        HlsBlockedReason::MissingChromeSegmentRequest => lang
+            .pick(
+                "No Chrome .ts segment request captured for this quality. Play this quality in Chrome, then refresh.",
+                "이 화질의 Chrome .ts 세그먼트 요청이 아직 캡처되지 않았습니다. Chrome에서 이 화질을 재생한 뒤 새로고침하세요.",
+            )
+            .to_owned(),
+    }
+}
+
+/// Translates [`HlsInspectError`] into the active UI language.
+#[must_use]
+pub(crate) fn hls_inspect_error(lang: Language, error: &HlsInspectError) -> String {
+    match error {
+        HlsInspectError::InvalidUrl(err) => match lang {
+            Language::English => format!("invalid playlist URL: {err}"),
+            Language::Korean => format!("잘못된 재생목록 URL입니다: {err}"),
+        },
+        HlsInspectError::IncompletePlaylist => lang
+            .pick(
+                "playlist response is not a complete 200 OK body",
+                "재생목록 응답이 완료된 200 OK 본문이 아닙니다",
+            )
+            .to_owned(),
+        HlsInspectError::PlaylistTooLarge => lang
+            .pick(
+                "playlist body is too large to parse",
+                "재생목록 본문이 너무 커서 해석할 수 없습니다",
+            )
+            .to_owned(),
+        HlsInspectError::DecodeFailed => lang
+            .pick(
+                "playlist body could not be decoded",
+                "재생목록 본문을 디코딩하지 못했습니다",
+            )
+            .to_owned(),
+        HlsInspectError::InvalidUtf8 => lang
+            .pick(
+                "playlist body is not valid UTF-8",
+                "재생목록 본문이 올바른 UTF-8이 아닙니다",
+            )
+            .to_owned(),
+        HlsInspectError::Parse(err) => match lang {
+            Language::English => err.to_string(),
+            Language::Korean => format!("재생목록 해석 실패: {err}"),
+        },
+    }
+}
+
+/// Translates [`HlsDownloadError`] into the active UI language.
+#[must_use]
+pub(crate) fn hls_download_error(lang: Language, error: &HlsDownloadError) -> String {
+    if let HlsDownloadError::NotReady(reason) = error {
+        return hls_blocked_reason(lang, reason);
+    }
+    match lang {
+        Language::English => hls_download_error_en(error),
+        Language::Korean => hls_download_error_ko(error),
+    }
+}
+
+fn hls_download_error_en(error: &HlsDownloadError) -> String {
+    match error {
+        HlsDownloadError::NotReady(reason) => hls_blocked_reason(Language::English, reason),
+        HlsDownloadError::HttpStatus {
+            segment_number,
+            segment_name,
+            status,
+            reason,
+            ..
+        } => format!("HTTP {status} {reason} on segment #{segment_number} ({segment_name})"),
+        HlsDownloadError::TooManyRedirects {
+            segment_number,
+            segment_name,
+            ..
+        } => format!("Too many redirects on segment #{segment_number} ({segment_name})"),
+        HlsDownloadError::InvalidRedirect {
+            segment_number,
+            segment_name,
+            detail,
+            ..
+        } => format!("Invalid redirect on segment #{segment_number} ({segment_name}): {detail}"),
+        HlsDownloadError::Network {
+            segment_number,
+            segment_name,
+            detail,
+            ..
+        } => format!("Network error on segment #{segment_number} ({segment_name}): {detail}"),
+        HlsDownloadError::Decode {
+            segment_number,
+            segment_name,
+            detail,
+            ..
+        } => format!("Decoding failed on segment #{segment_number} ({segment_name}): {detail}"),
+        HlsDownloadError::CacheRead {
+            segment_number,
+            segment_name,
+            detail,
+            ..
+        } => {
+            format!("Cached segment #{segment_number} ({segment_name}) could not be read: {detail}")
+        }
+        HlsDownloadError::TlsSetup(detail) => format!("TLS setup failed: {detail}"),
+        HlsDownloadError::Io(detail) => format!("File write failed: {detail}"),
+    }
+}
+
+fn hls_download_error_ko(error: &HlsDownloadError) -> String {
+    match error {
+        HlsDownloadError::NotReady(reason) => hls_blocked_reason(Language::Korean, reason),
+        HlsDownloadError::HttpStatus {
+            segment_number,
+            segment_name,
+            status,
+            reason,
+            ..
+        } => format!("세그먼트 #{segment_number}({segment_name})에서 HTTP {status} {reason} 오류"),
+        HlsDownloadError::TooManyRedirects {
+            segment_number,
+            segment_name,
+            ..
+        } => format!("세그먼트 #{segment_number}({segment_name})에서 리다이렉트가 너무 많습니다"),
+        HlsDownloadError::InvalidRedirect {
+            segment_number,
+            segment_name,
+            detail,
+            ..
+        } => {
+            format!(
+                "세그먼트 #{segment_number}({segment_name})의 리다이렉트가 올바르지 않습니다: {detail}"
+            )
+        }
+        HlsDownloadError::Network {
+            segment_number,
+            segment_name,
+            detail,
+            ..
+        } => format!("세그먼트 #{segment_number}({segment_name}) 네트워크 오류: {detail}"),
+        HlsDownloadError::Decode {
+            segment_number,
+            segment_name,
+            detail,
+            ..
+        } => format!("세그먼트 #{segment_number}({segment_name}) 디코딩 실패: {detail}"),
+        HlsDownloadError::CacheRead {
+            segment_number,
+            segment_name,
+            detail,
+            ..
+        } => {
+            format!("캐시된 세그먼트 #{segment_number}({segment_name})를 읽지 못했습니다: {detail}")
+        }
+        HlsDownloadError::TlsSetup(detail) => format!("TLS 설정 실패: {detail}"),
+        HlsDownloadError::Io(detail) => format!("파일 쓰기 실패: {detail}"),
     }
 }
 

@@ -64,6 +64,10 @@ fn session_error_text(error: &SessionError, lang: Language) -> String {
             Language::English => format!("Merging ranges failed: {detail}"),
             Language::Korean => format!("범위 응답 병합 실패: {detail}"),
         },
+        SessionError::HlsDownload(detail) => match lang {
+            Language::English => format!("HLS download failed: {detail}"),
+            Language::Korean => format!("HLS 다운로드 실패: {detail}"),
+        },
     }
 }
 
