@@ -1,13 +1,17 @@
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use eframe::egui;
-use http_inspector_analysis::filter::{FilterKey, RecordList, TargetParts};
+use http_inspector_analysis::filter::{FilterDiagnostic, FilterKey, RecordList, TargetParts};
 use http_inspector_analysis::search::{MatchOptions, SearchScope};
 use http_inspector_exchange::Exchange;
 
 use super::{RequestSearch, SearchSettings};
 use crate::ui::requests::filter_menu::field_term;
-use crate::ui::style::tokens::{Layout, Space, StrokeWidth, ThemeTokens};
+use crate::ui::style::{
+    fonts,
+    tokens::{Layout, Space, StrokeWidth, ThemeTokens},
+};
 use crate::ui::workbench::controls;
 use crate::ui::workbench::field::{self, Field};
 use crate::ui::workbench::text::ShellText;
@@ -47,6 +51,17 @@ impl RequestSearch {
             } else {
                 (!diagnostics.is_empty()).then_some(ShellText::InvalidCondition.text())
             });
+        let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, _| {
+            let text = buffer.as_str();
+            let errors = if text == self.settings().text {
+                diagnostics
+            } else {
+                &[]
+            };
+            layout_filter_text(ui, text, errors)
+        };
+        let layouter =
+            (!diagnostics.is_empty()).then_some(&mut layouter as &mut field::Layouter<'_>);
         let response = field::single_line_with(
             ui,
             &mut settings.text,
@@ -61,11 +76,33 @@ impl RequestSearch {
                 filter_help(ui, height);
                 options(ui, &mut settings.scope, &mut settings.options);
             },
-            |ui, edit| self.show_edit(ui, edit, id, regex, records),
+            layouter,
+            |ui, edit| {
+                egui::CompletionPopup::new(id)
+                    .show(ui, edit, |query| {
+                        if regex {
+                            Vec::new()
+                        } else {
+                            suggestions(query, records)
+                        }
+                    })
+                    .text_edit
+                    .response
+                    .response
+            },
         );
         if clear {
             settings.text.clear();
         }
+        self.filter_tooltip(ui, response, diagnostics);
+        (&settings != self.settings()).then_some(settings)
+    }
+    fn filter_tooltip(
+        &self,
+        ui: &egui::Ui,
+        response: egui::Response,
+        diagnostics: &[FilterDiagnostic],
+    ) {
         let response = response.accessible_name("Filter requests");
         if let Some(error) = self.regex_error() {
             response.on_hover_text(error);
@@ -81,52 +118,42 @@ impl RequestSearch {
                 }
             });
         }
-        (&settings != self.settings()).then_some(settings)
     }
+}
 
-    fn show_edit(
-        &self,
-        ui: &mut egui::Ui,
-        edit: egui::TextEdit<'_>,
-        id: egui::Id,
-        regex: bool,
-        records: &RecordList<Exchange>,
-    ) -> egui::Response {
-        let output = egui::CompletionPopup::new(id)
-            .show(ui, edit, |query| {
-                if regex {
-                    Vec::new()
-                } else {
-                    suggestions(query, records)
-                }
-            })
-            .text_edit;
-        self.underline_errors(ui, &output);
-        output.response.response
-    }
-
-    fn underline_errors(&self, ui: &egui::Ui, output: &egui::text_edit::TextEditOutput) {
-        let text = output.galley.text();
-        if text != self.settings().text {
-            return;
-        }
-        let theme = ThemeTokens::for_theme(ui.ctx().theme());
-        let stroke = egui::Stroke::new(StrokeWidth::STRUCTURAL, theme.status.error);
-        let painter = ui.painter().with_clip_rect(output.text_clip_rect);
-        let position = |byte| {
-            let index = text.get(..byte).unwrap_or_default().chars().count();
-            let cursor = egui::text::CCursor::new(index);
-            output
-                .galley
-                .pos_from_cursor(cursor)
-                .translate(output.galley_pos.to_vec2())
-        };
-        for error in &self.parsed().diagnostics {
-            let start = position(error.span.start);
-            let end = position(error.span.end);
-            painter.hline(start.left()..=end.left(), start.bottom(), stroke);
+fn layout_filter_text(
+    ui: &egui::Ui,
+    text: &str,
+    diagnostics: &[FilterDiagnostic],
+) -> Arc<egui::Galley> {
+    let theme = ThemeTokens::for_theme(ui.ctx().theme());
+    let error_stroke = egui::Stroke::new(StrokeWidth::STRUCTURAL, theme.status.error);
+    let format = egui::TextFormat {
+        font_id: fonts::data(),
+        color: theme.text.primary,
+        ..Default::default()
+    };
+    let mut job = egui::text::LayoutJob::default();
+    let mut start = 0;
+    for diagnostic in diagnostics {
+        if let (Some(prefix), Some(term)) = (
+            text.get(start..diagnostic.span.start),
+            text.get(diagnostic.span.clone()),
+        ) {
+            job.append(prefix, 0.0, format.clone());
+            job.append(
+                term,
+                0.0,
+                egui::TextFormat {
+                    underline: error_stroke,
+                    ..format.clone()
+                },
+            );
+            start = diagnostic.span.end;
         }
     }
+    job.append(text.get(start..).unwrap_or_default(), 0.0, format);
+    ui.fonts_mut(|fonts| fonts.layout_job(job))
 }
 
 fn filter_help(ui: &mut egui::Ui, height: f32) {

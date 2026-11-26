@@ -689,9 +689,10 @@ fn field_filter(field: Field, record: &Exchange) -> Option<(FilterKey, Cow<'_, s
             (!host.is_empty()).then_some((FilterKey::Host, Cow::Borrowed(host)))
         }
         Field::Status => match record.outcome() {
-            Outcome::Response(response) => {
-                Some((FilterKey::Status, Cow::Owned(response.status().to_string())))
-            }
+            Outcome::Response(response) => Some((
+                FilterKey::Status,
+                Cow::Owned(response.status().as_u16().to_string()),
+            )),
             _ => None,
         },
         _ => None,
@@ -858,6 +859,24 @@ fn duration_text(record: &Exchange) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn status_context_filter_uses_numeric_code() -> Result<(), Box<dyn std::error::Error>> {
+        use http::{Method, StatusCode};
+        use http_inspector_analysis::filter::FilterQuery;
+        use http_inspector_exchange::{ExchangeBuilder, ResponseFixture};
+
+        let record = ExchangeBuilder::http(Method::GET, "http://fixture.test/")?
+            .respond(ResponseFixture::new(StatusCode::NOT_FOUND))?;
+        let (key, value) =
+            super::field_filter(super::Field::Status, &record).ok_or("missing filter")?;
+        let term = super::filter_menu::field_term(key, &value, false);
+        assert_eq!(term, "status:404");
+        let parsed = FilterQuery::parse(&term);
+        assert!(parsed.diagnostics.is_empty());
+        assert!(parsed.matches(&record));
+        Ok(())
+    }
+
     use super::*;
 
     #[test]
