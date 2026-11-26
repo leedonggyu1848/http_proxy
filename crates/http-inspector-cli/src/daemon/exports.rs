@@ -2,15 +2,17 @@
 //! app's HAR export, Map endpoint structure, and HLS download.
 
 use std::fs;
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::time::{Duration, SystemTime};
 
 use http_inspector_core::hls::{
-    HlsBlockedReason, HlsDownloadConfig, HlsDownloadError, HlsDownloadOutcome, HlsDownloadPhase,
-    HlsDownloadProgress, HlsDownloadSummary, HlsSessionPlan, HlsVariantEntry, VariantMediaState,
-    inspect_hls_session, start_hls_download,
+    HlsBlockedReason, HlsDownloadConfig, HlsDownloadError, HlsDownloadHandle, HlsDownloadOutcome,
+    HlsDownloadPhase, HlsDownloadProgress, HlsDownloadSummary, HlsSessionPlan, HlsVariantEntry,
+    VariantMediaState, inspect_hls_session, start_hls_download,
 };
 use http_inspector_exchange::Exchange;
 use http_inspector_interop::har::{self, HarOptions};
@@ -167,23 +169,45 @@ pub(super) fn download(
         Ok(handle) => handle,
         Err(error) => return write_line(writer, &error_line(&download_error(&error))),
     };
-    let probe = writer.try_clone()?;
+    let Ok(probe) = writer.try_clone() else {
+        abandon(handle);
+        return Ok(());
+    };
     let mut last = None;
     loop {
         if let Some(outcome) = handle.try_finish() {
+            // `finished` publishes or discards the file before replying.
             return write_line(writer, &finished(outcome, output));
         }
-        let progress = handle.progress();
-        let event = progress_json(&progress);
+        let event = progress_json(&handle.progress());
         if last.as_ref() != Some(&event) {
-            write_line(writer, &ok_line(&event))?;
+            if let Err(error) = write_line(writer, &ok_line(&event)) {
+                abandon(handle);
+                return Err(error);
+            }
             last = Some(event);
         }
+        if shared.stopping.load(Ordering::Acquire) {
+            abandon(handle);
+            return write_line(
+                writer,
+                &error_line(&hls_error("The daemon stopped during the download")),
+            );
+        }
         if client_left(&probe) {
-            // Dropping the handle cancels the download.
+            abandon(handle);
             return Ok(());
         }
         let _woken = progressed.recv_timeout(PROGRESS_INTERVAL);
+    }
+}
+
+/// Cancels a download nobody will receive and removes its staging file,
+/// including one the downloader finished just before the cancellation.
+fn abandon(handle: HlsDownloadHandle) {
+    handle.cancel();
+    if let HlsDownloadOutcome::Completed(summary) = handle.wait() {
+        let _already_gone = fs::remove_file(&summary.path).is_err();
     }
 }
 
@@ -271,12 +295,51 @@ fn progress_json(progress: &HlsDownloadProgress) -> Value {
 /// including a dangling symlink or a file created during the download, so
 /// the file is never saved under another name and nothing is overwritten.
 fn publish_exact(staged: &Path, output: &Path) -> Result<(), CliError> {
-    let linked = fs::hard_link(staged, output);
+    publish_with(staged, output, |from, to| fs::hard_link(from, to))
+}
+
+/// [`publish_exact`] with the linking step given, so the fallback can be
+/// tested. File systems without hard links (FAT, exFAT, some network
+/// mounts) fall back to copying into a file opened with `O_EXCL`, which
+/// likewise fails if anything exists at `output`.
+fn publish_with(
+    staged: &Path,
+    output: &Path,
+    link: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> Result<(), CliError> {
+    let published = match link(staged, output) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err(file_exists(output)),
+        Err(_) => copy_new(staged, output),
+    };
     let _staging_gone = fs::remove_file(staged).is_err();
-    linked.map_err(|error| match error.kind() {
-        std::io::ErrorKind::AlreadyExists => file_exists(output),
-        _ => CliError::io(&format!("Could not save {}", output.display()), &error),
-    })
+    published
+}
+
+/// Copies `staged` into a new file at exactly `output` (owner-only, as the
+/// downloader creates it), removing the partial copy if anything fails.
+fn copy_new(staged: &Path, output: &Path) -> Result<(), CliError> {
+    let mut target = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(output)
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::AlreadyExists => file_exists(output),
+            _ => CliError::io(&format!("Could not save {}", output.display()), &error),
+        })?;
+    let copied = fs::File::open(staged)
+        .and_then(|mut source| std::io::copy(&mut source, &mut target))
+        .and_then(|_| target.sync_all());
+    if let Err(error) = copied {
+        drop(target);
+        let _partial_gone = fs::remove_file(output).is_err();
+        return Err(CliError::io(
+            &format!("Could not save {}", output.display()),
+            &error,
+        ));
+    }
+    Ok(())
 }
 
 fn finished(outcome: HlsDownloadOutcome, output: &Path) -> Value {
@@ -305,6 +368,8 @@ fn completed(summary: &HlsDownloadSummary, output: &Path) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::MetadataExt as _;
+
     use super::*;
 
     /// A file that appears at the destination during the download wins:
@@ -344,6 +409,33 @@ mod tests {
             .collect();
         names.sort_unstable();
         assert_eq!(names, ["dangling.ts", "fresh.ts", "video.ts"]);
+        Ok(())
+    }
+
+    /// Without hard links the file is copied to exactly `output`, still
+    /// refusing anything that exists there.
+    #[test]
+    fn falls_back_to_an_exclusive_copy() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let staged = directory.path().join(".video.ts.partial");
+        let unsupported =
+            |_: &Path, _: &Path| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        let output = directory.path().join("video.ts");
+        fs::write(&staged, b"media")?;
+        publish_with(&staged, &output, unsupported)?;
+        assert_eq!(fs::read(&output)?, b"media");
+        assert_eq!(fs::metadata(&output)?.mode() & 0o777, 0o600);
+        assert!(!staged.exists());
+
+        let dangling = directory.path().join("dangling.ts");
+        std::os::unix::fs::symlink(directory.path().join("missing"), &dangling)?;
+        fs::write(&staged, b"media")?;
+        let error = publish_with(&staged, &dangling, unsupported)
+            .err()
+            .map(|error| error.code);
+        assert_eq!(error, Some(ErrorCode::FileExists));
+        assert!(!staged.exists());
+        assert!(!directory.path().join("missing").exists());
         Ok(())
     }
 }

@@ -249,7 +249,8 @@ http-proxy proxy stop
 - `--output`이 없으면 화질 목록(`variants`: `index`, `quality`, `bandwidth`, `resolution`, `state`, 세그먼트 수, `can_download`, `blocked`)과 기본 화질(`default_variant`)을 출력한다.
 - `--output PATH`면 `--variant`(기본은 앱이 고르는 화질)를 받아 PATH에 저장한다. 진행은 NDJSON `progress` 이벤트(단계, 전체·완료·재사용·받은 세그먼트 수, 받은 바이트)로, 끝은 `completed`(경로, 전체 바이트, 세그먼트 수)로 알린다. 실패하면 오류 줄로 끝난다.
 - 파일은 정확히 PATH에만 저장한다. PATH에 파일이나 심볼릭 링크(가리키는 대상이 없는 링크 포함)가 있으면 시작하지 않고 `file_exists`로 실패한다. 받는 동안 PATH에 파일이 생기면 그 파일을 덮어쓰거나 다른 이름으로 저장하지 않고 `file_exists`로 끝낸다. 덮어쓰는 옵션은 없다.
-- 받는 동안에는 같은 디렉터리의 숨은 임시 파일(`.이름.partial`)에 쓰고, 성공·실패·취소 어느 경우에도 지운다.
+- 받는 동안에는 같은 디렉터리의 숨은 임시 파일(`.이름.partial`)에 쓴다. 성공, 실패, 취소, 명령 종료(Ctrl+C), `proxy stop` 어느 경우에도 지운다. 데몬 프로세스가 강제로 끝나면(`SIGKILL` 등) 남을 수 있다.
+- 마지막에 임시 파일을 PATH에 하드 링크로 게시한다. 하드 링크를 지원하지 않는 파일 시스템(FAT, exFAT, 일부 네트워크 마운트)에서는 PATH를 `O_EXCL`로 새로 만들어 복사하며, 이때도 PATH에 무엇이 있으면 `file_exists`로 실패한다.
 - 앱과 같은 조건이 필요하다. 현재 데몬 세션에 해당 화질의 미디어 재생목록과 Chrome `.ts` 세그먼트 요청이 캡처되어 있어야 하며, 없으면 `hls_unavailable`로 이유(예: `No Chrome .ts segment request captured for this quality`)를 알려 준다. 이미 보관한 세그먼트는 재사용하고 나머지는 프록시를 거쳐 받는다.
 - 진행 중에 명령을 끝내면(Ctrl+C) 다운로드를 취소한다.
 
@@ -327,7 +328,7 @@ http-proxy proxy stop
 
 ## 보안
 
-- **제어 채널**: `$XDG_RUNTIME_DIR/http-inspector/control.sock`, 이 변수가 없거나 절대 경로가 아니면 시스템 임시 디렉터리의 `http-inspector-<uid>/control.sock`을 쓴다. 디렉터리는 `0700`, 소켓은 `0600`으로 만든다. 디렉터리나 소켓이 다른 사용자 소유이거나 그룹·다른 사용자 권한이 있으면 고치지 않고 `insecure_control_path`로 거부한다. TCP 제어 포트는 없다.
+- **제어 채널**: `$XDG_RUNTIME_DIR/http-inspector/control.sock`, 이 변수가 없거나 절대 경로가 아니면 시스템 임시 디렉터리의 `http-inspector-<uid>/control.sock`을 쓴다. 디렉터리는 `0700`, 소켓은 `0600`으로 만든다. 소켓은 잠금 아래에서 임시 이름(`pending.sock`)으로 만들어 `0600`으로 바꾼 뒤 제자리로 옮기므로, 제어 경로에는 처음부터 `0600`으로만 나타난다. 디렉터리나 소켓이 다른 사용자 소유이거나 그룹·다른 사용자 권한이 있으면 고치지 않고 `insecure_control_path`로 거부한다. TCP 제어 포트는 없다.
 - **프록시**: 앱과 같이 `127.0.0.1`에만 바인딩한다.
 - **가려진 헤더**: `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie` 값은 캡처할 때 `[REDACTED]`로 바뀌므로 명령 출력, 소켓 메시지, 세션 로그 어디에도 원래 값이 없다. 원래 값을 복원하는 옵션은 없다.
 - **CA 개인키**: 어떤 명령·출력·소켓 메시지에도 포함하지 않는다. `ca info`는 공개 인증서의 경로와 지문만 출력한다.

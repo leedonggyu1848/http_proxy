@@ -20,6 +20,9 @@ use crate::error::{CliError, ErrorCode};
 
 const DIRECTORY_NAME: &str = "http-inspector";
 const SOCKET_NAME: &str = "control.sock";
+/// Where a starting daemon binds before moving the socket into place. The
+/// same length as [`SOCKET_NAME`], so both fit the socket path limit.
+const PENDING_NAME: &str = "pending.sock";
 const LOCK_NAME: &str = "control.lock";
 /// Permission bits for group and others, which must all be clear.
 const SHARED_BITS: u32 = 0o077;
@@ -122,6 +125,11 @@ impl ControlPath {
     /// Binds the socket with mode 0600, replacing a socket that no daemon
     /// answers on. Fails with `daemon_already_running` when a daemon is
     /// listening.
+    ///
+    /// The socket is bound under a pending name, restricted to 0600, and
+    /// only then renamed to the control path, so clients never see the
+    /// control socket with the wider mode `bind` creates it with. Changing
+    /// the umask instead would affect every thread of the process.
     pub(crate) fn bind(&self) -> Result<Bound, CliError> {
         self.prepare_directory()?;
         let _lock = self.lock()?;
@@ -142,7 +150,11 @@ impl ControlPath {
             fs::remove_file(&self.socket)
                 .map_err(|error| CliError::io("Could not remove a stale control socket", &error))?;
         }
-        let listener = UnixListener::bind(&self.socket).map_err(|error| {
+        let pending = self.directory.join(PENDING_NAME);
+        // A daemon that failed between bind and rename left this behind;
+        // nobody else uses it while we hold the lock.
+        let _no_leftover = fs::remove_file(&pending).is_err();
+        let listener = UnixListener::bind(&pending).map_err(|error| {
             let failure = CliError::io(
                 &format!("Could not listen on {}", self.socket.display()),
                 &error,
@@ -154,8 +166,17 @@ impl ControlPath {
                 failure
             }
         })?;
-        fs::set_permissions(&self.socket, Permissions::from_mode(0o600))
-            .map_err(|error| CliError::io("Could not restrict the control socket", &error))?;
+        let published = fs::set_permissions(&pending, Permissions::from_mode(0o600))
+            .map_err(|error| CliError::io("Could not restrict the control socket", &error))
+            .and_then(|()| {
+                fs::rename(&pending, &self.socket).map_err(|error| {
+                    CliError::io("Could not move the control socket into place", &error)
+                })
+            });
+        if let Err(error) = published {
+            let _removed = fs::remove_file(&pending).is_err();
+            return Err(error);
+        }
         Ok(Bound { listener })
     }
 
@@ -262,6 +283,64 @@ mod tests {
         let after_crash = control.bind()?;
         let _client = control.connect()?;
         control.close(after_crash);
+        Ok(())
+    }
+
+    /// The control socket is never visible with a mode other than 0600,
+    /// even for an instant while a daemon starts.
+    #[test]
+    fn the_socket_appears_only_with_mode_0600() -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let root = tempfile::tempdir()?;
+        let control = ControlPath::in_directory(root.path().join("control"));
+        control.prepare_directory()?;
+        let done = Arc::new(AtomicBool::new(false));
+        let watcher = {
+            let socket = control.socket().to_path_buf();
+            let done = Arc::clone(&done);
+            std::thread::spawn(move || {
+                let mut seen = 0_u64;
+                let mut wrong = std::collections::BTreeSet::new();
+                while !done.load(Ordering::Acquire) {
+                    if let Ok(metadata) = fs::symlink_metadata(&socket) {
+                        seen += 1;
+                        let mode = metadata.mode() & 0o777;
+                        if mode != 0o600 {
+                            wrong.insert(mode);
+                        }
+                    }
+                }
+                (seen, wrong)
+            })
+        };
+        for _ in 0..300 {
+            let bound = control.bind()?;
+            control.close(bound);
+        }
+        done.store(true, Ordering::Release);
+        let (seen, wrong) = watcher.join().map_err(|_| "watcher panicked")?;
+        assert!(seen > 0, "the watcher never saw the socket");
+        assert!(
+            wrong.is_empty(),
+            "the socket was visible with modes {wrong:?} (decimal)"
+        );
+        assert!(!root.path().join("control").join(PENDING_NAME).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn a_leftover_pending_socket_is_replaced() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let control = ControlPath::in_directory(root.path().join("control"));
+        control.prepare_directory()?;
+        let leftover = root.path().join("control").join(PENDING_NAME);
+        drop(UnixListener::bind(&leftover)?);
+        let bound = control.bind()?;
+        let _client = control.connect()?;
+        assert!(!leftover.exists());
+        control.close(bound);
         Ok(())
     }
 
