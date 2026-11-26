@@ -8,11 +8,12 @@ use crate::ui::detail::image_view;
 use crate::ui::detail::search::Query;
 use crate::ui::detail::search::highlight;
 use crate::ui::dialogs::scope_help;
-use crate::ui::dialogs::{body_saving::BodySaving, copy_curl::CurlCopy};
+use crate::ui::dialogs::{body_saving::BodySaving, copy_curl};
 use crate::ui::requests::outcome_view;
 use crate::ui::style::theme::MatchColors;
 use crate::ui::style::theme::Palette;
-use crate::ui::style::tokens::Layout;
+use crate::ui::style::tokens::{Layout, Space, StrokeWidth};
+use crate::ui::workbench::{chrome, controls};
 use eframe::egui;
 use http_inspector_content::detect;
 use http_inspector_content::format::{BodyFormat, ViewMode, form};
@@ -34,7 +35,6 @@ pub(crate) struct DetailView<'a> {
     pub(crate) search: Option<&'a Query>,
     pub(crate) tab: DetailTab,
     pub(crate) body_mode: ViewMode,
-    pub(crate) curl: &'a CurlCopy,
     pub(crate) body_saving: &'a BodySaving,
 }
 
@@ -46,21 +46,23 @@ impl DetailView<'_> {
         shortcuts_allowed: bool,
         actions: &mut Vec<AppAction>,
     ) {
+        let mut tab = self.tab;
         let Some(record) = self.record else {
+            chrome::pane_header(ui, "details-header", |ui| detail_tabs::show(ui, &mut tab));
             ui.centered_and_justified(|ui| {
                 ui.add(egui::Label::new(egui::RichText::new("No request selected").weak()).wrap());
             });
+            if tab != self.tab {
+                actions.push(AppAction::DetailTab(tab));
+            }
             return;
         };
-        let mut tab = self.tab;
         if shortcuts_allowed {
             detail_tabs::apply_shortcuts(ui, &mut tab);
         }
         let request = record.request();
         let search = self.search;
-        render_title(ui, record, search);
-        detail_actions(ui, record, self.curl, actions);
-        detail_tabs::show(ui, &mut tab);
+        header(ui, record, search, &mut tab, actions);
         if tab != self.tab {
             actions.push(AppAction::DetailTab(tab));
         }
@@ -70,38 +72,43 @@ impl DetailView<'_> {
             .id_salt(("details-scroll", tab))
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                render_timing(ui, record);
-                ui.separator();
-                let mut body = BodyPanel {
-                    record: record.id(),
-                    mode: self.body_mode,
-                    cache: &mut widgets.body,
-                    copied: None,
-                    search,
-                };
-                match tab {
-                    DetailTab::Headers => {
-                        render_query(ui, request.target());
-                        ui.strong("Request headers");
-                        render_headers(
-                            ui,
-                            "request-headers",
-                            request.headers(),
-                            body.headers_search(),
-                        );
+                egui::Frame::new()
+                    .inner_margin(Layout::PANE_ROW_MARGIN)
+                    .show(ui, |ui| {
+                        render_timing(ui, record);
                         ui.separator();
-                        render_outcome(ui, record, &mut body, None);
-                    }
-                    DetailTab::Body => render_body_tab(
-                        ui,
-                        record,
-                        &mut body,
-                        &mut body_mode,
-                        &mut widgets.image,
-                        |ui| actions.extend(self.body_saving.menus(ui, record)),
-                    ),
-                }
-                body.copied
+                        let mut body = BodyPanel {
+                            record: record.id(),
+                            mode: self.body_mode,
+                            cache: &mut widgets.body,
+                            copied: None,
+                            search,
+                        };
+                        match tab {
+                            DetailTab::Headers => {
+                                render_query(ui, request.target());
+                                ui.strong("Request headers");
+                                render_headers(
+                                    ui,
+                                    "request-headers",
+                                    request.headers(),
+                                    body.headers_search(),
+                                );
+                                ui.separator();
+                                render_outcome(ui, record, &mut body, None);
+                            }
+                            DetailTab::Body => render_body_tab(
+                                ui,
+                                record,
+                                &mut body,
+                                &mut body_mode,
+                                &mut widgets.image,
+                                |ui| actions.extend(self.body_saving.menus(ui, record)),
+                            ),
+                        }
+                        body.copied
+                    })
+                    .inner
             })
             .inner;
         actions.extend(copied.map(AppAction::CopyText));
@@ -111,25 +118,92 @@ impl DetailView<'_> {
     }
 }
 
-fn detail_actions(
+/// The pane header with the tabs and, when they fit, the record actions,
+/// then the method, URL, and outcome of `record` under it.
+fn header(
     ui: &mut egui::Ui,
     record: &Exchange,
-    curl: &CurlCopy,
+    search: Option<&Query>,
+    tab: &mut DetailTab,
     actions: &mut Vec<AppAction>,
 ) {
-    ui.horizontal_wrapped(|ui| {
-        let (status, tone) = outcome_view::outcome_text(record.outcome());
-        ui.colored_label(Palette::of(ui).status(tone), status);
+    let actions_in_header = chrome::pane_header(ui, "details-header", |ui| {
+        detail_tabs::show(ui, tab);
+        let fits = ui.available_width() >= header_actions_width(ui) + Space::LG;
+        if fits {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                header_actions(ui, record, actions);
+            });
+        }
+        fits
+    });
+    let title = egui::Frame::new()
+        .inner_margin(Layout::PANE_ROW_MARGIN)
+        .show(ui, |ui| {
+            render_title(ui, record, search);
+            summary_row(ui, record, actions_in_header, actions);
+        });
+    ui.painter().hline(
+        ui.max_rect().x_range(),
+        title.response.rect.bottom(),
+        egui::Stroke::new(StrokeWidth::STRUCTURAL, Palette::of(ui).borders.subtle),
+    );
+}
+
+/// Edit and Resend and Copy as cURL, laid out right to left in the pane
+/// header, or left to right under the title when the header is too narrow.
+fn header_actions(ui: &mut egui::Ui, record: &Exchange, actions: &mut Vec<AppAction>) {
+    controls::ghost_style(ui);
+    let resend = |ui: &mut egui::Ui, actions: &mut Vec<AppAction>| {
+        let button = controls::ghost(RESEND_LABEL, Layout::PANE_BUTTON_HEIGHT);
         if ui
             .add_enabled(
                 record.source() != http_inspector_exchange::CaptureSource::Connect,
-                egui::Button::new("Edit and Resend"),
+                button,
             )
             .clicked()
         {
             actions.push(AppAction::OpenReplay(record.id()));
         }
-        curl.controls(ui, record, actions);
+    };
+    let copy = |ui: &mut egui::Ui, actions: &mut Vec<AppAction>| {
+        if copy_curl::copy_button(ui, record).clicked() {
+            actions.push(AppAction::CopyCurl(record.id()));
+        }
+    };
+    if ui.layout().prefer_right_to_left() {
+        copy(ui, actions);
+        resend(ui, actions);
+    } else {
+        resend(ui, actions);
+        copy(ui, actions);
+    }
+}
+
+const RESEND_LABEL: &str = "Edit and Resend";
+
+/// Width the header actions need, so the header can tell whether they fit.
+fn header_actions_width(ui: &egui::Ui) -> f32 {
+    [RESEND_LABEL, copy_curl::COPY_LABEL]
+        .iter()
+        .map(|label| controls::button_width(ui, label) + ui.spacing().item_spacing.x)
+        .sum()
+}
+
+/// The outcome and, for a resent request, a link to the original. Holds the
+/// header actions too when the header has no room for them.
+fn summary_row(
+    ui: &mut egui::Ui,
+    record: &Exchange,
+    actions_in_header: bool,
+    actions: &mut Vec<AppAction>,
+) {
+    ui.horizontal_wrapped(|ui| {
+        let (status, tone) = outcome_view::outcome_text(record.outcome());
+        ui.colored_label(Palette::of(ui).status(tone), status);
+        if !actions_in_header {
+            header_actions(ui, record, actions);
+        }
         if let Some(original) = record.replay_of()
             && ui.link(replay_link(original)).clicked()
         {

@@ -44,7 +44,7 @@ impl Radius {
     /// Shortcut chips and scrollbar thumbs.
     #[expect(
         dead_code,
-        reason = "Shortcut chips arrive with the toolbar and pane header step of the redesign"
+        reason = "egui takes the scrollbar thumb radius from the widget radius; shortcut chips are not shown yet"
     )]
     pub(crate) const MICRO: u8 = 2;
     pub(crate) const GRAPH_CANVAS: u8 = 4;
@@ -60,10 +60,6 @@ impl TypeScale {
     /// Panel and toolbar titles.
     pub(crate) const PANEL_TITLE: f32 = 12.0;
     /// Letter spacing of panel titles: 0.01 em of [`Self::PANEL_TITLE`].
-    #[expect(
-        dead_code,
-        reason = "Panel headers arrive with the toolbar and pane header step of the redesign"
-    )]
     pub(crate) const PANEL_TITLE_TRACKING: f32 = 0.12;
     /// Controls, buttons, and tabs.
     pub(crate) const CONTROL: f32 = 12.0;
@@ -142,14 +138,43 @@ impl Layout {
     pub(crate) const TICK_HEIGHT: f32 = 12.0;
     /// Width of the bar at the left edge of a selected row.
     pub(crate) const SELECTION_BAR_WIDTH: f32 = 2.0;
+    /// Height of the toolbar row at the top of the window.
+    pub(crate) const TOOLBAR_HEIGHT: f32 = 42.0;
+    /// Height of the header at the top of each split pane.
+    pub(crate) const PANE_HEADER_HEIGHT: f32 = 28.0;
+    /// Height of the status bar at the bottom of the window.
+    pub(crate) const STATUS_BAR_HEIGHT: f32 = 24.0;
+    /// Width of the pointer target around a 1px splitter line.
+    pub(crate) const SPLITTER_HIT: f32 = 5.0;
+    /// Height of buttons on the toolbar.
+    pub(crate) const TOOLBAR_BUTTON_HEIGHT: f32 = 28.0;
+    /// Height of buttons inside a pane, including pane headers.
+    pub(crate) const PANE_BUTTON_HEIGHT: f32 = 24.0;
+    /// Height of text inputs.
+    pub(crate) const INPUT_HEIGHT: f32 = 28.0;
+    /// Small line icon, such as the magnifier in the filter input.
+    pub(crate) const ICON_SMALL: f32 = 14.0;
+    /// Height of the vertical line between toolbar groups.
+    pub(crate) const TOOLBAR_SEPARATOR_HEIGHT: f32 = 20.0;
+    /// Default share of the window width given to the primary pane (the
+    /// request list or the URL tree).
+    pub(crate) const PRIMARY_PANE_FRACTION: f32 = 0.62;
+    /// Narrowest window that fits the toolbar on one row. Narrower windows
+    /// move the view switch and the filter to a second toolbar row.
+    pub(crate) const TOOLBAR_ONE_ROW_MIN_WIDTH: f32 = 960.0;
+    /// Padding of a one-line row inside a pane, such as the Map filter row.
+    pub(crate) const PANE_ROW_MARGIN: egui::Margin = egui::Margin::symmetric(12, 4);
+    /// Padding of a one-line notice under the toolbar.
+    pub(crate) const NOTICE_MARGIN: egui::Margin = egui::Margin::symmetric(12, 2);
+    /// Width of the request filter input on the toolbar.
+    pub(crate) const TOOLBAR_FILTER_WIDTH: SizeLimit = SizeLimit::new(0.0, 120.0, 280.0);
     pub(crate) const WINDOW: [f32; 2] = [1_280.0, 820.0];
     pub(crate) const MIN_WINDOW: [f32; 2] = [640.0, 420.0];
     pub(crate) const MIN_MAIN_HEIGHT: f32 = 280.0;
     pub(crate) const MIN_TABLE_WIDTH: f32 = 320.0;
     pub(crate) const MIN_DETAIL_WIDTH: f32 = 280.0;
-    pub(crate) const DEFAULT_DETAIL_SHARE: f32 = 0.4;
-    pub(crate) const SPLIT_HANDLE_HALF_WIDTH: f32 = 3.0;
-    pub(crate) const SPLIT_GUTTER_HALF_WIDTH: f32 = 1.0;
+    /// Share of the split given to the inspector pane by default.
+    pub(crate) const DEFAULT_DETAIL_SHARE: f32 = 1.0 - Self::PRIMARY_PANE_FRACTION;
     pub(crate) const TREE_INDENT: f32 = Space::MD;
     pub(crate) const TREE_LEAF_PREFIX: f32 = 20.0;
     pub(crate) const MAP_TREE_ROW_HEIGHT: f32 = 22.0;
@@ -215,7 +240,6 @@ impl Layout {
     pub(crate) const BODY_SETTINGS_WIDTH: SizeLimit = SizeLimit::new(48.0, 220.0, 380.0);
     pub(crate) const MAP_SEARCH_WIDTH: SizeLimit = SizeLimit::new(0.0, 90.0, 150.0);
     pub(crate) const TREE_SEARCH_WIDTH: SizeLimit = SizeLimit::new(0.0, 100.0, 180.0);
-    pub(crate) const REQUEST_SEARCH_WIDTH: SizeLimit = SizeLimit::new(0.0, 120.0, 260.0);
     pub(crate) const DETAIL_KEY_WIDTH: SizeLimit = SizeLimit::new(0.0, 72.0, 220.0);
     pub(crate) const DETAIL_ROW_MIN_WIDTH: f32 = 120.0;
     pub(crate) const REPLAY_DIALOG: egui::Vec2 = egui::vec2(650.0, 600.0);
@@ -234,6 +258,8 @@ pub(crate) struct StrokeWidth;
 impl StrokeWidth {
     pub(crate) const STRUCTURAL: f32 = 1.0;
     pub(crate) const FOCUS_RING: f32 = 1.0;
+    /// Line icons.
+    pub(crate) const ICON: f32 = 1.5;
     pub(crate) const MAP_STATUS: f32 = 0.5;
     pub(crate) const GRAPH_LINK: f32 = 1.6;
     pub(crate) const GRAPH_REDIRECT: f32 = 2.6;
@@ -317,15 +343,11 @@ pub(crate) struct TextColors {
     pub(crate) secondary: Color32,
     /// Below 4.5:1 on some surfaces: inactive icons, key-value colons, line
     /// number gutters, and hints of inputs that have their own label.
-    #[expect(
-        dead_code,
-        reason = "Line number gutters and key-value colons are restyled with the details panel"
-    )]
     pub(crate) muted: Color32,
     /// Text of disabled controls.
     #[expect(
         dead_code,
-        reason = "Disabled control text is restyled with the toolbar controls"
+        reason = "egui dims disabled controls itself; the token is kept for custom widgets"
     )]
     pub(crate) disabled: Color32,
 }
@@ -352,13 +374,6 @@ pub(crate) struct StatusColors {
 
 /// Colors of the one primary action button of a screen.
 #[derive(Clone, Copy, Debug)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "The primary action button is styled with the toolbar step of the redesign"
-    )
-)]
 pub(crate) struct PrimaryAction {
     pub(crate) fill: Color32,
     pub(crate) text: Color32,
@@ -375,13 +390,6 @@ pub(crate) struct ThemeTokens {
     pub(crate) text: TextColors,
     pub(crate) accent: Accents,
     pub(crate) status: StatusColors,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "The primary action button is styled with the toolbar step of the redesign"
-        )
-    )]
     pub(crate) primary_action: PrimaryAction,
     /// Colors of [`Category`], in declaration order.
     categories: [Color32; 5],

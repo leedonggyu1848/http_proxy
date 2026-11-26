@@ -35,11 +35,14 @@ fn disable_quic_example(address: std::net::SocketAddr) -> String {
     )
 }
 
-/// Shows the `?` button whose popup explains the capture scope.
-pub(crate) fn button(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>) {
-    ui.menu_button("?", |ui| contents(ui, address))
-        .response
-        .on_hover_text("What is captured?");
+/// Shows the Capture scope submenu that explains which traffic is recorded.
+pub(crate) fn submenu(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>) {
+    ui.menu_button(
+        crate::ui::workbench::text::ShellText::CaptureScope.text(),
+        |ui| contents(ui, address),
+    )
+    .response
+    .on_hover_text("What is captured?");
 }
 
 fn contents(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>) {

@@ -215,13 +215,13 @@ UI 글자는 sans, 데이터는 mono로 나눈다. egui의 `FontFamily::Proporti
 
 ## 레이아웃 치수
 
-원문이 범위로 준 값은 원문 템플릿 값이나 범위 안의 한 값으로 고정했다. 모든 값은 `tokens.rs`의 `Layout`에 둔다.
+원문이 범위로 준 값은 원문 템플릿 값이나 범위 안의 한 값으로 고정했다. 모든 값은 `tokens.rs`의 `Layout`에 둔다. 주 패널 기본 폭은 처음 0.6으로 정했다가, 사용자가 승인한 워크벤치 컨셉 화면의 62%에 맞춰 범위 안의 0.62로 바꿨다.
 
 | 요소 | 원문 | 값 | Rust 이름 |
 | --- | --- | --- | --- |
 | 툴바 높이 | 40~44 | 42 | `Layout::TOOLBAR_HEIGHT` |
 | 보조 스트립 높이 | 110~140 | 120 | `Layout::AUX_STRIP_HEIGHT` |
-| 주 패널 기본 폭 | 60~65% | 0.6 | `Layout::PRIMARY_PANE_FRACTION` |
+| 주 패널 기본 폭 | 60~65% | 0.62 | `Layout::PRIMARY_PANE_FRACTION` |
 | 상태 바 높이 | 24~26 | 24 | `Layout::STATUS_BAR_HEIGHT` |
 | 패널 헤더 높이 | 28~30 | 28 | `Layout::PANE_HEADER_HEIGHT` |
 | 스플리터 히트 영역 | 5 | 5 | `Layout::SPLITTER_HIT` |
@@ -318,7 +318,8 @@ UI 글자는 sans, 데이터는 mono로 나눈다. egui의 `FontFamily::Proporti
 | `Visuals::selection.bg_fill` | `surfaces.selected` |
 | `Visuals::selection.stroke` | `text.primary`. egui는 이 색으로 선택된 글자, 선택된 버튼 글자, 선택된 표 행 글자를 칠하므로 `accent.primary`를 넣으면 D8을 어긴다. 선택의 `accent.primary`는 표가 그리는 2px 선택 바로 보인다. |
 | `Visuals::hyperlink_color` | `text.primary`. 링크는 밑줄로 구분한다. |
-| `Spacing::scroll` | `ScrollStyle::solid()` 기반, `bar_width` 6. egui는 썸 색을 `widgets.inactive.bg_fill`(`borders.control`), 썸 모서리를 위젯 모서리(`Radius::CONTROL`)에서 가져오고 트랙을 `extreme_bg_color`(`surfaces.input`)로 칠한다. 썸 2pt와 투명 트랙은 egui 설정으로 바꿀 수 없다. |
+| `Spacing::scroll` | `floating: true`, `bar_width`·`floating_width`·`floating_allocated_width` 6, 배경 불투명도 0, 손잡이 불투명도 1. 내용 옆 6pt를 비워 썸이 글자를 가리지 않고, 트랙은 투명하다. egui는 썸 색을 `widgets.*.bg_fill`에서 가져오므로 `inactive`·`hovered`·`active`의 `bg_fill`을 모두 `borders.control`로 둔다. 썸 모서리는 위젯 모서리(`Radius::CONTROL`)를 따르므로 2pt로 바꿀 수 없다. |
+| 포커스된 입력 | egui는 포커스된 `TextEdit` 테두리를 `selection.stroke`(`text.primary`)로 그린다. 그래서 툴바 필터, 포트, 저장 경로 입력은 `ui::workbench::field`가 테두리 없는 `TextEdit` 둘레에 직접 테두리를 그린다. 평소 `borders.control`, 포커스 때 `accent.secondary`와 바깥 1px 선, 잘못된 값일 때 `status.error`와 오른쪽 끝 11pt 글자다. |
 | `Style::animation_time` | 0.08 이하 |
 
 ## 출처

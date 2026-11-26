@@ -11,10 +11,11 @@ use http_inspector_interop::curl::{
 
 use crate::ui::AppAction;
 use crate::ui::style::indicator;
+use crate::ui::style::theme::Palette;
 use crate::ui::style::tokens::Tone;
 
 /// Label shared by the request-list menu and the details panel.
-pub(super) const COPY_LABEL: &str = "Copy as cURL";
+pub(crate) const COPY_LABEL: &str = "Copy as cURL";
 /// How long a plain success notice stays before it hides itself.
 const SUCCESS_NOTICE: Duration = Duration::from_secs(4);
 
@@ -45,33 +46,28 @@ pub(crate) struct CurlCopy {
 }
 
 impl CurlCopy {
-    /// Shows the copy button for `record` and the redacted-header option.
-    pub(crate) fn controls(
-        &self,
-        ui: &mut egui::Ui,
-        record: &Exchange,
-        actions: &mut Vec<AppAction>,
-    ) {
-        if copy_button(ui, record).clicked() {
-            actions.push(AppAction::CopyCurl(record.id()));
-        }
+    /// The redaction choice for copied commands, in the Settings menu: it
+    /// applies to every copy, not to the selected request.
+    pub(crate) fn settings(&self, ui: &mut egui::Ui) -> Option<AppAction> {
+        ui.label(egui::RichText::new(COPY_LABEL).color(Palette::of(ui).secondary));
         let mut placeholders = self.redacted == RedactedHeaders::Placeholder;
-        if ui
+        let changed = ui
             .checkbox(&mut placeholders, "Redacted placeholders")
             .on_hover_text(format!(
-                "Authorization and Cookie values are never stored. When on, the copied command \
-                 carries them as {CURL_REDACTED_PLACEHOLDER} for you to fill in; when off, it \
-                 leaves them out."
+                "Copied commands carry {CURL_REDACTED_PLACEHOLDER} for Authorization and Cookie values, which are never stored."
             ))
-            .changed()
-        {
-            let redacted = if placeholders {
-                RedactedHeaders::Placeholder
-            } else {
-                RedactedHeaders::Omit
-            };
-            actions.push(AppAction::SetCurlRedactions(redacted));
-        }
+            .changed();
+        let redacted = if placeholders {
+            RedactedHeaders::Placeholder
+        } else {
+            RedactedHeaders::Omit
+        };
+        changed.then_some(AppAction::SetCurlRedactions(redacted))
+    }
+
+    /// Reports whether [`Self::notice`] has anything to show.
+    pub(crate) const fn has_notice(&self) -> bool {
+        self.notice.is_some()
     }
 
     /// Copies `record` as a `curl` command, or explains why it was not copied.
@@ -139,7 +135,11 @@ impl CurlCopy {
 /// no request to copy. Other problems are reported when it is pressed.
 pub(crate) fn copy_button(ui: &mut egui::Ui, record: &Exchange) -> egui::Response {
     let unavailable = curl_unavailable_reason(record);
-    let response = ui.add_enabled(unavailable.is_none(), egui::Button::new(COPY_LABEL));
+    let button = crate::ui::workbench::controls::ghost(
+        COPY_LABEL,
+        crate::ui::style::tokens::Layout::PANE_BUTTON_HEIGHT,
+    );
+    let response = ui.add_enabled(unavailable.is_none(), button);
     match unavailable {
         Some(reason) => response.on_disabled_hover_text(reason.to_string()),
         None => response.on_hover_text("Copy this request as a curl command for bash or zsh."),

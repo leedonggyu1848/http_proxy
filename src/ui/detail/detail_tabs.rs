@@ -3,6 +3,8 @@
 
 use eframe::egui::{self, Key, Modifiers};
 
+use crate::ui::workbench::controls;
+
 /// Section of the selected request shown in the detail panel.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum DetailTab {
@@ -73,46 +75,29 @@ pub(super) fn apply_shortcuts(ui: &egui::Ui, tab: &mut DetailTab) {
     });
 }
 
-/// Shows the tabs as an accessibility tab list whose items report selection
-/// instead of a toggle-button state, and returns the area the bar occupies.
-///
-/// The tab list scope sits inside `horizontal` so the bar stays one row tall;
-/// a scope with its own horizontal layout would claim the rest of the panel.
+/// Shows the tabs as text tabs in an accessibility tab list whose items
+/// report selection instead of a toggle-button state, and returns the area
+/// they occupy. Call it inside a pane header, whose height the tabs fill.
 pub(super) fn show(ui: &mut egui::Ui, current: &mut DetailTab) -> egui::Rect {
-    ui.horizontal(|ui| {
-        ui.scope_builder(
-            egui::UiBuilder::new()
-                .accessibility_role(egui::accesskit::Role::TabList)
-                .accessibility_label("Request details"),
-            |ui| {
-                for tab in DetailTab::ALL {
-                    show_tab(ui, current, tab);
-                }
-            },
-        );
+    controls::tab_list(ui, "Request details", |ui| {
+        let mut area = egui::Rect::NOTHING;
+        for tab in DetailTab::ALL {
+            let selected = *current == tab;
+            let response = controls::text_tab(ui, selected, tab.title());
+            if response.clicked() {
+                *current = tab;
+            }
+            area = area.union(response.rect);
+        }
+        area
     })
-    .response
-    .rect
-}
-
-fn show_tab(ui: &mut egui::Ui, current: &mut DetailTab, tab: DetailTab) {
-    let selected = *current == tab;
-    let response = ui.selectable_label(selected, tab.title());
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::Role::Tab, ui.is_enabled(), selected, tab.title())
-    });
-    ui.ctx().accesskit_node_builder(response.id, |node| {
-        node.clear_toggled();
-        node.set_selected(selected);
-    });
-    if response.clicked() {
-        *current = tab;
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::style::tokens::Layout;
+    use crate::ui::workbench::chrome;
 
     #[test]
     fn steps_wrap_around_both_ends() {
@@ -179,15 +164,17 @@ mod tests {
         };
         let mut remaining = Vec::new();
         let mut bar = egui::Rect::NOTHING;
-        let mut row_height = 0.0;
         let mut output = ctx.run_ui(input, |ui| {
             apply_shortcuts(ui, &mut tab);
             remaining = ui.input(|input| input.events.clone());
-            row_height = ui.spacing().interact_size.y;
-            bar = show(ui, &mut tab);
+            bar = chrome::pane_header(ui, "tabs", |ui| show(ui, &mut tab));
         });
-        // The bar must leave the rest of the panel to the details below it.
-        assert!(bar.height() <= row_height + 1.0, "tab bar is {bar:?}");
+        // The tabs fill the pane header and leave the rest of the panel to
+        // the details below it.
+        assert!(
+            (bar.height() - Layout::PANE_HEADER_HEIGHT).abs() < 1.0,
+            "tab bar is {bar:?}"
+        );
         assert_eq!(tab, DetailTab::Body);
         output.textures_delta.clear();
         assert!(matches!(
