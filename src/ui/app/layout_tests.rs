@@ -18,6 +18,8 @@ use tokio::time::timeout;
 
 fn test_app(context: egui::Context) -> InspectorApp {
     fonts::configure_fonts(&context);
+    let mut layout = LayoutState::new(&context);
+    layout.language = crate::ui::i18n::LanguageSettings::fixed(crate::ui::i18n::Language::English);
     InspectorApp {
         session: SessionState {
             capture: super::capture::CaptureSession::fixture(),
@@ -29,7 +31,7 @@ fn test_app(context: egui::Context) -> InspectorApp {
         detail: DetailState::default(),
         map: MapState::new(AnalysisPipeline::disabled()),
         dialogs: Dialogs::new(),
-        layout: LayoutState::new(&context),
+        layout,
         context,
     }
 }
@@ -104,7 +106,12 @@ fn invalid_port_leaves_proxy_stopped_with_a_toolbar_error() {
             .capture
             .error
             .as_ref()
-            .map(crate::ui::requests::toolbar::notice_text)
+            .map(|notice| {
+                crate::ui::requests::toolbar::notice_text(
+                    notice,
+                    crate::ui::i18n::Language::English,
+                )
+            })
             .as_deref(),
         Some("Enter a port number, or 0 to pick a free port.")
     );
@@ -517,7 +524,13 @@ async fn dialogs_fit_minimum_window_without_text_overlap() -> Result<(), Box<dyn
             ..Default::default()
         };
         let mut output = ctx.run_ui(input, |ui| {
-            let _ = har.show(ui.ctx(), counts, false, true);
+            let _ = har.show(
+                ui.ctx(),
+                counts,
+                false,
+                true,
+                crate::ui::i18n::Language::English,
+            );
         });
         output.textures_delta.clear();
         drawn = collect_text_shapes(&output.shapes);
@@ -536,7 +549,7 @@ async fn dialogs_fit_minimum_window_without_text_overlap() -> Result<(), Box<dyn
             ..Default::default()
         };
         let mut output = ctx.run_ui(input, |ui| {
-            let _ = replay.show(ui.ctx(), false, None);
+            let _ = replay.show(ui.ctx(), false, None, crate::ui::i18n::Language::English);
         });
         output.textures_delta.clear();
         drawn = collect_text_shapes(&output.shapes);
@@ -1386,6 +1399,86 @@ async fn measure_map_ui_frame_time_at_scale() -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
+#[tokio::test]
+async fn korean_layout_has_no_text_overlap_in_default_and_narrow_windows()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::ui::i18n::{Language, LanguageSettings};
+
+    let mut app = test_app(egui::Context::default());
+    app.layout.language = LanguageSettings::fixed(Language::Korean);
+    for record in capture_sample_exchanges().await? {
+        app.map.analysis.record_added(&record);
+        let _evicted = super::capture::add_record(
+            &mut app.requests.records,
+            &mut app.requests.selected,
+            record,
+        );
+    }
+
+    for (label, size) in [
+        ("korean-default", Layout::WINDOW),
+        ("korean-narrow", Layout::MIN_WINDOW),
+    ] {
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size[0], size[1]));
+        app.layout.main_view = MainView::Requests;
+        for tab in [DetailTab::Headers, DetailTab::Body] {
+            app.detail.tab = tab;
+            let drawn = render_settled(&mut app, size);
+            assert_no_text_overlap(&drawn, viewport, &format!("{label}-requests-{tab:?}"));
+            assert!(
+                drawn.iter().any(|item| item.text.contains("메서드")),
+                "{label}: expected Korean column header in Requests view"
+            );
+        }
+
+        app.layout.main_view = MainView::Map;
+        app.map.panel.sub_view = super::MapSubView::Tree;
+        let drawn = render_settled(&mut app, size);
+        assert_no_text_overlap(&drawn, viewport, &format!("{label}-map-tree"));
+        assert!(
+            drawn.iter().any(|item| item.text.starts_with("맵")),
+            "{label}: expected Korean Map tab label"
+        );
+        assert!(
+            drawn.iter().any(|item| item.text.contains("트리")),
+            "{label}: expected Korean Tree view label"
+        );
+
+        app.map.panel.sub_view = super::MapSubView::Graph;
+        let drawn = render_settled(&mut app, size);
+        assert_no_text_overlap(&drawn, viewport, &format!("{label}-map-graph"));
+    }
+    Ok(())
+}
+
+#[test]
+fn switching_language_updates_ui_immediately_without_restart() {
+    use crate::ui::i18n::{Language, LanguagePreference, LanguageSettings};
+
+    let mut app = test_app(egui::Context::default());
+    app.layout.language = LanguageSettings::fixed(Language::English);
+
+    let english_drawn = render_settled(&mut app, Layout::WINDOW);
+    assert!(english_drawn.iter().any(|item| item.text == "Requests"));
+    assert!(english_drawn.iter().any(|item| item.text == "Settings"));
+
+    let ctx = app.context.clone();
+    app.layout
+        .language
+        .set_preference(&ctx, LanguagePreference::Korean);
+    let (korean_drawn, _) = render_frame(&mut app, Layout::WINDOW, Vec::new());
+    assert!(korean_drawn.iter().any(|item| item.text == "요청"));
+    assert!(korean_drawn.iter().any(|item| item.text == "설정"));
+    assert!(!korean_drawn.iter().any(|item| item.text == "Requests"));
+
+    app.layout
+        .language
+        .set_preference(&ctx, LanguagePreference::English);
+    let (restored_drawn, _) = render_frame(&mut app, Layout::WINDOW, Vec::new());
+    assert!(restored_drawn.iter().any(|item| item.text == "Requests"));
+    assert!(!restored_drawn.iter().any(|item| item.text == "요청"));
+}
+
 /// Vertical center of the first drawn text equal to `label`.
 fn text_center_y(drawn: &[DrawnText], label: &str) -> Result<f32, String> {
     drawn
@@ -1447,7 +1540,7 @@ fn narrow_toolbar_moves_the_view_switch_and_filter_to_a_second_row() {
     let first_row = margin + Layout::TOOLBAR_HEIGHT;
     for label in [
         "Requests",
-        crate::ui::workbench::text::ShellText::Filter.text(),
+        crate::ui::workbench::text::ShellText::Filter.text(crate::ui::i18n::Language::English),
     ] {
         let y = text_center_y(&drawn, label).unwrap_or_default();
         assert!(

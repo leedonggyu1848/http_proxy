@@ -6,6 +6,7 @@ use std::time::Duration;
 use eframe::egui;
 use http_inspector_exchange::Exchange;
 
+use crate::ui::i18n::Language;
 use crate::ui::requests::outcome_view;
 use crate::ui::style::fonts;
 use crate::ui::style::theme::Palette;
@@ -20,18 +21,18 @@ struct Phase {
     running: bool,
 }
 
-pub(super) fn show(ui: &mut egui::Ui, record: &Exchange) {
-    let phases = phases(record);
+pub(super) fn show(ui: &mut egui::Ui, record: &Exchange, lang: Language) {
+    let phases = phases(record, lang);
     let label_width = phases
         .iter()
         .map(|phase| label_galley(ui, phase.label).size().x)
         .fold(0.0, f32::max);
     for phase in &phases {
-        row(ui, phase, label_width);
+        row(ui, phase, label_width, lang);
     }
 }
 
-fn phases(record: &Exchange) -> [Phase; 6] {
+fn phases(record: &Exchange, lang: Language) -> [Phase; 6] {
     let timing = record.timing();
     let millis = |duration: Option<Duration>| duration.map(outcome_view::elapsed_millis);
     let in_flight = record.outcome().is_in_flight();
@@ -42,32 +43,32 @@ fn phases(record: &Exchange) -> [Phase; 6] {
     };
     [
         Phase {
-            label: ShellText::Connect.text(),
+            label: ShellText::Connect.text(lang),
             millis: millis(timing.connect()),
             running: false,
         },
         Phase {
-            label: ShellText::Send.text(),
+            label: ShellText::Send.text(lang),
             millis: millis(timing.send()),
             running: false,
         },
         Phase {
-            label: ShellText::Wait.text(),
+            label: ShellText::Wait.text(lang),
             millis: millis(timing.wait()),
             running: false,
         },
         Phase {
-            label: ShellText::Receive.text(),
+            label: ShellText::Receive.text(lang),
             millis: millis(timing.receive()),
             running: false,
         },
         Phase {
-            label: http_inspector_analysis::outcome::timing_label(record.outcome()),
+            label: outcome_view::timing_label(record.outcome(), lang),
             millis: settled,
             running: in_flight,
         },
         Phase {
-            label: ShellText::Total.text(),
+            label: ShellText::Total.text(lang),
             millis: millis(timing.complete()),
             running: false,
         },
@@ -85,10 +86,10 @@ fn label_galley(ui: &egui::Ui, label: &str) -> std::sync::Arc<egui::Galley> {
 /// One table row: the phase in `text.secondary` sans, then its time right-
 /// aligned in a column as wide as the longest time, over a `borders.subtle`
 /// row line.
-fn row(ui: &mut egui::Ui, phase: &Phase, label_width: f32) {
+fn row(ui: &mut egui::Ui, phase: &Phase, label_width: f32, lang: Language) {
     let palette = Palette::of(ui);
     let value = phase.millis.map_or_else(
-        || ShellText::NotObserved.text().to_owned(),
+        || ShellText::NotObserved.text(lang).to_owned(),
         |millis| {
             if phase.running {
                 text::milliseconds_running(millis)

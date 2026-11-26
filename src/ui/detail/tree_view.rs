@@ -160,8 +160,9 @@ impl TreeView {
         ui: &mut egui::Ui,
         theme: Theme,
         font: &FontId,
+        lang: crate::ui::i18n::Language,
     ) -> Option<String> {
-        self.controls(ui);
+        self.controls(ui, lang);
         self.prepare_labels(ui.ctx(), theme, font);
         let visible = self.visible();
         let mut copied = None;
@@ -173,7 +174,7 @@ impl TreeView {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 for row in range {
                     if let Some(&index) = visible.get(row)
-                        && let Some(text) = self.row(ui, index)
+                        && let Some(text) = self.row(ui, index, lang)
                     {
                         copied = Some(text);
                     }
@@ -183,7 +184,7 @@ impl TreeView {
     }
 
     /// Expand all, Collapse all, and the key filter, in one pane row.
-    fn controls(&mut self, ui: &mut egui::Ui) {
+    fn controls(&mut self, ui: &mut egui::Ui, lang: crate::ui::i18n::Language) {
         egui::Frame::new()
             .inner_margin(Layout::PANE_ROW_MARGIN)
             .show(ui, |ui| {
@@ -192,7 +193,7 @@ impl TreeView {
                     let mut query = self.query.clone();
                     let width = Layout::TREE_SEARCH_WIDTH.fit(ui.available_width());
                     let field = Field::new(width)
-                        .hint(ShellText::FilterKeys.text())
+                        .hint(ShellText::FilterKeys.text(lang))
                         .search_icon();
                     if field::single_line(ui, &mut query, field, |_| {}).changed() {
                         self.search(&query);
@@ -202,7 +203,10 @@ impl TreeView {
                         (ShellText::CollapseAll, false),
                     ] {
                         if ui
-                            .add(controls::ghost(label.text(), Layout::PANE_BUTTON_HEIGHT))
+                            .add(controls::ghost(
+                                label.text(lang),
+                                Layout::PANE_BUTTON_HEIGHT,
+                            ))
                             .clicked()
                         {
                             self.set_all(open);
@@ -212,7 +216,12 @@ impl TreeView {
             });
     }
 
-    fn row(&mut self, ui: &mut egui::Ui, index: usize) -> Option<String> {
+    fn row(
+        &mut self,
+        ui: &mut egui::Ui,
+        index: usize,
+        lang: crate::ui::i18n::Language,
+    ) -> Option<String> {
         let node = self.model.node(index)?;
         let job = Arc::clone(self.labels.as_ref()?.jobs.get(index)?);
         let open = self.is_open(index);
@@ -254,12 +263,12 @@ impl TreeView {
         response.context_menu(|ui| {
             if let Some(path) = &node.path {
                 ui.weak(path.as_str());
-                if ui.button(copy.path).clicked() {
+                if ui.button(tree_copy_label(lang, copy.path)).clicked() {
                     copied = Some(path.clone());
                     ui.close();
                 }
             }
-            if ui.button(copy.value).clicked() {
+            if ui.button(tree_copy_label(lang, copy.value)).clicked() {
                 copied = Some(node.value.clone());
                 ui.close();
             }
@@ -271,6 +280,18 @@ impl TreeView {
     }
 }
 
+fn tree_copy_label(lang: crate::ui::i18n::Language, raw: &'static str) -> &'static str {
+    match lang {
+        crate::ui::i18n::Language::English => raw,
+        crate::ui::i18n::Language::Korean => match raw {
+            "Copy JSONPath" => "JSONPath 복사",
+            "Copy XPath" => "XPath 복사",
+            "Copy path" => "경로 복사",
+            "Copy value" => "값 복사",
+            other => other,
+        },
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

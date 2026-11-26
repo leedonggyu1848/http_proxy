@@ -8,7 +8,7 @@ use http_inspector_content::format::tree;
 
 fn run(cache: &mut BodyViewCache, ctx: &egui::Context, source: &BodySource<'_>, mode: ViewMode) {
     let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-        let _ = cache.show(ui, source, mode);
+        let _ = cache.show(ui, source, mode, Language::English);
     });
     output.textures_delta.clear();
 }
@@ -80,7 +80,7 @@ fn rebuilds_only_when_the_body_or_view_changes() {
     // The theme buttons switch the theme in the middle of a frame.
     let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
         ui.ctx().set_theme(Theme::Light);
-        let _ = cache.show(ui, &source(2, body), ViewMode::Raw);
+        let _ = cache.show(ui, &source(2, body), ViewMode::Raw, Language::English);
     });
     output.textures_delta.clear();
     assert_eq!(total_builds(&cache), 5);
@@ -450,7 +450,7 @@ fn clamps_multiline_continuation_indent_in_narrow_viewport() -> Result<(), Strin
     };
     let mut output = ctx.run_ui(input, |ui| {
         ui.set_max_width(240.0);
-        let _ = cache.show(ui, &xml, ViewMode::Pretty);
+        let _ = cache.show(ui, &xml, ViewMode::Pretty, Language::English);
     });
     output.textures_delta.clear();
 
@@ -493,7 +493,7 @@ fn trailing_newline_does_not_enable_break_anywhere_on_wide_viewport() -> Result<
     };
     let mut output = ctx.run_ui(input, |ui| {
         ui.set_max_width(300.0);
-        let _ = cache.show(ui, &truncated_xml, ViewMode::Pretty);
+        let _ = cache.show(ui, &truncated_xml, ViewMode::Pretty, Language::English);
     });
     output.textures_delta.clear();
 
@@ -741,9 +741,9 @@ fn copies_pretty_request_and_response_with_drag_select_all_and_clicks() -> Resul
         ..source(30, br#"{"resp":  "gamma  delta","ok":true}"#)
     };
     let mut draw_pretty = |ui: &mut egui::Ui| {
-        let _ = cache.show(ui, &req_source, ViewMode::Pretty);
+        let _ = cache.show(ui, &req_source, ViewMode::Pretty, Language::English);
         ui.separator();
-        let _ = cache.show(ui, &resp_source, ViewMode::Pretty);
+        let _ = cache.show(ui, &resp_source, ViewMode::Pretty, Language::English);
     };
 
     time += 0.05;
@@ -834,9 +834,9 @@ fn copies_raw_request_and_response_preserving_original_spacing() -> Result<(), S
         ..source(36, resp_raw)
     };
     let mut draw_raw = |ui: &mut egui::Ui| {
-        let _ = cache.show(ui, &req_source, ViewMode::Raw);
+        let _ = cache.show(ui, &req_source, ViewMode::Raw, Language::English);
         ui.separator();
-        let _ = cache.show(ui, &resp_source, ViewMode::Raw);
+        let _ = cache.show(ui, &resp_source, ViewMode::Raw, Language::English);
     };
 
     time += 0.05;
@@ -886,7 +886,7 @@ fn read_only_body_rejects_text_edits_backspace_paste_and_cut() -> Result<(), Str
 
     time += 0.05;
     let initial = run_frame(&ctx, time, Vec::new(), |ui| {
-        let _ = cache.show(ui, &json, ViewMode::Pretty);
+        let _ = cache.show(ui, &json, ViewMode::Pretty, Language::English);
     });
     let (pos, galley) =
         find_text_shape(&initial.shapes, &|t| t == expected).ok_or("missing JSON galley")?;
@@ -898,7 +898,7 @@ fn read_only_body_rejects_text_edits_backspace_paste_and_cut() -> Result<(), Str
         cursor_screen_pos(pos, &galley, start)?,
         cursor_screen_pos(pos, &galley, start + "Alice".len())?,
         |ui| {
-            let _ = cache.show(ui, &json, ViewMode::Pretty);
+            let _ = cache.show(ui, &json, ViewMode::Pretty, Language::English);
         },
     );
 
@@ -916,7 +916,7 @@ fn read_only_body_rejects_text_edits_backspace_paste_and_cut() -> Result<(), Str
             egui::Event::Cut,
         ],
         |ui| {
-            let _ = cache.show(ui, &json, ViewMode::Pretty);
+            let _ = cache.show(ui, &json, ViewMode::Pretty, Language::English);
         },
     );
 
@@ -932,7 +932,7 @@ fn read_only_body_rejects_text_edits_backspace_paste_and_cut() -> Result<(), Str
             egui::Event::Copy,
         ],
         |ui| {
-            let _ = cache.show(ui, &json, ViewMode::Pretty);
+            let _ = cache.show(ui, &json, ViewMode::Pretty, Language::English);
         },
     );
     assert_eq!(copied_texts(&verify), vec![expected.to_owned()]);
@@ -954,7 +954,7 @@ fn copies_multiline_values_without_visual_leading_space() -> Result<(), String> 
 
     time += 0.05;
     let initial = run_frame(&ctx, time, Vec::new(), |ui| {
-        let _ = cache.show(ui, &xml, ViewMode::Pretty);
+        let _ = cache.show(ui, &xml, ViewMode::Pretty, Language::English);
     });
     let (job, _) = cached_text_galley(&cache)?;
     let expected_text = job.text.clone();
@@ -969,7 +969,7 @@ fn copies_multiline_values_without_visual_leading_space() -> Result<(), String> 
         find_text_shape(&initial.shapes, &|t| t == expected_text).ok_or("missing XML galley")?;
     let needle = "line1\nline2\n  line3";
     let copied = drag_copy_slice(&ctx, &mut time, pos, &galley, needle, |ui| {
-        let _ = cache.show(ui, &xml, ViewMode::Pretty);
+        let _ = cache.show(ui, &xml, ViewMode::Pretty, Language::English);
     })?;
     assert_eq!(
         copied,
@@ -992,7 +992,7 @@ fn resets_selection_on_record_and_mode_switch_without_panic() -> Result<(), Stri
 
     time += 0.05;
     let initial = run_frame(&ctx, time, Vec::new(), |ui| {
-        let _ = cache.show(ui, &long_body, ViewMode::Pretty);
+        let _ = cache.show(ui, &long_body, ViewMode::Pretty, Language::English);
     });
     let (job, _) = cached_text_galley(&cache)?;
     let full_pretty = job.text.clone();
@@ -1005,7 +1005,7 @@ fn resets_selection_on_record_and_mode_switch_without_panic() -> Result<(), Stri
         cursor_screen_pos(pos, &galley, tail_start)?,
         cursor_screen_pos(pos, &galley, full_pretty.len())?,
         |ui| {
-            let _ = cache.show(ui, &long_body, ViewMode::Pretty);
+            let _ = cache.show(ui, &long_body, ViewMode::Pretty, Language::English);
         },
     );
     assert!(ctx.memory(egui::Memory::focused).is_some());
@@ -1013,7 +1013,7 @@ fn resets_selection_on_record_and_mode_switch_without_panic() -> Result<(), Stri
     // Switch Pretty -> Raw: selection and focus reset cleanly.
     time += 0.05;
     let switched_mode = run_frame(&ctx, time, vec![egui::Event::Copy], |ui| {
-        let _ = cache.show(ui, &long_body, ViewMode::Raw);
+        let _ = cache.show(ui, &long_body, ViewMode::Raw, Language::English);
     });
     assert_eq!(copied_texts(&switched_mode), Vec::<String>::new());
     assert!(ctx.memory(egui::Memory::focused).is_none());
@@ -1029,13 +1029,13 @@ fn resets_selection_on_record_and_mode_switch_without_panic() -> Result<(), Stri
         cursor_screen_pos(raw_pos, &raw_galley, full_raw.len() - 15)?,
         cursor_screen_pos(raw_pos, &raw_galley, full_raw.len())?,
         |ui| {
-            let _ = cache.show(ui, &long_body, ViewMode::Raw);
+            let _ = cache.show(ui, &long_body, ViewMode::Raw, Language::English);
         },
     );
 
     time += 0.05;
     let switched_record = run_frame(&ctx, time, vec![egui::Event::Copy], |ui| {
-        let _ = cache.show(ui, &short_body, ViewMode::Raw);
+        let _ = cache.show(ui, &short_body, ViewMode::Raw, Language::English);
     });
     assert_eq!(copied_texts(&switched_record), Vec::<String>::new());
     assert!(ctx.memory(egui::Memory::focused).is_none());
@@ -1053,7 +1053,7 @@ fn numbered_lines_view_copies_code_without_line_numbers() -> Result<(), String> 
     };
 
     let mut draw = |ui: &mut egui::Ui| {
-        let _ = cache.show(ui, &css, ViewMode::Pretty);
+        let _ = cache.show(ui, &css, ViewMode::Pretty, Language::English);
     };
     time += 0.05;
     let initial = run_frame(&ctx, time, Vec::new(), &mut draw);

@@ -13,6 +13,7 @@ use http_inspector_exchange::ByteSize;
 
 use super::state::MainView;
 use super::{AppAction, InspectorApp, MAX_RECORDS};
+use crate::ui::i18n::{Language, domain};
 use crate::ui::map::MapSubView;
 use crate::ui::style::tokens::{Layout, Tone};
 use crate::ui::workbench::chrome;
@@ -29,6 +30,7 @@ impl InspectorApp {
         shown: Option<usize>,
         actions: &mut Vec<AppAction>,
     ) {
+        let lang = self.language();
         chrome::band(
             ui,
             "status-bar",
@@ -37,36 +39,42 @@ impl InspectorApp {
             chrome::Inset::BAR,
             |ui| {
                 chrome::status_text(ui);
-                let mut items = self.counts(shown);
-                items.extend(self.limits());
+                let mut items = self.counts(shown, lang);
+                items.extend(self.limits(lang));
                 let results = self.dialogs.save.has_status()
                     || self.session.body_saving.has_status()
-                    || self.layout.theme.has_error();
+                    || self.layout.theme.has_error()
+                    || self.layout.language.has_error();
                 let available = if results {
                     ui.available_width() * (1.0 - RESULT_SHARE)
                 } else {
                     ui.available_width()
                 };
                 status::show(ui, &items, available);
-                self.dialogs.save.status(ui);
-                if self.session.body_saving.status(ui) {
+                self.dialogs.save.status(ui, lang);
+                if self.session.body_saving.status(ui, lang) {
                     actions.push(AppAction::CancelBulkSave);
                 }
-                self.layout.theme.status(ui);
+                self.layout.theme.status(ui, lang);
+                self.layout.language.status(ui);
             },
         );
     }
 
     /// Requests and failures, hosts and nodes in the Map tree, or domains
     /// and edges in the Map graph.
-    fn counts(&self, shown: Option<usize>) -> Vec<StatusItem> {
+    fn counts(&self, shown: Option<usize>, lang: Language) -> Vec<StatusItem> {
         let records = &self.requests.records;
         let mut items = Vec::new();
         match self.layout.main_view {
             MainView::Requests => {
                 // The request area counted the rows it showed this frame.
                 let shown = shown.unwrap_or(records.len());
-                items.push(StatusItem::count(text::request_count(shown, records.len())));
+                items.push(StatusItem::count(text::request_count(
+                    lang,
+                    shown,
+                    records.len(),
+                )));
                 // Outcomes change in place without a new list revision, so
                 // failures are counted again each frame; the list holds at
                 // most `MAX_RECORDS`.
@@ -77,29 +85,31 @@ impl InspectorApp {
                     })
                     .count();
                 if failed > 0 {
-                    items.push(StatusItem::count(text::failure_count(failed)));
+                    items.push(StatusItem::count(text::failure_count(lang, failed)));
                 }
-                items.extend(self.requests.search.status_items());
+                items.extend(self.requests.search.status_items(lang));
             }
             MainView::Map => {
                 let map = self.map.analysis.url_map();
                 items.push(StatusItem::count(text::request_count(
+                    lang,
                     records.len(),
                     records.len(),
                 )));
                 if self.map.panel.sub_view == MapSubView::Graph {
-                    let (summary, capped) = self.map.panel.graph_summary();
+                    let (summary, capped) = self.map.panel.graph_summary(lang);
                     items.push(if capped {
                         StatusItem::marked(
                             Tone::Warning,
                             summary,
-                            ShellText::DomainLimitHint.text(),
+                            ShellText::DomainLimitHint.text(lang),
                         )
                     } else {
                         StatusItem::count(summary)
                     });
                 } else {
                     items.push(StatusItem::count(text::map_count(
+                        lang,
                         map.origins().len(),
                         map.node_count(),
                     )));
@@ -110,7 +120,7 @@ impl InspectorApp {
     }
 
     /// Records the capture could not keep, and logging limits.
-    fn limits(&self) -> Vec<StatusItem> {
+    fn limits(&self, lang: Language) -> Vec<StatusItem> {
         let mut items = Vec::new();
         let dropped = self
             .requests
@@ -119,24 +129,24 @@ impl InspectorApp {
         if dropped > 0 {
             items.push(StatusItem::marked(
                 Tone::Danger,
-                text::dropped(dropped),
-                text::DROPPED_HINT,
+                text::dropped(lang, dropped),
+                text::dropped_hint(lang),
             ));
         }
         let evicted = self.requests.records.evicted();
         if evicted > 0 {
             items.push(StatusItem::marked(
                 Tone::Warning,
-                text::older_removed(evicted),
-                text::older_removed_hint(MAX_RECORDS),
+                text::older_removed(lang, evicted),
+                text::older_removed_hint(lang, MAX_RECORDS),
             ));
         }
         let map = self.map.analysis.url_map();
         if map.node_limit_reached() {
             items.push(StatusItem::marked(
                 Tone::Warning,
-                ShellText::UrlMapLimit.text(),
-                text::url_map_limit_hint(map.max_nodes()),
+                ShellText::UrlMapLimit.text(lang),
+                text::url_map_limit_hint(lang, map.max_nodes()),
             ));
         }
         let log_error = self
@@ -144,18 +154,19 @@ impl InspectorApp {
             .capture
             .log_init_error
             .as_ref()
-            .map(ToString::to_string)
+            .map(|error| domain::full_log_error(lang, error))
             .or_else(|| {
                 self.session
                     .capture
                     .full_log
                     .as_ref()
                     .and_then(FullLog::error)
+                    .map(|raw| domain::localize_full_log_runtime_error(lang, &raw))
             });
         if let Some(error) = log_error {
             items.push(StatusItem::marked(
                 Tone::Danger,
-                ShellText::FullLogUnavailable.text(),
+                ShellText::FullLogUnavailable.text(lang),
                 error,
             ));
         }
@@ -168,8 +179,11 @@ impl InspectorApp {
         {
             items.push(StatusItem::marked(
                 Tone::Warning,
-                ShellText::LogBodyLimit.text(),
-                text::log_body_limit_hint(&ByteSize::new(log.body_limit()).exact().to_string()),
+                ShellText::LogBodyLimit.text(lang),
+                text::log_body_limit_hint(
+                    lang,
+                    &ByteSize::new(log.body_limit()).exact().to_string(),
+                ),
             ));
         }
         items

@@ -7,6 +7,7 @@ mod tree_pane;
 
 pub(crate) use detail_pane::RecordMatchCache;
 
+use crate::ui::i18n::{Language, domain};
 use crate::ui::style::theme::Palette;
 use crate::ui::style::tokens::{Layout, Space, StrokeWidth};
 use crate::ui::workbench::field::{self, Field};
@@ -221,22 +222,23 @@ impl MapPanel {
         ui: &mut egui::Ui,
         map: &UrlMap,
         save_busy: bool,
+        lang: Language,
     ) -> Option<MapAction> {
         chrome::pane_header(ui, "map-header", |ui| {
-            self.sub_view_tabs(ui);
+            self.sub_view_tabs(ui, lang);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 controls::ghost_style(ui);
                 let clear = ui
                     .add(controls::ghost(
-                        ShellText::Clear.text(),
+                        ShellText::Clear.text(lang),
                         Layout::PANE_BUTTON_HEIGHT,
                     ))
-                    .on_hover_text(ShellText::ClearHint.text())
+                    .on_hover_text(ShellText::ClearHint.text(lang))
                     .clicked()
                     .then_some(MapAction::ClearAll);
-                let action = Self::export_menu(ui, map, save_busy).or(clear);
+                let action = Self::export_menu(ui, map, save_busy, lang).or(clear);
                 if self.sub_view == MapSubView::Graph {
-                    self.graph_actions(ui);
+                    self.graph_actions(ui, lang);
                 }
                 action
             })
@@ -246,14 +248,14 @@ impl MapPanel {
 
     /// The host filter, filter menus, sort, and expansion of the tree, in
     /// one pane row under the header. Wraps when the pane is narrow.
-    pub(super) fn tree_filters(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn tree_filters(&mut self, ui: &mut egui::Ui, lang: Language) {
         egui::Frame::new()
             .inner_margin(Layout::PANE_ROW_MARGIN)
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     controls::ghost_style(ui);
                     ui.spacing_mut().item_spacing = egui::vec2(Space::XS, Space::XS);
-                    self.tree_controls(ui);
+                    self.tree_controls(ui, lang);
                 });
             });
         ui.painter().hline(
@@ -269,9 +271,10 @@ impl MapPanel {
         ui: &mut egui::Ui,
         map: &UrlMap,
         shortcuts_allowed: bool,
+        lang: Language,
     ) {
         self.ensure_projection(map);
-        tree_pane::show(self, ui, map, shortcuts_allowed);
+        tree_pane::show(self, ui, map, shortcuts_allowed, lang);
     }
 
     /// Renders the right detail pane for the selected tree node.
@@ -281,6 +284,7 @@ impl MapPanel {
         map: &UrlMap,
         records: &RecordList<Exchange>,
         schemas: &EndpointSchemas,
+        lang: Language,
     ) -> Option<MapAction> {
         self.ensure_projection(map);
         let selected_node = self
@@ -297,31 +301,31 @@ impl MapPanel {
             records,
             &mut self.detail_match_cache,
             &endpoints,
+            lang,
         )
     }
 
     /// Renders the interactive domain relationship graph.
-    pub(super) fn show_graph_pane(&mut self, ui: &mut egui::Ui, map: &UrlMap) {
+    pub(super) fn show_graph_pane(&mut self, ui: &mut egui::Ui, map: &UrlMap, lang: Language) {
         let selected_host = self
             .selected
             .as_ref()
             .map(|key| key.origin.host().to_owned());
-        if let Some(host) = graph_pane::show(
-            ui,
-            map.graph(),
-            &mut self.layout,
-            self.edge_visibility,
-            &mut self.dragged_node,
-            selected_host.as_deref(),
-        ) {
+        let view = graph_pane::GraphView {
+            graph: map.graph(),
+            visibility: self.edge_visibility,
+            selected_host: selected_host.as_deref(),
+            lang,
+        };
+        if let Some(host) = graph_pane::show(ui, &view, &mut self.layout, &mut self.dragged_node) {
             self.jump_to_host(map, &host);
         }
     }
 
     /// Domains and edges the graph shows, and whether the domain limit hid
     /// some, for the status bar.
-    pub(super) fn graph_summary(&self) -> (String, bool) {
-        graph_pane::summary_text(&self.layout, self.edge_visibility)
+    pub(super) fn graph_summary(&self, lang: Language) -> (String, bool) {
+        graph_pane::summary_text(&self.layout, self.edge_visibility, lang)
     }
 
     /// Jumps from the relationship graph to the first origin matching `host` in Tree view.
@@ -383,62 +387,60 @@ impl MapPanel {
         self.rows_dirty = true;
     }
 
-    fn sub_view_tabs(&mut self, ui: &mut egui::Ui) {
-        controls::tab_list(ui, ShellText::MapView.text(), |ui| {
+    fn sub_view_tabs(&mut self, ui: &mut egui::Ui, lang: Language) {
+        controls::tab_list(ui, ShellText::MapView.text(lang), |ui| {
             for (view, label) in [
                 (MapSubView::Tree, ShellText::Tree),
                 (MapSubView::Graph, ShellText::Graph),
             ] {
-                if controls::text_tab(ui, self.sub_view == view, label.text()).clicked() {
+                if controls::text_tab(ui, self.sub_view == view, label.text(lang)).clicked() {
                     self.sub_view = view;
                 }
             }
         });
     }
 
-    fn tree_controls(&mut self, ui: &mut egui::Ui) {
+    fn tree_controls(&mut self, ui: &mut egui::Ui, lang: Language) {
         let width = Layout::MAP_SEARCH_WIDTH.fit(ui.available_width());
         let field = Field::new(width)
-            .hint(ShellText::FilterHosts.text())
+            .hint(ShellText::FilterHosts.text(lang))
             .search_icon()
             .monospace();
         let _ = field::single_line(ui, &mut self.filter.host_query, field, |_| {});
-        choice_menu(
-            ui,
-            &mut self.filter.status,
-            &StatusFilter::ALL,
-            StatusFilter::label,
-        );
+        choice_menu(ui, &mut self.filter.status, &StatusFilter::ALL, |option| {
+            domain::status_filter(lang, option)
+        });
         choice_menu(
             ui,
             &mut self.filter.content_type,
             &ContentTypeFilter::ALL,
-            ContentTypeFilter::label,
+            |option| domain::content_type_filter(lang, option),
         );
-        choice_menu(
-            ui,
-            &mut self.filter.party,
-            &PartyFilter::ALL,
-            PartyFilter::label,
-        );
+        choice_menu(ui, &mut self.filter.party, &PartyFilter::ALL, |option| {
+            domain::party_filter(lang, option)
+        });
         let fold = controls::ghost_toggle(
             ui,
             self.filter.fold_ids,
-            ShellText::FoldIds.text(),
+            ShellText::FoldIds.text(lang),
             Layout::PANE_BUTTON_HEIGHT,
         )
-        .on_hover_text(ShellText::FoldIdsHint.text());
+        .on_hover_text(ShellText::FoldIdsHint.text(lang));
         if fold.clicked() {
             self.filter.fold_ids = !self.filter.fold_ids;
         }
-        let sort = text::sort_label(self.sort.label());
+        let sort = text::sort_label(lang, domain::tree_sort_field(lang, self.sort));
         let _ = controls::ghost_menu(
             ui,
             text::menu_label(&sort),
             Layout::PANE_BUTTON_HEIGHT,
             |ui| {
                 for option in TreeSortField::ALL {
-                    ui.selectable_value(&mut self.sort, option, option.label());
+                    ui.selectable_value(
+                        &mut self.sort,
+                        option,
+                        domain::tree_sort_field(lang, option),
+                    );
                 }
             },
         );
@@ -451,7 +453,7 @@ impl MapPanel {
                 self.direction.arrow(),
                 Layout::PANE_BUTTON_HEIGHT,
             ))
-            .on_hover_text(direction.text())
+            .on_hover_text(direction.text(lang))
             .clicked()
         {
             self.direction = self.direction.toggled();
@@ -461,7 +463,10 @@ impl MapPanel {
             (ShellText::CollapseAll, false),
         ] {
             if ui
-                .add(controls::ghost(label.text(), Layout::PANE_BUTTON_HEIGHT))
+                .add(controls::ghost(
+                    label.text(lang),
+                    Layout::PANE_BUTTON_HEIGHT,
+                ))
                 .clicked()
             {
                 self.set_all_expanded(expanded);
@@ -471,13 +476,13 @@ impl MapPanel {
 
     /// Edge kinds with their line samples, the domain limit, and Relayout,
     /// laid out right to left in the graph's pane header.
-    fn graph_actions(&mut self, ui: &mut egui::Ui) {
+    fn graph_actions(&mut self, ui: &mut egui::Ui, lang: Language) {
         if ui
             .add(controls::ghost(
-                ShellText::Relayout.text(),
+                ShellText::Relayout.text(lang),
                 Layout::PANE_BUTTON_HEIGHT,
             ))
-            .on_hover_text(ShellText::RelayoutHint.text())
+            .on_hover_text(ShellText::RelayoutHint.text(lang))
             .clicked()
         {
             self.layout = ForceLayout::new(self.layout.max_domains());
@@ -485,29 +490,34 @@ impl MapPanel {
         let mut limit = self.layout.max_domains();
         let _ = controls::ghost_menu(
             ui,
-            text::menu_label(&text::top_domains(limit)),
+            text::menu_label(&text::top_domains(lang, limit)),
             Layout::PANE_BUTTON_HEIGHT,
             |ui| {
                 for count in [15_usize, 40, 80, 150] {
-                    ui.selectable_value(&mut limit, count, text::top_domains(count));
+                    ui.selectable_value(&mut limit, count, text::top_domains(lang, count));
                 }
             },
         );
         self.layout.set_max_domains(limit);
         let _ = controls::ghost_menu(
             ui,
-            text::menu_label(ShellText::Legend.text()),
+            text::menu_label(ShellText::Legend.text(lang)),
             Layout::PANE_BUTTON_HEIGHT,
-            |ui| graph_pane::legend_menu(ui, &mut self.edge_visibility),
+            |ui| graph_pane::legend_menu(ui, &mut self.edge_visibility, lang),
         );
     }
 
-    fn export_menu(ui: &mut egui::Ui, map: &UrlMap, save_busy: bool) -> Option<MapAction> {
+    fn export_menu(
+        ui: &mut egui::Ui,
+        map: &UrlMap,
+        save_busy: bool,
+        lang: Language,
+    ) -> Option<MapAction> {
         let has_data = map.node_count() > 0;
         ui.add_enabled_ui(!save_busy && has_data, |ui| {
             controls::ghost_menu(
                 ui,
-                text::menu_label(ShellText::Export.text()),
+                text::menu_label(ShellText::Export.text(lang)),
                 Layout::PANE_BUTTON_HEIGHT,
                 |ui| {
                     let mut action = None;
@@ -540,7 +550,7 @@ impl MapPanel {
                         if matches!(label, ShellText::SaveGraphMermaid | ShellText::CopyMermaid) {
                             ui.separator();
                         }
-                        if ui.button(label.text()).clicked() {
+                        if ui.button(label.text(lang)).clicked() {
                             action = Some(chosen);
                             ui.close();
                         }

@@ -7,6 +7,7 @@ use eframe::egui::{self, Key, RichText};
 use http_inspector_analysis::url_map::{NodeStats, RowKind, UrlMap, ViewNodeKey, VisibleRow};
 
 use super::MapPanel;
+use crate::ui::i18n::Language;
 use crate::ui::style::fonts;
 use crate::ui::style::theme::Palette;
 use crate::ui::style::tokens::{Layout, Space};
@@ -15,7 +16,13 @@ use crate::ui::workbench::tree;
 
 const NEW_NODE_HIGHLIGHT: Duration = Duration::from_secs(2);
 
-pub(super) fn show(panel: &mut MapPanel, ui: &mut egui::Ui, map: &UrlMap, shortcuts_allowed: bool) {
+pub(super) fn show(
+    panel: &mut MapPanel,
+    ui: &mut egui::Ui,
+    map: &UrlMap,
+    shortcuts_allowed: bool,
+    lang: Language,
+) {
     if panel.cached_rows.is_empty() {
         let message = if map.node_count() == 0 {
             ShellText::NoUrlsYet
@@ -23,7 +30,7 @@ pub(super) fn show(panel: &mut MapPanel, ui: &mut egui::Ui, map: &UrlMap, shortc
             ShellText::NoNodesMatch
         };
         ui.centered_and_justified(|ui| {
-            ui.add(egui::Label::new(RichText::new(message.text()).weak()).wrap());
+            ui.add(egui::Label::new(RichText::new(message.text(lang)).weak()).wrap());
         });
         return;
     }
@@ -65,7 +72,7 @@ pub(super) fn show(panel: &mut MapPanel, ui: &mut egui::Ui, map: &UrlMap, shortc
                 continue;
             };
             let is_selected = panel.selected.as_ref() == Some(&row.key);
-            let outcome = render_row(ui, row, is_selected);
+            let outcome = render_row(ui, row, is_selected, lang);
             if outcome.toggled {
                 toggle_key = Some((row.key.clone(), !row.expansion.is_expanded()));
             }
@@ -96,7 +103,12 @@ struct RowOutcome {
 
 /// One 24pt tree row: the node name, then its counts right-aligned in fixed
 /// columns so they line up from row to row (D15, D18).
-fn render_row(ui: &mut egui::Ui, row: &VisibleRow, is_selected: bool) -> RowOutcome {
+fn render_row(
+    ui: &mut egui::Ui,
+    row: &VisibleRow,
+    is_selected: bool,
+    lang: Language,
+) -> RowOutcome {
     let palette = Palette::of(ui);
     let age = row.created_at.elapsed();
     let fading = age < NEW_NODE_HIGHLIGHT;
@@ -132,10 +144,12 @@ fn render_row(ui: &mut egui::Ui, row: &VisibleRow, is_selected: bool) -> RowOutc
                     .wrap_mode(egui::TextWrapMode::Extend)
                     .selectable(false),
             );
-            render_row_metrics(ui, row, &palette);
+            render_row_metrics(ui, row, &palette, lang);
         },
     );
-    let response = shown.response.on_hover_text(status_breakdown(&row.subtree));
+    let response = shown
+        .response
+        .on_hover_text(status_breakdown(&row.subtree, lang));
     let clicked = response.clicked() && !shown.toggled;
     let toggled = shown.toggled || (response.double_clicked() && row.expansion.is_expandable());
     RowOutcome {
@@ -161,18 +175,18 @@ fn format_row_label(row: &VisibleRow, palette: &Palette) -> RichText {
 
 /// Party and tunnel markers, methods, failures, and the request count,
 /// right to left from the row's right edge.
-fn render_row_metrics(ui: &mut egui::Ui, row: &VisibleRow, palette: &Palette) {
+fn render_row_metrics(ui: &mut egui::Ui, row: &VisibleRow, palette: &Palette, lang: Language) {
     let stats = &row.subtree;
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         ui.add_space(Space::SM);
         let data = |text: String, color| RichText::new(text).font(fonts::data()).color(color);
         column(
             ui,
-            data(text::request_total(stats.request_count), palette.text),
+            data(text::request_total(lang, stats.request_count), palette.text),
         );
         let errors = stats.status.errors();
         let errors_text = if errors > 0 {
-            data(text::error_total(errors), palette.error)
+            data(text::error_total(lang, errors), palette.error)
         } else {
             RichText::new("")
         };
@@ -195,10 +209,10 @@ fn render_row_metrics(ui: &mut egui::Ui, row: &VisibleRow, palette: &Palette) {
         );
         let mut markers = Vec::new();
         if stats.has_tunnel {
-            markers.push(ShellText::Tunnel.text());
+            markers.push(ShellText::Tunnel.text(lang));
         }
         if stats.is_third_party() {
-            markers.push(ShellText::ThirdParty.text());
+            markers.push(ShellText::ThirdParty.text(lang));
         }
         if !markers.is_empty() {
             ui.add(
@@ -228,16 +242,19 @@ fn column(ui: &mut egui::Ui, text: RichText) {
 }
 
 /// Every status count of a node, for the row tooltip and screen readers.
-fn status_breakdown(stats: &NodeStats) -> String {
-    let counts = compact_status_numbers(stats);
+fn status_breakdown(stats: &NodeStats, lang: Language) -> String {
+    let counts = compact_status_numbers(stats, lang);
     if counts.is_empty() {
-        text::request_total(stats.request_count)
+        text::request_total(lang, stats.request_count)
     } else {
-        format!("{} · {counts}", text::request_total(stats.request_count))
+        format!(
+            "{} · {counts}",
+            text::request_total(lang, stats.request_count)
+        )
     }
 }
 
-fn compact_status_numbers(stats: &NodeStats) -> String {
+fn compact_status_numbers(stats: &NodeStats, lang: Language) -> String {
     let mut parts = Vec::new();
     if stats.status.s2xx > 0 {
         parts.push(format!("2xx:{}", stats.status.s2xx));
@@ -247,13 +264,21 @@ fn compact_status_numbers(stats: &NodeStats) -> String {
     }
     let errs = stats.status.errors();
     if errs > 0 {
-        parts.push(format!("err:{errs}"));
+        parts.push(format!("{}:{errs}", lang.pick("err", "오류")));
     }
     if stats.status.tunnel > 0 {
-        parts.push(format!("tun:{}", stats.status.tunnel));
+        parts.push(format!(
+            "{}:{}",
+            lang.pick("tun", "터널"),
+            stats.status.tunnel
+        ));
     }
     if stats.status.pending > 0 {
-        parts.push(format!("pend:{}", stats.status.pending));
+        parts.push(format!(
+            "{}:{}",
+            lang.pick("pend", "대기"),
+            stats.status.pending
+        ));
     }
     parts.join(" ")
 }
@@ -396,6 +421,9 @@ mod tests {
         stats.record_request(&Method::CONNECT, StatusBucket::Tunnel, now, false, true);
         stats.record_request(&Method::GET, StatusBucket::Pending, now, false, false);
         stats.record_request(&Method::CONNECT, StatusBucket::Failed, now, false, true);
-        assert_eq!(compact_status_numbers(&stats), "2xx:1 err:1 tun:1 pend:1");
+        assert_eq!(
+            compact_status_numbers(&stats, Language::English),
+            "2xx:1 err:1 tun:1 pend:1"
+        );
     }
 }

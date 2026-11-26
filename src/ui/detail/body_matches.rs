@@ -118,10 +118,10 @@ impl BodyMatches {
 
     /// Shows the position among matches with Previous and Next buttons.
     /// Returns `true` when the current match changed.
-    pub(super) fn controls(&mut self, ui: &mut egui::Ui) -> bool {
+    pub(super) fn controls(&mut self, ui: &mut egui::Ui, lang: crate::ui::i18n::Language) -> bool {
         let count = self.hits.len();
         if count == 0 {
-            ui.weak(ShellText::NoMatches.text());
+            ui.weak(ShellText::NoMatches.text(lang));
             return false;
         }
         let mut step = None;
@@ -133,7 +133,10 @@ impl BodyMatches {
             );
             for (label, offset) in [(ShellText::Previous, count - 1), (ShellText::Next, 1)] {
                 if ui
-                    .add(controls::ghost(label.text(), Layout::PANE_BUTTON_HEIGHT))
+                    .add(controls::ghost(
+                        label.text(lang),
+                        Layout::PANE_BUTTON_HEIGHT,
+                    ))
                     .clicked()
                 {
                     step = Some(offset);

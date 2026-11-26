@@ -1,9 +1,10 @@
 //! Strings that the workbench shows: the shell, the inspector, the URL map,
 //! and the status bar.
 //!
-//! The workbench keeps its labels in one catalog so a translation layer can
-//! replace [`ShellText::text`] and the formatters without touching the
-//! layout code.
+//! The workbench keeps its labels in one catalog backed by [`Language`] so
+//! adding a new language checks every shell label at compile time.
+
+use crate::ui::i18n::Language;
 
 /// A fixed label shown by the shell.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -168,165 +169,219 @@ impl ShellText {
         clippy::too_many_lines,
         reason = "the catalog is one match arm per string"
     )]
-    pub(crate) const fn text(self) -> &'static str {
+    pub(crate) const fn text(self, lang: Language) -> &'static str {
         match self {
-            Self::ViewSwitch => "View",
-            Self::Requests => "Requests",
-            Self::Map => "Map",
-            Self::Stopped => "Stopped",
-            Self::Port => "Port",
-            Self::Start => "Start",
-            Self::Stop => "Stop",
-            Self::Copy => "Copy",
-            Self::HttpsOn => "HTTPS on",
-            Self::HttpsOff => "HTTPS off",
-            Self::DecryptHttps => "Decrypt HTTPS",
-            Self::Save => "Save",
-            Self::Settings => "Settings",
-            Self::CaptureScope => "Capture scope",
-            Self::Filter => "method:POST url:/api status:4xx",
-            Self::InvalidFilter => "Invalid pattern",
-            Self::InvalidCondition => "Invalid condition",
-            Self::RequestOutcome => "Request outcome",
-            Self::Searching => "Searching…",
-            Self::FilterRegex => "Filter with regex",
-            Self::ClearFilter => "Clear filter",
-            Self::FilterRequests => "Filter requests",
-            Self::FilterSyntax => "Filter syntax",
-            Self::UseRegex => "Use a regular expression",
-            Self::MatchCase => "Match free-text case",
-            Self::SearchScope => "Search scope for free text",
-            Self::Exclude => "Exclude",
-            Self::Phrase => "Phrase",
-            Self::FilterByValue => "Filter by value",
-            Self::ExcludeValue => "Exclude value",
-            Self::FieldFilterNeedsText => "Turn off regex mode to use field filters",
-            Self::SharedHost => "Every request in the list goes to this host",
-            Self::Headers => "Headers",
-            Self::Body => "Body",
-            Self::Timing => "Timing",
-            Self::NoRequestSelected => "No request selected",
-            Self::EditAndResend => "Edit and Resend",
-            Self::Query => "Query",
-            Self::Request => "Request",
-            Self::Response => "Response",
-            Self::HeadersOmitted => "More headers omitted",
-            Self::Tunnel => "Tunnel",
-            Self::TunnelHint => {
-                "Forwarded without decryption, so only the host, port, bytes, and duration are recorded."
-            }
-            Self::TunnelState => "State",
-            Self::TunnelSent => "Sent",
-            Self::TunnelReceived => "Received",
-            Self::Duration => "Duration",
-            Self::Connect => "Connect",
-            Self::Send => "Send",
-            Self::Wait => "Wait (TTFB)",
-            Self::Receive => "Receive",
-            Self::Total => "Total",
+            Self::ViewSwitch => lang.pick("View", "보기"),
+            Self::Requests => lang.pick("Requests", "요청"),
+            Self::Map => lang.pick("Map", "맵"),
+            Self::Stopped => lang.pick("Stopped", "중지됨"),
+            Self::Port => lang.pick("Port", "포트"),
+            Self::Start => lang.pick("Start", "시작"),
+            Self::Stop => lang.pick("Stop", "중지"),
+            Self::Copy => lang.pick("Copy", "복사"),
+            Self::HttpsOn => lang.pick("HTTPS on", "HTTPS 켬"),
+            Self::HttpsOff => lang.pick("HTTPS off", "HTTPS 끔"),
+            Self::DecryptHttps => lang.pick("Decrypt HTTPS", "HTTPS 복호화"),
+            Self::Save => lang.pick("Save", "저장"),
+            Self::Settings => lang.pick("Settings", "설정"),
+            Self::CaptureScope => lang.pick("Capture scope", "캡처 범위"),
+            Self::Filter => lang.pick(
+                "method:POST url:/api status:4xx",
+                "method:POST url:/api status:4xx",
+            ),
+            Self::InvalidFilter => lang.pick("Invalid pattern", "잘못된 패턴"),
+            Self::InvalidCondition => lang.pick("Invalid condition", "잘못된 조건"),
+            Self::RequestOutcome => lang.pick("Request outcome", "요청 결과"),
+            Self::Searching => lang.pick("Searching…", "검색 중…"),
+            Self::FilterRegex => lang.pick("Filter with regex", "정규식으로 필터링"),
+            Self::ClearFilter => lang.pick("Clear filter", "필터 비우기"),
+            Self::FilterRequests => lang.pick("Filter requests", "요청 필터"),
+            Self::FilterSyntax => lang.pick("Filter syntax", "필터 문법"),
+            Self::UseRegex => lang.pick("Use a regular expression", "정규식 사용"),
+            Self::MatchCase => lang.pick("Match free-text case", "자유 텍스트 대소문자 구분"),
+            Self::SearchScope => lang.pick("Search scope for free text", "자유 텍스트 검색 범위"),
+            Self::Exclude => lang.pick("Exclude", "제외"),
+            Self::Phrase => lang.pick("Phrase", "구문"),
+            Self::FilterByValue => lang.pick("Filter by value", "이 값으로 필터링"),
+            Self::ExcludeValue => lang.pick("Exclude value", "이 값 제외"),
+            Self::FieldFilterNeedsText => lang.pick(
+                "Turn off regex mode to use field filters",
+                "필드 필터를 쓰려면 정규식 모드를 끄세요",
+            ),
+            Self::SharedHost => lang.pick(
+                "Every request in the list goes to this host",
+                "목록의 모든 요청이 이 호스트로 전송되었습니다",
+            ),
+            Self::Headers => lang.pick("Headers", "헤더"),
+            Self::Body => lang.pick("Body", "본문"),
+            Self::Timing => lang.pick("Timing", "타이밍"),
+            Self::NoRequestSelected => lang.pick("No request selected", "선택된 요청 없음"),
+            Self::EditAndResend => lang.pick("Edit and Resend", "편집 후 재전송"),
+            Self::Query => lang.pick("Query", "쿼리"),
+            Self::Request => lang.pick("Request", "요청"),
+            Self::Response => lang.pick("Response", "응답"),
+            Self::HeadersOmitted => lang.pick("More headers omitted", "추가 헤더 생략됨"),
+            Self::Tunnel => lang.pick("Tunnel", "터널"),
+            Self::TunnelHint => lang.pick(
+                "Forwarded without decryption, so only the host, port, bytes, and duration are recorded.",
+                "복호화 없이 전달되어 호스트·포트·전송량·소요 시간만 기록됩니다.",
+            ),
+            Self::TunnelState => lang.pick("State", "상태"),
+            Self::TunnelSent => lang.pick("Sent", "보냄"),
+            Self::TunnelReceived => lang.pick("Received", "받음"),
+            Self::Duration => lang.pick("Duration", "소요 시간"),
+            Self::Connect => lang.pick("Connect", "연결"),
+            Self::Send => lang.pick("Send", "전송"),
+            Self::Wait => lang.pick("Wait (TTFB)", "대기 (TTFB)"),
+            Self::Receive => lang.pick("Receive", "수신"),
+            Self::Total => lang.pick("Total", "전체"),
             Self::NotObserved => "—",
-            Self::RequestBody => "Request body",
-            Self::ResponseBody => "Response body",
-            Self::Updating => "Updating…",
-            Self::PreviewOmitted => "Preview omitted",
-            Self::PreviewOmittedHint => {
-                "The body was forwarded without keeping a preview, so forwarding never waited."
+            Self::RequestBody => lang.pick("Request body", "요청 본문"),
+            Self::ResponseBody => lang.pick("Response body", "응답 본문"),
+            Self::Updating => lang.pick("Updating…", "업데이트 중…"),
+            Self::PreviewOmitted => lang.pick("Preview omitted", "미리보기 생략됨"),
+            Self::PreviewOmittedHint => lang.pick(
+                "The body was forwarded without keeping a preview, so forwarding never waited.",
+                "전달이 지연되지 않도록 미리보기를 보관하지 않고 본문을 전달했습니다.",
+            ),
+            Self::TreeUnavailable => {
+                lang.pick("Needs a JSON or XML body", "JSON 또는 XML 본문이 필요합니다")
             }
-            Self::TreeUnavailable => "Needs a JSON or XML body",
-            Self::Previous => "Previous",
-            Self::Next => "Next",
-            Self::NoMatches => "No matches",
-            Self::ExpandAll => "Expand all",
-            Self::CollapseAll => "Collapse all",
-            Self::FilterKeys => "Filter keys",
-            Self::CloseBrowser => "Close browser",
-            Self::BrowserOpen => "Browser open",
-            Self::SearchOnUiThread => "Search on UI thread",
-            Self::UrlMapLimit => "URL map limit",
-            Self::FullLogUnavailable => "Full log unavailable",
-            Self::LogBodyLimit => "Log body limit",
-            Self::DomainLimitHint => "Raise the domain limit in the graph header to show more.",
-            Self::Clear => "Clear",
-            Self::ClearHint => "Clear captured requests and reset the URL map.",
-            Self::MapView => "Map view",
-            Self::Tree => "Tree",
-            Self::Graph => "Graph",
-            Self::FilterHosts => "Filter hosts",
-            Self::FoldIds => "Fold IDs",
-            Self::FoldIdsHint => {
-                "Group sibling ID segments (integers, UUIDs, hex tokens) into /{id}."
+            Self::Previous => lang.pick("Previous", "이전"),
+            Self::Next => lang.pick("Next", "다음"),
+            Self::NoMatches => lang.pick("No matches", "일치 없음"),
+            Self::ExpandAll => lang.pick("Expand all", "모두 펼치기"),
+            Self::CollapseAll => lang.pick("Collapse all", "모두 접기"),
+            Self::FilterKeys => lang.pick("Filter keys", "키 필터"),
+            Self::CloseBrowser => lang.pick("Close browser", "브라우저 닫기"),
+            Self::BrowserOpen => lang.pick("Browser open", "브라우저 열림"),
+            Self::SearchOnUiThread => lang.pick("Search on UI thread", "UI 스레드 검색"),
+            Self::UrlMapLimit => lang.pick("URL map limit", "URL 맵 한도"),
+            Self::FullLogUnavailable => lang.pick("Full log unavailable", "전체 로그 사용 불가"),
+            Self::LogBodyLimit => lang.pick("Log body limit", "로그 본문 한도"),
+            Self::DomainLimitHint => lang.pick(
+                "Raise the domain limit in the graph header to show more.",
+                "더 많은 도메인을 보려면 그래프 머리줄에서 도메인 한도를 높이세요.",
+            ),
+            Self::Clear => lang.pick("Clear", "비우기"),
+            Self::ClearHint => lang.pick(
+                "Clear captured requests and reset the URL map.",
+                "캡처된 요청을 비우고 URL 맵을 초기화합니다.",
+            ),
+            Self::MapView => lang.pick("Map view", "맵 보기"),
+            Self::Tree => lang.pick("Tree", "트리"),
+            Self::Graph => lang.pick("Graph", "그래프"),
+            Self::FilterHosts => lang.pick("Filter hosts", "호스트 필터"),
+            Self::FoldIds => lang.pick("Fold IDs", "ID 접기"),
+            Self::FoldIdsHint => lang.pick(
+                "Group sibling ID segments (integers, UUIDs, hex tokens) into /{id}.",
+                "정수·UUID·16진수 토큰 같은 ID 경로 조각을 /{id}로 묶습니다.",
+            ),
+            Self::Ascending => lang.pick("Ascending", "오름차순"),
+            Self::Descending => lang.pick("Descending", "내림차순"),
+            Self::Relayout => lang.pick("Relayout", "다시 배치"),
+            Self::RelayoutHint => lang.pick(
+                "Recompute the force-directed domain layout.",
+                "도메인 관계 그래프 배치를 다시 계산합니다.",
+            ),
+            Self::Legend => lang.pick("Edges", "연결선"),
+            Self::Export => lang.pick("Export", "내보내기"),
+            Self::SaveTreeText => lang.pick("Save tree as Text (.txt)", "트리를 텍스트(.txt)로 저장"),
+            Self::SaveMapJson => lang.pick("Save map as JSON (.json)", "맵을 JSON(.json)으로 저장"),
+            Self::SaveGraphMermaid => {
+                lang.pick("Save graph as Mermaid (.mmd)", "그래프를 Mermaid(.mmd)로 저장")
             }
-            Self::Ascending => "Ascending",
-            Self::Descending => "Descending",
-            Self::Relayout => "Relayout",
-            Self::RelayoutHint => "Recompute the force-directed domain layout.",
-            Self::Legend => "Edges",
-            Self::Export => "Export",
-            Self::SaveTreeText => "Save tree as Text (.txt)",
-            Self::SaveMapJson => "Save map as JSON (.json)",
-            Self::SaveGraphMermaid => "Save graph as Mermaid (.mmd)",
-            Self::SaveGraphDot => "Save graph as Graphviz DOT (.dot)",
-            Self::CopyMermaid => "Copy Mermaid to clipboard",
-            Self::CopyDot => "Copy DOT to clipboard",
-            Self::NoRelationships => "No domain relationships yet",
+            Self::SaveGraphDot => lang.pick(
+                "Save graph as Graphviz DOT (.dot)",
+                "그래프를 Graphviz DOT(.dot)로 저장",
+            ),
+            Self::CopyMermaid => lang.pick("Copy Mermaid to clipboard", "Mermaid를 클립보드에 복사"),
+            Self::CopyDot => lang.pick("Copy DOT to clipboard", "DOT를 클립보드에 복사"),
+            Self::NoRelationships => {
+                lang.pick("No domain relationships yet", "아직 도메인 관계가 없습니다")
+            }
             Self::Referer => "Referer",
             Self::OriginCors => "Origin (CORS)",
-            Self::Redirect => "Redirect (3xx)",
-            Self::FirstParty => "1st-party",
-            Self::ThirdParty => "3rd-party",
-            Self::NoUrlsYet => "No URLs captured yet",
-            Self::NoNodesMatch => "No nodes match the filters",
-            Self::Node => "Node",
-            Self::NoNodeSelected => "No node selected",
-            Self::ShowInRequests => "Show in Requests",
-            Self::ShowInRequestsHint => {
-                "Switch to Requests view filtered to this origin and path prefix."
+            Self::Redirect => lang.pick("Redirect (3xx)", "리다이렉트 (3xx)"),
+            Self::FirstParty => lang.pick("1st-party", "퍼스트파티"),
+            Self::ThirdParty => lang.pick("3rd-party", "서드파티"),
+            Self::NoUrlsYet => lang.pick("No URLs captured yet", "캡처된 URL이 없습니다"),
+            Self::NoNodesMatch => {
+                lang.pick("No nodes match the filters", "필터와 일치하는 노드가 없습니다")
             }
-            Self::Summary => "Summary",
-            Self::Methods => "Methods",
-            Self::Status => "Status",
+            Self::Node => lang.pick("Node", "노드"),
+            Self::NoNodeSelected => lang.pick("No node selected", "선택된 노드 없음"),
+            Self::ShowInRequests => lang.pick("Show in Requests", "요청 목록에서 보기"),
+            Self::ShowInRequestsHint => lang.pick(
+                "Switch to Requests view filtered to this origin and path prefix.",
+                "이 출처와 경로 접두사로 필터링된 요청 보기로 전환합니다.",
+            ),
+            Self::Summary => lang.pick("Summary", "요약"),
+            Self::Methods => lang.pick("Methods", "메서드"),
+            Self::Status => lang.pick("Status", "상태"),
             Self::ContentType => "Content-Type",
-            Self::Transferred => "Transferred",
-            Self::ResponseTime => "Response time",
-            Self::Observed => "Observed",
-            Self::Party => "Party",
-            Self::FoldedIds => "Folded IDs",
-            Self::NoPathInfo => "No path info",
-            Self::Merged => "Merged",
-            Self::Failed => "Failed",
-            Self::Pending => "Pending",
-            Self::QueryNames => "Query names",
-            Self::OpenInRequests => "Open this request in Requests view.",
-            Self::Endpoints => "Endpoints",
-            Self::EndpointsHint => {
-                "Names, types, and frequencies from requests on this exact path; values are never shown."
-            }
+            Self::Transferred => lang.pick("Transferred", "전송량"),
+            Self::ResponseTime => lang.pick("Response time", "응답 시간"),
+            Self::Observed => lang.pick("Observed", "관측 기간"),
+            Self::Party => lang.pick("Party", "구분"),
+            Self::FoldedIds => lang.pick("Folded IDs", "접힌 ID"),
+            Self::NoPathInfo => lang.pick("No path info", "경로 정보 없음"),
+            Self::Merged => lang.pick("Merged", "병합됨"),
+            Self::Failed => lang.pick("Failed", "실패"),
+            Self::Pending => lang.pick("Pending", "대기 중"),
+            Self::QueryNames => lang.pick("Query names", "쿼리 이름"),
+            Self::OpenInRequests => lang.pick(
+                "Open this request in Requests view.",
+                "이 요청을 요청 보기에서 엽니다.",
+            ),
+            Self::Endpoints => lang.pick("Endpoints", "엔드포인트"),
+            Self::EndpointsHint => lang.pick(
+                "Names, types, and frequencies from requests on this exact path; values are never shown.",
+                "이 경로의 요청에서 추출한 이름·형식·빈도만 표시하며 실제 값은 보이지 않습니다.",
+            ),
         }
     }
 }
 
 /// Request count in the status bar, or how many of them the filters show.
-pub(crate) fn request_count(shown: usize, total: usize) -> String {
-    if shown == total {
-        format!("{total} requests")
-    } else {
-        format!("{shown} of {total} requests")
+pub(crate) fn request_count(lang: Language, shown: usize, total: usize) -> String {
+    match lang {
+        Language::English => {
+            if shown == total {
+                format!("{total} requests")
+            } else {
+                format!("{shown} of {total} requests")
+            }
+        }
+        Language::Korean => {
+            if shown == total {
+                format!("요청 {total}건")
+            } else {
+                format!("요청 {shown}/{total}건")
+            }
+        }
     }
 }
 
 /// Failed request count in the status bar.
-pub(crate) fn failure_count(failed: usize) -> String {
-    format!("{failed} failed")
+pub(crate) fn failure_count(lang: Language, failed: usize) -> String {
+    match lang {
+        Language::English => format!("{failed} failed"),
+        Language::Korean => format!("실패 {failed}건"),
+    }
 }
 
 /// Host and node counts of the URL map in the status bar.
-pub(crate) fn map_count(hosts: usize, nodes: usize) -> String {
-    format!("{hosts} hosts · {nodes} nodes")
+pub(crate) fn map_count(lang: Language, hosts: usize, nodes: usize) -> String {
+    match lang {
+        Language::English => format!("{hosts} hosts · {nodes} nodes"),
+        Language::Korean => format!("호스트 {hosts} · 노드 {nodes}"),
+    }
 }
 
 /// Search progress in the status bar.
-pub(crate) fn search_progress(checked: usize, total: usize) -> String {
-    format!("{} {checked}/{total}", ShellText::Searching.text())
+pub(crate) fn search_progress(lang: Language, checked: usize, total: usize) -> String {
+    format!("{} {checked}/{total}", ShellText::Searching.text(lang))
 }
 
 /// A time in milliseconds with one decimal.
@@ -345,46 +400,79 @@ pub(crate) fn byte_count(bytes: u64) -> String {
 }
 
 /// Link from a resent request to the one it was sent from.
-pub(crate) fn replay_of(original: u64) -> String {
-    format!("Replay of #{original} — show original")
+pub(crate) fn replay_of(lang: Language, original: u64) -> String {
+    match lang {
+        Language::English => format!("Replay of #{original} — show original"),
+        Language::Korean => format!("#{original}의 재전송 — 원본 보기"),
+    }
 }
 
 /// Tooltip of the request filter: its keyboard shortcut.
-pub(crate) fn focus_filter(shortcut: &str) -> String {
-    format!("Focus filter ({shortcut})")
+pub(crate) fn focus_filter(lang: Language, shortcut: &str) -> String {
+    match lang {
+        Language::English => format!("Focus filter ({shortcut})"),
+        Language::Korean => format!("필터에 포커스 ({shortcut})"),
+    }
 }
 
 /// Tooltip of the dropped-records entry of the status bar.
-pub(crate) const DROPPED_HINT: &str =
-    "The capture queue was full, so these exchanges were forwarded but not shown.";
+pub(crate) const fn dropped_hint(lang: Language) -> &'static str {
+    lang.pick(
+        "The capture queue was full, so these exchanges were forwarded but not shown.",
+        "캡처 대기열이 가득 차 해당 요청은 전달되었지만 화면에는 표시되지 않았습니다.",
+    )
+}
 
 /// Tooltip of the removed-records entry of the status bar.
-pub(crate) fn older_removed_hint(kept: usize) -> String {
-    format!(
-        "Only the newest {kept} requests stay on screen; the full-session log keeps every record."
-    )
+pub(crate) fn older_removed_hint(lang: Language, kept: usize) -> String {
+    match lang {
+        Language::English => format!(
+            "Only the newest {kept} requests stay on screen; the full-session log keeps every record."
+        ),
+        Language::Korean => {
+            format!("화면에는 최근 {kept}건만 유지되며 전체 세션 로그에는 모든 기록이 남습니다.")
+        }
+    }
 }
 
 /// Tooltip of the URL map limit entry of the status bar.
-pub(crate) fn url_map_limit_hint(nodes: usize) -> String {
-    format!("The URL map reached {nodes} nodes; deeper paths are folded into parent nodes.")
+pub(crate) fn url_map_limit_hint(lang: Language, nodes: usize) -> String {
+    match lang {
+        Language::English => {
+            format!("The URL map reached {nodes} nodes; deeper paths are folded into parent nodes.")
+        }
+        Language::Korean => {
+            format!("URL 맵이 {nodes}개 노드 한도에 도달해 하위 경로는 상위 노드에 병합됩니다.")
+        }
+    }
 }
 
 /// Tooltip of the log body limit entry of the status bar.
-pub(crate) fn log_body_limit_hint(limit: &str) -> String {
-    format!(
-        "Body bytes after {limit} are left out of the full-session log; headers and results are still logged."
-    )
+pub(crate) fn log_body_limit_hint(lang: Language, limit: &str) -> String {
+    match lang {
+        Language::English => format!(
+            "Body bytes after {limit} are left out of the full-session log; headers and results are still logged."
+        ),
+        Language::Korean => format!(
+            "{limit}를 넘는 본문 바이트는 전체 세션 로그에서 생략되며 헤더와 결과는 계속 기록됩니다."
+        ),
+    }
 }
 
 /// Bodies the search could read only in part.
-pub(crate) fn partly_searched(count: usize) -> String {
-    format!("{count} bodies partly searched")
+pub(crate) fn partly_searched(lang: Language, count: usize) -> String {
+    match lang {
+        Language::English => format!("{count} bodies partly searched"),
+        Language::Korean => format!("본문 {count}건 일부만 검색됨"),
+    }
 }
 
 /// Exchanges the capture queue could not keep.
-pub(crate) fn dropped(count: u64) -> String {
-    format!("{count} dropped")
+pub(crate) fn dropped(lang: Language, count: u64) -> String {
+    match lang {
+        Language::English => format!("{count} dropped"),
+        Language::Korean => format!("누락 {count}건"),
+    }
 }
 
 /// Status bar entries left out for lack of room.
@@ -398,33 +486,57 @@ pub(crate) fn menu_label(label: &str) -> String {
 }
 
 /// Label of the URL map sort menu.
-pub(crate) fn sort_label(field: &str) -> String {
-    format!("Sort: {field}")
+pub(crate) fn sort_label(lang: Language, field: &str) -> String {
+    match lang {
+        Language::English => format!("Sort: {field}"),
+        Language::Korean => format!("정렬: {field}"),
+    }
 }
 
 /// A choice of the graph's domain limit.
-pub(crate) fn top_domains(count: usize) -> String {
-    format!("Top {count} domains")
+pub(crate) fn top_domains(lang: Language, count: usize) -> String {
+    match lang {
+        Language::English => format!("Top {count} domains"),
+        Language::Korean => format!("상위 도메인 {count}개"),
+    }
 }
 
 /// Domains and edges the graph shows, in the status bar.
 pub(crate) fn graph_count(
+    lang: Language,
     shown: usize,
     total: usize,
     visible_edges: usize,
     total_edges: usize,
 ) -> String {
-    let domains = if total > shown {
-        format!("top {shown} of {total} domains")
-    } else {
-        format!("{shown} domains")
-    };
-    let edges = if visible_edges == total_edges {
-        format!("{total_edges} edges")
-    } else {
-        format!("{visible_edges}/{total_edges} edges")
-    };
-    format!("{domains} · {edges}")
+    match lang {
+        Language::English => {
+            let domains = if total > shown {
+                format!("top {shown} of {total} domains")
+            } else {
+                format!("{shown} domains")
+            };
+            let edges = if visible_edges == total_edges {
+                format!("{total_edges} edges")
+            } else {
+                format!("{visible_edges}/{total_edges} edges")
+            };
+            format!("{domains} · {edges}")
+        }
+        Language::Korean => {
+            let domains = if total > shown {
+                format!("상위 도메인 {shown}/{total}")
+            } else {
+                format!("도메인 {shown}")
+            };
+            let edges = if visible_edges == total_edges {
+                format!("연결선 {total_edges}")
+            } else {
+                format!("연결선 {visible_edges}/{total_edges}")
+            };
+            format!("{domains} · {edges}")
+        }
+    }
 }
 
 /// A folded ID node of the URL map tree.
@@ -433,25 +545,46 @@ pub(crate) fn folded_ids(label: &str, count: usize) -> String {
 }
 
 /// Requests counted under a URL map node.
-pub(crate) fn request_total(count: u64) -> String {
-    format!("{count} req")
+pub(crate) fn request_total(lang: Language, count: u64) -> String {
+    match lang {
+        Language::English => format!("{count} req"),
+        Language::Korean => format!("{count}건"),
+    }
 }
 
 /// Error responses and failures counted under a URL map node.
-pub(crate) fn error_total(count: u64) -> String {
-    format!("{count} err")
+pub(crate) fn error_total(lang: Language, count: u64) -> String {
+    match lang {
+        Language::English => format!("{count} err"),
+        Language::Korean => format!("오류 {count}"),
+    }
 }
 
 /// Requests of a URL map node: the total, and the direct, retained, and
 /// removed requests when they differ from it.
-pub(crate) fn node_requests(total: u64, direct: u64, retained: usize, evicted: u64) -> String {
+pub(crate) fn node_requests(
+    lang: Language,
+    total: u64,
+    direct: u64,
+    retained: usize,
+    evicted: u64,
+) -> String {
     let mut parts = Vec::new();
     if direct > 0 && direct != total {
-        parts.push(format!("{direct} direct"));
+        parts.push(match lang {
+            Language::English => format!("{direct} direct"),
+            Language::Korean => format!("직접 {direct}건"),
+        });
     }
     if evicted > 0 {
-        parts.push(format!("{retained} retained"));
-        parts.push(format!("{evicted} removed"));
+        parts.push(match lang {
+            Language::English => format!("{retained} retained"),
+            Language::Korean => format!("{retained}건 유지"),
+        });
+        parts.push(match lang {
+            Language::English => format!("{evicted} removed"),
+            Language::Korean => format!("오래된 기록 {evicted}건 정리됨"),
+        });
     }
     if parts.is_empty() {
         total.to_string()
@@ -461,13 +594,19 @@ pub(crate) fn node_requests(total: u64, direct: u64, retained: usize, evicted: u
 }
 
 /// Average and maximum response time.
-pub(crate) fn avg_max(avg: f64, max: f64) -> String {
-    format!("avg {avg:.1} ms · max {max:.1} ms")
+pub(crate) fn avg_max(lang: Language, avg: f64, max: f64) -> String {
+    match lang {
+        Language::English => format!("avg {avg:.1} ms · max {max:.1} ms"),
+        Language::Korean => format!("평균 {avg:.1} ms · 최대 {max:.1} ms"),
+    }
 }
 
 /// Third-party requests under a node.
-pub(crate) fn third_party_hits(hits: u64) -> String {
-    format!("3rd-party · {hits} hits")
+pub(crate) fn third_party_hits(lang: Language, hits: u64) -> String {
+    match lang {
+        Language::English => format!("3rd-party · {hits} hits"),
+        Language::Korean => format!("서드파티 · {hits}건"),
+    }
 }
 
 /// IDs folded into one node and their kinds.
@@ -480,8 +619,11 @@ pub(crate) fn folded_kinds(count: usize, kinds: &[&str]) -> String {
 }
 
 /// Deeper requests merged into a node at the node limit.
-pub(crate) fn merged_at_cap(count: u64) -> String {
-    format!("{count} deeper requests at the node limit")
+pub(crate) fn merged_at_cap(lang: Language, count: u64) -> String {
+    match lang {
+        Language::English => format!("{count} deeper requests at the node limit"),
+        Language::Korean => format!("노드 한도로 병합된 하위 요청 {count}건"),
+    }
 }
 
 /// How often a name was seen.
@@ -490,18 +632,27 @@ pub(crate) fn times(count: u64) -> String {
 }
 
 /// Requests removed from the list but still in the counts.
-pub(crate) fn older_removed(count: u64) -> String {
-    format!("{count} older removed")
+pub(crate) fn older_removed(lang: Language, count: u64) -> String {
+    match lang {
+        Language::English => format!("{count} older removed"),
+        Language::Korean => format!("오래된 기록 {count}건 정리됨"),
+    }
 }
 
 /// The newest requests listed out of all retained ones.
-pub(crate) fn newest_of(shown: usize, total: usize) -> String {
-    format!("Newest {shown} of {total}")
+pub(crate) fn newest_of(lang: Language, shown: usize, total: usize) -> String {
+    match lang {
+        Language::English => format!("Newest {shown} of {total}"),
+        Language::Korean => format!("최근 {shown}/{total}건"),
+    }
 }
 
 /// Requests the endpoint analysis did not take this session.
-pub(crate) fn analysis_skipped(count: u64) -> String {
-    format!("{count} requests not analyzed")
+pub(crate) fn analysis_skipped(lang: Language, count: u64) -> String {
+    match lang {
+        Language::English => format!("{count} requests not analyzed"),
+        Language::Korean => format!("분석 생략 요청 {count}건"),
+    }
 }
 
 /// Position of the current search match in a body.
@@ -515,11 +666,16 @@ mod tests {
 
     #[test]
     fn counts_name_only_what_differs() {
-        assert_eq!(request_count(12, 12), "12 requests");
-        assert_eq!(request_count(3, 12), "3 of 12 requests");
-        assert_eq!(failure_count(2), "2 failed");
-        assert_eq!(map_count(3, 17), "3 hosts · 17 nodes");
-        assert_eq!(search_progress(4, 9), "Searching… 4/9");
+        assert_eq!(request_count(Language::English, 12, 12), "12 requests");
+        assert_eq!(request_count(Language::English, 3, 12), "3 of 12 requests");
+        assert_eq!(request_count(Language::Korean, 12, 12), "요청 12건");
+        assert_eq!(request_count(Language::Korean, 3, 12), "요청 3/12건");
+        assert_eq!(failure_count(Language::English, 2), "2 failed");
+        assert_eq!(failure_count(Language::Korean, 2), "실패 2건");
+        assert_eq!(map_count(Language::English, 3, 17), "3 hosts · 17 nodes");
+        assert_eq!(map_count(Language::Korean, 3, 17), "호스트 3 · 노드 17");
+        assert_eq!(search_progress(Language::English, 4, 9), "Searching… 4/9");
+        assert_eq!(search_progress(Language::Korean, 4, 9), "검색 중… 4/9");
         assert_eq!(match_position(1, 3), "1/3");
         assert_eq!(milliseconds(52.64), "52.6 ms");
         assert_eq!(milliseconds_running(1204.4), "1204 ms…");

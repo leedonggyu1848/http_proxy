@@ -12,10 +12,11 @@ impl InspectorApp {
         body_dialog_open: bool,
         actions: &mut Vec<AppAction>,
     ) {
+        let lang = self.language();
         actions.extend(
             self.session
                 .body_saving
-                .show_confirmation(context)
+                .show_confirmation(context, lang)
                 .map(AppAction::ConfirmBodySave),
         );
         actions.extend(
@@ -24,6 +25,7 @@ impl InspectorApp {
                     context,
                     self.session.capture.proxy.is_some(),
                     &self.requests.records,
+                    lang,
                 )
                 .into_iter()
                 .map(AppAction::Replay),
@@ -41,6 +43,7 @@ impl InspectorApp {
                         counts,
                         self.dialogs.save.is_busy(),
                         !body_dialog_open,
+                        lang,
                     )
                     .map(AppAction::Har),
             );
@@ -51,7 +54,7 @@ impl InspectorApp {
             actions.extend(
                 self.dialogs
                     .hls
-                    .show(context, !body_dialog_open)
+                    .show(context, !body_dialog_open, lang)
                     .map(AppAction::Hls),
             );
         }

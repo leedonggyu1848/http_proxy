@@ -9,13 +9,15 @@ use eframe::egui::{self, Key, RichText};
 use egui_extras::{Column, TableBuilder};
 use http_inspector_core::hls::{
     HlsBlockedReason, HlsDownloadConfig, HlsDownloadError, HlsDownloadHandle, HlsDownloadOutcome,
-    HlsDownloadPhase, HlsDownloadProgress, HlsSessionPlan, HlsVariantEntry, MediaDownloadPlan,
-    SegmentPlan, SegmentStatus, VariantMediaState, inspect_hls_session, start_hls_download,
+    HlsDownloadPhase, HlsDownloadProgress, HlsInspectError, HlsSessionPlan, HlsVariantEntry,
+    MediaDownloadPlan, SegmentPlan, SegmentStatus, VariantMediaState, inspect_hls_session,
+    start_hls_download,
 };
 use http_inspector_core::recording::BodyStore;
 use http_inspector_exchange::{ByteSize, Exchange, RecordId};
 
 use super::background_task::{BackgroundTask, TaskPoll};
+use crate::ui::i18n::{Language, Text, domain};
 use crate::ui::style::theme::Palette;
 use crate::ui::style::tokens::{Layout, Radius, Space, StrokeWidth, ThemeTokens, TypeScale};
 
@@ -31,12 +33,33 @@ pub(crate) enum HlsAction {
     Close,
 }
 
+enum HlsInspectFailure {
+    Inspect(HlsInspectError),
+    WorkerDisconnected,
+    Io(io::Error),
+}
+
+impl HlsInspectFailure {
+    fn localized(&self, lang: Language) -> String {
+        match self {
+            Self::Inspect(error) => domain::hls_inspect_error(lang, error),
+            Self::WorkerDisconnected => lang
+                .pick(
+                    "HLS inspection worker stopped unexpectedly",
+                    "HLS 검사 작업자가 예기치 않게 중지되었습니다",
+                )
+                .to_owned(),
+            Self::Io(error) => error.to_string(),
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct HlsDialog {
     source_record_id: Option<RecordId>,
-    inspecting: Option<BackgroundTask<Result<HlsSessionPlan, String>>>,
+    inspecting: Option<BackgroundTask<Result<HlsSessionPlan, HlsInspectError>>>,
     plan: Option<HlsSessionPlan>,
-    inspect_error: Option<String>,
+    inspect_error: Option<HlsInspectFailure>,
     selected_variant: usize,
     download: Option<ActiveDownload>,
     last_result: Option<FinishedDownload>,
@@ -88,9 +111,11 @@ impl HlsDialog {
             self.last_result = None;
         }
         let task = BackgroundTask::start("hls-inspect", context, move || {
-            let result = inspect_hls_session(&playlist_record, &records, body_store.as_ref())
-                .map_err(|error| error.to_string());
-            Ok(result)
+            Ok(inspect_hls_session(
+                &playlist_record,
+                &records,
+                body_store.as_ref(),
+            ))
         });
         self.inspecting = Some(task);
         if let Some(index) = previous_variant {
@@ -187,9 +212,12 @@ impl HlsDialog {
                 return;
             }
             TaskPoll::Ready(result) => result,
-            TaskPoll::Disconnected => Err(io::Error::other(
-                "HLS inspection worker stopped unexpectedly",
-            )),
+            TaskPoll::Disconnected => {
+                self.inspecting = None;
+                self.inspect_error = Some(HlsInspectFailure::WorkerDisconnected);
+                self.plan = None;
+                return;
+            }
         };
         self.inspecting = None;
         match result {
@@ -205,12 +233,12 @@ impl HlsDialog {
                     self.last_result = None;
                 }
             }
-            Ok(Err(message)) => {
-                self.inspect_error = Some(message);
+            Ok(Err(error)) => {
+                self.inspect_error = Some(HlsInspectFailure::Inspect(error));
                 self.plan = None;
             }
             Err(error) => {
-                self.inspect_error = Some(error.to_string());
+                self.inspect_error = Some(HlsInspectFailure::Io(error));
                 self.plan = None;
             }
         }
@@ -258,7 +286,12 @@ impl HlsDialog {
     }
 
     /// Renders the modal dialog when open and returns any user action.
-    pub(crate) fn show(&self, context: &egui::Context, escape_enabled: bool) -> Option<HlsAction> {
+    pub(crate) fn show(
+        &self,
+        context: &egui::Context,
+        escape_enabled: bool,
+        lang: Language,
+    ) -> Option<HlsAction> {
         if !self.is_open() {
             return None;
         }
@@ -272,7 +305,7 @@ impl HlsDialog {
             ui.set_max_height(max_height);
             ui.spacing_mut().item_spacing.y = Space::SM;
 
-            ui.heading("HLS media");
+            ui.heading(lang.pick("HLS media", "HLS 미디어"));
             if let Some(plan) = &self.plan {
                 let palette = Palette::of(ui);
                 ui.add(
@@ -288,11 +321,11 @@ impl HlsDialog {
             }
 
             ui.separator();
-            if let Some(body_action) = self.render_body(ui) {
+            if let Some(body_action) = self.render_body(ui, lang) {
                 action = Some(body_action);
             }
             ui.separator();
-            if let Some(footer_action) = self.render_footer(ui) {
+            if let Some(footer_action) = self.render_footer(ui, lang) {
                 action = Some(footer_action);
             }
         });
@@ -322,17 +355,19 @@ impl HlsDialog {
         })
     }
 
-    fn render_body(&self, ui: &mut egui::Ui) -> Option<HlsAction> {
+    fn render_body(&self, ui: &mut egui::Ui, lang: Language) -> Option<HlsAction> {
         if self.inspecting.is_some() && self.plan.is_none() {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label("Inspecting playlist…");
+                ui.label(lang.pick("Inspecting playlist…", "재생목록 검사 중…"));
             });
             return None;
         }
         if let Some(error) = &self.inspect_error {
             let palette = Palette::of(ui);
-            ui.add(egui::Label::new(RichText::new(error).color(palette.error)).wrap());
+            ui.add(
+                egui::Label::new(RichText::new(error.localized(lang)).color(palette.error)).wrap(),
+            );
             return None;
         }
         let plan = self.plan.as_ref()?;
@@ -344,6 +379,7 @@ impl HlsDialog {
                 &plan.variants,
                 self.selected_variant,
                 self.is_downloading(),
+                lang,
             ) {
                 action = Some(HlsAction::SelectVariant(selected));
             }
@@ -357,36 +393,40 @@ impl HlsDialog {
                     media,
                     self.segment_statuses_for_selected(),
                     self.is_downloading(),
+                    lang,
                 );
             }
-            self.render_status_line(ui, entry);
+            self.render_status_line(ui, entry, lang);
         }
         action
     }
 
-    fn render_status_line(&self, ui: &mut egui::Ui, entry: &HlsVariantEntry) {
+    fn render_status_line(&self, ui: &mut egui::Ui, entry: &HlsVariantEntry, lang: Language) {
         if let Some(active) = &self.download {
             ui.add_space(Space::XS);
-            render_progress_row(ui, &active.progress);
+            render_progress_row(ui, &active.progress, lang);
             return;
         }
         if let Some(finished) = &self.last_result
             && finished.variant_index == self.selected_variant
         {
             ui.add_space(Space::XS);
-            render_outcome_line(ui, &finished.outcome);
+            render_outcome_line(ui, &finished.outcome, lang);
             return;
         }
         if let Some(reason) = entry.blocked_reason() {
             ui.add_space(Space::XS);
             let palette = Palette::of(ui);
             ui.add(
-                egui::Label::new(RichText::new(reason.to_string()).color(palette.warning)).wrap(),
+                egui::Label::new(
+                    RichText::new(domain::hls_blocked_reason(lang, &reason)).color(palette.warning),
+                )
+                .wrap(),
             );
         }
     }
 
-    fn render_footer(&self, ui: &mut egui::Ui) -> Option<HlsAction> {
+    fn render_footer(&self, ui: &mut egui::Ui, lang: Language) -> Option<HlsAction> {
         let can_download = self
             .selected_entry()
             .is_some_and(HlsVariantEntry::can_download)
@@ -395,21 +435,25 @@ impl HlsDialog {
 
         let mut action = None;
         ui.horizontal_wrapped(|ui| {
-            let download_resp = primary_button(ui, "Download .ts", can_download);
+            let download_resp =
+                primary_button(ui, lang.pick("Download .ts", ".ts 다운로드"), can_download);
             if download_resp.clicked() {
                 action = Some(HlsAction::Download);
             }
             if self.is_downloading() {
-                if ui.button("Cancel").clicked() {
+                if ui.button(lang.text(Text::Cancel)).clicked() {
                     action = Some(HlsAction::CancelDownload);
                 }
             } else if ui
-                .add_enabled(self.inspecting.is_none(), egui::Button::new("Refresh"))
+                .add_enabled(
+                    self.inspecting.is_none(),
+                    egui::Button::new(lang.pick("Refresh", "새로고침")),
+                )
                 .clicked()
             {
                 action = Some(HlsAction::Refresh);
             }
-            if ui.button("Close").clicked() {
+            if ui.button(lang.pick("Close", "닫기")).clicked() {
                 action = Some(HlsAction::Close);
             }
         });
@@ -440,10 +484,11 @@ fn render_variants_table(
     variants: &[HlsVariantEntry],
     selected: usize,
     locked: bool,
+    lang: Language,
 ) -> Option<usize> {
     let palette = Palette::of(ui);
     ui.label(
-        RichText::new("Media playlists")
+        RichText::new(lang.pick("Media playlists", "미디어 재생목록"))
             .size(TypeScale::PANEL_TITLE)
             .color(palette.secondary),
     );
@@ -470,10 +515,34 @@ fn render_variants_table(
             .column(Column::remainder().at_least(cols.playlist_min))
             .column(Column::exact(cols.status))
             .header(Layout::TABLE_HEADER_HEIGHT, |mut header| {
-                header_col(&mut header, "Quality", false, ROW_LEAD, false);
-                header_col(&mut header, "Bitrate", true, Space::MD, false);
-                header_col(&mut header, "Playlist", false, Space::S, false);
-                header_col(&mut header, "Status", false, Space::S, true);
+                header_col(
+                    &mut header,
+                    lang.pick("Quality", "화질"),
+                    false,
+                    ROW_LEAD,
+                    false,
+                );
+                header_col(
+                    &mut header,
+                    lang.pick("Bitrate", "비트레이트"),
+                    true,
+                    Space::MD,
+                    false,
+                );
+                header_col(
+                    &mut header,
+                    lang.pick("Playlist", "재생목록"),
+                    false,
+                    Space::S,
+                    false,
+                );
+                header_col(
+                    &mut header,
+                    lang.text(Text::ColStatus),
+                    false,
+                    Space::S,
+                    true,
+                );
             })
             .body(|mut body| {
                 body.ui_mut().style_mut().interaction.selectable_labels = false;
@@ -484,7 +553,8 @@ fn render_variants_table(
                     };
                     let is_selected = idx == selected;
                     row.set_selected(is_selected);
-                    let cell_clicked = render_variant_row(&mut row, entry, is_selected, &palette);
+                    let cell_clicked =
+                        render_variant_row(&mut row, entry, is_selected, &palette, lang);
                     if !locked && (row.response().clicked() || cell_clicked) {
                         clicked_row = Some(idx);
                     }
@@ -500,6 +570,7 @@ fn render_variant_row(
     entry: &HlsVariantEntry,
     is_selected: bool,
     palette: &Palette,
+    lang: Language,
 ) -> bool {
     let mut cell_clicked = false;
     row.col(|ui| {
@@ -555,7 +626,7 @@ fn render_variant_row(
     row.col(|ui| {
         paint_row_cell(ui, false, true);
         ui.add_space(Space::S);
-        let (text, color) = variant_status_cell(entry, palette);
+        let (text, color) = variant_status_cell(entry, palette, lang);
         let resp = ui.add(
             egui::Label::new(
                 RichText::new(text)
@@ -571,22 +642,32 @@ fn render_variant_row(
     cell_clicked
 }
 
-fn variant_status_cell(
+const fn variant_status_cell(
     entry: &HlsVariantEntry,
     palette: &Palette,
+    lang: Language,
 ) -> (&'static str, egui::Color32) {
     match &entry.state {
-        VariantMediaState::NotCaptured => ("Not captured", palette.secondary),
-        VariantMediaState::Failed(_) => ("Parse error", palette.error),
+        VariantMediaState::NotCaptured => (lang.pick("Not captured", "미캡처"), palette.secondary),
+        VariantMediaState::Failed(_) => (lang.pick("Parse error", "해석 오류"), palette.error),
         VariantMediaState::Ready(plan) => match &plan.blocked {
-            None => ("Ready", palette.text),
-            Some(HlsBlockedReason::MissingChromeSegmentRequest) => {
-                ("Play in Chrome", palette.secondary)
+            None => (lang.pick("Ready", "준비됨"), palette.text),
+            Some(HlsBlockedReason::MissingChromeSegmentRequest) => (
+                lang.pick("Play in Chrome", "Chrome 재생 필요"),
+                palette.secondary,
+            ),
+            Some(HlsBlockedReason::Unsupported(_)) => {
+                (lang.pick("Unsupported", "미지원"), palette.secondary)
             }
-            Some(HlsBlockedReason::Unsupported(_)) => ("Unsupported", palette.secondary),
-            Some(HlsBlockedReason::NoSegments) => ("No segments", palette.secondary),
-            Some(HlsBlockedReason::PlaylistNotCaptured) => ("Not captured", palette.secondary),
-            Some(HlsBlockedReason::PlaylistParseFailed(_)) => ("Parse error", palette.error),
+            Some(HlsBlockedReason::NoSegments) => {
+                (lang.pick("No segments", "세그먼트 없음"), palette.secondary)
+            }
+            Some(HlsBlockedReason::PlaylistNotCaptured) => {
+                (lang.pick("Not captured", "미캡처"), palette.secondary)
+            }
+            Some(HlsBlockedReason::PlaylistParseFailed(_)) => {
+                (lang.pick("Parse error", "해석 오류"), palette.error)
+            }
         },
     }
 }
@@ -595,17 +676,19 @@ fn segments_summary_text(
     media: &MediaDownloadPlan,
     live_statuses: Option<&[SegmentStatus]>,
     is_downloading: bool,
+    lang: Language,
 ) -> Option<String> {
     if is_downloading {
         return None;
     }
     let Some(statuses) = live_statuses else {
-        return Some(format!(
-            "{} total · {} cached · {} missing",
-            media.segments.len(),
-            media.cached_count,
-            media.missing_count,
-        ));
+        let total = media.segments.len();
+        let cached = media.cached_count;
+        let missing = media.missing_count;
+        return Some(match lang {
+            Language::English => format!("{total} total · {cached} cached · {missing} missing"),
+            Language::Korean => format!("전체 {total} · 캐시 {cached} · 누락 {missing}"),
+        });
     };
 
     let mut cached = 0usize;
@@ -623,21 +706,39 @@ fn segments_summary_text(
         }
     }
 
-    let mut parts = vec![format!("{} total", statuses.len())];
+    let mut parts = vec![match lang {
+        Language::English => format!("{} total", statuses.len()),
+        Language::Korean => format!("전체 {}", statuses.len()),
+    }];
     if cached > 0 {
-        parts.push(format!("{cached} cached"));
+        parts.push(match lang {
+            Language::English => format!("{cached} cached"),
+            Language::Korean => format!("캐시 {cached}"),
+        });
     }
     if fetched > 0 {
-        parts.push(format!("{fetched} fetched"));
+        parts.push(match lang {
+            Language::English => format!("{fetched} fetched"),
+            Language::Korean => format!("수신 {fetched}"),
+        });
     }
     if failed > 0 {
-        parts.push(format!("{failed} failed"));
+        parts.push(match lang {
+            Language::English => format!("{failed} failed"),
+            Language::Korean => format!("실패 {failed}"),
+        });
     }
     if cancelled > 0 {
-        parts.push(format!("{cancelled} cancelled"));
+        parts.push(match lang {
+            Language::English => format!("{cancelled} cancelled"),
+            Language::Korean => format!("취소 {cancelled}"),
+        });
     }
     if pending > 0 {
-        parts.push(format!("{pending} remaining"));
+        parts.push(match lang {
+            Language::English => format!("{pending} remaining"),
+            Language::Korean => format!("대기 {pending}"),
+        });
     }
     Some(parts.join(" · "))
 }
@@ -647,15 +748,16 @@ fn render_segments_section(
     media: &MediaDownloadPlan,
     live_statuses: Option<&[SegmentStatus]>,
     is_downloading: bool,
+    lang: Language,
 ) {
     let palette = Palette::of(ui);
     ui.horizontal(|ui| {
         ui.label(
-            RichText::new("Segments")
+            RichText::new(lang.pick("Segments", "세그먼트"))
                 .size(TypeScale::PANEL_TITLE)
                 .color(palette.secondary),
         );
-        if let Some(summary) = segments_summary_text(media, live_statuses, is_downloading) {
+        if let Some(summary) = segments_summary_text(media, live_statuses, is_downloading, lang) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
                     RichText::new(summary)
@@ -688,9 +790,27 @@ fn render_segments_section(
             .column(Column::exact(cols.status))
             .header(Layout::TABLE_HEADER_HEIGHT, |mut header| {
                 header_col(&mut header, "#", true, Space::MD, false);
-                header_col(&mut header, "Segment", false, Space::S, false);
-                header_col(&mut header, "Duration", true, Space::MD, false);
-                header_col(&mut header, "Status", false, Space::S, true);
+                header_col(
+                    &mut header,
+                    lang.pick("Segment", "세그먼트"),
+                    false,
+                    Space::S,
+                    false,
+                );
+                header_col(
+                    &mut header,
+                    lang.pick("Duration", "길이"),
+                    true,
+                    Space::MD,
+                    false,
+                );
+                header_col(
+                    &mut header,
+                    lang.text(Text::ColStatus),
+                    false,
+                    Space::S,
+                    true,
+                );
             })
             .body(|body| {
                 body.rows(Layout::TABLE_ROW_HEIGHT, media.segments.len(), |mut row| {
@@ -699,7 +819,7 @@ fn render_segments_section(
                         return;
                     };
                     let live = live_statuses.and_then(|slice| slice.get(idx));
-                    render_segment_row(&mut row, idx + 1, segment, live, &palette);
+                    render_segment_row(&mut row, idx + 1, segment, live, &palette, lang);
                 });
             });
     });
@@ -711,6 +831,7 @@ fn render_segment_row(
     plan: &SegmentPlan,
     live_status: Option<&SegmentStatus>,
     palette: &Palette,
+    lang: Language,
 ) {
     row.col(|ui| {
         paint_row_cell(ui, false, false);
@@ -751,7 +872,7 @@ fn render_segment_row(
     row.col(|ui| {
         paint_row_cell(ui, false, true);
         ui.add_space(Space::S);
-        let (label, color, tooltip) = segment_status_cell(plan, live_status, palette);
+        let (label, color, tooltip) = segment_status_cell(plan, live_status, palette, lang);
         let resp = ui.add(
             egui::Label::new(
                 RichText::new(label)
@@ -771,32 +892,55 @@ fn segment_status_cell(
     plan: &SegmentPlan,
     live: Option<&SegmentStatus>,
     palette: &Palette,
+    lang: Language,
 ) -> (String, egui::Color32, Option<String>) {
     match live {
-        Some(SegmentStatus::Cached) => ("Cached".to_owned(), palette.text, None),
-        Some(SegmentStatus::Queued) => ("Queued".to_owned(), palette.secondary, None),
-        Some(SegmentStatus::Downloading) => ("Downloading".to_owned(), palette.text, None),
-        Some(SegmentStatus::Done) => ("Done".to_owned(), palette.text, None),
-        Some(SegmentStatus::Cancelled) => ("Cancelled".to_owned(), palette.warning, None),
+        Some(SegmentStatus::Cached) => {
+            (lang.pick("Cached", "캐시됨").to_owned(), palette.text, None)
+        }
+        Some(SegmentStatus::Queued) => (
+            lang.pick("Queued", "대기 중").to_owned(),
+            palette.secondary,
+            None,
+        ),
+        Some(SegmentStatus::Downloading) => (
+            lang.pick("Downloading", "받는 중").to_owned(),
+            palette.text,
+            None,
+        ),
+        Some(SegmentStatus::Done) => (lang.pick("Done", "완료").to_owned(), palette.text, None),
+        Some(SegmentStatus::Cancelled) => (
+            lang.pick("Cancelled", "취소됨").to_owned(),
+            palette.warning,
+            None,
+        ),
         Some(SegmentStatus::Failed { status, message }) => {
             let (label, color) = match status {
                 Some(code) if *code >= 500 => (format!("HTTP {code}"), palette.error),
                 Some(code) => (format!("HTTP {code}"), palette.warning),
-                None => ("Failed".to_owned(), palette.error),
+                None => (lang.pick("Failed", "실패").to_owned(), palette.error),
             };
-            (label, color, Some(message.clone()))
+            (
+                label,
+                color,
+                Some(domain::localize_hls_segment_failure(lang, message)),
+            )
         }
         None => {
             if plan.is_cached() {
-                ("Cached".to_owned(), palette.text, None)
+                (lang.pick("Cached", "캐시됨").to_owned(), palette.text, None)
             } else {
-                ("Missing".to_owned(), palette.secondary, None)
+                (
+                    lang.pick("Missing", "누락").to_owned(),
+                    palette.secondary,
+                    None,
+                )
             }
         }
     }
 }
 
-fn render_progress_row(ui: &mut egui::Ui, progress: &HlsDownloadProgress) {
+fn render_progress_row(ui: &mut egui::Ui, progress: &HlsDownloadProgress, lang: Language) {
     let fraction = if progress.total_segments == 0 {
         0.0
     } else {
@@ -809,9 +953,9 @@ fn render_progress_row(ui: &mut egui::Ui, progress: &HlsDownloadProgress) {
         }
     };
     let phase_label = match progress.phase {
-        HlsDownloadPhase::Downloading => "Downloading",
-        HlsDownloadPhase::Merging => "Merging",
-        HlsDownloadPhase::Finished => "Finishing",
+        HlsDownloadPhase::Downloading => lang.pick("Downloading", "다운로드 중"),
+        HlsDownloadPhase::Merging => lang.pick("Merging", "병합 중"),
+        HlsDownloadPhase::Finished => lang.pick("Finishing", "마무리 중"),
     };
     let tokens = ThemeTokens::for_theme(ui.ctx().theme());
     ui.horizontal_wrapped(|ui| {
@@ -844,7 +988,7 @@ fn render_progress_row(ui: &mut egui::Ui, progress: &HlsDownloadProgress) {
     });
 }
 
-fn render_outcome_line(ui: &mut egui::Ui, outcome: &HlsDownloadOutcome) {
+fn render_outcome_line(ui: &mut egui::Ui, outcome: &HlsDownloadOutcome, lang: Language) {
     let palette = Palette::of(ui);
     match outcome {
         HlsDownloadOutcome::Completed(summary) => {
@@ -853,14 +997,22 @@ fn render_outcome_line(ui: &mut egui::Ui, outcome: &HlsDownloadOutcome) {
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("output.ts");
-            let text = format!("Saved {file_name} ({})", ByteSize::new(summary.total_bytes));
+            let size = ByteSize::new(summary.total_bytes);
+            let text = match lang {
+                Language::English => format!("Saved {file_name} ({size})"),
+                Language::Korean => format!("{file_name} 저장됨 ({size})"),
+            };
             ui.add(egui::Label::new(RichText::new(text).color(palette.text)).wrap())
                 .on_hover_text(summary.path.display().to_string());
         }
         HlsDownloadOutcome::Cancelled => {
             ui.add(
                 egui::Label::new(
-                    RichText::new("Download cancelled. No file was saved.").color(palette.warning),
+                    RichText::new(lang.pick(
+                        "Download cancelled. No file was saved.",
+                        "다운로드가 취소되어 파일이 저장되지 않았습니다.",
+                    ))
+                    .color(palette.warning),
                 )
                 .wrap(),
             );
@@ -871,7 +1023,12 @@ fn render_outcome_line(ui: &mut egui::Ui, outcome: &HlsDownloadOutcome) {
                 HlsDownloadError::NotReady(_) => palette.warning,
                 _ => palette.error,
             };
-            ui.add(egui::Label::new(RichText::new(error.to_string()).color(color)).wrap());
+            ui.add(
+                egui::Label::new(
+                    RichText::new(domain::hls_download_error(lang, error)).color(color),
+                )
+                .wrap(),
+            );
         }
     }
 }
@@ -994,10 +1151,12 @@ mod tests {
     }
 
     fn run_frame(ctx: &egui::Context, dialog: &HlsDialog) {
-        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let _ = dialog.show(ui.ctx(), true);
-        });
-        out.textures_delta.clear();
+        for lang in [Language::English, Language::Korean] {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let _ = dialog.show(ui.ctx(), true, lang);
+            });
+            out.textures_delta.clear();
+        }
     }
 
     #[test]
@@ -1110,7 +1269,7 @@ mod tests {
         };
         let mut action = None;
         let mut out = ctx.run_ui(input, |ui| {
-            action = dialog.show(ui.ctx(), true);
+            action = dialog.show(ui.ctx(), true, Language::English);
         });
         out.textures_delta.clear();
         assert_eq!(action, Some(HlsAction::Close));
@@ -1194,8 +1353,7 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn segments_summary_reflects_live_and_final_states() -> Result<(), Box<dyn std::error::Error>> {
+    fn sample_media_plan() -> Result<MediaDownloadPlan, Box<dyn std::error::Error>> {
         let session = SessionId::next();
         let media = fixture_exchange(
             session,
@@ -1212,44 +1370,54 @@ mod tests {
             &[0x47; 188],
         )?;
         let plan = inspect_hls_session(&media, &[media.clone(), seg0], None)?;
-        let media_plan = plan
-            .variants
-            .first()
-            .and_then(HlsVariantEntry::media)
-            .ok_or("missing media plan")?;
+        plan.variants
+            .into_iter()
+            .next()
+            .and_then(|entry| match entry.state {
+                VariantMediaState::Ready(plan) => Some(*plan),
+                VariantMediaState::NotCaptured | VariantMediaState::Failed(_) => None,
+            })
+            .ok_or_else(|| "missing media plan".into())
+    }
+
+    #[test]
+    fn segments_summary_reflects_live_and_final_states() -> Result<(), Box<dyn std::error::Error>> {
+        let media_plan = sample_media_plan()?;
 
         assert_eq!(
-            segments_summary_text(media_plan, None, false).as_deref(),
+            segments_summary_text(&media_plan, None, false, Language::English).as_deref(),
             Some("3 total · 1 cached · 2 missing")
         );
         assert_eq!(
             segments_summary_text(
-                media_plan,
+                &media_plan,
                 Some(&[
                     SegmentStatus::Cached,
                     SegmentStatus::Downloading,
                     SegmentStatus::Downloading,
                 ]),
                 true,
+                Language::English,
             ),
             None
         );
         assert_eq!(
             segments_summary_text(
-                media_plan,
+                &media_plan,
                 Some(&[
                     SegmentStatus::Cached,
                     SegmentStatus::Done,
                     SegmentStatus::Done,
                 ]),
                 false,
+                Language::English,
             )
             .as_deref(),
             Some("3 total · 1 cached · 2 fetched")
         );
         assert_eq!(
             segments_summary_text(
-                media_plan,
+                &media_plan,
                 Some(&[
                     SegmentStatus::Cached,
                     SegmentStatus::Failed {
@@ -1259,22 +1427,52 @@ mod tests {
                     SegmentStatus::Done,
                 ]),
                 false,
+                Language::English,
             )
             .as_deref(),
             Some("3 total · 1 cached · 1 fetched · 1 failed")
         );
         assert_eq!(
             segments_summary_text(
-                media_plan,
+                &media_plan,
                 Some(&[
                     SegmentStatus::Cached,
                     SegmentStatus::Cancelled,
                     SegmentStatus::Cancelled,
                 ]),
                 false,
+                Language::English,
             )
             .as_deref(),
             Some("3 total · 1 cached · 2 cancelled")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn segments_summary_localizes_in_korean() -> Result<(), Box<dyn std::error::Error>> {
+        let media_plan = sample_media_plan()?;
+
+        assert_eq!(
+            segments_summary_text(&media_plan, None, false, Language::Korean).as_deref(),
+            Some("전체 3 · 캐시 1 · 누락 2")
+        );
+        assert_eq!(
+            segments_summary_text(
+                &media_plan,
+                Some(&[
+                    SegmentStatus::Cached,
+                    SegmentStatus::Failed {
+                        status: Some(403),
+                        message: "HTTP 403 Forbidden".to_owned(),
+                    },
+                    SegmentStatus::Done,
+                ]),
+                false,
+                Language::Korean,
+            )
+            .as_deref(),
+            Some("전체 3 · 캐시 1 · 수신 1 · 실패 1")
         );
         Ok(())
     }

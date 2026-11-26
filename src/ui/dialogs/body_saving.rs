@@ -1,5 +1,6 @@
 //! Saving captured bodies to files from the session body store.
 
+use crate::ui::i18n::{Language, Text, domain};
 use crate::ui::style::tokens::Layout;
 use std::io;
 use std::path::PathBuf;
@@ -26,30 +27,140 @@ const MIB: u64 = 1024 * 1024;
 const SETTINGS_FILE: &str = "body-store";
 const LIMIT_KEY: &str = "limit_mib";
 const MAX_LIMIT_MIB: u64 = 1024 * 1024;
-pub(super) const PRIVACY_NOTICE: &str = "Saved bodies can contain cookies, tokens and personal data. \
-     Files are created readable only by you; keep them private.";
+
+pub(super) const fn privacy_notice(lang: Language) -> &'static str {
+    lang.pick(
+        "Saved bodies can contain cookies, tokens and personal data. \
+         Files are created readable only by you; keep them private.",
+        "저장된 본문에는 쿠키, 토큰, 개인정보가 포함될 수 있습니다. \
+         파일은 현재 사용자만 읽을 수 있도록 생성됩니다. 안전하게 보관하세요.",
+    )
+}
 
 /// A save waiting for the user to confirm a warning.
 struct Confirmation {
     request: SaveBody,
-    incomplete: Option<String>,
+    stored: StoredBody,
     show_privacy: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum InitError {
+    NoCacheDirectory,
+    Open(String),
+}
+
+impl InitError {
+    fn localized(&self, lang: Language) -> String {
+        match (self, lang) {
+            (Self::NoCacheDirectory, Language::English) => {
+                "Saving bodies is unavailable: no cache directory; check HOME".to_owned()
+            }
+            (Self::NoCacheDirectory, Language::Korean) => {
+                "본문 저장을 사용할 수 없습니다: 캐시 폴더를 찾을 수 없습니다(HOME을 확인하세요)"
+                    .to_owned()
+            }
+            (Self::Open(detail), Language::English) => {
+                format!("Saving bodies is unavailable: {detail}")
+            }
+            (Self::Open(detail), Language::Korean) => {
+                format!("본문 저장을 사용할 수 없습니다: {detail}")
+            }
+        }
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum BodySaveFailure {
+    Directory(String, bool),
+    Init(InitError),
+    NotStored,
+    NoResponse,
+    WorkerStopped,
+    Other(String),
+}
+
+impl BodySaveFailure {
+    fn from_dir_error(error: &io::Error) -> Self {
+        let is_missing = error.kind() == io::ErrorKind::NotADirectory
+            && error.to_string() == "Choose an existing save directory in the Save menu";
+        Self::Directory(error.to_string(), is_missing)
+    }
+
+    fn localized(&self, lang: Language) -> String {
+        match self {
+            Self::Directory(_, true) => lang
+                .pick(
+                    "Choose an existing save directory in the Save menu",
+                    "저장 메뉴에서 존재하는 저장 폴더를 선택하세요",
+                )
+                .to_owned(),
+            Self::Directory(detail, false) | Self::Other(detail) => detail.clone(),
+            Self::Init(err) => err.localized(lang),
+            Self::NotStored => lang
+                .pick(
+                    "This body was not stored.",
+                    "이 본문은 저장되지 않았습니다.",
+                )
+                .to_owned(),
+            Self::NoResponse => lang
+                .pick("No response was received.", "수신된 응답이 없습니다.")
+                .to_owned(),
+            Self::WorkerStopped => lang
+                .pick(
+                    "The save worker stopped unexpectedly",
+                    "저장 작업자가 예기치 않게 중지되었습니다",
+                )
+                .to_owned(),
+        }
+    }
+}
+
+/// Reason saving the body store limit setting failed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum LimitSaveError {
+    DirectoryUnavailable,
+    InvalidPath,
+    Io(String),
+}
+
+impl LimitSaveError {
+    fn localized(&self, lang: Language) -> String {
+        match self {
+            Self::DirectoryUnavailable => lang
+                .pick(
+                    "settings directory unavailable",
+                    "설정 폴더를 사용할 수 없습니다",
+                )
+                .to_owned(),
+            Self::InvalidPath => lang
+                .pick("invalid settings path", "유효하지 않은 설정 경로입니다")
+                .to_owned(),
+            Self::Io(detail) => detail.clone(),
+        }
+    }
+}
+
+impl From<io::Error> for LimitSaveError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error.to_string())
+    }
 }
 
 /// Outcome of the most recent single-body save attempt.
 #[derive(Debug, Eq, PartialEq)]
 enum SaveStatus {
     Saved(SavedBody),
-    Failed(String),
+    Failed(BodySaveFailure),
 }
 
 /// Body store ownership, its settings, and the state of body saves.
 pub(crate) struct BodySaving {
     store: Option<BodyStore>,
-    init_error: Option<String>,
+    init_error: Option<InitError>,
     limit_mib: u64,
     settings_path: Option<PathBuf>,
-    settings_error: Option<String>,
+    settings_error: Option<LimitSaveError>,
     pending: Option<BackgroundTask<SavedBody>>,
     status: Option<SaveStatus>,
     confirmation: Option<Confirmation>,
@@ -71,15 +182,16 @@ impl BodySaving {
             .and_then(|path| std::fs::read_to_string(path).ok())
             .and_then(|text| parse_limit(&text))
             .unwrap_or(BODY_STORE_LIMIT_BYTES / MIB);
-        let opened = http_inspector_core::settings::paths::body_store_directory(|name| {
+        let cache_dir = http_inspector_core::settings::paths::body_store_directory(|name| {
             std::env::var_os(name)
-        })
-        .ok_or_else(|| io::Error::other("no cache directory; check HOME"))
-        .and_then(|root| BodyStore::with_limits(&root, limit_mib * MIB, BODY_STORE_MIN_FREE_BYTES));
-        let (store, init_error) = match opened {
-            Ok(store) => (Some(store), None),
-            Err(error) => (None, Some(format!("Saving bodies is unavailable: {error}"))),
-        };
+        });
+        let (store, init_error) = cache_dir.map_or_else(
+            || (None, Some(InitError::NoCacheDirectory)),
+            |root| match BodyStore::with_limits(&root, limit_mib * MIB, BODY_STORE_MIN_FREE_BYTES) {
+                Ok(store) => (Some(store), None),
+                Err(error) => (None, Some(InitError::Open(error.to_string()))),
+            },
+        );
         Self {
             store,
             init_error,
@@ -131,13 +243,13 @@ impl BodySaving {
         self.store.as_ref()
     }
 
-    /// The request and response `Save … body ▼` menus of the Body tab.
     /// The `Save` menu in the header of one body section of the Body tab.
     pub(crate) fn menu(
         &self,
         ui: &mut egui::Ui,
         record: &Exchange,
         side: BodySide,
+        lang: Language,
     ) -> Option<AppAction> {
         let stored = self
             .store
@@ -148,20 +260,21 @@ impl BodySaving {
             .add_enabled_ui(enabled, |ui| {
                 controls::ghost_menu(
                     ui,
-                    text::menu_label(ShellText::Save.text()),
+                    text::menu_label(ShellText::Save.text(lang)),
                     Layout::PANE_BUTTON_HEIGHT,
                     |ui| {
                         if let Some(stored) = stored {
-                            ui.weak(stored_text(&stored));
+                            ui.weak(stored_text(&stored, lang));
                         }
                         for format in [SaveFormat::Decoded, SaveFormat::AsReceived] {
-                            let (text, hover) = format_text(format);
+                            let (text, hover) = format_text(format, lang);
                             if ui.button(text).on_hover_text(hover).clicked() {
                                 ui.close();
                                 return Some(AppAction::SaveBody(record.id(), side, format));
                             }
                         }
-                        if side == BodySide::Response && super::range_merge::menu_items(ui, record)
+                        if side == BodySide::Response
+                            && super::range_merge::menu_items(ui, record, lang)
                         {
                             ui.close();
                             return Some(AppAction::PlanRanges(record.id()));
@@ -173,17 +286,25 @@ impl BodySaving {
             .inner;
         let _ = shown
             .response
-            .on_disabled_hover_text(self.unavailable_text());
+            .on_disabled_hover_text(self.unavailable_text(lang));
         shown.inner.flatten()
     }
 
-    fn unavailable_text(&self) -> &str {
+    fn unavailable_text(&self, lang: Language) -> String {
         if self.is_busy() {
-            "Another body is being saved."
-        } else if let Some(error) = self.init_error.as_deref() {
-            error
+            lang.pick(
+                "Another body is being saved.",
+                "다른 본문을 저장하는 중입니다.",
+            )
+            .to_owned()
+        } else if let Some(error) = self.init_error.as_ref() {
+            error.localized(lang)
         } else {
-            "This body was not stored."
+            lang.pick(
+                "This body was not stored.",
+                "이 본문은 저장되지 않았습니다.",
+            )
+            .to_owned()
         }
     }
 
@@ -203,26 +324,27 @@ impl BodySaving {
         }
         self.status = None;
         let result = directory
-            .map_err(|error| error.to_string())
+            .map_err(|error| BodySaveFailure::from_dir_error(&error))
             .and_then(|directory| {
-                let store = self
-                    .store
-                    .as_ref()
-                    .ok_or_else(|| self.unavailable_text().to_owned())?;
+                let store = self.store.as_ref().ok_or_else(|| {
+                    self.init_error
+                        .clone()
+                        .map_or(BodySaveFailure::NotStored, BodySaveFailure::Init)
+                })?;
                 let stored = store
                     .body(record.id(), side)
-                    .ok_or_else(|| "This body was not stored.".to_owned())?;
+                    .ok_or(BodySaveFailure::NotStored)?;
                 let request = SaveBody::new(record, side, format, directory)
-                    .ok_or_else(|| "No response was received.".to_owned())?;
+                    .ok_or(BodySaveFailure::NoResponse)?;
                 Ok((request, stored))
             });
         match result {
             Ok((request, stored)) => {
-                let incomplete = stored.incomplete_reason();
-                if incomplete.is_some() || !self.privacy_acknowledged {
+                let is_incomplete = stored.incomplete_reason().is_some();
+                if is_incomplete || !self.privacy_acknowledged {
                     self.confirmation = Some(Confirmation {
                         request,
-                        incomplete,
+                        stored,
                         show_privacy: !self.privacy_acknowledged,
                     });
                 } else {
@@ -245,34 +367,44 @@ impl BodySaving {
         };
         match store.save(request) {
             Ok(receiver) => self.pending = Some(BackgroundTask::track(receiver)),
-            Err(error) => self.status = Some(SaveStatus::Failed(error.to_string())),
+            Err(error) => {
+                self.status = Some(SaveStatus::Failed(BodySaveFailure::Other(
+                    error.to_string(),
+                )));
+            }
         }
     }
 
     /// Shows the pending confirmation without starting or cancelling a save.
-    pub(crate) fn show_confirmation(&self, ctx: &egui::Context) -> Option<bool> {
+    pub(crate) fn show_confirmation(&self, ctx: &egui::Context, lang: Language) -> Option<bool> {
         let confirmation = self.confirmation.as_ref()?;
         let mut choice = None;
         let max_width = Layout::BODY_CONFIRM_WIDTH.fit(ctx.content_rect().width());
         let modal = egui::Modal::new(egui::Id::unique("confirm-body-save")).show(ctx, |ui| {
             ui.set_max_width(max_width);
-            ui.heading("Save body");
-            if let Some(reason) = confirmation.incomplete.as_deref() {
-                ui.colored_label(
-                    Palette::of(ui).warning,
-                    format!(
+            ui.heading(lang.pick("Save body", "본문 저장"));
+            if let Some(reason) = domain::stored_body_incomplete_reason(lang, &confirmation.stored)
+            {
+                let warning = match lang {
+                    Language::English => format!(
                         "This body is incomplete. {reason} The file name will end in .partial."
                     ),
-                );
+                    Language::Korean => {
+                        format!(
+                            "이 본문은 불완전합니다. {reason} 파일 이름 끝에 .partial이 붙습니다."
+                        )
+                    }
+                };
+                ui.colored_label(Palette::of(ui).warning, warning);
             }
             if confirmation.show_privacy {
-                ui.label(PRIVACY_NOTICE);
+                ui.label(privacy_notice(lang));
             }
             ui.horizontal_wrapped(|ui| {
-                if ui.button("Save").clicked() {
+                if ui.button(lang.text(Text::Save)).clicked() {
                     choice = Some(true);
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(lang.text(Text::Cancel)).clicked() {
                     choice = Some(false);
                 }
             });
@@ -303,22 +435,22 @@ impl BodySaving {
         };
         let status = match task.poll() {
             TaskPoll::Ready(Ok(saved)) => SaveStatus::Saved(saved),
-            TaskPoll::Ready(Err(error)) => SaveStatus::Failed(error.to_string()),
-            TaskPoll::Pending => return,
-            TaskPoll::Disconnected => {
-                SaveStatus::Failed("The save worker stopped unexpectedly".to_owned())
+            TaskPoll::Ready(Err(error)) => {
+                SaveStatus::Failed(BodySaveFailure::Other(error.to_string()))
             }
+            TaskPoll::Pending => return,
+            TaskPoll::Disconnected => SaveStatus::Failed(BodySaveFailure::WorkerStopped),
         };
         self.pending = None;
         self.status = Some(status);
     }
 
     /// The body store limit inside the Settings menu.
-    pub(crate) fn settings_menu(&self, ui: &mut egui::Ui) -> Option<u64> {
+    pub(crate) fn settings_menu(&self, ui: &mut egui::Ui, lang: Language) -> Option<u64> {
         let max_width = Layout::BODY_SETTINGS_WIDTH.fit(ui.ctx().content_rect().width());
         ui.set_max_width(max_width);
         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-            ui.label("Body store limit");
+            ui.label(lang.pick("Body store limit", "본문 저장소 한도"));
             let mut limit = self.limit_mib;
             let changed = ui
                 .add(
@@ -326,19 +458,23 @@ impl BodySaving {
                         .range(1..=MAX_LIMIT_MIB)
                         .suffix(" MiB"),
                 )
-                .on_hover_text(
-                    "Most body bytes kept for saving in one session. Later bodies are not stored once it is reached.",
-                )
+                .on_hover_text(lang.pick(
+                    "Maximum body bytes kept for saving in one session; later bodies are not stored once reached.",
+                    "한 세션에서 저장용으로 보관할 최대 본문 용량이며, 한도에 도달하면 이후 본문은 저장되지 않습니다.",
+                ))
                 .changed();
             if let Some(store) = self.store.as_ref() {
-                ui.weak(format!(
-                    "{} used · stored in {}",
-                    ByteSize::new(store.used_bytes()),
-                    store.directory().display()
-                ));
+                let used = ByteSize::new(store.used_bytes());
+                let dir = store.directory().display();
+                let summary = match lang {
+                    Language::English => format!("{used} used · stored in {dir}"),
+                    Language::Korean => format!("{used} 사용 중 · 저장 위치: {dir}"),
+                };
+                ui.weak(summary);
             }
             changed.then_some(limit)
-        }).inner
+        })
+        .inner
     }
 
     pub(crate) fn set_limit(&mut self, limit_mib: u64) {
@@ -346,30 +482,32 @@ impl BodySaving {
         if let Some(store) = self.store.as_ref() {
             store.set_limit_bytes(limit_mib * MIB);
         }
-        self.settings_error = self
-            .save_settings()
-            .err()
-            .map(|error| format!("Could not save the body store limit: {error}"));
+        self.settings_error = self.save_settings().err();
     }
 
-    fn save_settings(&self) -> io::Result<()> {
+    fn save_settings(&self) -> Result<(), LimitSaveError> {
         use std::io::Write as _;
         let path = self
             .settings_path
             .as_ref()
-            .ok_or_else(|| io::Error::other("settings directory unavailable"))?;
-        let parent = path
-            .parent()
-            .ok_or_else(|| io::Error::other("invalid settings path"))?;
+            .ok_or(LimitSaveError::DirectoryUnavailable)?;
+        let parent = path.parent().ok_or(LimitSaveError::InvalidPath)?;
         std::fs::create_dir_all(parent)?;
         publish(path, ExistingFile::Replace, |file| {
             writeln!(file, "{LIMIT_KEY}={}", self.limit_mib)
+        })?;
+        Ok(())
+    }
+
+    fn has_warnings(&self) -> bool {
+        self.store.as_ref().is_some_and(|store| {
+            store.error().is_some() || store.limit_reached() || store.low_disk_space()
         })
     }
 
     /// Whether [`Self::status`] has anything to show.
     pub(crate) fn has_status(&self) -> bool {
-        !self.warnings().is_empty()
+        self.has_warnings()
             || self.init_error.is_some()
             || self.settings_error.is_some()
             || self.pending.is_some()
@@ -378,38 +516,52 @@ impl BodySaving {
     }
 
     /// Body store warnings and the result of the last body save, for the status bar.
-    pub(crate) fn status(&self, ui: &mut egui::Ui) -> bool {
-        for warning in self.warnings() {
+    pub(crate) fn status(&self, ui: &mut egui::Ui, lang: Language) -> bool {
+        for warning in self.warnings(lang) {
             ui.separator();
             indicator::dot_label(ui, Tone::Warning, warning);
         }
-        if let Some(error) = self.init_error.as_ref().or(self.settings_error.as_ref()) {
+        if let Some(error) = self.init_error.as_ref() {
             ui.separator();
-            indicator::dot_label(ui, Tone::Danger, error);
+            indicator::dot_label(ui, Tone::Danger, error.localized(lang));
+        } else if let Some(error) = self.settings_error.as_ref() {
+            ui.separator();
+            let detail = error.localized(lang);
+            let text = match lang {
+                Language::English => format!("Could not save the body store limit: {detail}"),
+                Language::Korean => format!("본문 저장소 한도를 저장하지 못했습니다: {detail}"),
+            };
+            indicator::dot_label(ui, Tone::Danger, text);
         }
         if self.pending.is_some() {
             ui.separator();
             ui.spinner();
-            ui.label("Saving body…");
+            ui.label(lang.pick("Saving body…", "본문 저장 중…"));
         }
-        let cancel_bulk = self.bulk.status(ui);
+        let cancel_bulk = self.bulk.status(ui, lang);
         match &self.status {
             Some(SaveStatus::Saved(saved)) => {
                 ui.separator();
-                let suffix = if saved.complete() {
-                    ""
-                } else {
-                    " (incomplete)"
+                let path = saved.path().display();
+                let size = ByteSize::new(saved.bytes());
+                let text = match (lang, saved.complete()) {
+                    (Language::English, true) => format!("Saved body: {path} ({size})"),
+                    (Language::English, false) => {
+                        format!("Saved body (incomplete): {path} ({size})")
+                    }
+                    (Language::Korean, true) => format!("본문 저장됨: {path} ({size})"),
+                    (Language::Korean, false) => format!("본문 저장됨(불완전): {path} ({size})"),
                 };
-                ui.label(format!(
-                    "Saved body{suffix}: {} ({})",
-                    saved.path().display(),
-                    ByteSize::new(saved.bytes())
-                ));
+                ui.label(text);
             }
             Some(SaveStatus::Failed(error)) => {
                 ui.separator();
-                indicator::dot_label(ui, Tone::Danger, format!("Body save failed: {error}"));
+                let detail = error.localized(lang);
+                let text = match lang {
+                    Language::English => format!("Body save failed: {detail}"),
+                    Language::Korean => format!("본문 저장 실패: {detail}"),
+                };
+                indicator::dot_label(ui, Tone::Danger, text);
             }
             None => {}
         }
@@ -420,25 +572,38 @@ impl BodySaving {
         self.bulk.cancel();
     }
 
-    fn warnings(&self) -> Vec<String> {
+    fn warnings(&self, lang: Language) -> Vec<String> {
         let Some(store) = self.store.as_ref() else {
             return Vec::new();
         };
         let mut warnings = Vec::new();
         if let Some(error) = store.error() {
-            warnings.push(format!("{error}. Later bodies are not stored."));
+            warnings.push(match lang {
+                Language::English => format!("{error}. Later bodies are not stored."),
+                Language::Korean => format!("{error}. 이후 본문은 저장되지 않습니다."),
+            });
         }
         if store.limit_reached() {
-            warnings.push(format!(
-                "The body store reached its {} limit. Later bodies are not stored; raise the limit in Settings.",
-                ByteSize::new(store.limit_bytes())
-            ));
+            let limit = ByteSize::new(store.limit_bytes());
+            warnings.push(match lang {
+                Language::English => format!(
+                    "The body store reached its {limit} limit. Later bodies are not stored; raise the limit in Settings."
+                ),
+                Language::Korean => format!(
+                    "본문 저장소가 {limit} 한도에 도달했습니다. 이후 본문은 저장되지 않으므로 설정에서 한도를 높이세요."
+                ),
+            });
         }
         if store.low_disk_space() {
-            warnings.push(format!(
-                "Free disk space is below {}. Bodies are not stored until space is freed.",
-                ByteSize::new(store.min_free_bytes())
-            ));
+            let min_free = ByteSize::new(store.min_free_bytes());
+            warnings.push(match lang {
+                Language::English => format!(
+                    "Free disk space is below {min_free}. Bodies are not stored until space is freed."
+                ),
+                Language::Korean => format!(
+                    "디스크 여유 공간이 {min_free} 미만입니다. 공간을 확보할 때까지 본문이 저장되지 않습니다."
+                ),
+            });
         }
         warnings
     }
@@ -452,24 +617,36 @@ fn parse_limit(text: &str) -> Option<u64> {
         .filter(|limit| (1..=MAX_LIMIT_MIB).contains(limit))
 }
 
-const fn format_text(format: SaveFormat) -> (&'static str, &'static str) {
+const fn format_text(format: SaveFormat, lang: Language) -> (&'static str, &'static str) {
     match format {
         SaveFormat::Decoded => (
-            "Decoded",
-            "Remove gzip, deflate, br and zstd Content-Encoding so the file holds the actual content.",
+            lang.pick("Decoded", "디코딩됨"),
+            lang.pick(
+                "Remove gzip, deflate, br and zstd Content-Encoding so the file holds the actual content.",
+                "gzip, deflate, br, zstd Content-Encoding을 해제해 실제 콘텐츠를 파일에 저장합니다.",
+            ),
         ),
         SaveFormat::AsReceived => (
-            "As received",
-            "Keep the exact bytes that were received, including any Content-Encoding.",
+            lang.pick("As received", "수신 원본 그대로"),
+            lang.pick(
+                "Keep the exact bytes that were received, including any Content-Encoding.",
+                "Content-Encoding을 포함해 수신한 바이트 그대로 저장합니다.",
+            ),
         ),
     }
 }
 
-fn stored_text(stored: &StoredBody) -> String {
+fn stored_text(stored: &StoredBody, lang: Language) -> String {
     let size = ByteSize::new(stored.stored_bytes());
-    stored.incomplete_reason().map_or_else(
-        || format!("{size} stored · complete"),
-        |reason| format!("{size} stored · incomplete: {reason}"),
+    domain::stored_body_incomplete_reason(lang, stored).map_or_else(
+        || match lang {
+            Language::English => format!("{size} stored · complete"),
+            Language::Korean => format!("{size} 저장됨 · 완료"),
+        },
+        |reason| match lang {
+            Language::English => format!("{size} stored · incomplete: {reason}"),
+            Language::Korean => format!("{size} 저장됨 · 불완전: {reason}"),
+        },
     )
 }
 
@@ -487,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn saves_and_replaces_limit_settings() -> io::Result<()> {
+    fn saves_and_replaces_limit_settings() -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("settings").join(SETTINGS_FILE);
         let mut saving = BodySaving {
@@ -505,10 +682,32 @@ mod tests {
         };
         for limit in [64, 128] {
             saving.limit_mib = limit;
-            saving.save_settings()?;
+            saving
+                .save_settings()
+                .map_err(|err| err.localized(Language::English))?;
             assert_eq!(parse_limit(&std::fs::read_to_string(&path)?), Some(limit));
         }
         Ok(())
+    }
+
+    #[test]
+    fn limit_save_errors_localize_in_english_and_korean() {
+        assert_eq!(
+            LimitSaveError::DirectoryUnavailable.localized(Language::English),
+            "settings directory unavailable"
+        );
+        assert_eq!(
+            LimitSaveError::DirectoryUnavailable.localized(Language::Korean),
+            "설정 폴더를 사용할 수 없습니다"
+        );
+        assert_eq!(
+            LimitSaveError::InvalidPath.localized(Language::English),
+            "invalid settings path"
+        );
+        assert_eq!(
+            LimitSaveError::InvalidPath.localized(Language::Korean),
+            "유효하지 않은 설정 경로입니다"
+        );
     }
 
     #[test]
@@ -521,7 +720,9 @@ mod tests {
             settings_path: None,
             settings_error: None,
             pending: Some(task),
-            status: Some(SaveStatus::Failed("earlier".to_owned())),
+            status: Some(SaveStatus::Failed(BodySaveFailure::Other(
+                "earlier".to_owned(),
+            ))),
             confirmation: None,
             privacy_acknowledged: true,
             bulk: crate::ui::dialogs::bulk_save::BulkControls::default(),
@@ -541,7 +742,9 @@ mod tests {
         assert!(saving.pending.is_some(), "the running save is kept");
         assert_eq!(
             saving.status,
-            Some(SaveStatus::Failed("earlier".to_owned()))
+            Some(SaveStatus::Failed(BodySaveFailure::Other(
+                "earlier".to_owned(),
+            )))
         );
         Ok(())
     }
@@ -599,7 +802,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
-                let _ = saving.settings_menu(ui);
+                let _ = saving.settings_menu(ui, Language::English);
             });
         });
         output.textures_delta.clear();

@@ -9,6 +9,7 @@ use http_inspector_exchange::{Exchange, HeaderPreview, Outcome, TunnelPreview};
 
 use crate::ui::AppAction;
 use crate::ui::detail::search::{Query, highlight};
+use crate::ui::i18n::{Language, domain};
 use crate::ui::requests::filter_menu;
 use crate::ui::requests::outcome_view;
 use crate::ui::style::fonts;
@@ -24,11 +25,13 @@ pub(super) fn show(
     record: &Exchange,
     search: Option<&Query>,
     field_menu_enabled: bool,
+    lang: Language,
 ) -> Option<AppAction> {
     let rows = Rows {
         key_width: tree::key_width(ui.available_width()),
         search,
         field_menu_enabled,
+        lang,
         filter: std::cell::Cell::new(None),
     };
     let request = record.request();
@@ -38,7 +41,7 @@ pub(super) fn show(
             tree::group(
                 ui,
                 "inspector-query",
-                ShellText::Query.text(),
+                ShellText::Query.text(lang),
                 Some(pairs.len()),
                 |ui| {
                     for (key, value) in &pairs {
@@ -74,6 +77,7 @@ struct Rows<'a> {
     key_width: f32,
     search: Option<&'a Query>,
     field_menu_enabled: bool,
+    lang: Language,
     /// The filter term picked from a header row's context menu.
     filter: std::cell::Cell<Option<AppAction>>,
 }
@@ -87,14 +91,15 @@ impl Rows<'_> {
         headers: &HeaderPreview,
     ) {
         let entries = headers.entries();
-        tree::group(ui, id, title.text(), Some(entries.len()), |ui| {
+        let lang = self.lang;
+        tree::group(ui, id, title.text(lang), Some(entries.len()), |ui| {
             for header in entries {
                 let masked = header.value() == REDACTED_VALUE;
                 let row = self.pair(ui, header.name(), header.value(), masked);
                 row.context_menu(|ui| {
                     let term = format!("{}={}", header.name(), header.value());
                     if let Some(action) =
-                        filter_menu::items(ui, key, &term, self.field_menu_enabled)
+                        filter_menu::items(ui, key, &term, self.field_menu_enabled, lang)
                     {
                         self.filter.set(Some(action));
                     }
@@ -103,7 +108,7 @@ impl Rows<'_> {
             if headers.omitted() {
                 tree::row(ui, tree::TreeRow::new(1, ""), |ui| {
                     ui.label(
-                        egui::RichText::new(ShellText::HeadersOmitted.text())
+                        egui::RichText::new(ShellText::HeadersOmitted.text(lang))
                             .color(Palette::of(ui).warning),
                     );
                 });
@@ -153,10 +158,14 @@ impl Rows<'_> {
 
 /// What a CONNECT tunnel recorded: its state, bytes each way, and duration.
 fn tunnel_group(ui: &mut egui::Ui, rows: &Rows<'_>, tunnel: &TunnelPreview) {
+    let lang = rows.lang;
     let snapshot = tunnel.snapshot();
     let duration = text::milliseconds(outcome_view::elapsed_millis(snapshot.duration()));
     let pairs = [
-        (ShellText::TunnelState, snapshot.state().to_string()),
+        (
+            ShellText::TunnelState,
+            domain::tunnel_state(lang, snapshot.state()),
+        ),
         (
             ShellText::TunnelSent,
             text::byte_count(snapshot.client_to_upstream()),
@@ -170,13 +179,13 @@ fn tunnel_group(ui: &mut egui::Ui, rows: &Rows<'_>, tunnel: &TunnelPreview) {
     let header = tree::group(
         ui,
         "inspector-tunnel",
-        ShellText::Tunnel.text(),
+        ShellText::Tunnel.text(lang),
         None,
         |ui| {
             for (key, value) in &pairs {
-                let _ = rows.pair(ui, key.text(), value, false);
+                let _ = rows.pair(ui, key.text(lang), value, false);
             }
         },
     );
-    header.on_hover_text(ShellText::TunnelHint.text());
+    header.on_hover_text(ShellText::TunnelHint.text(lang));
 }

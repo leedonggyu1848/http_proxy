@@ -19,11 +19,13 @@ use http_inspector_interop::map_export::{
     export_graph_dot, export_graph_mermaid, export_tree_json, export_tree_text,
 };
 
+use super::state::{HlsSessionError, SessionError};
 use super::{InspectorApp, MainView};
 use crate::ui::dialogs::{
     browser_panel::BrowserAction, bulk_save::BulkAction, ca_panel, har_dialog,
     hls_dialog::HlsAction, replay_panel::ReplayAction,
 };
+use crate::ui::i18n::LanguagePreference;
 use crate::ui::map::{MapAction, MapExportFormat};
 use http_inspector_core::interception::ProxyHandle;
 
@@ -39,6 +41,7 @@ pub(crate) enum AppAction {
     DismissCaNotice,
     SaveMenu(SaveMenuAction),
     SetTheme(egui::ThemePreference),
+    SetLanguage(LanguagePreference),
     SetBodyStorageLimit(u64),
     Browser(BrowserAction),
     Ca(ca_panel::Action),
@@ -129,6 +132,9 @@ impl InspectorApp {
             AppAction::SetTheme(preference) => {
                 self.layout.theme.set_preference(context, preference);
             }
+            AppAction::SetLanguage(preference) => {
+                self.layout.language.set_preference(context, preference);
+            }
             AppAction::SetBodyStorageLimit(limit) => self.session.body_saving.set_limit(limit),
             AppAction::Browser(action) => self.apply_browser(action),
             AppAction::Ca(action) => {
@@ -154,7 +160,7 @@ impl InspectorApp {
             AppAction::SelectRecord(id) => self.requests.selected = Some(id),
             AppAction::DetailTab(tab) => self.detail.tab = tab,
             AppAction::BodyMode(mode) => self.detail.body_mode = mode,
-            AppAction::OpenReplay(id) => self.open_replay(id),
+            AppAction::OpenReplay(id) => self.open_replay_record(id),
             AppAction::OpenHls(id) => self.open_hls(context, id),
             AppAction::Hls(action) => self.apply_hls_action(context, action),
             AppAction::CopyText(text) => context.copy_text(text),
@@ -176,11 +182,11 @@ impl InspectorApp {
         }
     }
 
-    fn open_replay(&mut self, id: RecordId) {
+    fn open_replay_record(&mut self, id: RecordId) {
         if let Some(record) = self.record(id).cloned()
             && let Err(error) = self.detail.open_replay(record)
         {
-            self.report_error(error.to_string());
+            self.report_error(SessionError::Replay(error));
         }
     }
 
@@ -224,7 +230,7 @@ impl InspectorApp {
         }
     }
 
-    pub(crate) fn report_error(&mut self, error: String) {
+    pub(crate) fn report_error(&mut self, error: SessionError) {
         self.session.error = Some(error);
         self.session.capture.error = None;
     }
@@ -307,7 +313,9 @@ impl InspectorApp {
                         .hls
                         .start_download(directory, store, proxy_addr, context);
                 }
-                Err(error) => self.report_error(format!("HLS download failed: {error}")),
+                Err(error) => {
+                    self.report_error(SessionError::HlsDownload(HlsSessionError::Directory(error)));
+                }
             },
             HlsAction::CancelDownload => self.dialogs.hls.cancel_download(),
             HlsAction::Close => self.dialogs.hls.close(),

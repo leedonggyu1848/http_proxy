@@ -22,6 +22,7 @@ use crate::ui::dialogs::{
     replay_panel::{ReplayAction, ReplayPanel},
     save::SaveControls,
 };
+use crate::ui::i18n::{Language, LanguageSettings};
 use crate::ui::map::{MapPanel, RecordMatchCache};
 use crate::ui::requests::filter;
 use crate::ui::requests::toolbar::AuthorizationNotice;
@@ -32,10 +33,27 @@ use crate::ui::style::tokens::Layout;
 use super::MAX_RECORDS;
 use super::capture::CaptureSession;
 
+pub(crate) enum RangeMergeError {
+    Directory(std::io::Error),
+    SavingUnavailable,
+    WorkerStopped,
+    Io(std::io::Error),
+}
+
+pub(crate) enum HlsSessionError {
+    Directory(std::io::Error),
+}
+
+pub(crate) enum SessionError {
+    Replay(ReplayError),
+    RangeMerge(RangeMergeError),
+    HlsDownload(HlsSessionError),
+}
+
 pub(crate) struct SessionState {
     pub(crate) capture: CaptureSession,
     pub(crate) body_saving: BodySaving,
-    pub(crate) error: Option<String>,
+    pub(crate) error: Option<SessionError>,
 }
 
 impl SessionState {
@@ -155,6 +173,7 @@ impl DetailState {
         context: &egui::Context,
         proxy_running: bool,
         records: &RecordList<Exchange>,
+        lang: Language,
     ) -> Vec<ReplayAction> {
         let Some(panel) = self.replay.as_mut() else {
             return Vec::new();
@@ -163,7 +182,7 @@ impl DetailState {
             .iter()
             .rev()
             .find(|record| record.replay_of() == Some(panel.original_id()));
-        panel.show(context, proxy_running, latest)
+        panel.show(context, proxy_running, latest, lang)
     }
 
     pub(super) fn apply_replay(&mut self, action: ReplayAction, proxy: Option<&ProxyHandle>) {
@@ -231,6 +250,7 @@ pub(crate) enum MainView {
 
 pub(crate) struct LayoutState {
     pub(crate) theme: ThemeSettings,
+    pub(crate) language: LanguageSettings,
     pub(crate) main_view: MainView,
     /// Fraction of the main area given to the details pane before clamping.
     /// Updated only when the user drags the divider, so shrinking the window
@@ -242,6 +262,7 @@ impl LayoutState {
     pub(super) fn new(context: &egui::Context) -> Self {
         Self {
             theme: ThemeSettings::new(context),
+            language: LanguageSettings::new(),
             main_view: MainView::default(),
             detail_share: Layout::DEFAULT_DETAIL_SHARE,
         }

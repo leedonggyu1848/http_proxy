@@ -16,6 +16,7 @@ use http_inspector_exchange::BodySide;
 use crate::ui::detail::body_cache::BodySource;
 use crate::ui::detail::body_matches::Hit;
 use crate::ui::detail::tree_view::TreeView;
+use crate::ui::i18n::Language;
 use crate::ui::style::theme::Palette;
 use crate::ui::style::tokens::{Layout, TypeScale};
 
@@ -31,9 +32,10 @@ impl BodyViewCache {
         ui: &mut egui::Ui,
         source: &BodySource<'_>,
         mode: ViewMode,
+        lang: Language,
     ) -> Option<String> {
-        let _ = self.prepare(ui, source, mode);
-        self.render(ui, source.side, mode)
+        let _ = self.prepare(ui, source, mode, lang);
+        self.render(ui, source.side, mode, lang)
     }
 
     /// Builds the view of `source` again when its bytes, mode, search, or
@@ -43,8 +45,9 @@ impl BodyViewCache {
         ui: &egui::Ui,
         source: &BodySource<'_>,
         mode: ViewMode,
+        lang: Language,
     ) -> Option<BodyFormat> {
-        let style = RenderStyle::of(ui);
+        let style = RenderStyle::of(ui, lang);
         let side = self.side(source.side);
         if side.update(ui.ctx(), source, mode, &style) {
             reset_text_selection(ui, source.side);
@@ -62,8 +65,9 @@ impl BodyViewCache {
         ui: &mut egui::Ui,
         side: BodySide,
         mode: ViewMode,
+        lang: Language,
     ) -> Option<String> {
-        let style = RenderStyle::of(ui);
+        let style = RenderStyle::of(ui, lang);
         let view = self.side(side);
         render(
             ui,
@@ -84,6 +88,7 @@ fn render(
     style: &RenderStyle,
     tree: Option<&mut TreeView>,
 ) -> Option<String> {
+    let lang = style.language;
     let (notices, job, lines, matches, galley) = match content {
         Content::Unavailable(message) => {
             padded(ui, |ui| {
@@ -95,7 +100,7 @@ fn render(
             render_notices(ui, notices);
             return ui
                 .push_id(("body-tree", side), |ui| {
-                    tree.and_then(|view| view.show(ui, style.theme, &style.font))
+                    tree.and_then(|view| view.show(ui, style.theme, &style.font, lang))
                 })
                 .inner;
         }
@@ -110,7 +115,7 @@ fn render(
     };
     render_notices(ui, notices);
     let scroll = matches.as_mut().and_then(|marked| {
-        if padded(ui, |ui| marked.matches.controls(ui)) {
+        if padded(ui, |ui| marked.matches.controls(ui, lang)) {
             (*job, *lines) = marked.matches.mark(&marked.job, marked.lines.as_deref());
             *galley = None;
         }

@@ -7,6 +7,7 @@ use crate::ui::detail::detail_tabs::{self, DetailTab};
 use crate::ui::detail::search::{Query, highlight};
 use crate::ui::detail::{headers_tab, image_view, timing_tab};
 use crate::ui::dialogs::{body_saving::BodySaving, copy_curl};
+use crate::ui::i18n::Language;
 use crate::ui::requests::outcome_view;
 use crate::ui::style::fonts;
 use crate::ui::style::theme::{MatchColors, Palette};
@@ -31,6 +32,7 @@ pub(crate) struct DetailView<'a> {
     /// Header rows offer filter terms in their context menu.
     pub(crate) field_menu_enabled: bool,
     pub(crate) body_saving: &'a BodySaving,
+    pub(crate) lang: Language,
 }
 
 impl DetailView<'_> {
@@ -41,13 +43,16 @@ impl DetailView<'_> {
         shortcuts_allowed: bool,
         actions: &mut Vec<AppAction>,
     ) {
+        let lang = self.lang;
         let mut tab = self.tab;
         let Some(record) = self.record else {
-            chrome::pane_header(ui, "details-header", |ui| detail_tabs::show(ui, &mut tab));
+            chrome::pane_header(ui, "details-header", |ui| {
+                detail_tabs::show(ui, &mut tab, lang)
+            });
             ui.centered_and_justified(|ui| {
                 ui.add(
                     egui::Label::new(
-                        egui::RichText::new(ShellText::NoRequestSelected.text()).weak(),
+                        egui::RichText::new(ShellText::NoRequestSelected.text(lang)).weak(),
                     )
                     .wrap(),
                 );
@@ -61,7 +66,7 @@ impl DetailView<'_> {
             detail_tabs::apply_shortcuts(ui, &mut tab);
         }
         let search = self.search;
-        header(ui, record, search, &mut tab, actions);
+        header(ui, record, search, &mut tab, lang, actions);
         if tab != self.tab {
             actions.push(AppAction::DetailTab(tab));
         }
@@ -79,6 +84,7 @@ impl DetailView<'_> {
                             record,
                             search.filter(|query| query.scope.covers_headers()),
                             self.field_menu_enabled,
+                            lang,
                         );
                         (None, filter)
                     }
@@ -91,13 +97,14 @@ impl DetailView<'_> {
                             mode: body_mode,
                             search,
                             copied: None,
+                            lang,
                         };
                         body_tab::show(ui, record, &mut panel, actions);
                         body_mode = panel.mode;
                         (panel.copied, None)
                     }
                     DetailTab::Timing => {
-                        timing_tab::show(ui, record);
+                        timing_tab::show(ui, record, lang);
                         (None, None)
                     }
                 }
@@ -118,14 +125,15 @@ fn header(
     record: &Exchange,
     search: Option<&Query>,
     tab: &mut DetailTab,
+    lang: Language,
     actions: &mut Vec<AppAction>,
 ) {
     let actions_in_header = chrome::pane_header(ui, "details-header", |ui| {
-        detail_tabs::show(ui, tab);
-        let fits = ui.available_width() >= header_actions_width(ui, record) + Space::LG;
+        detail_tabs::show(ui, tab, lang);
+        let fits = ui.available_width() >= header_actions_width(ui, record, lang) + Space::LG;
         if fits {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                header_actions(ui, record, actions);
+                header_actions(ui, record, lang, actions);
             });
         }
         fits
@@ -136,7 +144,7 @@ fn header(
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = Space::XS;
             request_line(ui, record, search);
-            summary_row(ui, record, actions_in_header, actions);
+            summary_row(ui, record, actions_in_header, lang, actions);
         });
     ui.painter().hline(
         ui.max_rect().x_range(),
@@ -145,15 +153,25 @@ fn header(
     );
 }
 
-const HLS_MEDIA_LABEL: &str = "HLS media…";
+const fn hls_media_label(lang: Language) -> &'static str {
+    lang.pick("HLS media…", "HLS 미디어…")
+}
 
 /// Edit and Resend, Copy as cURL, and (for HLS playlists) HLS media, laid out
 /// right to left in the pane header, or left to right under the request line
 /// when the header is too narrow.
-fn header_actions(ui: &mut egui::Ui, record: &Exchange, actions: &mut Vec<AppAction>) {
+fn header_actions(
+    ui: &mut egui::Ui,
+    record: &Exchange,
+    lang: Language,
+    actions: &mut Vec<AppAction>,
+) {
     controls::ghost_style(ui);
     let resend = |ui: &mut egui::Ui, actions: &mut Vec<AppAction>| {
-        let button = controls::ghost(ShellText::EditAndResend.text(), Layout::PANE_BUTTON_HEIGHT);
+        let button = controls::ghost(
+            ShellText::EditAndResend.text(lang),
+            Layout::PANE_BUTTON_HEIGHT,
+        );
         if ui
             .add_enabled(record.source() != CaptureSource::Connect, button)
             .clicked()
@@ -162,14 +180,17 @@ fn header_actions(ui: &mut egui::Ui, record: &Exchange, actions: &mut Vec<AppAct
         }
     };
     let copy = |ui: &mut egui::Ui, actions: &mut Vec<AppAction>| {
-        if copy_curl::copy_button(ui, record).clicked() {
+        if copy_curl::copy_button(ui, record, lang).clicked() {
             actions.push(AppAction::CopyCurl(record.id()));
         }
     };
     let hls = |ui: &mut egui::Ui, actions: &mut Vec<AppAction>| {
         if http_inspector_core::hls::is_hls_playlist_record(record)
             && ui
-                .add(controls::ghost(HLS_MEDIA_LABEL, Layout::PANE_BUTTON_HEIGHT))
+                .add(controls::ghost(
+                    hls_media_label(lang),
+                    Layout::PANE_BUTTON_HEIGHT,
+                ))
                 .clicked()
         {
             actions.push(AppAction::OpenHls(record.id()));
@@ -187,13 +208,16 @@ fn header_actions(ui: &mut egui::Ui, record: &Exchange, actions: &mut Vec<AppAct
 }
 
 /// Width the header actions need, so the header can tell whether they fit.
-fn header_actions_width(ui: &egui::Ui, record: &Exchange) -> f32 {
-    let mut width: f32 = [ShellText::EditAndResend.text(), copy_curl::COPY_LABEL]
-        .iter()
-        .map(|label| controls::button_width(ui, label) + ui.spacing().item_spacing.x)
-        .sum();
+fn header_actions_width(ui: &egui::Ui, record: &Exchange, lang: Language) -> f32 {
+    let mut width: f32 = [
+        ShellText::EditAndResend.text(lang),
+        copy_curl::copy_label(lang),
+    ]
+    .iter()
+    .map(|label| controls::button_width(ui, label) + ui.spacing().item_spacing.x)
+    .sum();
     if http_inspector_core::hls::is_hls_playlist_record(record) {
-        width += controls::button_width(ui, HLS_MEDIA_LABEL) + ui.spacing().item_spacing.x;
+        width += controls::button_width(ui, hls_media_label(lang)) + ui.spacing().item_spacing.x;
     }
     width
 }
@@ -204,20 +228,21 @@ fn summary_row(
     ui: &mut egui::Ui,
     record: &Exchange,
     actions_in_header: bool,
+    lang: Language,
     actions: &mut Vec<AppAction>,
 ) {
     ui.horizontal_wrapped(|ui| {
-        let (status, tone) = outcome_view::detail_status(record.outcome());
+        let (status, tone) = outcome_view::detail_status(record.outcome(), lang);
         ui.label(
             egui::RichText::new(status)
                 .font(fonts::data())
                 .color(Palette::of(ui).status(tone)),
         );
         if !actions_in_header {
-            header_actions(ui, record, actions);
+            header_actions(ui, record, lang, actions);
         }
         if let Some(original) = record.replay_of()
-            && ui.link(replay_link(original)).clicked()
+            && ui.link(replay_link(original, lang)).clicked()
         {
             actions.push(AppAction::SelectRecord(original));
         }
@@ -266,6 +291,6 @@ fn request_line(ui: &mut egui::Ui, record: &Exchange, search: Option<&Query>) {
 
 /// Link to the request a replay was sent from. Links keep the text color
 /// and are told apart by their underline.
-fn replay_link(original: RecordId) -> egui::RichText {
-    egui::RichText::new(text::replay_of(original.value())).underline()
+fn replay_link(original: RecordId, lang: Language) -> egui::RichText {
+    egui::RichText::new(text::replay_of(lang, original.value())).underline()
 }

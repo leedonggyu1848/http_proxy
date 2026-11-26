@@ -15,6 +15,7 @@ use crate::ui::detail::body_render::BodyViewCache;
 use crate::ui::detail::image_view;
 use crate::ui::detail::search::Query;
 use crate::ui::dialogs::body_saving::BodySaving;
+use crate::ui::i18n::{Language, domain};
 use crate::ui::style::fonts;
 use crate::ui::style::indicator;
 use crate::ui::style::theme::Palette;
@@ -34,6 +35,7 @@ pub(super) struct BodyPanel<'a> {
     pub(super) search: Option<&'a Query>,
     /// Text the user chose to copy from a tree.
     pub(super) copied: Option<String>,
+    pub(super) lang: Language,
 }
 
 pub(super) fn show(
@@ -59,7 +61,7 @@ pub(super) fn show(
         .collect();
     if !mode_bodies.is_empty() {
         let has_tree = mode_bodies.iter().any(|body| has_tree(body.media_type));
-        view_mode_row(ui, &mut panel.mode, has_tree);
+        view_mode_row(ui, &mut panel.mode, has_tree, panel.lang);
     }
     actions.extend(section(
         ui,
@@ -120,7 +122,7 @@ fn has_tree(media_type: Option<&MediaType>) -> bool {
 
 /// Pretty, Raw, and Tree as Ghost toggles. Tree is enabled only when a body
 /// may be JSON or XML.
-fn view_mode_row(ui: &mut egui::Ui, mode: &mut ViewMode, has_tree: bool) {
+fn view_mode_row(ui: &mut egui::Ui, mode: &mut ViewMode, has_tree: bool, lang: Language) {
     if !has_tree && *mode == ViewMode::Tree {
         *mode = ViewMode::Pretty;
     }
@@ -137,12 +139,12 @@ fn view_mode_row(ui: &mut egui::Ui, mode: &mut ViewMode, has_tree: bool) {
                             controls::ghost_toggle(
                                 ui,
                                 *mode == option,
-                                option.label(),
+                                domain::view_mode(lang, option),
                                 Layout::PANE_BUTTON_HEIGHT,
                             )
                         })
                         .inner
-                        .on_disabled_hover_text(ShellText::TreeUnavailable.text());
+                        .on_disabled_hover_text(ShellText::TreeUnavailable.text(lang));
                     if response.clicked() {
                         *mode = option;
                     }
@@ -161,6 +163,7 @@ fn section(
     body: Option<&Body<'_>>,
 ) -> Option<AppAction> {
     let mode = panel.mode;
+    let lang = panel.lang;
     let source = body.and_then(|body| {
         let snapshot = body.snapshot.as_ref()?;
         (snapshot.retention() != BodyRetention::Omitted
@@ -176,6 +179,7 @@ fn section(
             ui,
             &body_source(panel, side, snapshot, body, &encodings),
             mode,
+            lang,
         )
     });
     let action = section_header(ui, record, panel, side, body, format);
@@ -192,13 +196,20 @@ fn section(
         egui::Frame::new()
             .inner_margin(Layout::PANE_ROW_MARGIN)
             .show(ui, |ui| {
-                panel
-                    .image
-                    .show(ui, panel.record, snapshot, &encodings, format);
+                panel.image.show(
+                    ui,
+                    &image_view::ImageBody {
+                        record: panel.record,
+                        snapshot,
+                        encodings: &encodings,
+                        declared: format,
+                    },
+                    lang,
+                );
             });
         return action;
     }
-    if let Some(text) = panel.cache.render(ui, side, mode) {
+    if let Some(text) = panel.cache.render(ui, side, mode, lang) {
         panel.copied = Some(text);
     }
     action
@@ -232,6 +243,7 @@ fn section_header(
     body: Option<&Body<'_>>,
     format: Option<BodyFormat>,
 ) -> Option<AppAction> {
+    let lang = panel.lang;
     let title = match side {
         BodySide::Request => ShellText::RequestBody,
         BodySide::Response => ShellText::ResponseBody,
@@ -239,13 +251,13 @@ fn section_header(
     let top = ui.cursor().top();
     let action = chrome::pane_header(ui, side_salt(side), |ui| {
         ui.label(
-            egui::RichText::new(title.text())
+            egui::RichText::new(title.text(lang))
                 .font(fonts::panel_title())
                 .color(Palette::of(ui).text),
         );
-        meta(ui, body, format);
+        meta(ui, body, format, lang);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            panel.saving.menu(ui, record, side)
+            panel.saving.menu(ui, record, side, lang)
         })
         .inner
     });
@@ -266,7 +278,7 @@ const fn side_salt(side: BodySide) -> &'static str {
 }
 
 /// The format and size of a body, or why there is nothing to show.
-fn meta(ui: &mut egui::Ui, body: Option<&Body<'_>>, format: Option<BodyFormat>) {
+fn meta(ui: &mut egui::Ui, body: Option<&Body<'_>>, format: Option<BodyFormat>, lang: Language) {
     let secondary = Palette::of(ui).secondary;
     let data = |ui: &mut egui::Ui, text: &str| {
         ui.label(
@@ -276,19 +288,19 @@ fn meta(ui: &mut egui::Ui, body: Option<&Body<'_>>, format: Option<BodyFormat>) 
         );
     };
     let Some(body) = body else {
-        data(ui, ShellText::NotObserved.text());
+        data(ui, ShellText::NotObserved.text(lang));
         return;
     };
     let Some(snapshot) = body.snapshot.as_ref() else {
-        data(ui, ShellText::Updating.text());
+        data(ui, ShellText::Updating.text(lang));
         return;
     };
     if let Some(format) = format {
-        data(ui, format.label());
+        data(ui, domain::body_format(lang, format));
     }
     data(ui, &ByteSize::new(snapshot.observed_bytes()).to_string());
     if snapshot.retention() == BodyRetention::Omitted {
-        indicator::dot_label(ui, Tone::Warning, ShellText::PreviewOmitted.text())
-            .on_hover_text(ShellText::PreviewOmittedHint.text());
+        indicator::dot_label(ui, Tone::Warning, ShellText::PreviewOmitted.text(lang))
+            .on_hover_text(ShellText::PreviewOmittedHint.text(lang));
     }
 }

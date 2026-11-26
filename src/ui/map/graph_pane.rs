@@ -8,21 +8,34 @@ use http_inspector_analysis::url_map::{
 use http_inspector_exchange::ByteSize;
 
 use super::EdgeVisibility;
+use crate::ui::i18n::Language;
 use crate::ui::style::tokens::{Layout, Radius, Space, StrokeWidth, ThemeTokens};
 use crate::ui::style::{fonts, theme::Palette};
 use crate::ui::workbench::text::{self, ShellText};
+
+/// Inputs describing how to render the relationship graph.
+pub(super) struct GraphView<'a> {
+    pub(super) graph: &'a RelationshipGraph,
+    pub(super) visibility: EdgeVisibility,
+    pub(super) selected_host: Option<&'a str>,
+    pub(super) lang: Language,
+}
 
 /// Renders the relationship graph and returns the clicked host (if any) to jump
 /// to in Tree view. `selected_host` is the host of the node selected in the
 /// tree, drawn as active with the hovered node.
 pub(super) fn show(
     ui: &mut egui::Ui,
-    graph: &RelationshipGraph,
+    view: &GraphView<'_>,
     layout: &mut ForceLayout,
-    visibility: EdgeVisibility,
     dragged_node: &mut Option<usize>,
-    selected_host: Option<&str>,
 ) -> Option<String> {
+    let GraphView {
+        graph,
+        visibility,
+        selected_host,
+        lang,
+    } = *view;
     layout.sync(graph);
     if !layout.is_settled() && layout.step(STEPS_PER_FRAME) {
         ui.ctx().request_repaint();
@@ -32,7 +45,7 @@ pub(super) fn show(
     if layout.nodes().is_empty() {
         ui.centered_and_justified(|ui| {
             ui.add(
-                egui::Label::new(egui::RichText::new(ShellText::NoRelationships.text()).weak())
+                egui::Label::new(egui::RichText::new(ShellText::NoRelationships.text(lang)).weak())
                     .wrap(),
             );
         });
@@ -100,7 +113,7 @@ pub(super) fn show(
         && let Some(node) = layout.nodes().get(idx)
     {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        let tooltip = format_node_tooltip(graph, node);
+        let tooltip = format_node_tooltip(graph, node, lang);
         let _ = response.on_hover_text(tooltip);
     }
 
@@ -109,7 +122,11 @@ pub(super) fn show(
 
 /// Domains shown, edges shown, and whether the domain limit hid some, for
 /// the status bar.
-pub(super) fn summary_text(layout: &ForceLayout, visibility: EdgeVisibility) -> (String, bool) {
+pub(super) fn summary_text(
+    layout: &ForceLayout,
+    visibility: EdgeVisibility,
+    lang: Language,
+) -> (String, bool) {
     let shown = layout.nodes().len();
     let total = layout.total_domains();
     let total_edges = layout.edges().len();
@@ -119,7 +136,7 @@ pub(super) fn summary_text(layout: &ForceLayout, visibility: EdgeVisibility) -> 
         .filter(|edge| visibility.allows(edge.kind))
         .count();
     (
-        text::graph_count(shown, total, visible_edges, total_edges),
+        text::graph_count(lang, shown, total, visible_edges, total_edges),
         total > shown,
     )
 }
@@ -136,7 +153,7 @@ const fn edge_dash(kind: EdgeKind) -> Option<(f32, f32)> {
 
 /// The edge toggles with a sample of each line, then the node outlines, in
 /// the graph's legend menu.
-pub(super) fn legend_menu(ui: &mut egui::Ui, visibility: &mut EdgeVisibility) {
+pub(super) fn legend_menu(ui: &mut egui::Ui, visibility: &mut EdgeVisibility, lang: Language) {
     for (kind, shown, label) in [
         (
             EdgeKind::Referer,
@@ -155,7 +172,7 @@ pub(super) fn legend_menu(ui: &mut egui::Ui, visibility: &mut EdgeVisibility) {
         ),
     ] {
         ui.horizontal(|ui| {
-            ui.checkbox(shown, label.text());
+            ui.checkbox(shown, label.text(lang));
             let (rect, _) = ui.allocate_exact_size(
                 egui::vec2(Layout::LEGEND_SAMPLE_WIDTH, ui.spacing().interact_size.y),
                 Sense::hover(),
@@ -185,7 +202,7 @@ pub(super) fn legend_menu(ui: &mut egui::Ui, visibility: &mut EdgeVisibility) {
                 ui.painter()
                     .circle_stroke(rect.center(), size / 2.0 - 1.0, stroke);
             }
-            ui.label(label.text());
+            ui.label(label.text(lang));
         });
     }
 }
@@ -501,11 +518,11 @@ fn hit_test(positions: &[(Pos2, f32)], pointer: Pos2) -> Option<usize> {
         .map(|(index, _)| index)
 }
 
-fn format_node_tooltip(graph: &RelationshipGraph, node: &GraphNode) -> String {
+fn format_node_tooltip(graph: &RelationshipGraph, node: &GraphNode, lang: Language) -> String {
     let party = if node.third_party {
-        "3rd-party"
+        ShellText::ThirdParty.text(lang)
     } else {
-        "1st-party"
+        ShellText::FirstParty.text(lang)
     };
     let bytes = graph
         .domains()
@@ -521,14 +538,17 @@ fn format_node_tooltip(graph: &RelationshipGraph, node: &GraphNode) -> String {
         .keys()
         .filter(|key| key.to_host == node.host)
         .count();
-    format!(
-        "{}\nSite (eTLD+1): {}\nParty: {party}\nRequests: {} · Errors: {} · Size: {}\nEdges: {outgoing} outgoing, {incoming} incoming",
-        node.host,
-        node.site,
-        node.request_count,
-        node.error_count,
-        ByteSize::new(bytes),
-    )
+    let size = ByteSize::new(bytes);
+    match lang {
+        Language::English => format!(
+            "{}\nSite (eTLD+1): {}\nParty: {party}\nRequests: {} · Errors: {} · Size: {size}\nEdges: {outgoing} outgoing, {incoming} incoming",
+            node.host, node.site, node.request_count, node.error_count,
+        ),
+        Language::Korean => format!(
+            "{}\n사이트 (eTLD+1): {}\n구분: {party}\n요청: {} · 오류: {} · 크기: {size}\n연결선: 발신 {outgoing}, 수신 {incoming}",
+            node.host, node.site, node.request_count, node.error_count,
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -561,7 +581,8 @@ mod tests {
         let mut layout = ForceLayout::new(40);
         layout.sync(&graph);
 
-        let (all_text, capped) = summary_text(&layout, EdgeVisibility::default());
+        let (all_text, capped) =
+            summary_text(&layout, EdgeVisibility::default(), Language::English);
         assert!(!capped);
         assert_eq!(all_text, "2 domains · 2 edges");
 
@@ -570,7 +591,10 @@ mod tests {
             origin: false,
             redirect: false,
         };
-        let (filtered_text, _) = summary_text(&layout, only_referer);
+        let (filtered_text, _) = summary_text(&layout, only_referer, Language::English);
         assert_eq!(filtered_text, "2 domains · 1/2 edges");
+
+        let (ko_text, _) = summary_text(&layout, only_referer, Language::Korean);
+        assert_eq!(ko_text, "도메인 2 · 연결선 1/2");
     }
 }

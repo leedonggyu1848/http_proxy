@@ -1,8 +1,9 @@
 //! Shared outcome presentation for the request list, details, and search.
 
-use http_inspector_analysis::outcome::{self, short_text, status_class};
-use http_inspector_exchange::{Outcome, TunnelState};
+use http_inspector_analysis::outcome;
+use http_inspector_exchange::{Outcome, TunnelPreview, TunnelState};
 
+use crate::ui::i18n::{Language, domain};
 use crate::ui::style::tokens::Tone;
 
 /// Orders responses by status code, then every other outcome after them.
@@ -19,8 +20,33 @@ pub(super) const fn status_rank(outcome: &Outcome) -> (u8, u16) {
 }
 
 /// Short status text and the tone of an exceptional outcome.
-pub(crate) fn outcome_text(outcome: &Outcome) -> (String, Option<Tone>) {
-    (short_text(outcome), outcome_tone(outcome))
+pub(crate) fn outcome_text(outcome: &Outcome, lang: Language) -> (String, Option<Tone>) {
+    (short_text(outcome, lang), outcome_tone(outcome))
+}
+
+/// Short status text for one outcome, independent of the theme.
+fn short_text(outcome: &Outcome, lang: Language) -> String {
+    match lang {
+        Language::English => outcome::short_text(outcome),
+        Language::Korean => match outcome {
+            Outcome::InFlight => "대기 중".to_owned(),
+            Outcome::Response(response) => {
+                let status = response.status();
+                format!(
+                    "{} {}",
+                    status.as_str(),
+                    status.canonical_reason().unwrap_or("알 수 없는 상태")
+                )
+            }
+            Outcome::Tunnel(tunnel) => tunnel_summary_ko(tunnel),
+            Outcome::InspectionEstablished => "HTTPS".to_owned(),
+            Outcome::Failed { stage, message } => {
+                format!("{}: {message}", domain::failure_stage(lang, *stage))
+            }
+            Outcome::Cancelled => "클라이언트 취소".to_owned(),
+            Outcome::Incomplete => "불완전 (프록시 중지)".to_owned(),
+        },
+    }
 }
 
 /// Tone of an exceptional outcome: 4xx, cancelled, and incomplete
@@ -45,15 +71,46 @@ pub(crate) fn outcome_tone(outcome: &Outcome) -> Option<Tone> {
     }
 }
 
+/// Plain-language class of an HTTP status code, so that success and error do
+/// not depend on the status color alone.
+pub(crate) const fn status_class(code: u16, lang: Language) -> &'static str {
+    match lang {
+        Language::English => outcome::status_class(code),
+        Language::Korean => match code {
+            100..=199 => "정보 응답",
+            200..=299 => "성공",
+            300..=399 => "리다이렉트",
+            400..=499 => "클라이언트 오류",
+            500..=599 => "서버 오류",
+            _ => "비표준 상태",
+        },
+    }
+}
+
 /// Status text with the response class appended, for tooltips and screen
 /// readers. Other outcomes already name their state in the text.
-pub(super) fn outcome_summary(outcome: &Outcome) -> String {
-    let text = short_text(outcome);
+pub(super) fn outcome_summary(outcome: &Outcome, lang: Language) -> String {
+    let text = short_text(outcome, lang);
     match outcome {
         Outcome::Response(response) => {
-            format!("{text} ({})", status_class(response.status().as_u16()))
+            format!(
+                "{text} ({})",
+                status_class(response.status().as_u16(), lang)
+            )
         }
         _ => text,
+    }
+}
+
+fn tunnel_summary_ko(tunnel: &TunnelPreview) -> String {
+    match tunnel.snapshot().state() {
+        TunnelState::Open => "터널 · 열림".to_owned(),
+        TunnelState::Closed => "터널 · 닫힘".to_owned(),
+        TunnelState::Failed { stage, .. } => {
+            let stage_label = domain::failure_stage(Language::Korean, *stage);
+            format!("터널 · 실패 ({stage_label})")
+        }
+        TunnelState::Incomplete => "터널 · 불완전".to_owned(),
     }
 }
 
@@ -61,8 +118,31 @@ pub(super) fn outcome_summary(outcome: &Outcome) -> String {
 /// exceptional outcome. A response shows the reason phrase as the server
 /// sent it and the HTTP version it answered with; other outcomes show the
 /// same text as the request list.
-pub(crate) fn detail_status(outcome: &Outcome) -> (String, Option<Tone>) {
-    (outcome::detail_text(outcome), outcome_tone(outcome))
+pub(crate) fn detail_status(outcome: &Outcome, lang: Language) -> (String, Option<Tone>) {
+    let text = match lang {
+        Language::English => outcome::detail_text(outcome),
+        Language::Korean => match outcome {
+            Outcome::Response(response) => outcome::response_line(
+                response.status().as_u16(),
+                response.reason(),
+                &format!("{:?}", response.version()),
+            ),
+            _ => short_text(outcome, lang),
+        },
+    };
+    (text, outcome_tone(outcome))
+}
+
+pub(crate) const fn timing_label(outcome: &Outcome, lang: Language) -> &'static str {
+    match lang {
+        Language::English => outcome::timing_label(outcome),
+        Language::Korean => match outcome {
+            Outcome::InFlight => "대기",
+            Outcome::Response(_) => "응답 헤더",
+            Outcome::Tunnel(_) | Outcome::InspectionEstablished => "연결됨",
+            Outcome::Failed { .. } | Outcome::Cancelled | Outcome::Incomplete => "종료됨",
+        },
+    }
 }
 
 /// Converts a duration to milliseconds for UI timing displays.
@@ -74,6 +154,19 @@ pub(crate) fn elapsed_millis(duration: std::time::Duration) -> f64 {
 mod tests {
     use super::*;
     use http_inspector_exchange::FailureStage;
+
+    #[test]
+    fn names_every_status_class() {
+        assert_eq!(status_class(101, Language::English), "informational");
+        assert_eq!(status_class(200, Language::English), "success");
+        assert_eq!(status_class(204, Language::English), "success");
+        assert_eq!(status_class(304, Language::English), "redirect");
+        assert_eq!(status_class(404, Language::English), "client error");
+        assert_eq!(status_class(503, Language::English), "server error");
+        assert_eq!(status_class(999, Language::English), "nonstandard status");
+        assert_eq!(status_class(200, Language::Korean), "성공");
+        assert_eq!(status_class(404, Language::Korean), "클라이언트 오류");
+    }
 
     #[test]
     fn only_exceptions_have_a_tone() -> Result<(), Box<dyn std::error::Error>> {
@@ -104,8 +197,18 @@ mod tests {
 
     #[test]
     fn summary_keeps_non_response_text() {
-        assert_eq!(outcome_summary(&Outcome::InFlight), "Pending");
-        assert_eq!(outcome_summary(&Outcome::Cancelled), "Cancelled by client");
+        assert_eq!(
+            outcome_summary(&Outcome::InFlight, Language::English),
+            "Pending"
+        );
+        assert_eq!(
+            outcome_summary(&Outcome::Cancelled, Language::English),
+            "Cancelled by client"
+        );
+        assert_eq!(
+            outcome_summary(&Outcome::InFlight, Language::Korean),
+            "대기 중"
+        );
     }
 
     #[test]
@@ -115,11 +218,19 @@ mod tests {
             message: "certificate rejected".to_owned(),
         };
         assert_eq!(
-            outcome_text(&outcome),
+            outcome_text(&outcome, Language::English),
             (
                 "Upstream TLS handshake: certificate rejected".to_owned(),
                 Some(Tone::Danger)
             )
+        );
+        assert_eq!(
+            outcome_text(&outcome, Language::English),
+            detail_status(&outcome, Language::English)
+        );
+        assert_eq!(
+            outcome_text(&outcome, Language::Korean),
+            detail_status(&outcome, Language::Korean)
         );
         let matches = |query: &str| {
             http_inspector_analysis::search::Matcher::new(
@@ -148,7 +259,7 @@ mod tests {
             ResponseFixture::new(StatusCode::BAD_GATEWAY).reason("Upstream Took Too Long"),
         )?;
         assert_eq!(
-            detail_status(gateway.outcome()),
+            detail_status(gateway.outcome(), Language::English),
             (
                 "502 Upstream Took Too Long · HTTP/1.1".to_owned(),
                 Some(Tone::Danger)
@@ -158,19 +269,23 @@ mod tests {
         let custom =
             answered(ResponseFixture::new(StatusCode::from_u16(599)?).reason("Net Timeout"))?;
         assert_eq!(
-            detail_status(custom.outcome()).0,
+            detail_status(custom.outcome(), Language::English).0,
             "599 Net Timeout · HTTP/1.1",
             "a nonstandard code keeps its phrase instead of `Unknown status`"
         );
         let old = answered(ResponseFixture::new(StatusCode::OK).version(Version::HTTP_10))?;
         assert_eq!(
-            detail_status(old.outcome()),
+            detail_status(old.outcome(), Language::English),
             ("200 OK · HTTP/1.0".to_owned(), None)
         );
         // Other outcomes keep the request list's text.
         assert_eq!(
-            detail_status(&Outcome::Cancelled),
-            outcome_text(&Outcome::Cancelled)
+            detail_status(&Outcome::Cancelled, Language::English),
+            outcome_text(&Outcome::Cancelled, Language::English)
+        );
+        assert_eq!(
+            detail_status(&Outcome::Cancelled, Language::Korean),
+            outcome_text(&Outcome::Cancelled, Language::Korean)
         );
         Ok(())
     }

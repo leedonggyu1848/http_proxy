@@ -2,7 +2,7 @@
 
 [사용자 가이드 목록](README.md) · [README](../../README.md)
 
-이 문서는 화면 구성, 요청 목록 단축키, 테마, 화면 읽기 프로그램 지원과 글꼴 표시를 설명한다.
+이 문서는 화면 구성, 요청 목록 단축키, 언어와 테마, 화면 읽기 프로그램 지원과 글꼴 표시를 설명한다.
 
 ## 화면 구성
 
@@ -12,7 +12,7 @@
   - **프록시 상태:** 실행 중이면 초록 점과 주소(`127.0.0.1:8080 ▼`)를 표시한다. 주소를 누르면 **Copy** 항목(**Proxy URL**, **curl example**, **HTTP_PROXY variables**)과 **Stop**이 있는 메뉴가 열린다. 중지되면 빨간 점과 `Stopped`, 다음에 시작할 **Port** 입력란을 표시한다.
   - **HTTPS 상태:** `HTTPS off ▼` 또는 `HTTPS on ▼`이다. 복호화가 켜져 있으면 앞의 점 색이 CA 상태를 나타낸다. 누르면 **Decrypt HTTPS**와 CA 상태·**Register CA**·**CA details**가 있는 메뉴가 열린다. 자세한 내용은 [HTTPS 복호화와 검사 브라우저](https.md)에 있다.
   - **필터 입력란:** 요청 목록을 좁힌다. 입력란 오른쪽 끝에서 검색 범위(All·URL·Headers·Request body·Response body), **Aa**(대소문자 구분), **.\***(정규식)를 고른다. 정규식이 잘못되면 입력란 테두리가 빨갛게 바뀌고 오른쪽 끝에 `Invalid pattern`이 보인다. 마우스를 올리면 정규식 오류 내용을 볼 수 있다. **Map** 보기에서는 표시하지 않는다.
-  - **Settings:** 테마, 본문 저장 한도, cURL 복사의 **Redacted placeholders**, **Capture scope**(캡처 범위 안내)를 담는다.
+  - **Settings:** 언어, 테마, 본문 저장 한도, cURL 복사의 **Redacted placeholders**, **Capture scope**(캡처 범위 안내)를 담는다.
   - **주 행동 버튼:** 프록시가 중지되면 **Start**, 실행 중이면 **Open Browser**다. 검사 브라우저가 열려 있으면 그 자리에 `Browser open`과 **Close browser**를 표시한다.
   - 창 너비가 960pt보다 좁으면 앱 이름을 숨기고 보기 전환과 필터 입력란을 툴바 둘째 줄로 옮긴다.
 - **알림:** 포트 충돌, 브라우저·CA 오류처럼 확인해야 할 오류와 경고를 툴바 바로 아래에 한 줄씩 표시한다. 알림이 없으면 이 줄도 없다.
@@ -77,6 +77,17 @@
 - macOS: `~/Library/Application Support/http-inspector/theme`.
 
 설정 파일이 없거나 값이 잘못되면 System으로 시작한다.
+
+## 화면 언어
+
+툴바의 **Settings**(**설정**) 메뉴에서 **System**(**시스템**), **English**, **한국어** 중 하나를 고른다. 언어 이름(`English`, `한국어`)은 현재 UI 언어와 관계없이 고유 표기를 유지한다. 기본값은 **System**이며, 실행 시 POSIX 로케일 환경 변수(`LC_ALL` → `LC_MESSAGES` → `LANG`)를 순서대로 확인해 `ko` 계열이면 한국어로, 그 외에는 영어로 표시한다.
+
+선택은 앱을 다시 시작하지 않고 즉시 반영되며 포트·테마 설정과 같은 디렉터리의 `language` 파일에 저장된다.
+
+- Linux: `$XDG_CONFIG_HOME/http-inspector/language`. `XDG_CONFIG_HOME`이 없으면 `~/.config/http-inspector/language`를 사용한다.
+- macOS: `~/Library/Application Support/http-inspector/language`.
+
+설정 파일이 없거나 알 수 없는 값이 들어 있으면 오류 없이 System으로 시작한다. 저장에 실패하면 상태 바에 오류를 표시한다. 프로토콜·표준·고유 기술 용어(`HTTP`, `HTTPS`, `CONNECT`, `CA`, `HAR`, `cURL`, `URL`, `JSON`, `XML`, HTTP 메서드·헤더 이름, `200 OK` 등)와 내보내기 형식(HAR·cURL·URL 맵)·캡처된 트래픽 내용은 원문을 유지한다.
 
 ## 화면 읽기 프로그램
 

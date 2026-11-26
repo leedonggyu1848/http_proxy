@@ -11,6 +11,7 @@ use http_inspector_analysis::search::document::{self, BodyCache, Checked};
 use http_inspector_analysis::search::{MatchOptions, Query, SearchScope, SearchWorker, TextTerms};
 use http_inspector_exchange::{Exchange, RecordId};
 
+use crate::ui::i18n::Language;
 use crate::ui::style::tokens::Tone;
 use crate::ui::workbench::status::StatusItem;
 use crate::ui::workbench::text::{self, ShellText};
@@ -95,7 +96,7 @@ struct Summary {
 /// Background search worker, or an inline fallback when thread creation fails.
 enum SearchBackend {
     Worker(SearchWorker),
-    Inline { notice: String, cache: BodyCache },
+    Inline { reason: String, cache: BodyCache },
 }
 
 pub(crate) struct RequestSearch {
@@ -103,7 +104,7 @@ pub(crate) struct RequestSearch {
     parsed: FilterQuery,
     changed_at: Option<Instant>,
     active: Option<Active>,
-    error: Option<String>,
+    error: Option<http_inspector_analysis::search::MatcherError>,
     generation: u64,
     results: HashMap<RecordId, SearchResult>,
     /// Records sent to the worker for the active query and not reported yet.
@@ -118,9 +119,7 @@ impl RequestSearch {
         let backend = match SearchWorker::spawn(move || context.request_repaint()) {
             Ok(worker) => SearchBackend::Worker(worker),
             Err(error) => SearchBackend::Inline {
-                notice: format!(
-                    "Background search is unavailable ({error}); searching on the UI thread."
-                ),
+                reason: error.to_string(),
                 cache: BodyCache::default(),
             },
         };
@@ -142,8 +141,10 @@ impl RequestSearch {
         &self.settings
     }
 
-    pub(super) fn regex_error(&self) -> Option<&str> {
-        self.error.as_deref()
+    pub(super) const fn regex_error(
+        &self,
+    ) -> Option<&http_inspector_analysis::search::MatcherError> {
+        self.error.as_ref()
     }
 
     pub(super) const fn parsed(&self) -> &FilterQuery {
@@ -194,13 +195,23 @@ impl RequestSearch {
     /// Search progress and what was not searched, for the status bar.
     /// Matches are counted there with the rest of the list; parser errors
     /// show in the filter input. Empty while no search is active.
-    pub(crate) fn status_items(&self) -> Vec<StatusItem> {
+    pub(crate) fn status_items(&self, lang: Language) -> Vec<StatusItem> {
         let mut items = Vec::new();
-        if let SearchBackend::Inline { notice, .. } = &self.backend {
+        if let SearchBackend::Inline { reason, .. } = &self.backend {
+            let notice = match lang {
+                Language::English => {
+                    format!(
+                        "Background search is unavailable ({reason}); searching on the UI thread."
+                    )
+                }
+                Language::Korean => {
+                    format!("백그라운드 검색을 사용할 수 없어({reason}) UI 스레드에서 검색합니다.")
+                }
+            };
             items.push(StatusItem::marked(
                 Tone::Warning,
-                ShellText::SearchOnUiThread.text(),
-                notice.clone(),
+                ShellText::SearchOnUiThread.text(lang),
+                notice,
             ));
         }
         let Some(active) = &self.active else {
@@ -209,12 +220,13 @@ impl RequestSearch {
         let summary = self.summary;
         if summary.checked < summary.total {
             items.push(StatusItem::progress(text::search_progress(
+                lang,
                 summary.checked,
                 summary.total,
             )));
         }
         if active.settings.scope.covers_bodies()
-            && let Some(coverage) = coverage_text(summary)
+            && let Some(coverage) = coverage_text(summary, lang)
         {
             items.push(StatusItem::marked(
                 Tone::Warning,
@@ -281,7 +293,7 @@ impl RequestSearch {
         let compiled = match TextTerms::compile(&terms, settings.options) {
             Ok(compiled) => compiled,
             Err(error) => {
-                self.error = Some(capitalized(&error.to_string()));
+                self.error = Some(error);
                 self.results.clear();
                 return;
             }
@@ -437,35 +449,44 @@ struct Coverage {
     detail: String,
 }
 
-fn coverage_text(summary: Summary) -> Option<Coverage> {
+fn coverage_text(summary: Summary, lang: Language) -> Option<Coverage> {
     let mut parts = Vec::new();
+    let preview_kib = http_inspector_exchange::capture::BODY_PREVIEW_BYTES / 1024;
     if summary.partial > 0 {
-        parts.push(format!(
-            "{} only in their first {} KiB",
-            summary.partial,
-            http_inspector_exchange::capture::BODY_PREVIEW_BYTES / 1024
-        ));
+        parts.push(match lang {
+            Language::English => {
+                format!("{} only in their first {preview_kib} KiB", summary.partial)
+            }
+            Language::Korean => format!("{}건은 처음 {preview_kib} KiB만 검색", summary.partial),
+        });
     }
     if summary.binary > 0 {
-        parts.push(format!("{} binary, skipped", summary.binary));
+        parts.push(match lang {
+            Language::English => format!("{} binary, skipped", summary.binary),
+            Language::Korean => format!("{}건은 바이너리여서 건너뜀", summary.binary),
+        });
     }
     if summary.undecodable > 0 {
-        parts.push(format!("{} could not be decoded", summary.undecodable));
+        parts.push(match lang {
+            Language::English => format!("{} could not be decoded", summary.undecodable),
+            Language::Korean => format!("{}건은 디코딩할 수 없음", summary.undecodable),
+        });
     }
     let unsearched = summary.partial + summary.binary + summary.undecodable;
-    (!parts.is_empty()).then(|| Coverage {
-        short: text::partly_searched(unsearched),
-        detail: format!(
-            "Captured previews were searched after decompression ({}); the full-session log keeps the rest.",
-            parts.join(", ")
-        ),
-    })
-}
-
-fn capitalized(text: &str) -> String {
-    let mut characters = text.chars();
-    characters.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(characters).collect()
+    (!parts.is_empty()).then(|| {
+        let joined = parts.join(", ");
+        let detail = match lang {
+            Language::English => format!(
+                "Captured previews were searched after decompression ({joined}); the full-session log keeps the rest."
+            ),
+            Language::Korean => format!(
+                "압축 해제 후 캡처된 미리보기에서 검색했으며({joined}), 나머지는 전체 세션 로그에 보관됩니다."
+            ),
+        };
+        Coverage {
+            short: text::partly_searched(lang, unsearched),
+            detail,
+        }
     })
 }
 
@@ -566,12 +587,15 @@ mod tests {
 
     #[test]
     fn coverage_lists_only_what_was_not_fully_searched() {
-        assert!(coverage_text(Summary::default()).is_none());
-        let text = coverage_text(Summary {
-            partial: 2,
-            binary: 1,
-            ..Summary::default()
-        })
+        assert!(coverage_text(Summary::default(), Language::English).is_none());
+        let text = coverage_text(
+            Summary {
+                partial: 2,
+                binary: 1,
+                ..Summary::default()
+            },
+            Language::English,
+        )
         .map_or_default(|text| text.detail);
         assert!(
             text.contains("2 only in their first 8 KiB, 1 binary, skipped"),
@@ -601,7 +625,7 @@ mod tests {
         let _evicted = records.push(record);
         let mut search = RequestSearch::new(&egui::Context::default());
         search.backend = SearchBackend::Inline {
-            notice: String::new(),
+            reason: String::new(),
             cache: BodyCache::default(),
         };
         let mut query = settings("needle", false, false);
@@ -637,6 +661,27 @@ mod tests {
                 .is_some_and(|query| Arc::ptr_eq(query, &active_query))
         );
         Ok(())
+    }
+
+    #[test]
+    fn coverage_tooltip_is_single_sentence_in_both_languages() {
+        let summary = Summary {
+            partial: 2,
+            binary: 1,
+            undecodable: 1,
+            ..Summary::default()
+        };
+        for lang in [Language::English, Language::Korean] {
+            let coverage = coverage_text(summary, lang);
+            assert!(coverage.is_some());
+            if let Some(coverage) = coverage {
+                assert!(
+                    !coverage.detail.contains(". "),
+                    "tooltip must stay one sentence (S1): {}",
+                    coverage.detail
+                );
+            }
+        }
     }
 
     /// The list filter and the shared [`filter::RequestQuery`] used by the

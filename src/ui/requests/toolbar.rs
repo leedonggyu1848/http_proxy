@@ -3,7 +3,9 @@
 use crate::ui::app::capture::CaptureNotice;
 #[cfg(test)]
 use crate::ui::app::capture::PortChoice;
-use crate::ui::app::state::MainView;
+use crate::ui::app::state::{HlsSessionError, MainView, RangeMergeError, SessionError};
+use crate::ui::dialogs::save::localize_directory_error;
+use crate::ui::i18n::{Language, Text, domain};
 use crate::ui::style::theme::Palette;
 use crate::ui::style::{
     fonts, indicator,
@@ -17,45 +19,88 @@ use eframe::egui;
 use http_inspector_core::interception::{ProxyHandle, StartError};
 use http_inspector_core::settings;
 use std::borrow::Cow;
-use std::io;
 
 /// Explains a failed start in terms of what the user can change.
-pub(crate) fn start_error_text(error: &StartError, port: settings::port::ProxyPort) -> String {
-    match error {
-        StartError::Bind(bind) if bind.kind() == io::ErrorKind::AddrInUse => {
-            format!("Port {port} is already in use; enter another port, or 0 for a free one.")
-        }
-        StartError::Bind(bind) if bind.kind() == io::ErrorKind::PermissionDenied => format!(
-            "Port {port} needs administrator privileges; use 1024 to 65535, or 0 for a free one."
-        ),
-        other => other.to_string(),
-    }
+pub(crate) fn start_error_text(
+    error: &StartError,
+    port: settings::port::ProxyPort,
+    lang: Language,
+) -> String {
+    domain::start_error(lang, error, port)
 }
 
-pub(crate) fn notice_text(notice: &CaptureNotice) -> Cow<'_, str> {
+pub(crate) fn notice_text(notice: &CaptureNotice, lang: Language) -> Cow<'_, str> {
     match notice {
-        CaptureNotice::InvalidPort(error) => Cow::Owned(error.to_string()),
-        CaptureNotice::MissingCaDirectory => Cow::Borrowed(
+        CaptureNotice::InvalidPort(error) => Cow::Owned(domain::port_error(lang, error)),
+        CaptureNotice::MissingCaDirectory => Cow::Borrowed(lang.pick(
             "HTTPS inspection requires an application data directory; check HOME and platform storage settings",
-        ),
-        CaptureNotice::Start { port, error } => Cow::Owned(start_error_text(error, *port)),
-        CaptureNotice::RememberPort(error) => Cow::Owned(error.to_string()),
-        CaptureNotice::Stop(error) => Cow::Owned(error.to_string()),
+            "HTTPS 복호화를 사용하려면 앱 데이터 폴더가 필요합니다. HOME 및 플랫폼 저장소 설정을 확인하세요",
+        )),
+        CaptureNotice::Start { port, error } => Cow::Owned(start_error_text(error, *port, lang)),
+        CaptureNotice::RememberPort(error) => Cow::Owned(domain::port_save_error(lang, error)),
+        CaptureNotice::Stop(error) => Cow::Owned(domain::stop_error(lang, error)),
         CaptureNotice::Failed {
             message,
             stop_error,
         } => {
-            let message = format!("The proxy stopped: {message}");
+            let base = match lang {
+                Language::English => format!("The proxy stopped: {message}"),
+                Language::Korean => format!("프록시가 중지되었습니다: {message}"),
+            };
             match stop_error {
-                Some(error) => Cow::Owned(format!("{message} ({error})")),
-                None => Cow::Owned(message),
+                Some(error) => {
+                    let stop_text = domain::stop_error(lang, error);
+                    Cow::Owned(format!("{base} ({stop_text})"))
+                }
+                None => Cow::Owned(base),
             }
         }
     }
 }
 
-const AUTHORIZATION_WARNING: &str =
-    "Only enable inspection for traffic that you are authorized to inspect.";
+fn session_error_text(error: &SessionError, lang: Language) -> String {
+    match error {
+        SessionError::Replay(err) => domain::replay_error(lang, err),
+        SessionError::RangeMerge(err) => {
+            let detail = match err {
+                RangeMergeError::Directory(io_err) => localize_directory_error(io_err, lang),
+                RangeMergeError::SavingUnavailable => lang
+                    .pick(
+                        "Saving bodies is unavailable",
+                        "본문 저장을 사용할 수 없습니다",
+                    )
+                    .to_owned(),
+                RangeMergeError::WorkerStopped => lang
+                    .pick(
+                        "The range planning worker stopped unexpectedly",
+                        "범위 병합 계획 작업자가 예기치 않게 중지되었습니다",
+                    )
+                    .to_owned(),
+                RangeMergeError::Io(io_err) => io_err.to_string(),
+            };
+            match lang {
+                Language::English => format!("Merging ranges failed: {detail}"),
+                Language::Korean => format!("범위 응답 병합 실패: {detail}"),
+            }
+        }
+        SessionError::HlsDownload(err) => {
+            let detail = match err {
+                HlsSessionError::Directory(io_err) => localize_directory_error(io_err, lang),
+            };
+            match lang {
+                Language::English => format!("HLS download failed: {detail}"),
+                Language::Korean => format!("HLS 다운로드 실패: {detail}"),
+            }
+        }
+    }
+}
+
+const fn authorization_warning(lang: Language) -> &'static str {
+    lang.pick(
+        "Only enable inspection for traffic that you are authorized to inspect.",
+        "HTTPS 복호화는 검사 권한이 있는 트래픽에만 켜세요.",
+    )
+}
 
 /// Whether the one-time authorization warning for HTTPS inspection shows.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -87,6 +132,7 @@ impl InspectorApp {
         dialog_open: bool,
         actions: &mut Vec<AppAction>,
     ) {
+        let lang = self.language();
         let one_row = ui.available_width() >= Layout::TOOLBAR_ONE_ROW_MIN_WIDTH;
         let rows = if one_row { 1.0 } else { 2.0 };
         let rect = chrome::allocate(ui, Layout::TOOLBAR_HEIGHT * rows);
@@ -112,12 +158,12 @@ impl InspectorApp {
             actions.extend(
                 self.dialogs
                     .save
-                    .menu(ui, self.session.capture.full_log.is_some())
+                    .menu(ui, self.session.capture.full_log.is_some(), lang)
                     .into_iter()
                     .map(AppAction::SaveMenu),
             );
             if one_row {
-                let switch_width = view_switch_width(ui);
+                let switch_width = view_switch_width(ui, lang);
                 let room = 2.0f32.mul_add(-Space::LG, ui.available_width() - switch_width);
                 self.filter_input(
                     ui,
@@ -152,12 +198,13 @@ impl InspectorApp {
 
     /// Requests and Map. The counts live in the status bar (S16).
     fn view_switch(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+        let lang = self.language();
         actions.extend(
             controls::segmented(
                 ui,
-                ShellText::ViewSwitch.text(),
+                ShellText::ViewSwitch.text(lang),
                 self.layout.main_view,
-                &VIEWS.map(|(view, label)| (view, label.text())),
+                &VIEWS.map(|(view, label)| (view, label.text(lang))),
             )
             .map(AppAction::SwitchView),
         );
@@ -173,11 +220,12 @@ impl InspectorApp {
         dialog_open: bool,
         actions: &mut Vec<AppAction>,
     ) {
+        let lang = self.language();
         if self.layout.main_view == MainView::Requests {
             actions.extend(
                 self.requests
                     .search
-                    .controls(ui, width, &self.requests.records, dialog_open)
+                    .controls(ui, width, &self.requests.records, dialog_open, lang)
                     .map(AppAction::Search),
             );
         } else {
@@ -189,6 +237,7 @@ impl InspectorApp {
     /// with the copy actions and Stop; while stopped, the port to start on
     /// is edited in place.
     fn proxy_indicator(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+        let lang = self.language();
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.x = Space::XS;
             if let Some(proxy) = self.session.capture.proxy.as_ref() {
@@ -196,16 +245,16 @@ impl InspectorApp {
                 indicator::dot(ui, Tone::Success);
                 let label = egui::RichText::new(format!("{address} ▼")).font(fonts::data());
                 let menu = controls::ghost_menu(ui, label, Layout::TOOLBAR_BUTTON_HEIGHT, |ui| {
-                    proxy_menu(ui, address)
+                    proxy_menu(ui, address, lang)
                 });
                 if let Some(action) = menu.inner.flatten() {
                     actions.push(action);
                 }
             } else {
                 indicator::dot(ui, Tone::Danger);
-                ui.label(ShellText::Stopped.text());
+                ui.label(ShellText::Stopped.text(lang));
                 ui.add_space(Space::SM);
-                ui.label(ShellText::Port.text());
+                ui.label(ShellText::Port.text(lang));
                 let mut port = self.session.capture.port.text.clone();
                 let edited = field::single_line(
                     ui,
@@ -213,7 +262,10 @@ impl InspectorApp {
                     Field::new(Layout::PORT_INPUT_WIDTH).monospace(),
                     |_| {},
                 )
-                .on_hover_text("Loopback port to listen on; 0 picks a free port.")
+                .on_hover_text(lang.pick(
+                    "Loopback port to listen on; 0 picks a free port.",
+                    "프록시가 수신할 루프백 포트이며 0을 입력하면 빈 포트를 자동으로 선택합니다.",
+                ))
                 .changed();
                 if edited {
                     actions.push(AppAction::SetPort(port));
@@ -224,6 +276,7 @@ impl InspectorApp {
 
     /// HTTPS decryption state; the menu holds the switch and the CA.
     fn https_indicator(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+        let lang = self.language();
         let capture = &self.session.capture;
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.x = Space::XS;
@@ -237,7 +290,7 @@ impl InspectorApp {
             };
             let menu = controls::ghost_menu(
                 ui,
-                format!("{} ▼", label.text()),
+                format!("{} ▼", label.text(lang)),
                 Layout::TOOLBAR_BUTTON_HEIGHT,
                 |ui| self.https_menu(ui),
             );
@@ -246,18 +299,25 @@ impl InspectorApp {
     }
 
     fn https_menu(&self, ui: &mut egui::Ui) -> Vec<AppAction> {
+        let lang = self.language();
         let capture = &self.session.capture;
         let mut actions = Vec::new();
         let hover = if capture.proxy.is_some() {
-            "Stop the proxy to change this setting."
+            lang.pick(
+                "Stop the proxy to change this setting.",
+                "이 설정을 바꾸려면 프록시를 중지하세요.",
+            )
         } else {
-            "Decrypt HTTPS in new connections with the app CA."
+            lang.pick(
+                "Decrypt HTTPS in new connections with the app CA.",
+                "앱 CA로 새 연결의 HTTPS를 복호화합니다.",
+            )
         };
         let mut enabled = capture.https_inspection;
         let toggled = ui
             .add_enabled(
                 capture.proxy.is_none(),
-                egui::Checkbox::new(&mut enabled, ShellText::DecryptHttps.text()),
+                egui::Checkbox::new(&mut enabled, ShellText::DecryptHttps.text(lang)),
             )
             .on_hover_text(hover)
             .on_disabled_hover_text(hover)
@@ -267,34 +327,37 @@ impl InspectorApp {
         }
         if capture.https_inspection {
             ui.separator();
-            actions.extend(
-                self.dialogs
-                    .ca_panel
-                    .summary(ui, capture.ca_directory.as_deref()),
-            );
+            actions.extend(self.dialogs.ca_panel.summary(
+                ui,
+                capture.ca_directory.as_deref(),
+                lang,
+            ));
         }
         actions
     }
 
-    /// Theme, body storage, cURL redaction, and the capture scope help.
+    /// Language, theme, body storage, cURL redaction, and the capture scope help.
     fn settings_menu(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+        let lang = self.language();
         let menu = controls::ghost_menu(
             ui,
-            ShellText::Settings.text(),
+            ShellText::Settings.text(lang),
             Layout::TOOLBAR_BUTTON_HEIGHT,
             |ui| {
                 let mut chosen = Vec::new();
                 ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                    chosen.extend(self.layout.theme.menu(ui).map(AppAction::SetTheme));
+                    chosen.extend(self.layout.theme.menu(ui, lang).map(AppAction::SetTheme));
+                    ui.separator();
+                    chosen.extend(self.layout.language.menu(ui).map(AppAction::SetLanguage));
                     ui.separator();
                     chosen.extend(
                         self.session
                             .body_saving
-                            .settings_menu(ui)
+                            .settings_menu(ui, lang)
                             .map(AppAction::SetBodyStorageLimit),
                     );
                     ui.separator();
-                    chosen.extend(self.detail.curl.settings(ui));
+                    chosen.extend(self.detail.curl.settings(ui, lang));
                     ui.separator();
                     crate::ui::dialogs::scope_help::submenu(
                         ui,
@@ -303,6 +366,7 @@ impl InspectorApp {
                             .proxy
                             .as_ref()
                             .map(ProxyHandle::local_addr),
+                        lang,
                     );
                 });
                 chosen
@@ -316,9 +380,10 @@ impl InspectorApp {
     /// since an inspection browser is the shortest way to send traffic
     /// through it.
     fn primary_action(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+        let lang = self.language();
         if self.session.capture.proxy.is_none() {
             if ui
-                .add(controls::primary(ui, ShellText::Start.text()))
+                .add(controls::primary(ui, ShellText::Start.text(lang)))
                 .clicked()
             {
                 actions.push(AppAction::StartProxy);
@@ -332,6 +397,7 @@ impl InspectorApp {
                     ui,
                     self.session.capture.ca_directory.is_some()
                         && self.session.capture.https_inspection,
+                    lang,
                 )
                 .map(AppAction::Browser),
         );
@@ -367,33 +433,37 @@ impl InspectorApp {
 
     /// Shows each notice on its own line; reports whether any was shown.
     fn notice_lines(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) -> bool {
+        let lang = self.language();
         let mut shown = false;
         let mut line = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)| {
             shown = true;
             notice_row(ui, add);
         };
         if let Some(warning) = self.session.capture.port.launch_warning.as_ref() {
+            let text = domain::localize_port_launch_warning(lang, warning);
             line(ui, &mut |ui| {
-                indicator::dot_label(ui, Tone::Warning, warning);
+                indicator::dot_label(ui, Tone::Warning, &text);
             });
         }
         if let Some(error) = self.session.capture.error.as_ref() {
+            let text = notice_text(error, lang);
             line(ui, &mut |ui| {
-                indicator::dot_label(ui, Tone::Danger, notice_text(error));
+                indicator::dot_label(ui, Tone::Danger, text.as_ref());
             });
         } else if let Some(error) = self.session.error.as_ref() {
+            let text = session_error_text(error, lang);
             line(ui, &mut |ui| {
-                indicator::dot_label(ui, Tone::Danger, error);
+                indicator::dot_label(ui, Tone::Danger, &text);
             });
         }
-        if let Some(error) = self.dialogs.browsers.error() {
+        if let Some(error) = self.dialogs.browsers.error(lang) {
             line(ui, &mut |ui| {
-                indicator::dot_label(ui, Tone::Danger, error);
+                indicator::dot_label(ui, Tone::Danger, &error);
             });
         }
         if self.detail.curl.has_notice() {
             line(ui, &mut |ui| {
-                if self.detail.curl.notice(ui) {
+                if self.detail.curl.notice(ui, lang) {
                     actions.push(AppAction::DismissCurlNotice);
                 }
             });
@@ -401,15 +471,15 @@ impl InspectorApp {
         if self.session.capture.https_inspection {
             if self.dialogs.ca_panel.has_messages() {
                 line(ui, &mut |ui| {
-                    if self.dialogs.ca_panel.messages(ui) {
+                    if self.dialogs.ca_panel.messages(ui, lang) {
                         actions.push(AppAction::DismissCaNotice);
                     }
                 });
             }
             if self.dialogs.authorization_notice == AuthorizationNotice::Showing {
                 line(ui, &mut |ui| {
-                    indicator::dot_label(ui, Tone::Warning, AUTHORIZATION_WARNING);
-                    if ui.small_button("Dismiss").clicked() {
+                    indicator::dot_label(ui, Tone::Warning, authorization_warning(lang));
+                    if ui.small_button(lang.text(Text::Dismiss)).clicked() {
                         actions.push(AppAction::DismissAuthorization);
                     }
                 });
@@ -425,8 +495,8 @@ const VIEWS: [(MainView, ShellText); 2] = [
 ];
 
 /// Width the view switch takes, so the toolbar can center it.
-fn view_switch_width(ui: &egui::Ui) -> f32 {
-    controls::segmented_width(ui, VIEWS.iter().map(|(_, label)| label.text()))
+fn view_switch_width(ui: &egui::Ui, lang: Language) -> f32 {
+    controls::segmented_width(ui, VIEWS.iter().map(|(_, label)| label.text(lang)))
 }
 
 /// The app name at the left end of the toolbar.
@@ -450,19 +520,23 @@ fn notice_row(ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)) {
 }
 
 /// Copy actions and Stop for the running proxy at `address`.
-fn proxy_menu(ui: &mut egui::Ui, address: std::net::SocketAddr) -> Option<AppAction> {
+fn proxy_menu(
+    ui: &mut egui::Ui,
+    address: std::net::SocketAddr,
+    lang: Language,
+) -> Option<AppAction> {
     let mut action = None;
     ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-        ui.label(egui::RichText::new(ShellText::Copy.text()).color(Palette::of(ui).secondary));
+        ui.label(egui::RichText::new(ShellText::Copy.text(lang)).color(Palette::of(ui).secondary));
         for target in CopyTarget::ALL {
             let text = target.text(address);
-            if ui.button(target.label()).on_hover_text(&text).clicked() {
+            if ui.button(target.label(lang)).on_hover_text(&text).clicked() {
                 action = Some(AppAction::CopyText(text));
                 ui.close();
             }
         }
         ui.separator();
-        if ui.button(ShellText::Stop.text()).clicked() {
+        if ui.button(ShellText::Stop.text(lang)).clicked() {
             action = Some(AppAction::StopProxy);
             ui.close();
         }
@@ -481,11 +555,11 @@ pub(super) enum CopyTarget {
 impl CopyTarget {
     pub(super) const ALL: [Self; 3] = [Self::Address, Self::Curl, Self::Environment];
 
-    pub(super) const fn label(self) -> &'static str {
+    pub(super) const fn label(self, lang: Language) -> &'static str {
         match self {
-            Self::Address => "Proxy URL",
-            Self::Curl => "curl example",
-            Self::Environment => "HTTP_PROXY variables",
+            Self::Address => lang.pick("Proxy URL", "프록시 URL"),
+            Self::Curl => lang.pick("curl example", "curl 예시"),
+            Self::Environment => lang.pick("HTTP_PROXY variables", "HTTP_PROXY 환경 변수"),
         }
     }
 
@@ -498,10 +572,10 @@ impl CopyTarget {
         }
     }
 }
-
 #[cfg(test)]
 mod port_choice_tests {
     use super::{PortChoice, start_error_text};
+    use crate::ui::i18n::Language;
     use http_inspector_core::settings::port::{PortOrigin, PortSaveError, ProxyPort};
     use std::io;
 
@@ -536,9 +610,12 @@ mod port_choice_tests {
         ) else {
             return Err(io::Error::other("binding an occupied port succeeded"));
         };
-        let text = start_error_text(&error, port);
+        let text = start_error_text(&error, port, Language::English);
         assert!(text.contains("already in use"), "{text}");
         assert!(text.contains(&port.to_string()), "{text}");
+        let ko = start_error_text(&error, port, Language::Korean);
+        assert!(ko.contains("이미 사용 중"), "{ko}");
+        assert!(ko.contains(&port.to_string()), "{ko}");
         Ok(())
     }
 }
@@ -564,7 +641,11 @@ mod copy_tests {
 
 #[cfg(test)]
 mod authorization_tests {
-    use super::AuthorizationNotice;
+    use std::io;
+
+    use super::{AuthorizationNotice, session_error_text};
+    use crate::ui::app::state::{HlsSessionError, RangeMergeError, SessionError};
+    use crate::ui::i18n::Language;
 
     #[test]
     fn warning_shows_only_the_first_time() {
@@ -573,6 +654,56 @@ mod authorization_tests {
         assert_eq!(
             AuthorizationNotice::Dismissed.inspection_enabled(),
             AuthorizationNotice::Dismissed
+        );
+    }
+
+    #[test]
+    fn session_errors_retranslate_when_language_switches() {
+        let missing_dir = || {
+            io::Error::new(
+                io::ErrorKind::NotADirectory,
+                "Choose an existing save directory in the Save menu",
+            )
+        };
+
+        let hls = SessionError::HlsDownload(HlsSessionError::Directory(missing_dir()));
+        assert_eq!(
+            session_error_text(&hls, Language::English),
+            "HLS download failed: Choose an existing save directory in the Save menu"
+        );
+        assert_eq!(
+            session_error_text(&hls, Language::Korean),
+            "HLS 다운로드 실패: 저장 메뉴에서 존재하는 저장 폴더를 선택하세요"
+        );
+
+        let merge_dir = SessionError::RangeMerge(RangeMergeError::Directory(missing_dir()));
+        assert_eq!(
+            session_error_text(&merge_dir, Language::English),
+            "Merging ranges failed: Choose an existing save directory in the Save menu"
+        );
+        assert_eq!(
+            session_error_text(&merge_dir, Language::Korean),
+            "범위 응답 병합 실패: 저장 메뉴에서 존재하는 저장 폴더를 선택하세요"
+        );
+
+        let unavailable = SessionError::RangeMerge(RangeMergeError::SavingUnavailable);
+        assert_eq!(
+            session_error_text(&unavailable, Language::English),
+            "Merging ranges failed: Saving bodies is unavailable"
+        );
+        assert_eq!(
+            session_error_text(&unavailable, Language::Korean),
+            "범위 응답 병합 실패: 본문 저장을 사용할 수 없습니다"
+        );
+
+        let stopped = SessionError::RangeMerge(RangeMergeError::WorkerStopped);
+        assert_eq!(
+            session_error_text(&stopped, Language::English),
+            "Merging ranges failed: The range planning worker stopped unexpectedly"
+        );
+        assert_eq!(
+            session_error_text(&stopped, Language::Korean),
+            "범위 응답 병합 실패: 범위 병합 계획 작업자가 예기치 않게 중지되었습니다"
         );
     }
 }

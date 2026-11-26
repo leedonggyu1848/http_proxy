@@ -7,6 +7,7 @@ use http_inspector_analysis::search::{MatchOptions, SearchScope};
 use http_inspector_exchange::Exchange;
 
 use super::{RequestSearch, SearchSettings};
+use crate::ui::i18n::{Language, domain};
 use crate::ui::requests::filter_menu::field_term;
 use crate::ui::style::{
     fonts,
@@ -28,6 +29,7 @@ impl RequestSearch {
         width: f32,
         records: &RecordList<Exchange>,
         dialog_open: bool,
+        lang: Language,
     ) -> Option<SearchSettings> {
         let mut settings = self.settings().clone();
         let diagnostics = self.parsed().diagnostics.as_slice();
@@ -40,16 +42,16 @@ impl RequestSearch {
         let can_clear = !settings.text.is_empty();
         let field = Field::new(width)
             .hint(if regex {
-                ShellText::FilterRegex.text()
+                ShellText::FilterRegex.text(lang)
             } else {
-                ShellText::Filter.text()
+                ShellText::Filter.text(lang)
             })
             .search_icon()
             .monospace()
             .error(if self.regex_error().is_some() {
-                Some(ShellText::InvalidFilter.text())
+                Some(ShellText::InvalidFilter.text(lang))
             } else {
-                (!diagnostics.is_empty()).then_some(ShellText::InvalidCondition.text())
+                (!diagnostics.is_empty()).then_some(ShellText::InvalidCondition.text(lang))
             });
         let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, _| {
             let text = buffer.as_str();
@@ -70,11 +72,11 @@ impl RequestSearch {
                 let height = 2.0f32.mul_add(-Space::XS, Layout::INPUT_HEIGHT);
                 clear = ui
                     .add_enabled(can_clear, controls::ghost("×", height))
-                    .accessible_name(ShellText::ClearFilter.text())
-                    .on_hover_text(ShellText::ClearFilter.text())
+                    .accessible_name(ShellText::ClearFilter.text(lang))
+                    .on_hover_text(ShellText::ClearFilter.text(lang))
                     .clicked();
-                filter_help(ui, height);
-                options(ui, &mut settings.scope, &mut settings.options);
+                filter_help(ui, height, lang);
+                options(ui, &mut settings.scope, &mut settings.options, lang);
             },
             layouter,
             |ui, edit| {
@@ -94,7 +96,7 @@ impl RequestSearch {
         if clear {
             settings.text.clear();
         }
-        self.filter_tooltip(ui, response, diagnostics);
+        self.filter_tooltip(ui, response, diagnostics, lang);
         (&settings != self.settings()).then_some(settings)
     }
     fn filter_tooltip(
@@ -102,16 +104,23 @@ impl RequestSearch {
         ui: &egui::Ui,
         response: egui::Response,
         diagnostics: &[FilterDiagnostic],
+        lang: Language,
     ) {
-        let response = response.accessible_name(ShellText::FilterRequests.text());
+        let response = response.accessible_name(ShellText::FilterRequests.text(lang));
         if let Some(error) = self.regex_error() {
-            response.on_hover_text(error);
+            response.on_hover_text(domain::matcher_error(lang, error));
         } else if diagnostics.is_empty() {
-            response.on_hover_text(text::focus_filter(&ui.ctx().format_shortcut(&FOCUS_FILTER)));
+            response.on_hover_text(text::focus_filter(
+                lang,
+                &ui.ctx().format_shortcut(&FOCUS_FILTER),
+            ));
         } else {
             response.on_hover_ui(|ui| {
                 for diagnostic in diagnostics {
-                    ui.label(&diagnostic.message);
+                    ui.label(domain::localize_filter_diagnostic(
+                        lang,
+                        &diagnostic.message,
+                    ));
                 }
             });
         }
@@ -153,7 +162,7 @@ fn layout_filter_text(
     ui.fonts_mut(|fonts| fonts.layout_job(job))
 }
 
-fn filter_help(ui: &mut egui::Ui, height: f32) {
+fn filter_help(ui: &mut egui::Ui, height: f32, lang: Language) {
     controls::ghost_menu(ui, "?", height, |ui| {
         for (keys, example) in [
             ("method", "method:GET,POST"),
@@ -168,8 +177,8 @@ fn filter_help(ui: &mut egui::Ui, height: f32) {
             ("size", "size:>10kb"),
             ("duration, time", "duration:>500ms"),
             ("is", "is:failed,pending,tunnel,replay,https"),
-            (ShellText::Exclude.text(), "-url:/static/"),
-            (ShellText::Phrase.text(), "\"connection refused\""),
+            (ShellText::Exclude.text(lang), "-url:/static/"),
+            (ShellText::Phrase.text(lang), "\"connection refused\""),
         ] {
             ui.horizontal(|ui| {
                 ui.label(keys);
@@ -178,42 +187,50 @@ fn filter_help(ui: &mut egui::Ui, height: f32) {
         }
     })
     .response
-    .accessible_name(ShellText::FilterSyntax.text())
-    .on_hover_text(ShellText::FilterSyntax.text());
+    .accessible_name(ShellText::FilterSyntax.text(lang))
+    .on_hover_text(ShellText::FilterSyntax.text(lang));
 }
 
 /// Search options inside the right end of the filter input: scope, case,
 /// and regular expression.
-fn options(ui: &mut egui::Ui, scope: &mut SearchScope, match_options: &mut MatchOptions) {
+fn options(
+    ui: &mut egui::Ui,
+    scope: &mut SearchScope,
+    match_options: &mut MatchOptions,
+    lang: Language,
+) {
     controls::ghost_scope(ui, |ui| {
         let height = 2.0f32.mul_add(-Space::XS, Layout::INPUT_HEIGHT);
         toggle(
             ui,
             &mut match_options.regex,
             ".*",
-            ShellText::UseRegex.text(),
+            ShellText::UseRegex.text(lang),
             height,
         );
         toggle(
             ui,
             &mut match_options.case_sensitive,
             "Aa",
-            ShellText::MatchCase.text(),
+            ShellText::MatchCase.text(lang),
             height,
         );
         egui::containers::menu::MenuButton::from_button(controls::ghost(
-            text::menu_label(scope.label()),
+            text::menu_label(domain::search_scope(lang, *scope)),
             height,
         ))
         .ui(ui, |ui| {
             for option in SearchScope::ALL {
-                if ui.selectable_value(scope, option, option.label()).clicked() {
+                if ui
+                    .selectable_value(scope, option, domain::search_scope(lang, option))
+                    .clicked()
+                {
                     ui.close();
                 }
             }
         })
         .0
-        .on_hover_text(ShellText::SearchScope.text());
+        .on_hover_text(ShellText::SearchScope.text(lang));
     });
 }
 

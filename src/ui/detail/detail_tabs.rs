@@ -3,6 +3,7 @@
 
 use eframe::egui::{self, Key, Modifiers};
 
+use crate::ui::i18n::Language;
 use crate::ui::workbench::controls;
 use crate::ui::workbench::text::ShellText;
 
@@ -24,11 +25,11 @@ enum TabStep {
 impl DetailTab {
     const ALL: [Self; 3] = [Self::Headers, Self::Body, Self::Timing];
 
-    const fn title(self) -> &'static str {
+    const fn title(self, lang: Language) -> &'static str {
         match self {
-            Self::Headers => ShellText::Headers.text(),
-            Self::Body => ShellText::Body.text(),
-            Self::Timing => ShellText::Timing.text(),
+            Self::Headers => ShellText::Headers.text(lang),
+            Self::Body => ShellText::Body.text(lang),
+            Self::Timing => ShellText::Timing.text(lang),
         }
     }
 
@@ -81,12 +82,12 @@ pub(super) fn apply_shortcuts(ui: &egui::Ui, tab: &mut DetailTab) {
 /// Shows the tabs as text tabs in an accessibility tab list whose items
 /// report selection instead of a toggle-button state, and returns the area
 /// they occupy. Call it inside a pane header, whose height the tabs fill.
-pub(super) fn show(ui: &mut egui::Ui, current: &mut DetailTab) -> egui::Rect {
-    controls::tab_list(ui, "Request details", |ui| {
+pub(super) fn show(ui: &mut egui::Ui, current: &mut DetailTab, lang: Language) -> egui::Rect {
+    controls::tab_list(ui, lang.pick("Request details", "요청 상세"), |ui| {
         let mut area = egui::Rect::NOTHING;
         for tab in DetailTab::ALL {
             let selected = *current == tab;
-            let response = controls::text_tab(ui, selected, tab.title());
+            let response = controls::text_tab(ui, selected, tab.title(lang));
             if response.clicked() {
                 *current = tab;
             }
@@ -171,7 +172,7 @@ mod tests {
         let mut output = ctx.run_ui(input, |ui| {
             apply_shortcuts(ui, &mut tab);
             remaining = ui.input(|input| input.events.clone());
-            bar = chrome::pane_header(ui, "tabs", |ui| show(ui, &mut tab));
+            bar = chrome::pane_header(ui, "tabs", |ui| show(ui, &mut tab, Language::English));
         });
         // The tabs fill the pane header and leave the rest of the panel to
         // the details below it.

@@ -253,7 +253,7 @@ fn scroll_style() -> egui::style::ScrollStyle {
 pub(crate) struct ThemeSettings {
     preference: egui::ThemePreference,
     path: Option<std::path::PathBuf>,
-    error: Option<String>,
+    error: Option<crate::ui::i18n::SettingsSaveError>,
 }
 
 fn parse(value: &str) -> egui::ThemePreference {
@@ -296,20 +296,29 @@ impl ThemeSettings {
     }
 
     /// Shows the theme choice inside the settings menu.
-    pub(crate) fn menu(&self, ui: &mut egui::Ui) -> Option<egui::ThemePreference> {
+    pub(crate) fn menu(
+        &self,
+        ui: &mut egui::Ui,
+        lang: crate::ui::i18n::Language,
+    ) -> Option<egui::ThemePreference> {
+        use crate::ui::i18n::Text;
+
         let mut preference = self.preference;
-        ui.label("Theme");
+        ui.label(lang.text(Text::ThemeHeading));
         for (value, label) in [
-            (egui::ThemePreference::System, "System"),
-            (egui::ThemePreference::Light, "Light"),
-            (egui::ThemePreference::Dark, "Dark"),
+            (egui::ThemePreference::System, lang.text(Text::OptionSystem)),
+            (egui::ThemePreference::Light, lang.text(Text::ThemeLight)),
+            (egui::ThemePreference::Dark, lang.text(Text::ThemeDark)),
         ] {
             ui.radio_value(&mut preference, value, label);
         }
         if preference == egui::ThemePreference::System && ui.ctx().system_theme().is_none() {
             ui.colored_label(
                 Palette::of(ui).secondary,
-                "System appearance unavailable; using Dark.",
+                lang.pick(
+                    "System appearance unavailable; using Dark.",
+                    "시스템 테마를 확인할 수 없어 어둡게를 사용합니다.",
+                ),
             );
         }
         (preference != self.preference).then_some(preference)
@@ -323,10 +332,14 @@ impl ThemeSettings {
         self.preference = preference;
         context.set_theme(preference);
         context.request_repaint();
-        self.error = self
-            .save()
-            .err()
-            .map(|error| format!("Could not save theme: {error}"));
+        self.error = self.path.as_deref().map_or(
+            Some(crate::ui::i18n::SettingsSaveError::DirectoryUnavailable),
+            |path| {
+                save_theme(path, preference)
+                    .err()
+                    .map(crate::ui::i18n::SettingsSaveError::Write)
+            },
+        );
     }
 
     /// Whether a theme save error waits in the status bar.
@@ -335,26 +348,26 @@ impl ThemeSettings {
     }
 
     /// Shows a theme save error in the status bar.
-    pub(crate) fn status(&self, ui: &mut egui::Ui) {
+    pub(crate) fn status(&self, ui: &mut egui::Ui, lang: crate::ui::i18n::Language) {
         if let Some(error) = &self.error {
-            super::indicator::dot_label(ui, Tone::Danger, error);
+            super::indicator::dot_label(
+                ui,
+                Tone::Danger,
+                crate::ui::i18n::fmt::theme_save_error(lang, error),
+            );
         }
     }
+}
 
-    fn save(&self) -> std::io::Result<()> {
-        use std::io::Write as _;
-        let path = self
-            .path
-            .as_ref()
-            .ok_or_else(|| std::io::Error::other("settings directory unavailable"))?;
-        let parent = path
-            .parent()
-            .ok_or_else(|| std::io::Error::other("invalid settings path"))?;
-        std::fs::create_dir_all(parent)?;
-        publish(path, ExistingFile::Replace, |file| {
-            writeln!(file, "{}", serialize(self.preference))
-        })
-    }
+fn save_theme(path: &std::path::Path, preference: egui::ThemePreference) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("invalid settings path"))?;
+    std::fs::create_dir_all(parent)?;
+    publish(path, ExistingFile::Replace, |file| {
+        writeln!(file, "{}", serialize(preference))
+    })
 }
 
 /// Asserts WCAG AA contrast (4.5:1) of `foreground` on every background a
@@ -607,12 +620,7 @@ mod tests {
             (egui::ThemePreference::Light, "Light\n"),
             (egui::ThemePreference::Dark, "Dark\n"),
         ] {
-            let settings = ThemeSettings {
-                preference,
-                path: Some(path.clone()),
-                error: None,
-            };
-            settings.save()?;
+            save_theme(&path, preference)?;
             let saved = std::fs::read_to_string(&path)?;
             assert_eq!(saved, expected);
             assert_eq!(parse(&saved), preference);

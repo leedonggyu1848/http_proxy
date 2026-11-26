@@ -107,6 +107,10 @@ impl InspectorApp {
         self.dispatch(ui.ctx(), actions);
     }
 
+    pub(crate) const fn language(&self) -> crate::ui::i18n::Language {
+        self.layout.language.language()
+    }
+
     fn view(
         &mut self,
         ui: &mut egui::Ui,
@@ -160,6 +164,7 @@ impl InspectorApp {
         shortcuts_allowed: bool,
         actions: &mut Vec<AppAction>,
     ) -> usize {
+        let lang = self.language();
         let rows = self.requests.filtered_records();
         let shown = rows.len();
         let requests = ListView {
@@ -172,6 +177,7 @@ impl InspectorApp {
                 .as_ref()
                 .map(ProxyHandle::local_addr),
             saving_body: self.session.body_saving.is_busy(),
+            lang,
         };
         let used = ui.cursor().top() - top;
         let height = main_height(viewport_height, used, Layout::STATUS_BAR_HEIGHT);
@@ -204,6 +210,7 @@ impl InspectorApp {
                     body_mode: self.detail.body_mode,
                     body_saving: &self.session.body_saving,
                     field_menu_enabled: self.requests.search.field_menu_enabled(),
+                    lang,
                 };
                 detail.show(
                     right_ui,
@@ -225,6 +232,7 @@ impl InspectorApp {
         height: f32,
         shortcuts_allowed: bool,
     ) -> Option<MapAction> {
+        let lang = self.language();
         let save_busy = self.dialogs.save.is_busy();
         if self.map.panel.sub_view == MapSubView::Graph {
             let size = egui::vec2(ui.available_width(), height);
@@ -237,13 +245,13 @@ impl InspectorApp {
             );
             main.shrink_clip_rect(rect);
             paint_pane_surfaces(&main, [rect, egui::Rect::NOTHING]);
-            let action = self
-                .map
-                .panel
-                .header(&mut main, self.map.analysis.url_map(), save_busy);
+            let action =
+                self.map
+                    .panel
+                    .header(&mut main, self.map.analysis.url_map(), save_busy, lang);
             self.map
                 .panel
-                .show_graph_pane(&mut main, self.map.analysis.url_map());
+                .show_graph_pane(&mut main, self.map.analysis.url_map(), lang);
             return action;
         }
 
@@ -259,21 +267,23 @@ impl InspectorApp {
                 "map-detail-pane",
             ),
             |left_ui, right_ui| {
-                let header = self
-                    .map
-                    .panel
-                    .header(left_ui, self.map.analysis.url_map(), save_busy);
-                self.map.panel.tree_filters(left_ui);
+                let header =
+                    self.map
+                        .panel
+                        .header(left_ui, self.map.analysis.url_map(), save_busy, lang);
+                self.map.panel.tree_filters(left_ui, lang);
                 self.map.panel.show_tree_pane(
                     left_ui,
                     self.map.analysis.url_map(),
                     shortcuts_allowed,
+                    lang,
                 );
                 let detail = self.map.panel.show_detail_pane(
                     right_ui,
                     self.map.analysis.url_map(),
                     &self.requests.records,
                     self.map.analysis.endpoint_schemas(),
+                    lang,
                 );
                 detail.or(header)
             },
