@@ -4,5 +4,5 @@
 mod controller;
 pub(super) mod highlight;
 
-pub(crate) use controller::RequestSearch;
+pub(crate) use controller::{RequestSearch, SearchSettings};
 pub(super) use http_inspector_analysis::search::Query;

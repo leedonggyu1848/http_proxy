@@ -1,6 +1,7 @@
 //! The search controls above the request list and the state that decides
 //! which records the list shows.
 
+use crate::ui::style::tokens::Layout;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -22,13 +23,13 @@ const RETRY: Duration = Duration::from_millis(50);
 
 /// What the user asked to search for.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-struct Settings {
+pub(crate) struct SearchSettings {
     text: String,
     scope: SearchScope,
     options: MatchOptions,
 }
 
-impl Settings {
+impl SearchSettings {
     /// Reports whether every record matching `self` also matches
     /// `previous`, as when letters are added to a word. Records that
     /// `previous` ruled out then need no new check.
@@ -47,7 +48,7 @@ impl Settings {
 }
 
 struct Active {
-    settings: Settings,
+    settings: SearchSettings,
     query: Arc<Query>,
 }
 
@@ -87,7 +88,7 @@ pub(crate) struct RequestSearch {
     scope: SearchScope,
     options: MatchOptions,
     /// Settings seen last frame, to notice edits.
-    seen: Settings,
+    seen: SearchSettings,
     changed_at: Option<Instant>,
     active: Option<Active>,
     error: Option<String>,
@@ -115,7 +116,7 @@ impl RequestSearch {
             text: String::new(),
             scope: SearchScope::All,
             options: MatchOptions::default(),
-            seen: Settings::default(),
+            seen: SearchSettings::default(),
             changed_at: None,
             active: None,
             error: None,
@@ -128,26 +129,45 @@ impl RequestSearch {
     }
 
     /// The search text box, scope, and options.
-    pub(crate) fn controls(&mut self, ui: &mut egui::Ui) {
-        let search_width = ui.available_width().clamp(120.0, 260.0);
+    pub(crate) fn controls(&self, ui: &mut egui::Ui) -> Option<SearchSettings> {
+        let mut settings = self.settings();
+        let search_width = Layout::REQUEST_SEARCH_WIDTH.fit(ui.available_width());
         ui.add(
-            egui::TextEdit::singleline(&mut self.text)
+            egui::TextEdit::singleline(&mut settings.text)
                 .desired_width(search_width)
                 .hint_text(scope_hint(self.scope)),
         );
         egui::ComboBox::from_id_salt("search-scope")
-            .selected_text(self.scope.label())
+            .selected_text(settings.scope.label())
             .show_ui(ui, |ui| {
                 for scope in SearchScope::ALL {
-                    ui.selectable_value(&mut self.scope, scope, scope.label());
+                    ui.selectable_value(&mut settings.scope, scope, scope.label());
                 }
             })
             .response
             .on_hover_text("Where the filter text is looked for");
-        ui.toggle_value(&mut self.options.case_sensitive, "Aa")
+        ui.toggle_value(&mut settings.options.case_sensitive, "Aa")
             .on_hover_text("Match case");
-        ui.toggle_value(&mut self.options.regex, ".*")
+        ui.toggle_value(&mut settings.options.regex, ".*")
             .on_hover_text("Use a regular expression");
+        (settings.text != self.text
+            || settings.scope != self.scope
+            || settings.options != self.options)
+            .then_some(settings)
+    }
+
+    pub(crate) fn set_settings(&mut self, settings: SearchSettings) {
+        self.text = settings.text;
+        self.scope = settings.scope;
+        self.options = settings.options;
+    }
+
+    fn settings(&self) -> SearchSettings {
+        SearchSettings {
+            text: self.text.clone(),
+            scope: self.scope,
+            options: self.options,
+        }
     }
 
     /// Progress, match count, and what was not searched. Draws nothing
@@ -188,11 +208,7 @@ impl RequestSearch {
     /// Applies edits after the debounce, collects results, and queues new
     /// or newly settled records. Call once per frame before [`Self::shows`].
     pub(crate) fn update(&mut self, records: &RecordList<Exchange>, context: &egui::Context) {
-        let settings = Settings {
-            text: self.text.clone(),
-            scope: self.scope,
-            options: self.options,
-        };
+        let settings = self.settings();
         let now = Instant::now();
         if settings != self.seen {
             self.seen = settings.clone();
@@ -234,7 +250,7 @@ impl RequestSearch {
         self.active.as_ref().map(|active| &active.query)
     }
 
-    fn apply(&mut self, settings: Settings) {
+    fn apply(&mut self, settings: SearchSettings) {
         let finished = self.queued.is_empty();
         self.generation += 1;
         if let SearchBackend::Worker(worker) = &self.backend {
@@ -441,8 +457,8 @@ fn capitalized(text: &str) -> String {
 mod tests {
     use super::*;
 
-    fn settings(text: &str, case_sensitive: bool, regex: bool) -> Settings {
-        Settings {
+    fn settings(text: &str, case_sensitive: bool, regex: bool) -> SearchSettings {
+        SearchSettings {
             text: text.to_owned(),
             scope: SearchScope::All,
             options: MatchOptions {

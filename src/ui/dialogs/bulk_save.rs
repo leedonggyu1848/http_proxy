@@ -1,5 +1,6 @@
 //! The `Save bodies…` dialog and the progress of a running bulk save.
 
+use crate::ui::style::tokens::Layout;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -40,7 +41,7 @@ impl BulkSides {
 
 /// Choices made in the dialog.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct BulkChoice {
+pub(crate) struct BulkChoice {
     pub(super) scope: BulkScope,
     pub(super) sides: BulkSides,
     pub(super) format: SaveFormat,
@@ -56,6 +57,12 @@ impl Default for BulkChoice {
             layout: BodyLayout::Flat,
         }
     }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum BulkAction {
+    Close,
+    Save(BulkChoice),
 }
 
 /// How many requests each scope covers, shown next to the choices.
@@ -93,38 +100,40 @@ impl BulkControls {
         self.dialog.is_some()
     }
 
-    /// Shows the dialog and returns the choice once the user confirms it.
-    fn show(&mut self, context: &egui::Context, counts: ScopeCounts) -> Option<BulkChoice> {
-        let mut choice = self.dialog?;
+    /// Shows the form and reports what the user chose.
+    fn show(&mut self, context: &egui::Context, counts: ScopeCounts) -> Option<BulkAction> {
+        let choice = self.dialog.as_mut()?;
         let mut confirmed = None;
         let viewport = context.content_rect();
-        let max_width = (viewport.width() - 48.0).clamp(240.0, 460.0);
-        let max_scroll_height = (viewport.height() - 140.0).max(120.0);
+        let max_width = Layout::BODY_EXPORT_WIDTH.fit(viewport.width());
+        let max_scroll_height = Layout::BODY_EXPORT_HEIGHT.fit(viewport.height());
         let modal = egui::Modal::new(egui::Id::unique("save-bodies")).show(context, |ui| {
             ui.set_max_width(max_width);
             ui.heading("Save bodies");
             egui::ScrollArea::vertical()
                 .max_height(max_scroll_height)
-                .show(ui, |ui| choice_options(ui, &mut choice, counts));
+                .show(ui, |ui| choice_options(ui, choice, counts));
             confirmed = confirm_buttons(ui);
         });
         if modal.should_close() {
             confirmed = Some(false);
         }
-        match confirmed {
-            Some(true) => {
-                self.dialog = None;
-                self.last_choice = Some(choice);
-                Some(choice)
+        confirmed.map(|confirmed| {
+            if confirmed {
+                BulkAction::Save(*choice)
+            } else {
+                BulkAction::Close
             }
-            Some(false) => {
-                self.dialog = None;
-                None
-            }
-            None => {
-                self.dialog = Some(choice);
-                None
-            }
+        })
+    }
+
+    const fn finish(&mut self, action: BulkAction) -> Option<BulkChoice> {
+        self.dialog = None;
+        if let BulkAction::Save(choice) = action {
+            self.last_choice = Some(choice);
+            Some(choice)
+        } else {
+            None
         }
     }
 
@@ -147,7 +156,7 @@ impl BulkControls {
     }
 
     /// Shows progress with a Cancel button, or the last result, in the status bar.
-    pub(super) fn status(&self, ui: &mut egui::Ui) {
+    pub(super) fn status(&self, ui: &mut egui::Ui) -> bool {
         if let Some(running) = self.running.as_ref() {
             let progress = running.progress();
             ui.separator();
@@ -158,7 +167,7 @@ impl BulkControls {
             let fraction = progress.done() as f32 / progress.total().max(1) as f32;
             ui.add(
                 egui::ProgressBar::new(fraction)
-                    .desired_width(120.0)
+                    .desired_width(Layout::BULK_PROGRESS_WIDTH)
                     .text(format!("{}/{}", progress.done(), progress.total())),
             );
             ui.label(format!(
@@ -167,10 +176,9 @@ impl BulkControls {
             ));
             if progress.is_cancelled() {
                 ui.weak("Cancelling…");
-            } else if ui.small_button("Cancel").clicked() {
-                running.cancel();
+                return false;
             }
-            return;
+            return ui.small_button("Cancel").clicked();
         }
         match &self.result {
             Some(BulkResult::Finished(summary)) => {
@@ -186,6 +194,13 @@ impl BulkControls {
                 );
             }
             None => {}
+        }
+        false
+    }
+
+    pub(super) fn cancel(&self) {
+        if let Some(running) = self.running.as_ref() {
+            running.cancel();
         }
     }
 
@@ -326,17 +341,23 @@ pub(super) fn new_folder(directory: &Path) -> PathBuf {
 }
 
 impl InspectorApp {
-    /// Shows the `Save bodies…` dialog and starts the save it confirms.
-    pub(crate) fn bulk_body_save(&mut self, context: &egui::Context) {
-        self.session.body_saving.bulk.poll(context);
+    /// Shows the `Save bodies…` dialog and reports the user action.
+    pub(crate) fn show_bulk_save(&mut self, context: &egui::Context) -> Option<BulkAction> {
         let counts = ScopeCounts {
             all: self.requests.records.len(),
             filtered: self.requests.filtered_records().len(),
             selected: usize::from(self.requests.selected.is_some()),
         };
-        let Some(choice) = self.session.body_saving.bulk.show(context, counts) else {
-            return;
-        };
+        self.session.body_saving.bulk.show(context, counts)
+    }
+
+    pub(crate) fn apply_bulk_action(&mut self, action: BulkAction) {
+        if let Some(choice) = self.session.body_saving.bulk.finish(action) {
+            self.save_bulk(choice);
+        }
+    }
+
+    fn save_bulk(&mut self, choice: BulkChoice) {
         let directory = match self.dialogs.save.directory() {
             Ok(directory) => directory,
             Err(error) => {
@@ -372,6 +393,27 @@ impl InspectorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reopening_remembers_the_confirmed_choice_after_a_cancellation() {
+        let choice = BulkChoice {
+            sides: BulkSides::Both,
+            ..BulkChoice::default()
+        };
+        let mut controls = BulkControls::default();
+        controls.open();
+        assert_eq!(controls.finish(BulkAction::Save(choice)), Some(choice));
+        assert!(!controls.is_open());
+
+        controls.open();
+        assert_eq!(controls.dialog, Some(choice));
+        controls.dialog = Some(BulkChoice::default());
+        assert_eq!(controls.finish(BulkAction::Close), None);
+        assert!(!controls.is_open());
+
+        controls.open();
+        assert_eq!(controls.dialog, Some(choice));
+    }
 
     #[test]
     fn new_folders_never_reuse_an_existing_name() -> std::io::Result<()> {

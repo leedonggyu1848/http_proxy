@@ -2,8 +2,11 @@
 //! view are drawn, the open state survives theme and font changes, and
 //! every row can be searched and its path or value copied.
 
-use crate::ui::detail::highlight::{self, SyntaxPalette};
-use crate::ui::style::theme::Theme;
+use crate::ui::detail::highlight;
+#[cfg(test)]
+use crate::ui::style::fonts;
+use crate::ui::style::theme::{self, Palette, SyntaxPalette, Theme};
+use crate::ui::style::tokens::Layout;
 use eframe::egui::{self, FontId, text::LayoutJob};
 use http_inspector_content::format::tree::TreeModel;
 use std::sync::Arc;
@@ -12,8 +15,6 @@ use std::sync::Arc;
 const OPEN_LEVELS: usize = 2;
 /// Deepest level that still adds indentation, so rows stay on screen.
 const MAX_INDENT: usize = 64;
-/// Height of the row list before it scrolls.
-const ROWS_HEIGHT: f32 = 350.0;
 
 /// Row layouts for one theme and font.
 struct Labels {
@@ -131,7 +132,7 @@ impl TreeView {
         let palette = SyntaxPalette::for_theme(theme);
         // The keyed theme's style: after a theme switch this frame's style
         // still belongs to the previous theme.
-        let text_color = ctx.style_of(theme).visuals.text_color();
+        let text_color = theme::text_in_theme(ctx, theme);
         let jobs = self
             .model
             .nodes()
@@ -154,7 +155,12 @@ impl TreeView {
     }
 
     /// Shows the controls and the visible rows, colored for `theme`.
-    pub(super) fn show(&mut self, ui: &mut egui::Ui, theme: Theme, font: &FontId) {
+    pub(super) fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        theme: Theme,
+        font: &FontId,
+    ) -> Option<String> {
         ui.weak("Right-click a node to copy its path or value.");
         ui.horizontal_wrapped(|ui| {
             if ui.button("Expand all").clicked() {
@@ -165,7 +171,7 @@ impl TreeView {
             }
             ui.label("Search:");
             let mut query = self.query.clone();
-            let search_width = ui.available_width().clamp(100.0, 180.0);
+            let search_width = Layout::TREE_SEARCH_WIDTH.fit(ui.available_width());
             if ui
                 .add(egui::TextEdit::singleline(&mut query).desired_width(search_width))
                 .changed()
@@ -180,37 +186,34 @@ impl TreeView {
             .interact_size
             .y
             .max(ui.text_style_height(&egui::TextStyle::Monospace));
+        let mut copied = None;
         egui::ScrollArea::both()
             .id_salt("tree_rows")
-            .max_height(ROWS_HEIGHT)
+            .max_height(Layout::DETAIL_TREE_HEIGHT)
             .show_rows(ui, height, visible.len(), |ui, range| {
                 for row in range {
-                    if let Some(&index) = visible.get(row) {
-                        self.row(ui, index);
+                    if let Some(&index) = visible.get(row)
+                        && let Some(text) = self.row(ui, index)
+                    {
+                        copied = Some(text);
                     }
                 }
             });
+        copied
     }
 
-    fn row(&mut self, ui: &mut egui::Ui, index: usize) {
-        let Some(node) = self.model.node(index) else {
-            return;
-        };
-        let Some(job) = self
-            .labels
-            .as_ref()
-            .and_then(|labels| labels.jobs.get(index))
-        else {
-            return;
-        };
+    fn row(&mut self, ui: &mut egui::Ui, index: usize) -> Option<String> {
+        let node = self.model.node(index)?;
+        let job = self.labels.as_ref()?.jobs.get(index)?;
         let expandable = self.expandable(index);
         let open = self.is_open(index);
         let matched = self.matched.get(index).copied().unwrap_or_default();
         let mut toggled = false;
+        let mut copied = None;
         ui.horizontal(|ui| {
             toggled = tree_row_prefix(ui, node.depth, expandable, open);
             let job = if matched {
-                Arc::new(highlighted(job, ui.visuals().selection.bg_fill))
+                Arc::new(highlighted(job, Palette::of(ui).surfaces.selected))
             } else {
                 Arc::clone(job)
             };
@@ -232,12 +235,12 @@ impl TreeView {
                 if let Some(path) = &node.path {
                     ui.weak(path.as_str());
                     if ui.button(copy.path).clicked() {
-                        ui.ctx().copy_text(path.clone());
+                        copied = Some(path.clone());
                         ui.close();
                     }
                 }
                 if ui.button(copy.value).clicked() {
-                    ui.ctx().copy_text(node.value.clone());
+                    copied = Some(node.value.clone());
                     ui.close();
                 }
             });
@@ -245,6 +248,7 @@ impl TreeView {
         if toggled {
             self.toggle(index);
         }
+        copied
     }
 }
 
@@ -257,11 +261,11 @@ pub(crate) fn tree_row_prefix(
     open: bool,
 ) -> bool {
     let clamped = u16::try_from(depth.min(MAX_INDENT)).unwrap_or(0);
-    ui.add_space(f32::from(clamped) * 12.0);
+    ui.add_space(f32::from(clamped) * Layout::TREE_INDENT);
     if expandable {
         ui.small_button(if open { "▼" } else { "▶" }).clicked()
     } else {
-        ui.add_space(20.0);
+        ui.add_space(Layout::TREE_LEAF_PREFIX);
         false
     }
 }
@@ -369,7 +373,7 @@ mod tests {
     #[test]
     fn theme_change_relays_labels_and_keeps_open_rows() -> Result<(), String> {
         let ctx = egui::Context::default();
-        let font = FontId::monospace(12.0);
+        let font = fonts::code();
         let mut view = view(BodyFormat::Json, r#"{"a":{"b":{"c":1}}}"#)?;
         view.set_all(false);
         view.toggle(0);

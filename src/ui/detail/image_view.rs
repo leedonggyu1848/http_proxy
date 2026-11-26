@@ -1,5 +1,6 @@
 //! Image response bodies drawn as images, with source and hexadecimal views.
 
+use crate::ui::style::tokens::{Layout, Radius};
 use std::fmt::Write as _;
 
 use eframe::egui::{self, TextureHandle, TextureOptions};
@@ -14,9 +15,6 @@ use http_inspector_content::image::{self as image_decode, PreviewImage};
 const HEX_BYTES: usize = 8 * 1024;
 /// SVG source bytes shown in the source view.
 const SOURCE_BYTES: usize = 256 * 1024;
-/// Height at which drawn images are scaled down to keep the panel readable.
-const MAX_DISPLAY_HEIGHT: f32 = 480.0;
-
 /// Reason an image body could not be prepared for display.
 #[derive(Debug, thiserror::Error)]
 enum ImageViewError {
@@ -217,7 +215,7 @@ fn show_image(ui: &mut egui::Ui, loaded: &Loaded, received_bytes: u64, svg: bool
                 drawn.image_text,
                 received_text(loaded.file_bytes, received_bytes)
             ));
-            let size = egui::vec2(ui.available_width(), MAX_DISPLAY_HEIGHT);
+            let size = egui::vec2(ui.available_width(), Layout::IMAGE_DISPLAY_HEIGHT);
             let image = egui::Image::from_texture(&drawn.texture).max_size(size);
             let image_size = image.calc_size(size, Some(drawn.texture.size_vec2()));
             let (rect, _) = ui.allocate_exact_size(image_size, egui::Sense::hover());
@@ -225,8 +223,8 @@ fn show_image(ui: &mut egui::Ui, loaded: &Loaded, received_bytes: u64, svg: bool
             image.paint_at(ui, rect);
             ui.painter().rect_stroke(
                 rect,
-                0.0,
-                ui.visuals().window_stroke,
+                Radius::PANE,
+                crate::ui::style::theme::image_border(ui),
                 egui::StrokeKind::Outside,
             );
             None
@@ -269,7 +267,7 @@ fn show_source(ui: &mut egui::Ui, loaded: &Loaded) {
     let mut text = source.as_str();
     egui::ScrollArea::vertical()
         .id_salt("image-body-source")
-        .max_height(MAX_DISPLAY_HEIGHT)
+        .max_height(Layout::IMAGE_DISPLAY_HEIGHT)
         .show(ui, |ui| {
             ui.add(
                 egui::TextEdit::multiline(&mut text)
@@ -404,16 +402,13 @@ fn show_hex(ui: &mut egui::Ui, snapshot: &BodySnapshot) {
     let mut text = dump.as_str();
     let font = egui::TextStyle::Monospace.resolve(ui.style());
     let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, _: f32| {
-        ui.painter().layout_no_wrap(
-            text.as_str().to_owned(),
-            font.clone(),
-            ui.visuals().text_color(),
-        )
+        ui.painter()
+            .layout_no_wrap(text.as_str().to_owned(), font.clone(), Palette::of(ui).text)
     };
     egui::ScrollArea::both()
         .auto_shrink([false, true])
         .id_salt("image-body-hex")
-        .max_height(MAX_DISPLAY_HEIGHT)
+        .max_height(Layout::IMAGE_DISPLAY_HEIGHT)
         .show(ui, |ui| {
             ui.add(
                 egui::TextEdit::multiline(&mut text)
@@ -425,6 +420,7 @@ fn show_hex(ui: &mut egui::Ui, snapshot: &BodySnapshot) {
 }
 
 fn checkerboard(ui: &egui::Ui, rect: egui::Rect) {
+    let [inset, hover] = crate::ui::style::theme::image_checker_colors(ui);
     let mut y = rect.top();
     let mut row = false;
     loop {
@@ -439,19 +435,18 @@ fn checkerboard(ui: &egui::Ui, rect: egui::Rect) {
             }
             let tile = egui::Rect::from_min_max(
                 egui::pos2(x, y),
-                egui::pos2((x + 12.0).min(rect.right()), (y + 12.0).min(rect.bottom())),
+                egui::pos2(
+                    (x + Layout::IMAGE_CHECKER_TILE).min(rect.right()),
+                    (y + Layout::IMAGE_CHECKER_TILE).min(rect.bottom()),
+                ),
             );
-            let fill = if alternate {
-                ui.visuals().extreme_bg_color
-            } else {
-                ui.visuals().widgets.hovered.bg_fill
-            };
-            ui.painter().rect_filled(tile, 0.0, fill);
+            let fill = if alternate { inset } else { hover };
+            ui.painter().rect_filled(tile, Radius::PANE, fill);
             alternate = !alternate;
-            x += 12.0;
+            x += Layout::IMAGE_CHECKER_TILE;
         }
         row = !row;
-        y += 12.0;
+        y += Layout::IMAGE_CHECKER_TILE;
     }
 }
 

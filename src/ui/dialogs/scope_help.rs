@@ -1,5 +1,6 @@
 //! Explains which traffic the proxy can and cannot record.
 
+use crate::ui::style::tokens::{Layout, Space};
 use eframe::egui;
 
 /// One-line scope at the top of the capture help.
@@ -43,20 +44,20 @@ pub(crate) fn button(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>) {
 
 fn contents(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>) {
     let viewport = ui.ctx().content_rect();
-    let max_width = (viewport.width() - 32.0).clamp(240.0, 520.0);
-    let max_height = (viewport.height() - 80.0).max(160.0);
+    let max_width = Layout::SCOPE_HELP_WIDTH.fit(viewport.width());
+    let max_height = Layout::TOOLBAR_POPOVER_HEIGHT.fit(viewport.height());
     ui.set_max_width(max_width);
     ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
         egui::ScrollArea::vertical()
             .max_height(max_height)
             .show(ui, |ui| {
                 ui.label(SCOPE_SUMMARY);
-                ui.add_space(4.0);
+                ui.add_space(Space::XS);
                 ui.strong("Recorded");
                 for line in RECORDED {
                     ui.label(format!("• {line}"));
                 }
-                ui.add_space(4.0);
+                ui.add_space(Space::XS);
                 ui.strong("Not recorded");
                 for line in NOT_RECORDED {
                     ui.colored_label(
@@ -64,7 +65,7 @@ fn contents(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>) {
                         format!("• {line}"),
                     );
                 }
-                ui.add_space(4.0);
+                ui.add_space(Space::XS);
                 ui.label(QUIC_HINT);
                 if let Some(address) = address {
                     ui.add(

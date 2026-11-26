@@ -3,7 +3,37 @@ use eframe::egui::{self, Color32};
 pub(crate) use egui::Theme;
 use http_inspector_file::{ExistingFile, publish};
 
-use super::tokens::{Layout, Motion, Radius, Space, ThemeTokens, Tone, TypeScale};
+use super::tokens::{
+    Borders, Layout, Motion, Radius, Space, StrokeWidth, Surfaces, ThemeTokens, Tone, TypeScale,
+};
+
+pub(crate) use super::tokens::{MatchColors, SyntaxPalette};
+use http_inspector_content::format::TokenKind;
+
+impl SyntaxPalette {
+    pub(crate) const fn for_theme(theme: Theme) -> Self {
+        ThemeTokens::for_theme(theme).syntax
+    }
+
+    pub(crate) const fn color(&self, kind: TokenKind, text: Color32) -> Color32 {
+        match kind {
+            TokenKind::Text => text,
+            TokenKind::Key | TokenKind::AttributeName => self.key,
+            TokenKind::String | TokenKind::AttributeValue | TokenKind::CData => self.string,
+            TokenKind::Number | TokenKind::Entity => self.number,
+            TokenKind::Literal | TokenKind::Namespace => self.literal,
+            TokenKind::Punctuation => self.punctuation,
+            TokenKind::Tag => self.tag,
+            TokenKind::Comment | TokenKind::Instruction => self.comment,
+        }
+    }
+}
+
+impl MatchColors {
+    pub(crate) const fn for_theme(theme: Theme) -> Self {
+        ThemeTokens::for_theme(theme).search
+    }
+}
 
 /// Text colors of the current theme, from its design tokens. Point colors
 /// (`accent.*`, `status.ok`) are not text colors and are read from
@@ -17,6 +47,8 @@ pub(crate) struct Palette {
     pub(crate) warning: Color32,
     /// `status.error` text, on data surfaces only.
     pub(crate) error: Color32,
+    pub(crate) surfaces: Surfaces,
+    pub(crate) borders: Borders,
 }
 
 impl Palette {
@@ -31,6 +63,8 @@ impl Palette {
             secondary: tokens.text.secondary,
             warning: tokens.status.warn,
             error: tokens.status.error,
+            surfaces: tokens.surfaces,
+            borders: tokens.borders,
         }
     }
 
@@ -43,6 +77,39 @@ impl Palette {
             Some(Tone::Danger) => self.error,
         }
     }
+}
+
+/// Resolves the text color of the body's theme even when the context is
+/// still painting with the previous frame's style.
+pub(crate) fn text_in_theme(context: &egui::Context, theme: Theme) -> Color32 {
+    context.style_of(theme).visuals.text_color()
+}
+
+pub(crate) fn clear_color(visuals: &egui::Visuals) -> [f32; 4] {
+    visuals.panel_fill.to_normalized_gamma_f32()
+}
+
+pub(crate) fn divider_stroke(ui: &egui::Ui, response: &egui::Response) -> egui::Stroke {
+    let tokens = ThemeTokens::for_theme(ui.ctx().theme());
+    let color = if response.hovered() || response.dragged() {
+        tokens.accent.secondary
+    } else {
+        tokens.borders.structural
+    };
+    egui::Stroke::new(StrokeWidth::STRUCTURAL, color)
+}
+
+pub(crate) fn structural_stroke(ui: &egui::Ui) -> egui::Stroke {
+    ui.visuals().widgets.noninteractive.bg_stroke
+}
+
+pub(crate) fn image_border(ui: &egui::Ui) -> egui::Stroke {
+    ui.visuals().window_stroke
+}
+
+pub(crate) fn image_checker_colors(ui: &egui::Ui) -> [Color32; 2] {
+    let surfaces = Palette::of(ui).surfaces;
+    [surfaces.input, surfaces.hover]
 }
 
 /// egui visuals of `theme`, built from its design tokens.
@@ -69,7 +136,7 @@ fn apply_text_colors(visuals: &mut egui::Visuals, tokens: &ThemeTokens) {
     // selection keeps the primary text color and the accent goes to the
     // selection bar that the request table paints.
     visuals.selection.bg_fill = tokens.surfaces.selected;
-    visuals.selection.stroke = egui::Stroke::new(1.0, tokens.text.primary);
+    visuals.selection.stroke = egui::Stroke::new(StrokeWidth::STRUCTURAL, tokens.text.primary);
 }
 
 fn apply_surfaces(visuals: &mut egui::Visuals, tokens: &ThemeTokens) {
@@ -81,7 +148,7 @@ fn apply_surfaces(visuals: &mut egui::Visuals, tokens: &ThemeTokens) {
     visuals.code_bg_color = surfaces.input;
     visuals.faint_bg_color = surfaces.pane;
     visuals.striped = false;
-    visuals.window_stroke = egui::Stroke::new(1.0, tokens.borders.structural);
+    visuals.window_stroke = egui::Stroke::new(StrokeWidth::STRUCTURAL, tokens.borders.structural);
     visuals.window_corner_radius = egui::CornerRadius::same(Radius::CONTROL);
     visuals.menu_corner_radius = egui::CornerRadius::same(Radius::CONTROL);
     visuals.window_shadow = egui::Shadow::NONE;
@@ -99,7 +166,8 @@ fn apply_widgets(widgets: &mut egui::style::Widgets, tokens: &ThemeTokens) {
     let borders = tokens.borders;
     widgets.noninteractive.bg_fill = surfaces.pane;
     widgets.noninteractive.weak_bg_fill = surfaces.pane;
-    widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, borders.structural);
+    widgets.noninteractive.bg_stroke =
+        egui::Stroke::new(StrokeWidth::STRUCTURAL, borders.structural);
     // Resting controls are outline buttons; `bg_fill` also colors scrollbar
     // thumbs and checkbox boxes.
     widgets.inactive.weak_bg_fill = surfaces.elevated;
@@ -115,7 +183,7 @@ fn apply_widgets(widgets: &mut egui::style::Widgets, tokens: &ThemeTokens) {
         &mut widgets.active,
         &mut widgets.open,
     ] {
-        widget.fg_stroke = egui::Stroke::new(1.0, tokens.text.primary);
+        widget.fg_stroke = egui::Stroke::new(StrokeWidth::STRUCTURAL, tokens.text.primary);
         widget.corner_radius = egui::CornerRadius::same(Radius::CONTROL);
         widget.expansion = 0.0;
     }
@@ -125,12 +193,16 @@ fn apply_widgets(widgets: &mut egui::style::Widgets, tokens: &ThemeTokens) {
         &mut widgets.active,
         &mut widgets.open,
     ] {
-        widget.bg_stroke = egui::Stroke::new(1.0, borders.control);
+        widget.bg_stroke = egui::Stroke::new(StrokeWidth::STRUCTURAL, borders.control);
     }
 }
 
 /// Applies the spacing, type, scrollbar, and motion scales shared by both
 /// themes.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the theme installs design typography"
+)]
 fn apply_scales(style: &mut egui::Style) {
     use egui::{FontFamily, FontId, TextStyle};
     let spacing = &mut style.spacing;
@@ -215,30 +287,37 @@ impl ThemeSettings {
     }
 
     /// Shows the theme choice inside the settings menu.
-    pub(crate) fn menu(&mut self, ui: &mut egui::Ui) {
-        let previous = self.preference;
+    pub(crate) fn menu(&self, ui: &mut egui::Ui) -> Option<egui::ThemePreference> {
+        let mut preference = self.preference;
         ui.label("Theme");
         for (value, label) in [
             (egui::ThemePreference::System, "System"),
             (egui::ThemePreference::Light, "Light"),
             (egui::ThemePreference::Dark, "Dark"),
         ] {
-            ui.radio_value(&mut self.preference, value, label);
+            ui.radio_value(&mut preference, value, label);
         }
-        if previous != self.preference {
-            ui.ctx().set_theme(self.preference);
-            ui.ctx().request_repaint();
-            self.error = self
-                .save()
-                .err()
-                .map(|error| format!("Could not save theme: {error}"));
-        }
-        if self.preference == egui::ThemePreference::System && ui.ctx().system_theme().is_none() {
+        if preference == egui::ThemePreference::System && ui.ctx().system_theme().is_none() {
             ui.colored_label(
                 Palette::of(ui).secondary,
                 "System appearance unavailable; using Dark.",
             );
         }
+        (preference != self.preference).then_some(preference)
+    }
+
+    pub(crate) fn set_preference(
+        &mut self,
+        context: &egui::Context,
+        preference: egui::ThemePreference,
+    ) {
+        self.preference = preference;
+        context.set_theme(preference);
+        context.request_repaint();
+        self.error = self
+            .save()
+            .err()
+            .map(|error| format!("Could not save theme: {error}"));
     }
 
     /// Shows a theme save error in the status bar.
@@ -273,7 +352,7 @@ pub(crate) fn assert_readable(theme: Theme, foreground: Color32) {
 }
 
 /// Asserts WCAG AA contrast (4.5:1) of `foreground` on the data surfaces of
-/// `theme`. Use it for status, category, and syntax text, which design rule 25
+/// `theme`. Use it for status, category, and syntax text, which design rule D8
 /// keeps off the chrome and cross-highlight surfaces.
 #[cfg(test)]
 pub(crate) fn assert_readable_on_data(theme: Theme, foreground: Color32) {
@@ -347,7 +426,15 @@ mod tests {
                 assert_readable(theme, foreground);
             }
             let tokens = ThemeTokens::for_theme(theme);
+            let syntax = SyntaxPalette::for_theme(theme);
             for foreground in [
+                syntax.key,
+                syntax.string,
+                syntax.number,
+                syntax.literal,
+                syntax.punctuation,
+                syntax.tag,
+                syntax.comment,
                 palette.warning,
                 palette.error,
                 tokens.category(Category::BlueSlate),

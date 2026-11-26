@@ -1,57 +1,20 @@
 //! Toolbar controls, launch port choice, and clipboard actions.
 
-use crate::ui::style::indicator;
-use crate::ui::style::tokens::Tone;
-use crate::ui::{InspectorApp, MAX_RECORDS};
+use crate::ui::app::capture::CaptureNotice;
+#[cfg(test)]
+use crate::ui::app::capture::PortChoice;
+use crate::ui::style::{
+    indicator,
+    tokens::{Layout, Tone},
+};
+use crate::ui::{AppAction, InspectorApp, MAX_RECORDS};
 use eframe::egui;
 use http_inspector_core::interception::{ProxyHandle, StartError};
 use http_inspector_core::recording::FullLog;
 use http_inspector_core::settings;
 use http_inspector_exchange::ByteSize;
+use std::borrow::Cow;
 use std::io;
-use std::path::PathBuf;
-
-/// Port typed in the toolbar and where its current value came from.
-pub(crate) struct PortChoice {
-    pub(crate) text: String,
-    pub(crate) origin: settings::port::PortOrigin,
-    pub(crate) settings_directory: Option<PathBuf>,
-    pub(crate) launch_warning: Option<String>,
-}
-
-impl PortChoice {
-    pub(crate) fn from_launch() -> Self {
-        let settings_directory = settings::paths::settings_directory(|name| std::env::var_os(name));
-        let saved = settings_directory
-            .as_deref()
-            .and_then(settings::port::load_port);
-        let launch = settings::port::launch_port(
-            std::env::args_os(),
-            std::env::var_os(settings::port::PORT_ENV),
-            saved,
-        );
-        Self {
-            text: launch.port.to_string(),
-            origin: launch.origin,
-            settings_directory,
-            launch_warning: launch.warning,
-        }
-    }
-
-    /// Remembers a port the user typed once the proxy started on it.
-    pub(crate) fn remember(
-        &self,
-        port: settings::port::ProxyPort,
-    ) -> Result<(), settings::port::PortSaveError> {
-        if self.origin != settings::port::PortOrigin::User {
-            return Ok(());
-        }
-        let Some(directory) = self.settings_directory.as_deref() else {
-            return Err(settings::port::PortSaveError::SettingsDirectoryUnavailable);
-        };
-        settings::port::save_port(directory, port).map_err(settings::port::PortSaveError::Save)
-    }
-}
 
 /// Explains a failed start in terms of what the user can change.
 pub(crate) fn start_error_text(error: &StartError, port: settings::port::ProxyPort) -> String {
@@ -63,6 +26,28 @@ pub(crate) fn start_error_text(error: &StartError, port: settings::port::ProxyPo
             "Port {port} needs administrator privileges. Use a port from 1024 to 65535, or 0 to pick a free one."
         ),
         other => other.to_string(),
+    }
+}
+
+pub(crate) fn notice_text(notice: &CaptureNotice) -> Cow<'_, str> {
+    match notice {
+        CaptureNotice::InvalidPort(error) => Cow::Owned(error.to_string()),
+        CaptureNotice::MissingCaDirectory => Cow::Borrowed(
+            "HTTPS inspection requires an application data directory; check HOME and platform storage settings",
+        ),
+        CaptureNotice::Start { port, error } => Cow::Owned(start_error_text(error, *port)),
+        CaptureNotice::RememberPort(error) => Cow::Owned(error.to_string()),
+        CaptureNotice::Stop(error) => Cow::Owned(error.to_string()),
+        CaptureNotice::Failed {
+            message,
+            stop_error,
+        } => {
+            let message = format!("The proxy stopped: {message}. Press Start to restart it.");
+            match stop_error {
+                Some(error) => Cow::Owned(format!("{message} ({error})")),
+                None => Cow::Owned(message),
+            }
+        }
     }
 }
 
@@ -80,7 +65,7 @@ pub(crate) enum AuthorizationNotice {
 
 impl AuthorizationNotice {
     /// Shows the warning the first time inspection is turned on.
-    const fn inspection_enabled(self) -> Self {
+    pub(crate) const fn inspection_enabled(self) -> Self {
         match self {
             Self::NotShown => Self::Showing,
             Self::Showing | Self::Dismissed => self,
@@ -90,118 +75,131 @@ impl AuthorizationNotice {
 
 impl InspectorApp {
     /// One toolbar row with the controls used while watching requests.
-    pub(crate) fn toolbar(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn toolbar(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
         ui.horizontal_wrapped(|ui| {
-            self.proxy_controls(ui);
+            self.proxy_controls(ui, actions);
             ui.separator();
-            self.https_controls(ui);
+            self.https_controls(ui, actions);
             ui.separator();
-            if self.dialogs.browsers.toolbar(
-                ui,
-                self.session.proxy.as_ref().map(ProxyHandle::local_addr),
-                self.session
-                    .ca_directory
-                    .as_deref()
-                    .filter(|_| self.session.https_inspection),
-            ) {
-                self.dialogs.ca_panel.refresh();
-            }
-            match self.dialogs.save.menu(ui, self.session.full_log.as_ref()) {
-                Some(crate::ui::dialogs::save::SaveMenuAction::ExportHar) => {
-                    self.dialogs
-                        .har
-                        .open(self.dialogs.save.suggested_path("har"));
-                }
-                Some(crate::ui::dialogs::save::SaveMenuAction::SaveBodies) => {
-                    self.session.body_saving.open_bulk();
-                }
-                None => {}
-            }
+            actions.extend(
+                self.dialogs
+                    .browsers
+                    .toolbar(
+                        ui,
+                        self.session.capture.proxy.is_some(),
+                        self.session.capture.ca_directory.is_some()
+                            && self.session.capture.https_inspection,
+                    )
+                    .map(AppAction::Browser),
+            );
+            actions.extend(
+                self.dialogs
+                    .save
+                    .menu(ui, self.session.capture.full_log.is_some())
+                    .into_iter()
+                    .map(AppAction::SaveMenu),
+            );
             ui.menu_button("Settings", |ui| {
                 ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                    self.layout.theme.menu(ui);
+                    actions.extend(self.layout.theme.menu(ui).map(AppAction::SetTheme));
                     ui.separator();
-                    self.session.body_saving.settings_menu(ui);
+                    actions.extend(
+                        self.session
+                            .body_saving
+                            .settings_menu(ui)
+                            .map(AppAction::SetBodyStorageLimit),
+                    );
                 });
             });
             crate::ui::dialogs::scope_help::button(
                 ui,
-                self.session.proxy.as_ref().map(ProxyHandle::local_addr),
+                self.session
+                    .capture
+                    .proxy
+                    .as_ref()
+                    .map(ProxyHandle::local_addr),
             );
         });
     }
 
-    fn proxy_controls(&mut self, ui: &mut egui::Ui) {
-        if let Some(proxy) = self.session.proxy.as_ref() {
+    fn proxy_controls(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+        if let Some(proxy) = self.session.capture.proxy.as_ref() {
             let address = proxy.local_addr();
             indicator::dot_label(ui, Tone::Success, "Running");
             ui.monospace(address.to_string());
-            copy_menu(ui, address);
+            actions.extend(copy_menu(ui, address).map(AppAction::CopyText));
             if ui.button("Stop").clicked() {
-                self.stop_proxy();
+                actions.push(AppAction::StopProxy);
             }
         } else {
             indicator::dot_label(ui, Tone::Danger, "Stopped");
             ui.label("Port");
+            let mut port = self.session.capture.port.text.clone();
             let edited = ui
-                .add(egui::TextEdit::singleline(&mut self.session.port.text).desired_width(56.0))
+                .add(egui::TextEdit::singleline(&mut port).desired_width(Layout::PORT_INPUT_WIDTH))
                 .on_hover_text(
                     "Loopback port for the proxy. 0 picks a free port. A port you type is remembered.",
                 )
                 .changed();
             if edited {
-                self.session.port.origin = settings::port::PortOrigin::User;
+                actions.push(AppAction::SetPort(port));
             }
             if ui.button("Start").clicked() {
-                self.session.start_proxy(ui.ctx());
+                actions.push(AppAction::StartProxy);
             }
         }
     }
 
-    fn https_controls(&mut self, ui: &mut egui::Ui) {
-        let hover = if self.session.proxy.is_some() {
+    fn https_controls(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+        let hover = if self.session.capture.proxy.is_some() {
             format!("Stop the proxy to change this setting. {AUTHORIZATION_WARNING}")
         } else {
             format!("Decrypt HTTPS in new connections with the app CA. {AUTHORIZATION_WARNING}")
         };
+        let mut enabled = self.session.capture.https_inspection;
         let toggled = ui
             .add_enabled(
-                self.session.proxy.is_none(),
-                egui::Checkbox::new(&mut self.session.https_inspection, "Decrypt HTTPS"),
+                self.session.capture.proxy.is_none(),
+                egui::Checkbox::new(&mut enabled, "Decrypt HTTPS"),
             )
             .on_hover_text(&hover)
             .on_disabled_hover_text(&hover)
             .changed();
-        if toggled && self.session.https_inspection {
-            self.dialogs.authorization_notice =
-                self.dialogs.authorization_notice.inspection_enabled();
+        if toggled {
+            actions.push(AppAction::SetHttpsInspection(enabled));
         }
-        if self.session.https_inspection {
-            self.dialogs
-                .ca_panel
-                .summary(ui, self.session.ca_directory.as_deref());
+        if self.session.capture.https_inspection {
+            actions.extend(
+                self.dialogs
+                    .ca_panel
+                    .summary(ui, self.session.capture.ca_directory.as_deref()),
+            );
         }
     }
 
     /// Errors and warnings that need attention, shown right below the toolbar.
-    pub(crate) fn notices(&mut self, ui: &mut egui::Ui) {
-        if let Some(warning) = self.session.port.launch_warning.as_ref() {
+    pub(crate) fn notices(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+        if let Some(warning) = self.session.capture.port.launch_warning.as_ref() {
             indicator::dot_label(ui, Tone::Warning, warning);
         }
-        if let Some(error) = self.session.error.as_ref() {
+        if let Some(error) = self.session.capture.error.as_ref() {
+            indicator::dot_label(ui, Tone::Danger, notice_text(error));
+        } else if let Some(error) = self.session.error.as_ref() {
             indicator::dot_label(ui, Tone::Danger, error);
         }
         if let Some(error) = self.dialogs.browsers.error() {
             indicator::dot_label(ui, Tone::Danger, error);
         }
-        self.detail.curl.notice(ui);
-        if self.session.https_inspection {
+        if self.detail.curl.notice(ui) {
+            actions.push(AppAction::DismissCurlNotice);
+        }
+        if self.session.capture.https_inspection {
             self.dialogs.ca_panel.messages(ui);
             if self.dialogs.authorization_notice == AuthorizationNotice::Showing {
                 ui.horizontal_wrapped(|ui| {
                     indicator::dot_label(ui, Tone::Warning, AUTHORIZATION_WARNING);
                     if ui.small_button("Dismiss").clicked() {
-                        self.dialogs.authorization_notice = AuthorizationNotice::Dismissed;
+                        actions.push(AppAction::DismissAuthorization);
                     }
                 });
             }
@@ -209,10 +207,10 @@ impl InspectorApp {
     }
 
     /// Counters and full-session log state below the request list.
-    pub(crate) fn status_bar(&self, ui: &mut egui::Ui) {
+    pub(crate) fn status_bar(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
         ui.horizontal_wrapped(|ui| {
             ui.label(format!("{} requests", self.requests.records.len()));
-            let dropped = self.requests.records.dropped(self.session.engine_dropped());
+            let dropped = self.requests.records.dropped(self.session.capture.engine_dropped());
             if dropped > 0 {
                 ui.separator();
                 indicator::dot_label(ui, Tone::Danger, format!("{dropped} records dropped"))
@@ -240,15 +238,16 @@ impl InspectorApp {
                 );
             }
             if let Some(error) = self
-                .session.log_init_error
-                .clone()
-                .or_else(|| self.session.full_log.as_ref().and_then(FullLog::error))
+                .session.capture.log_init_error
+                .as_ref()
+                .map(|error| format!("Full-session logging is unavailable: {error}"))
+                .or_else(|| self.session.capture.full_log.as_ref().and_then(FullLog::error))
             {
                 ui.separator();
                 indicator::dot_label(ui, Tone::Danger, error);
             }
             if let Some(log) = self
-                .session.full_log
+                .session.capture.full_log
                 .as_ref()
                 .filter(|log| log.body_limit_reached())
             {
@@ -263,7 +262,9 @@ impl InspectorApp {
                 );
             }
             self.dialogs.save.status(ui);
-            self.session.body_saving.status(ui);
+            if self.session.body_saving.status(ui) {
+                actions.push(AppAction::CancelBulkSave);
+            }
             self.layout.theme.status(ui);
         });
     }
@@ -298,16 +299,19 @@ impl CopyTarget {
     }
 }
 
-fn copy_menu(ui: &mut egui::Ui, address: std::net::SocketAddr) {
-    ui.menu_button("Copy ▼", |ui| {
+fn copy_menu(ui: &mut egui::Ui, address: std::net::SocketAddr) -> Option<String> {
+    let menu = ui.menu_button("Copy ▼", |ui| {
+        let mut copied = None;
         for target in CopyTarget::ALL {
             let text = target.text(address);
             if ui.button(target.label()).on_hover_text(&text).clicked() {
-                ui.ctx().copy_text(text);
+                copied = Some(text);
                 ui.close();
             }
         }
+        copied
     });
+    menu.inner.flatten()
 }
 
 #[cfg(test)]

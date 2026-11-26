@@ -17,7 +17,7 @@ HTTP Inspector는 개발 도구다. 디자인 시스템은 정밀 도킹 워크�
 - **D3.** `accent.primary`는 선택 바, 켜진 토글 바, 활성 경로, 차트 선에 쓴다. `accent.secondary`는 포커스 링, 교차 강조, 스플리터 호버에 쓴다.
 - **D4.** 실패 행은 레프트 틱과 상태 글자색 중 하나만 쓴다(S15). 선택 행과 켜진 토글의 배경과 2px 바 조합(D23, D25)은 한 표시로 센다. 선택은 실패와 다른 정보이므로 함께 써도 되고, 행 왼쪽 끝은 선택 바가 쓰며 레프트 틱은 상태 셀의 글자 앞에 둔다.
 - **D5.** 그림자는 팝업과 드롭다운 메뉴의 경계 그림자만 허용한다. 반투명 색은 `surfaces.hover`, `surfaces.selected`, `surfaces.cross_highlight` 토큰으로만 쓴다.
-- **D6.** 색 값은 `src/ui/style/tokens.rs`에만 정의한다. 화면 코드는 토큰 이름이나 `Tone`으로 의미를 고르고 `Color32::from_rgb`·`from_rgba_unmultiplied`를 직접 쓰지 않는다.
+- **D6.** 색 값은 `src/ui/style/tokens.rs`에만 정의한다. 화면 코드는 토큰 이름이나 `Tone`으로 의미를 고르고 `Color32::from_rgb`·`from_rgba_unmultiplied`를 직접 쓰지 않는다. Clippy의 `disallowed_methods`가 색 생성자를 검사한다. `Color32::BLACK` 같은 상수는 리뷰에서 확인한다.
 - **D7.** 색만으로 의미를 전달하지 않는다. 상태는 `404 Not Found`처럼 글자로도 보인다. 글자와 그 글자가 실제로 놓이는 배경의 대비는 라이트·다크 테마 모두 WCAG AA(4.5:1) 이상이다. 도트, 틱, 바, 포커스 링은 인접 배경과 3:1 이상이다. `src/ui/style/theme.rs`의 `status_text_meets_aa_on_all_widget_backgrounds`가 글자 대비를 검사한다. 새 글자색은 그 테스트의 글자색 목록에, 글자가 놓이는 새 배경은 `text_backgrounds()`에 추가한다. D8로 데이터 표면에만 쓰는 글자색은 `data_backgrounds()`로 검사하고, `marks_meet_three_to_one_on_every_surface`가 도트·틱·바 색의 3:1을 검사한다.
 - **D8.** 다음 토큰은 4.5:1에 못 미치는 배경이 있으므로 정한 용도에만 쓴다. 토큰 값을 바꾸지 않고 용도를 줄인다. 계산값은 [대비](#대비)에 있다.
   - `text.muted`: 비활성 아이콘, 키-값 콜론, 줄 번호·오프셋 거터, 라벨이나 툴팁이 따로 있는 입력의 힌트
@@ -30,7 +30,7 @@ HTTP Inspector는 개발 도구다. 디자인 시스템은 정밀 도킹 워크�
 
 - **D10.** 영역은 `borders.structural` 1px 선으로 나눈 도킹 패널이다(S12).
 - **D11.** 패널, 툴바, 표, 분할 영역, 상세 패널의 모서리는 0(`Radius::PANE`)이다. 버튼, 입력, 드롭다운, 팝업, 메뉴는 4pt(`Radius::CONTROL`)다. 단축키 칩과 스크롤바 썸만 2pt(`Radius::MICRO`)다. 양 끝이 반원인 pill 모양은 쓰지 않는다.
-- **D12.** 간격, 모서리, 글자 크기, 치수는 `tokens.rs`의 `Space`, `Radius`, `TypeScale`, `Layout` 값만 쓴다. 토큰 값이 다른 규칙을 어기면 화면 코드에서 우회하지 말고 `tokens.rs`의 값을 고친다. 새 값이 필요하면 `tokens.rs`에 더하고 PR 본문에 이유를 적는다.
+- **D12.** 간격, 모서리, 글자 크기, 치수, 선 굵기는 `tokens.rs`의 `Space`, `Radius`, `TypeScale`, `Layout`, `StrokeWidth` 값만 쓴다. 토큰 값이 다른 규칙을 어기면 화면 코드에서 우회하지 말고 `tokens.rs`의 값을 고친다. 새 값이 필요하면 `tokens.rs`에 더하고 PR 본문에 이유를 적는다. Clippy의 `disallowed_methods`가 `FontId` 생성자를 검사한다. 화면에서는 테마의 글자 스타일이나 `style::fonts`의 함수를 쓴다.
 
 ### 글
 

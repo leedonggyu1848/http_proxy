@@ -5,6 +5,7 @@
 //! counts from [`EndpointSchema`]. The schema holds no query, header,
 //! cookie, credential or body value, so none can appear here.
 
+use crate::ui::style::tokens::Space;
 use std::fmt::Write as _;
 
 use eframe::egui::{self, RichText};
@@ -187,7 +188,7 @@ fn render_query(ui: &mut egui::Ui, schema: &EndpointSchema, salt: &str) {
     let palette = Palette::of(ui);
     egui::Grid::new(format!("{salt}/query"))
         .num_columns(3)
-        .spacing([12.0, 2.0])
+        .spacing([Space::MD, Space::XXS])
         .show(ui, |ui| {
             for (name, stats) in schema.query() {
                 ui.monospace(percent_decode_display(name));
@@ -207,7 +208,7 @@ fn render_headers(ui: &mut egui::Ui, schema: &EndpointSchema, salt: &str) {
     }
     egui::Grid::new(format!("{salt}/headers"))
         .num_columns(2)
-        .spacing([12.0, 2.0])
+        .spacing([Space::MD, Space::XXS])
         .show(ui, |ui| {
             for (name, count) in schema.headers() {
                 ui.monospace(name);
@@ -427,7 +428,7 @@ fn types_text(types: &TypeCounts, palette: &Palette) -> RichText {
 }
 
 fn section_title(ui: &mut egui::Ui, title: &str) {
-    ui.add_space(4.0);
+    ui.add_space(Space::XS);
     ui.label(RichText::new(title).strong().small());
 }
 

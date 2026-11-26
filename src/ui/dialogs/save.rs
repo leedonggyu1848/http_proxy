@@ -1,3 +1,4 @@
+use crate::ui::style::tokens::Layout;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,8 +17,11 @@ static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 type SaveCompletion = io::Result<PathBuf>;
 
 /// A `Save` menu item that opens a dialog owned by the app.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub(crate) enum SaveMenuAction {
+    Directory(String),
+    SavePng,
+    SaveLogs,
     ExportHar,
     SaveBodies,
 }
@@ -38,24 +42,30 @@ impl SaveControls {
         }
     }
 
-    /// Shows the `Save` menu in the toolbar and reports a chosen item that
-    /// opens a dialog.
-    pub(crate) fn menu(
-        &mut self,
-        ui: &mut egui::Ui,
-        log: Option<&FullLog>,
-    ) -> Option<SaveMenuAction> {
-        self.poll();
+    /// Shows the save controls and returns any edits or requested operations.
+    pub(crate) fn menu(&self, ui: &mut egui::Ui, log_available: bool) -> Vec<SaveMenuAction> {
         if self.pending.is_some() {
             ui.spinner();
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
         ui.add_enabled_ui(self.pending.is_none(), |ui| {
-            ui.menu_button("Save ▼", |ui| self.menu_items(ui, log))
+            ui.menu_button("Save ▼", |ui| self.menu_items(ui, log_available))
                 .inner
-                .flatten()
+                .unwrap_or_default()
         })
         .inner
+    }
+
+    pub(crate) fn set_directory(&mut self, directory: String) {
+        self.directory = directory;
+    }
+
+    pub(crate) fn save_logs(&mut self, log: &FullLog) {
+        self.status = None;
+        match self.destination("log").and_then(|path| log.export(path)) {
+            Ok(receiver) => self.pending = Some(BackgroundTask::track(receiver)),
+            Err(error) => self.status = Some(Err(error)),
+        }
     }
 
     /// Reports whether a save is still running.
@@ -107,58 +117,58 @@ impl SaveControls {
         }));
     }
 
-    fn menu_items(&mut self, ui: &mut egui::Ui, log: Option<&FullLog>) -> Option<SaveMenuAction> {
+    fn menu_items(&self, ui: &mut egui::Ui, log_available: bool) -> Vec<SaveMenuAction> {
+        let mut actions = Vec::new();
         ui.label("Save directory");
-        let input_width = (ui.ctx().content_rect().width() - 48.0).clamp(160.0, 320.0);
-        ui.add(
-            egui::TextEdit::singleline(&mut self.directory)
-                .desired_width(input_width)
-                .hint_text("Existing directory"),
-        );
+        let input_width = Layout::SAVE_DIRECTORY_WIDTH.fit(ui.ctx().content_rect().width());
+        let mut directory = self.directory.clone();
+        if ui
+            .add(
+                egui::TextEdit::singleline(&mut directory)
+                    .desired_width(input_width)
+                    .hint_text("Existing directory"),
+            )
+            .changed()
+        {
+            actions.push(SaveMenuAction::Directory(directory));
+        }
         if ui
             .button("Save window PNG")
             .on_hover_text("Save the visible app content, without the OS window border.")
             .clicked()
         {
+            actions.push(SaveMenuAction::SavePng);
             ui.close();
-            self.start_screenshot(ui.ctx());
         }
         if ui
-            .add_enabled(log.is_some(), egui::Button::new("Save all logs"))
+            .add_enabled(log_available, egui::Button::new("Save all logs"))
             .on_hover_text("Save all captured records and full bodies, regardless of the filter.")
             .clicked()
-            && let Some(log) = log
         {
+            actions.push(SaveMenuAction::SaveLogs);
             ui.close();
-            self.status = None;
-            match self.destination("log").and_then(|path| log.export(path)) {
-                Ok(receiver) => self.pending = Some(BackgroundTask::track(receiver)),
-                Err(error) => self.status = Some(Err(error)),
-            }
         }
-        let export_har = ui
+        if ui
             .button("Export HAR…")
             .on_hover_text(
                 "Save the requests in the list as a HAR 1.2 file. Bodies and sensitive headers are left out unless you include them.",
             )
-            .clicked();
-        let save_bodies = ui
+            .clicked()
+        {
+            actions.push(SaveMenuAction::ExportHar);
+            ui.close();
+        }
+        if ui
             .button("Save bodies…")
             .on_hover_text(
                 "Save the request and response bodies of many requests into a new folder with a manifest.json.",
             )
-            .clicked();
-        let action = if export_har {
-            Some(SaveMenuAction::ExportHar)
-        } else if save_bodies {
-            Some(SaveMenuAction::SaveBodies)
-        } else {
-            None
-        };
-        if action.is_some() {
+            .clicked()
+        {
+            actions.push(SaveMenuAction::SaveBodies);
             ui.close();
         }
-        action
+        actions
     }
 
     /// Shows the result of the last save in the status bar.
@@ -178,7 +188,7 @@ impl SaveControls {
         }
     }
 
-    fn poll(&mut self) {
+    pub(crate) fn poll(&mut self) {
         let Some(task) = &self.pending else {
             return;
         };
@@ -221,7 +231,7 @@ impl SaveControls {
         )))
     }
 
-    fn start_screenshot(&mut self, context: &egui::Context) {
+    pub(crate) fn start_screenshot(&mut self, context: &egui::Context) {
         self.status = None;
         let path = match self.destination("png") {
             Ok(path) => path,

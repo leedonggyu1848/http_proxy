@@ -7,11 +7,13 @@ use eframe::egui::{self, Key, RichText};
 use egui_extras::{Column, TableBuilder};
 use http_inspector_exchange::{ByteSize, Exchange, Outcome, RecordId};
 
+use crate::ui::AppAction;
 use crate::ui::dialogs::copy_curl;
 use crate::ui::requests::outcome_view::{outcome_summary, outcome_text, status_rank};
 use crate::ui::requests::target_view::{TargetParts, host_fits, middle_ellipsis, shared_host};
-use crate::ui::style::indicator;
-use crate::ui::style::tokens::{Layout, Radius, Space, ThemeTokens, TypeScale};
+use crate::ui::style::tokens::{Layout, Radius, Space, StrokeWidth, ThemeTokens, TypeScale};
+use crate::ui::style::{indicator, theme::Palette};
+use http_inspector_core::recording::SaveFormat;
 
 /// Space before the method, kept free for the selection bar of the row.
 const ROW_LEAD: f32 = Layout::SELECTION_BAR_WIDTH + Space::S;
@@ -52,12 +54,14 @@ impl Field {
 
     /// Minimum width kept even if the user drags a column narrow.
     const fn min_width(self) -> f32 {
+        let widths = Layout::REQUEST_COLUMNS;
         match self {
-            Self::Method | Self::Size => 40.0,
-            Self::Target => 60.0,
-            Self::Status => 64.0,
-            Self::Type => 32.0,
-            Self::Duration => 52.0,
+            Self::Method => widths.method_min,
+            Self::Target => widths.path_resize_min,
+            Self::Status => widths.status_min,
+            Self::Type => widths.kind_min,
+            Self::Size => widths.size_min,
+            Self::Duration => widths.duration_min,
         }
     }
 
@@ -179,18 +183,17 @@ fn keyboard_selection(
 
 /// Sort state and scrolling preference of the request list.
 pub(crate) struct RequestTable {
-    pub(super) replay: Option<Exchange>,
-    /// Record whose "Copy as cURL" menu item was chosen this frame.
-    pub(super) copy_curl: Option<Exchange>,
-    /// A body save chosen from a row's context menu.
-    pub(super) save_body: Option<(Exchange, http_inspector_exchange::BodySide)>,
-    /// Whether a body save is running, which disables the save menu items.
-    pub(super) saving_body: bool,
     sort: Sort,
     follow_newest: bool,
     keyboard_row: Option<usize>,
     page_rows: usize,
     last_viewport_width: f32,
+}
+
+#[derive(Default)]
+pub(super) struct TableResult {
+    pub(super) selected: Option<RecordId>,
+    pub(super) action: Option<AppAction>,
 }
 
 impl RequestTable {
@@ -201,10 +204,6 @@ impl RequestTable {
                 descending: false,
             },
             follow_newest: true,
-            replay: None,
-            copy_curl: None,
-            save_body: None,
-            saving_body: false,
             keyboard_row: None,
             page_rows: 1,
             last_viewport_width: 0.0,
@@ -243,9 +242,10 @@ impl RequestTable {
         mut rows: Vec<&Exchange>,
         mut selected: Option<RecordId>,
         shortcuts_allowed: bool,
-    ) -> Option<RecordId> {
+        saving_body: bool,
+    ) -> TableResult {
         self.sort_rows(&mut rows);
-        let mut changed = None;
+        let mut result = TableResult::default();
         let mut scroll_to = None;
         if shortcuts_allowed || self.keyboard_row.is_some() {
             let current = rows.iter().position(|record| Some(record.id()) == selected);
@@ -255,8 +255,8 @@ impl RequestTable {
             {
                 self.follow_newest = false;
                 self.keyboard_row = Some(index);
-                changed = Some(record.id());
-                selected = changed;
+                result.selected = Some(record.id());
+                selected = result.selected;
                 scroll_to = Some(index);
                 ui.ctx().request_repaint();
             } else if self.keyboard_row.is_some() && self.keyboard_row != current {
@@ -285,7 +285,8 @@ impl RequestTable {
                     scroll_to,
                     widths,
                     width_changed,
-                    &mut changed,
+                    &mut result,
+                    saving_body,
                 )
             })
             .inner;
@@ -296,7 +297,7 @@ impl RequestTable {
         )]
         let page_rows = (inner_height / Layout::TABLE_ROW_HEIGHT) as usize;
         self.page_rows = page_rows.max(1);
-        changed
+        result
     }
 
     #[expect(
@@ -311,7 +312,8 @@ impl RequestTable {
         scroll_to: Option<usize>,
         widths: [f32; 6],
         width_changed: bool,
-        changed: &mut Option<RecordId>,
+        result: &mut TableResult,
+        saving_body: bool,
     ) -> f32 {
         // Rows touch each other; the row line separates them.
         ui.spacing_mut().item_spacing.y = 0.0;
@@ -360,12 +362,14 @@ impl RequestTable {
                     if show_cells(&mut row, record, selected_row, focus_row, show_host) {
                         self.follow_newest = false;
                         self.keyboard_row = None;
-                        *changed = Some(record.id());
+                        result.selected = Some(record.id());
                     }
-                    self.row_menu(&row.response(), record);
+                    if let Some(action) = row_menu(&row.response(), record, saving_body) {
+                        result.action = Some(action);
+                    }
                     if row.response().clicked() {
                         self.keyboard_row = None;
-                        *changed = Some(record.id());
+                        result.selected = Some(record.id());
                     }
                 });
             });
@@ -418,7 +422,7 @@ fn paint_header_cell(ui: &egui::Ui, last: bool) {
     painter.hline(
         band.x_range(),
         band.bottom() - 0.5,
-        egui::Stroke::new(1.0, tokens.borders.structural),
+        egui::Stroke::new(StrokeWidth::STRUCTURAL, tokens.borders.structural),
     );
 }
 
@@ -431,7 +435,7 @@ fn paint_row_cell(ui: &egui::Ui, selection_bar: bool, last: bool) {
     painter.hline(
         band.x_range(),
         band.bottom() - 0.5,
-        egui::Stroke::new(1.0, tokens.borders.subtle),
+        egui::Stroke::new(StrokeWidth::STRUCTURAL, tokens.borders.subtle),
     );
     if selection_bar {
         let cell = ui.max_rect();
@@ -449,74 +453,102 @@ fn paint_row_cell(ui: &egui::Ui, selection_bar: bool, last: bool) {
 /// that fit cleanly without slicing the next column at the pane border, while
 /// the remaining columns stay reachable via horizontal scrolling.
 fn column_widths(viewport_width: f32, spacing_x: f32, scroll_gutter: f32) -> [f32; 6] {
-    const METHOD: f32 = 72.0;
-    const STATUS_WIDE: f32 = 136.0;
-    const STATUS_COMPACT: f32 = 104.0;
-    const TYPE: f32 = 48.0;
-    const SIZE: f32 = 68.0;
-    const DURATION: f32 = 68.0;
-    const MIN_TARGET: f32 = 140.0;
-    const EDGE_PAD: f32 = 4.0;
+    let widths = Layout::REQUEST_COLUMNS;
 
     let usable = (viewport_width - scroll_gutter).max(0.0);
-    let fixed_wide = METHOD + STATUS_WIDE + TYPE + SIZE + DURATION;
+    let fixed_wide =
+        widths.method + widths.status_wide + widths.kind + widths.size + widths.duration;
     let all_spacing = spacing_x * 5.0;
-    if usable >= fixed_wide + all_spacing + MIN_TARGET {
+    if usable >= fixed_wide + all_spacing + widths.path_min {
         let target = (usable - fixed_wide - all_spacing).floor();
-        return [METHOD, target, STATUS_WIDE, TYPE, SIZE, DURATION];
+        return [
+            widths.method,
+            target,
+            widths.status_wide,
+            widths.kind,
+            widths.size,
+            widths.duration,
+        ];
     }
 
     let visible = viewport_width.max(0.0);
-    let fixed_five = spacing_x.mul_add(4.0, METHOD + STATUS_COMPACT + TYPE + SIZE) + EDGE_PAD;
-    if visible >= fixed_five + MIN_TARGET {
+    let fixed_five = spacing_x.mul_add(
+        4.0,
+        widths.method + widths.status_compact + widths.kind + widths.size,
+    ) + Space::XS;
+    if visible >= fixed_five + widths.path_min {
         let target = (visible - fixed_five).floor();
-        return [METHOD, target, STATUS_COMPACT, TYPE, SIZE, DURATION];
+        return [
+            widths.method,
+            target,
+            widths.status_compact,
+            widths.kind,
+            widths.size,
+            widths.duration,
+        ];
     }
 
-    let fixed_four = spacing_x.mul_add(3.0, METHOD + STATUS_COMPACT + TYPE) + EDGE_PAD;
-    if visible >= fixed_four + MIN_TARGET {
+    let fixed_four =
+        spacing_x.mul_add(3.0, widths.method + widths.status_compact + widths.kind) + Space::XS;
+    if visible >= fixed_four + widths.path_min {
         let target = (visible - fixed_four).floor();
-        return [METHOD, target, STATUS_COMPACT, TYPE, SIZE, DURATION];
+        return [
+            widths.method,
+            target,
+            widths.status_compact,
+            widths.kind,
+            widths.size,
+            widths.duration,
+        ];
     }
 
-    let method = METHOD.min((visible * 0.22).floor().max(Field::Method.min_width()));
-    let status = STATUS_COMPACT.min((visible * 0.30).floor().max(Field::Status.min_width()));
+    let method = widths
+        .method
+        .min((visible * 0.22).floor().max(Field::Method.min_width()));
+    let status = widths
+        .status_compact
+        .min((visible * 0.30).floor().max(Field::Status.min_width()));
     let target = spacing_x
-        .mul_add(-2.0, visible - method - status - EDGE_PAD)
-        .floor()
-        .clamp(84.0, 220.0);
-    [method, target, status, TYPE, SIZE, DURATION]
+        .mul_add(-2.0, visible - method - status - Space::XS)
+        .floor();
+    let target = widths.path_compact.fit(target);
+    [
+        method,
+        target,
+        status,
+        widths.kind,
+        widths.size,
+        widths.duration,
+    ]
 }
 
-impl RequestTable {
-    /// Offers resending, copying, or saving a body of the row's request on right click.
-    fn row_menu(&mut self, response: &egui::Response, record: &Exchange) {
-        response.context_menu(|ui| {
-            if ui
-                .add_enabled(
-                    record.source() != http_inspector_exchange::CaptureSource::Connect,
-                    egui::Button::new("Edit and Resend"),
-                )
-                .clicked()
-            {
-                self.replay = Some(record.clone());
-                ui.close();
-            }
-            if copy_curl::copy_button(ui, record).clicked() {
-                self.copy_curl = Some(record.clone());
-                ui.close();
-            }
-            ui.separator();
-            if let Some(side) = save_body_items(ui, record, !self.saving_body) {
-                self.save_body = Some((record.clone(), side));
-                ui.close();
-            }
-        });
-    }
+/// Offers resending, copying, or saving a body of the row's request on right click.
+fn row_menu(response: &egui::Response, record: &Exchange, saving_body: bool) -> Option<AppAction> {
+    let mut action = None;
+    response.context_menu(|ui| {
+        if ui
+            .add_enabled(
+                record.source() != http_inspector_exchange::CaptureSource::Connect,
+                egui::Button::new("Edit and Resend"),
+            )
+            .clicked()
+        {
+            action = Some(AppAction::OpenReplay(record.id()));
+            ui.close();
+        }
+        if copy_curl::copy_button(ui, record).clicked() {
+            action = Some(AppAction::CopyCurl(record.id()));
+            ui.close();
+        }
+        ui.separator();
+        if let Some(side) = save_body_items(ui, record, !saving_body) {
+            action = Some(AppAction::SaveBody(record.id(), side, SaveFormat::Decoded));
+            ui.close();
+        }
+    });
+    action
 }
 
-/// The body save items of the row menu; returns the side chosen.
-/// They are disabled while `idle` is false, when another save is running.
 fn save_body_items(
     ui: &mut egui::Ui,
     record: &Exchange,
@@ -625,7 +657,7 @@ fn method_cell(ui: &mut egui::Ui, record: &Exchange, selected: bool, focus: bool
             ui.painter().rect_stroke(
                 response.rect.expand(Space::XXS),
                 Radius::CONTROL,
-                egui::Stroke::new(1.0, ring),
+                egui::Stroke::new(StrokeWidth::FOCUS_RING, ring),
                 egui::StrokeKind::Outside,
             );
         }
@@ -646,8 +678,7 @@ fn method_text(ui: &mut egui::Ui, method: &str) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(galley.size(), egui::Sense::click());
     let elided = galley.elided;
     if ui.is_rect_visible(rect) {
-        ui.painter()
-            .galley(rect.min, galley, ui.visuals().text_color());
+        ui.painter().galley(rect.min, galley, Palette::of(ui).text);
     }
     if elided {
         response.on_hover_text(method)
@@ -835,7 +866,10 @@ mod tests {
                     .filter(|record| record.request().target().contains(query.as_str()))
                     .collect();
                 let shortcuts_allowed = crate::ui::request_shortcuts_allowed(ui.ctx());
-                if let Some(id) = table.show(ui, rows, selected, shortcuts_allowed) {
+                if let Some(id) = table
+                    .show(ui, rows, selected, shortcuts_allowed, false)
+                    .selected
+                {
                     selected = Some(id);
                 }
             });
@@ -944,7 +978,7 @@ mod tests {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
                     .show(ui, |ui| {
-                        let _ = table.show(ui, Vec::new(), None, false);
+                        let _ = table.show(ui, Vec::new(), None, false, false);
                     });
             });
             output.textures_delta.clear();

@@ -1,15 +1,18 @@
 //! Selected request details and body previews.
 
-use crate::ui::InspectorApp;
+use crate::ui::AppAction;
 use crate::ui::detail::body_cache::{BodySource, Capture};
 use crate::ui::detail::body_render::BodyViewCache;
 use crate::ui::detail::detail_tabs::{self, DetailTab};
 use crate::ui::detail::image_view;
 use crate::ui::detail::search::Query;
-use crate::ui::detail::search::highlight::{self, MatchColors};
+use crate::ui::detail::search::highlight;
 use crate::ui::dialogs::scope_help;
+use crate::ui::dialogs::{body_saving::BodySaving, copy_curl::CurlCopy};
 use crate::ui::requests::outcome_view;
+use crate::ui::style::theme::MatchColors;
 use crate::ui::style::theme::Palette;
+use crate::ui::style::tokens::Layout;
 use eframe::egui;
 use http_inspector_content::detect;
 use http_inspector_content::format::{BodyFormat, ViewMode, form};
@@ -20,62 +23,63 @@ use http_inspector_exchange::{
 };
 use std::time::Duration;
 
-impl InspectorApp {
-    pub(crate) fn detail_panel(&mut self, ui: &mut egui::Ui, shortcuts_allowed: bool) {
-        let detail = &mut self.detail;
-        let requests = &mut self.requests;
-        let body_saving = &mut self.session.body_saving;
-        let Some(selected) = requests.selected else {
+#[derive(Default)]
+pub(crate) struct DetailWidgets {
+    body: BodyViewCache,
+    image: image_view::ImagePanel,
+}
+
+pub(crate) struct DetailView<'a> {
+    pub(crate) record: Option<&'a Exchange>,
+    pub(crate) search: Option<&'a Query>,
+    pub(crate) tab: DetailTab,
+    pub(crate) body_mode: ViewMode,
+    pub(crate) curl: &'a CurlCopy,
+    pub(crate) body_saving: &'a BodySaving,
+}
+
+impl DetailView<'_> {
+    pub(crate) fn show(
+        &self,
+        ui: &mut egui::Ui,
+        widgets: &mut DetailWidgets,
+        shortcuts_allowed: bool,
+        actions: &mut Vec<AppAction>,
+    ) {
+        let Some(record) = self.record else {
             ui.centered_and_justified(|ui| {
                 ui.add(egui::Label::new(egui::RichText::new("No request selected").weak()).wrap());
             });
             return;
         };
-        let Some(record) = requests.records.iter().find(|row| row.id() == selected) else {
-            return;
-        };
-
+        let mut tab = self.tab;
         if shortcuts_allowed {
-            detail_tabs::apply_shortcuts(ui, &mut detail.tab);
+            detail_tabs::apply_shortcuts(ui, &mut tab);
         }
         let request = record.request();
-        let search = requests.search.active_query().map(AsRef::as_ref);
+        let search = self.search;
         render_title(ui, record, search);
-        ui.horizontal_wrapped(|ui| {
-            let (status, tone) = outcome_view::outcome_text(record.outcome());
-            ui.colored_label(Palette::of(ui).status(tone), status);
-            if ui
-                .add_enabled(
-                    record.source() != http_inspector_exchange::CaptureSource::Connect,
-                    egui::Button::new("Edit and Resend"),
-                )
-                .clicked()
-                && let Err(error) = detail.open_replay(record.clone())
-            {
-                self.session.error = Some(error.to_string());
-            }
-            detail.curl.controls(ui, record);
-            if let Some(original) = record.replay_of()
-                && ui.link(replay_link(original)).clicked()
-            {
-                requests.selected = Some(original);
-            }
-        });
-        detail_tabs::show(ui, &mut detail.tab);
+        detail_actions(ui, record, self.curl, actions);
+        detail_tabs::show(ui, &mut tab);
+        if tab != self.tab {
+            actions.push(AppAction::DetailTab(tab));
+        }
+        let mut body_mode = self.body_mode;
 
-        egui::ScrollArea::vertical()
-            .id_salt(("details-scroll", detail.tab))
+        let copied = egui::ScrollArea::vertical()
+            .id_salt(("details-scroll", tab))
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 render_timing(ui, record);
                 ui.separator();
                 let mut body = BodyPanel {
                     record: record.id(),
-                    mode: detail.body_mode,
-                    cache: &mut detail.body_cache,
+                    mode: self.body_mode,
+                    cache: &mut widgets.body,
+                    copied: None,
                     search,
                 };
-                match detail.tab {
+                match tab {
                     DetailTab::Headers => {
                         render_query(ui, request.target());
                         ui.strong("Request headers");
@@ -92,13 +96,46 @@ impl InspectorApp {
                         ui,
                         record,
                         &mut body,
-                        &mut detail.body_mode,
-                        &mut detail.image,
-                        |ui| body_saving.menus(ui, record, &self.dialogs.save),
+                        &mut body_mode,
+                        &mut widgets.image,
+                        |ui| actions.extend(self.body_saving.menus(ui, record)),
                     ),
                 }
-            });
+                body.copied
+            })
+            .inner;
+        actions.extend(copied.map(AppAction::CopyText));
+        if body_mode != self.body_mode {
+            actions.push(AppAction::BodyMode(body_mode));
+        }
     }
+}
+
+fn detail_actions(
+    ui: &mut egui::Ui,
+    record: &Exchange,
+    curl: &CurlCopy,
+    actions: &mut Vec<AppAction>,
+) {
+    ui.horizontal_wrapped(|ui| {
+        let (status, tone) = outcome_view::outcome_text(record.outcome());
+        ui.colored_label(Palette::of(ui).status(tone), status);
+        if ui
+            .add_enabled(
+                record.source() != http_inspector_exchange::CaptureSource::Connect,
+                egui::Button::new("Edit and Resend"),
+            )
+            .clicked()
+        {
+            actions.push(AppAction::OpenReplay(record.id()));
+        }
+        curl.controls(ui, record, actions);
+        if let Some(original) = record.replay_of()
+            && ui.link(replay_link(original)).clicked()
+        {
+            actions.push(AppAction::SelectRecord(original));
+        }
+    });
 }
 
 /// Where and how the bodies of the selected exchange are shown.
@@ -106,6 +143,7 @@ struct BodyPanel<'a> {
     record: RecordId,
     mode: ViewMode,
     cache: &'a mut BodyViewCache,
+    copied: Option<String>,
     /// The active search, whose matches are marked.
     search: Option<&'a Query>,
 }
@@ -123,7 +161,7 @@ fn render_title(ui: &mut egui::Ui, record: &Exchange, search: Option<&Query>) {
     let label = match search.filter(|query| query.scope.covers_url()) {
         Some(query) => {
             let font = egui::TextStyle::Monospace.resolve(ui.style());
-            let color = ui.visuals().strong_text_color();
+            let color = Palette::of(ui).text;
             let colors = MatchColors::for_theme(ui.ctx().theme());
             let mut job = highlight::plain(&title, &query.matcher, font, color, colors);
             job.wrap.max_width = ui.available_width();
@@ -169,9 +207,10 @@ struct GridBounds {
 
 impl GridBounds {
     fn from_ui(ui: &egui::Ui) -> Self {
-        let available = ui.available_width().max(120.0);
+        let available = ui.available_width().max(Layout::DETAIL_ROW_MIN_WIDTH);
         let right = ui.cursor().left() + available;
-        let key_max = ((available - ui.spacing().item_spacing.x) * 0.42).clamp(72.0, 220.0);
+        let key_max =
+            Layout::DETAIL_KEY_WIDTH.fit((available - ui.spacing().item_spacing.x) * 0.42);
         Self {
             available,
             right,
@@ -245,7 +284,7 @@ fn render_query(ui: &mut egui::Ui, target: &str) {
 fn render_headers(ui: &mut egui::Ui, id: &str, headers: &HeaderPreview, search: Option<&Query>) {
     let name_color = Palette::of(ui).secondary;
     let font = egui::TextStyle::Monospace.resolve(ui.style());
-    let text_color = ui.visuals().text_color();
+    let text_color = Palette::of(ui).text;
     let colors = MatchColors::for_theme(ui.ctx().theme());
     let bounds = GridBounds::from_ui(ui);
     egui::Grid::new(id)
@@ -416,7 +455,9 @@ fn render_body(
         capture: Capture::of(snapshot),
         search: panel.search.filter(|query| query.scope.covers_body(side)),
     };
-    panel.cache.show(ui, &source, panel.mode);
+    if let Some(text) = panel.cache.show(ui, &source, panel.mode) {
+        panel.copied = Some(text);
+    }
 }
 
 const fn lifecycle_text(lifecycle: BodyLifecycle) -> &'static str {
