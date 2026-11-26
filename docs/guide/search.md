@@ -10,6 +10,10 @@
 
 ## 필드 조건
 
+아래 화면은 로컬 서버로 보낸 테스트 요청 8건에 `method:POST url:/api/users`를 적용한 결과다. 남은 4건은 상태 바에 표시된다.
+
+![POST 메서드와 URL 조건을 함께 적용한 요청 목록](../screenshots/request-filter-combined-dark.png)
+
 `method:POST url:/api/users status:4xx -path:/static/ token`은 모든 조건을 만족하는 요청을 남긴다. `method:GET,POST`의 쉼표는 같은 키에서 허용할 값을 나눈다. `"connection refused"`는 공백을 포함한 구절 하나를 찾는다. 큰따옴표 안에 쉼표를 쓰면 쉼표도 검색한다. 큰따옴표와 역슬래시 자체를 검색하려면 큰따옴표 안에서 각각 `\"`와 `\\`로 입력한다.
 
 - 필드 조건의 키와 값은 대소문자를 구분하지 않는다. 키 목록은 [README의 요청 필터 표](../../README.md#요청-필터) 또는 입력 옆 **?** 메뉴에서 확인한다.
