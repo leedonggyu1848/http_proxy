@@ -21,7 +21,7 @@ use http_inspector_interop::map_export::{
 
 use super::{InspectorApp, MainView};
 use crate::ui::dialogs::{
-    browser_panel::BrowserAction, bulk_save::BulkChoice, ca_panel, har_dialog,
+    browser_panel::BrowserAction, bulk_save::BulkAction, ca_panel, har_dialog,
     replay_panel::ReplayAction,
 };
 use crate::ui::map::{MapAction, MapExportFormat};
@@ -41,10 +41,10 @@ pub(crate) enum AppAction {
     SetBodyStorageLimit(u64),
     Browser(BrowserAction),
     Ca(ca_panel::Action),
-    ExportHar(har_dialog::HarExport),
+    Har(har_dialog::HarAction),
     Replay(ReplayAction),
     ConfirmBodySave(bool),
-    BulkSave(BulkChoice),
+    BulkSave(BulkAction),
     CancelBulkSave,
     SwitchView(MainView),
     ClearSession,
@@ -55,6 +55,7 @@ pub(crate) enum AppAction {
     BodyMode(ViewMode),
     OpenReplay(RecordId),
     CopyCurl(RecordId),
+    CopyText(String),
     SetCurlRedactions(RedactedHeaders),
     DismissCurlNotice,
     SaveBody(RecordId, BodySide, SaveFormat),
@@ -129,14 +130,14 @@ impl InspectorApp {
                     self.dialogs.ca_panel.start(action, directory, context);
                 }
             }
-            AppAction::ExportHar(export) => self.export_har(context, export),
+            AppAction::Har(action) => self.apply_har_action(context, action),
             AppAction::Replay(action) => self
                 .detail
                 .apply_replay(action, self.session.capture.proxy.as_ref()),
             AppAction::ConfirmBodySave(choice) => {
                 self.session.body_saving.apply_confirmation(choice);
             }
-            AppAction::BulkSave(choice) => self.save_bulk(choice),
+            AppAction::BulkSave(action) => self.apply_bulk_action(action),
             AppAction::CancelBulkSave => self.session.body_saving.cancel_bulk(),
             AppAction::SwitchView(view) => self.layout.main_view = view,
             AppAction::ClearSession => self.clear_session(),
@@ -153,6 +154,7 @@ impl InspectorApp {
                     self.report_error(error.to_string());
                 }
             }
+            AppAction::CopyText(text) => context.copy_text(text),
             AppAction::CopyCurl(id) => {
                 if let Some(record) = self.record(id).cloned() {
                     self.detail.curl.copy(context, &record);
@@ -277,24 +279,7 @@ impl InspectorApp {
                 ctx.request_repaint();
             }
             MapAction::Export(format) => {
-                let content = match format {
-                    MapExportFormat::TreeText => {
-                        export_tree_text(self.map.analysis.url_map(), self.map.panel.fold_ids())
-                    }
-                    MapExportFormat::TreeJson => serde_json::to_string_pretty(&export_tree_json(
-                        self.map.analysis.url_map(),
-                        self.map.panel.fold_ids(),
-                    ))
-                    .unwrap_or_else(|_| "{}".to_owned()),
-                    MapExportFormat::GraphMermaid => export_graph_mermaid(
-                        self.map.analysis.url_map(),
-                        self.map.panel.max_graph_domains(),
-                    ),
-                    MapExportFormat::GraphDot => export_graph_dot(
-                        self.map.analysis.url_map(),
-                        self.map.panel.max_graph_domains(),
-                    ),
-                };
+                let content = self.map_export_text(format);
                 self.dialogs.save.save_text_file(
                     ctx,
                     format.file_prefix(),
@@ -302,10 +287,39 @@ impl InspectorApp {
                     content,
                 );
             }
+            MapAction::Copy(format) => ctx.copy_text(self.map_export_text(format)),
             MapAction::ClearAll => {
                 self.clear_session();
                 ctx.request_repaint();
             }
+        }
+    }
+
+    fn map_export_text(&self, format: MapExportFormat) -> String {
+        match format {
+            MapExportFormat::TreeText => {
+                export_tree_text(self.map.analysis.url_map(), self.map.panel.fold_ids())
+            }
+            MapExportFormat::TreeJson => serde_json::to_string_pretty(&export_tree_json(
+                self.map.analysis.url_map(),
+                self.map.panel.fold_ids(),
+            ))
+            .unwrap_or_else(|_| "{}".to_owned()),
+            MapExportFormat::GraphMermaid => export_graph_mermaid(
+                self.map.analysis.url_map(),
+                self.map.panel.max_graph_domains(),
+            ),
+            MapExportFormat::GraphDot => export_graph_dot(
+                self.map.analysis.url_map(),
+                self.map.panel.max_graph_domains(),
+            ),
+        }
+    }
+
+    fn apply_har_action(&mut self, context: &egui::Context, action: har_dialog::HarAction) {
+        self.dialogs.har.close();
+        if let har_dialog::HarAction::Export(export) = action {
+            self.export_har(context, export);
         }
     }
 

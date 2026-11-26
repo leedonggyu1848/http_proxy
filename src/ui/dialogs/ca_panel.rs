@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::SendError;
 use std::time::Duration;
 
+use crate::ui::AppAction;
 use crate::ui::style::indicator;
 use crate::ui::style::tokens::Tone;
 
@@ -134,7 +135,7 @@ impl CaPanel {
     }
 
     /// Shows the registration badge and the available CA actions.
-    pub(crate) fn summary(&self, ui: &mut egui::Ui, directory: Option<&Path>) -> Option<Action> {
+    pub(crate) fn summary(&self, ui: &mut egui::Ui, directory: Option<&Path>) -> Option<AppAction> {
         let Some(directory) = directory else {
             indicator::dot_label(ui, Tone::Danger, "CA storage unavailable")
                 .on_hover_text("Check HOME and platform storage settings.");
@@ -156,7 +157,7 @@ impl CaPanel {
             .on_hover_text("CA registration status. Click to check again.")
             .clicked()
         {
-            action = Some(Action::Check);
+            action = Some(AppAction::Ca(Action::Check));
         }
         match badge.primary() {
             Some(Action::Install) => {
@@ -165,7 +166,7 @@ impl CaPanel {
                     .on_hover_text(REGISTER_HELP)
                     .clicked()
                 {
-                    action = Some(Action::Install);
+                    action = Some(AppAction::Ca(Action::Install));
                 }
             }
             Some(Action::Remove) => {
@@ -174,7 +175,7 @@ impl CaPanel {
                     .on_hover_text("Remove the CA that HTTP Inspector registered.")
                     .clicked()
                 {
-                    action = Some(Action::Remove);
+                    action = Some(AppAction::Ca(Action::Remove));
                 }
             }
             Some(Action::Check) | None => {}
@@ -184,7 +185,7 @@ impl CaPanel {
     }
 
     /// Paths, fingerprint, and less frequent actions, shown only on request.
-    fn details(&self, ui: &mut egui::Ui, directory: &Path) -> Option<Action> {
+    fn details(&self, ui: &mut egui::Ui, directory: &Path) -> Option<AppAction> {
         let mut action = None;
         let viewport = ui.ctx().content_rect();
         let max_width = Layout::CA_DETAILS_WIDTH.fit(viewport.width());
@@ -194,20 +195,22 @@ impl CaPanel {
             egui::ScrollArea::vertical()
                 .max_height(max_height)
                 .show(ui, |ui| {
-                    copyable(
+                    action = copyable(
                         ui,
                         "Public CA certificate",
                         &directory.join("root-ca.pem").display().to_string(),
                     );
                     if let Some(info) = &self.info {
-                        copyable(ui, "SHA-256 fingerprint", info.fingerprint_sha256());
+                        action = copyable(ui, "SHA-256 fingerprint", info.fingerprint_sha256())
+                            .or_else(|| action.take());
                     }
                     if let Some(registration) = &self.registration {
-                        copyable(
+                        action = copyable(
                             ui,
                             &format!("Trust store: {}", registration.target),
                             &registration.location.display().to_string(),
-                        );
+                        )
+                        .or_else(|| action.take());
                     }
                     ui.separator();
                     ui.weak(REGISTER_HELP);
@@ -216,7 +219,7 @@ impl CaPanel {
                     ui.add_enabled_ui(self.pending_action.is_none(), |ui| {
                         ui.horizontal_wrapped(|ui| {
                             if ui.button("Check registration").clicked() {
-                                action = Some(Action::Check);
+                                action = Some(AppAction::Ca(Action::Check));
                             }
                             let registered =
                                 self.registration.as_ref().is_some_and(|registration| {
@@ -226,7 +229,7 @@ impl CaPanel {
                                 .add_enabled(registered, egui::Button::new("Remove CA"))
                                 .clicked()
                             {
-                                action = Some(Action::Remove);
+                                action = Some(AppAction::Ca(Action::Remove));
                             }
                         });
                     });
@@ -328,15 +331,16 @@ fn registration(
     })
 }
 
-/// One labelled value with a button that copies it.
-fn copyable(ui: &mut egui::Ui, label: &str, value: &str) {
-    ui.horizontal_wrapped(|ui| {
-        ui.strong(label);
-        if ui.small_button("Copy").clicked() {
-            ui.ctx().copy_text(value.to_owned());
-        }
-    });
+/// One labelled value and the clipboard action offered beside it.
+fn copyable(ui: &mut egui::Ui, label: &str, value: &str) -> Option<AppAction> {
+    let copied = ui
+        .horizontal_wrapped(|ui| {
+            ui.strong(label);
+            ui.small_button("Copy").clicked()
+        })
+        .inner;
     ui.add(egui::Label::new(RichText::new(value).monospace()).wrap());
+    copied.then(|| AppAction::CopyText(value.to_owned()))
 }
 
 #[cfg(test)]

@@ -127,7 +127,7 @@ impl InspectorApp {
             let address = proxy.local_addr();
             indicator::dot_label(ui, Tone::Success, "Running");
             ui.monospace(address.to_string());
-            copy_menu(ui, address);
+            actions.extend(copy_menu(ui, address).map(AppAction::CopyText));
             if ui.button("Stop").clicked() {
                 actions.push(AppAction::StopProxy);
             }
@@ -172,8 +172,7 @@ impl InspectorApp {
             actions.extend(
                 self.dialogs
                     .ca_panel
-                    .summary(ui, self.session.capture.ca_directory.as_deref())
-                    .map(AppAction::Ca),
+                    .summary(ui, self.session.capture.ca_directory.as_deref()),
             );
         }
     }
@@ -300,16 +299,19 @@ impl CopyTarget {
     }
 }
 
-fn copy_menu(ui: &mut egui::Ui, address: std::net::SocketAddr) {
-    ui.menu_button("Copy ▼", |ui| {
+fn copy_menu(ui: &mut egui::Ui, address: std::net::SocketAddr) -> Option<String> {
+    let menu = ui.menu_button("Copy ▼", |ui| {
+        let mut copied = None;
         for target in CopyTarget::ALL {
             let text = target.text(address);
             if ui.button(target.label()).on_hover_text(&text).clicked() {
-                ui.ctx().copy_text(text);
+                copied = Some(text);
                 ui.close();
             }
         }
+        copied
     });
+    menu.inner.flatten()
 }
 
 #[cfg(test)]

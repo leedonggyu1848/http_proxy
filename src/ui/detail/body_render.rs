@@ -22,7 +22,12 @@ pub(crate) use view_cache::BodyViewCache;
 use view_cache::{Content, RenderStyle};
 
 impl BodyViewCache {
-    pub(super) fn show(&mut self, ui: &mut egui::Ui, source: &BodySource<'_>, mode: ViewMode) {
+    pub(super) fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        source: &BodySource<'_>,
+        mode: ViewMode,
+    ) -> Option<String> {
         let style = RenderStyle {
             theme: ui.ctx().theme(),
             font: egui::TextStyle::Monospace.resolve(ui.style()),
@@ -31,9 +36,14 @@ impl BodyViewCache {
         if side.update(ui.ctx(), source, mode, &style) {
             reset_text_selection(ui, source.side);
         }
-        if let Some(content) = &mut side.shown {
-            render(ui, content, source.side, mode, &style, side.tree.as_mut());
-        }
+        render(
+            ui,
+            side.shown.as_mut()?,
+            source.side,
+            mode,
+            &style,
+            side.tree.as_mut(),
+        )
     }
 }
 
@@ -44,20 +54,19 @@ fn render(
     mode: ViewMode,
     style: &RenderStyle,
     tree: Option<&mut TreeView>,
-) {
+) -> Option<String> {
     let (format, notices, job, lines, matches, galley) = match content {
         Content::Unavailable(message) => {
             ui.colored_label(Palette::of(ui).warning, message.as_str());
-            return;
+            return None;
         }
         Content::Tree { format, notices } => {
             render_header(ui, *format, notices, mode);
-            if let Some(view) = tree {
-                ui.push_id(("body-tree", side), |ui| {
-                    view.show(ui, style.theme, &style.font);
-                });
-            }
-            return;
+            return ui
+                .push_id(("body-tree", side), |ui| {
+                    tree.and_then(|view| view.show(ui, style.theme, &style.font))
+                })
+                .inner;
         }
         Content::Ready {
             format,
@@ -78,7 +87,7 @@ fn render(
     });
     if let Some(lines) = lines {
         render_numbered_lines(ui, lines, side, scroll.map(|hit| hit.line));
-        return;
+        return None;
     }
     let mut text = job.text.as_str();
     let mut layouter = |ui: &egui::Ui, _: &dyn egui::TextBuffer, wrap_width: f32| {
@@ -104,6 +113,7 @@ fn render(
     if let Some(hit) = scroll {
         scroll_to_hit(ui, &output, &job.text, &hit);
     }
+    None
 }
 
 /// Persistent widget id for one side's non-numbered read-only body text view.

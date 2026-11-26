@@ -59,6 +59,12 @@ impl Default for BulkChoice {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum BulkAction {
+    Close,
+    Save(BulkChoice),
+}
+
 /// How many requests each scope covers, shown next to the choices.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ScopeCounts {
@@ -94,9 +100,9 @@ impl BulkControls {
         self.dialog.is_some()
     }
 
-    /// Shows the dialog and returns the choice once the user confirms it.
-    fn show(&mut self, context: &egui::Context, counts: ScopeCounts) -> Option<BulkChoice> {
-        let mut choice = self.dialog?;
+    /// Shows the form and reports what the user chose.
+    fn show(&mut self, context: &egui::Context, counts: ScopeCounts) -> Option<BulkAction> {
+        let choice = self.dialog.as_mut()?;
         let mut confirmed = None;
         let viewport = context.content_rect();
         let max_width = Layout::BODY_EXPORT_WIDTH.fit(viewport.width());
@@ -106,26 +112,28 @@ impl BulkControls {
             ui.heading("Save bodies");
             egui::ScrollArea::vertical()
                 .max_height(max_scroll_height)
-                .show(ui, |ui| choice_options(ui, &mut choice, counts));
+                .show(ui, |ui| choice_options(ui, choice, counts));
             confirmed = confirm_buttons(ui);
         });
         if modal.should_close() {
             confirmed = Some(false);
         }
-        match confirmed {
-            Some(true) => {
-                self.dialog = None;
-                self.last_choice = Some(choice);
-                Some(choice)
+        confirmed.map(|confirmed| {
+            if confirmed {
+                BulkAction::Save(*choice)
+            } else {
+                BulkAction::Close
             }
-            Some(false) => {
-                self.dialog = None;
-                None
-            }
-            None => {
-                self.dialog = Some(choice);
-                None
-            }
+        })
+    }
+
+    const fn finish(&mut self, action: BulkAction) -> Option<BulkChoice> {
+        self.dialog = None;
+        if let BulkAction::Save(choice) = action {
+            self.last_choice = Some(choice);
+            Some(choice)
+        } else {
+            None
         }
     }
 
@@ -333,8 +341,8 @@ pub(super) fn new_folder(directory: &Path) -> PathBuf {
 }
 
 impl InspectorApp {
-    /// Shows the `Save bodies…` dialog and starts the save it confirms.
-    pub(crate) fn show_bulk_save(&mut self, context: &egui::Context) -> Option<BulkChoice> {
+    /// Shows the `Save bodies…` dialog and reports the user action.
+    pub(crate) fn show_bulk_save(&mut self, context: &egui::Context) -> Option<BulkAction> {
         let counts = ScopeCounts {
             all: self.requests.records.len(),
             filtered: self.requests.filtered_records().len(),
@@ -343,7 +351,13 @@ impl InspectorApp {
         self.session.body_saving.bulk.show(context, counts)
     }
 
-    pub(crate) fn save_bulk(&mut self, choice: BulkChoice) {
+    pub(crate) fn apply_bulk_action(&mut self, action: BulkAction) {
+        if let Some(choice) = self.session.body_saving.bulk.finish(action) {
+            self.save_bulk(choice);
+        }
+    }
+
+    fn save_bulk(&mut self, choice: BulkChoice) {
         let directory = match self.dialogs.save.directory() {
             Ok(directory) => directory,
             Err(error) => {
@@ -379,6 +393,27 @@ impl InspectorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reopening_remembers_the_confirmed_choice_after_a_cancellation() {
+        let choice = BulkChoice {
+            sides: BulkSides::Both,
+            ..BulkChoice::default()
+        };
+        let mut controls = BulkControls::default();
+        controls.open();
+        assert_eq!(controls.finish(BulkAction::Save(choice)), Some(choice));
+        assert!(!controls.is_open());
+
+        controls.open();
+        assert_eq!(controls.dialog, Some(choice));
+        controls.dialog = Some(BulkChoice::default());
+        assert_eq!(controls.finish(BulkAction::Close), None);
+        assert!(!controls.is_open());
+
+        controls.open();
+        assert_eq!(controls.dialog, Some(choice));
+    }
 
     #[test]
     fn new_folders_never_reuse_an_existing_name() -> std::io::Result<()> {

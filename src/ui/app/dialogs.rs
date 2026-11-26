@@ -42,7 +42,7 @@ impl InspectorApp {
                         self.dialogs.save.is_busy(),
                         !body_dialog_open,
                     )
-                    .map(AppAction::ExportHar),
+                    .map(AppAction::Har),
             );
         }
         actions.extend(self.show_bulk_save(context).map(AppAction::BulkSave));

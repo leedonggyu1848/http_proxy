@@ -223,7 +223,7 @@ fn show_image(ui: &mut egui::Ui, loaded: &Loaded, received_bytes: u64, svg: bool
             image.paint_at(ui, rect);
             ui.painter().rect_stroke(
                 rect,
-                0.0,
+                Radius::PANE,
                 crate::ui::style::theme::image_border(ui),
                 egui::StrokeKind::Outside,
             );

@@ -70,6 +70,8 @@ pub(super) enum MapAction {
     SelectRequest(RecordId),
     /// Save an exported representation into the configured `Save directory`.
     Export(MapExportFormat),
+    /// Copy an exported representation to the clipboard.
+    Copy(MapExportFormat),
     /// Clear captured records and the URL map.
     ClearAll,
 }
@@ -224,7 +226,7 @@ impl MapPanel {
                 MapSubView::Graph => self.graph_controls(ui),
             }
             ui.separator();
-            if let Some(export_action) = self.export_menu(ui, map, save_busy) {
+            if let Some(export_action) = Self::export_menu(ui, map, save_busy) {
                 action = Some(export_action);
             }
             if ui
@@ -426,7 +428,7 @@ impl MapPanel {
         }
     }
 
-    fn export_menu(&self, ui: &mut egui::Ui, map: &UrlMap, save_busy: bool) -> Option<MapAction> {
+    fn export_menu(ui: &mut egui::Ui, map: &UrlMap, save_busy: bool) -> Option<MapAction> {
         let mut action = None;
         let has_data = map.node_count() > 0;
         ui.add_enabled_ui(!save_busy && has_data, |ui| {
@@ -451,19 +453,11 @@ impl MapPanel {
                 }
                 ui.separator();
                 if ui.button("Copy Mermaid to clipboard").clicked() {
-                    let mermaid = http_inspector_interop::map_export::export_graph_mermaid(
-                        map,
-                        self.layout.max_domains(),
-                    );
-                    ui.ctx().copy_text(mermaid);
+                    action = Some(MapAction::Copy(MapExportFormat::GraphMermaid));
                     ui.close();
                 }
                 if ui.button("Copy DOT to clipboard").clicked() {
-                    let dot = http_inspector_interop::map_export::export_graph_dot(
-                        map,
-                        self.layout.max_domains(),
-                    );
-                    ui.ctx().copy_text(dot);
+                    action = Some(MapAction::Copy(MapExportFormat::GraphDot));
                     ui.close();
                 }
             });

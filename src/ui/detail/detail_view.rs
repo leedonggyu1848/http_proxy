@@ -66,7 +66,7 @@ impl DetailView<'_> {
         }
         let mut body_mode = self.body_mode;
 
-        egui::ScrollArea::vertical()
+        let copied = egui::ScrollArea::vertical()
             .id_salt(("details-scroll", tab))
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -76,6 +76,7 @@ impl DetailView<'_> {
                     record: record.id(),
                     mode: self.body_mode,
                     cache: &mut widgets.body,
+                    copied: None,
                     search,
                 };
                 match tab {
@@ -100,7 +101,10 @@ impl DetailView<'_> {
                         |ui| actions.extend(self.body_saving.menus(ui, record)),
                     ),
                 }
-            });
+                body.copied
+            })
+            .inner;
+        actions.extend(copied.map(AppAction::CopyText));
         if body_mode != self.body_mode {
             actions.push(AppAction::BodyMode(body_mode));
         }
@@ -139,6 +143,7 @@ struct BodyPanel<'a> {
     record: RecordId,
     mode: ViewMode,
     cache: &'a mut BodyViewCache,
+    copied: Option<String>,
     /// The active search, whose matches are marked.
     search: Option<&'a Query>,
 }
@@ -450,7 +455,9 @@ fn render_body(
         capture: Capture::of(snapshot),
         search: panel.search.filter(|query| query.scope.covers_body(side)),
     };
-    panel.cache.show(ui, &source, panel.mode);
+    if let Some(text) = panel.cache.show(ui, &source, panel.mode) {
+        panel.copied = Some(text);
+    }
 }
 
 const fn lifecycle_text(lifecycle: BodyLifecycle) -> &'static str {

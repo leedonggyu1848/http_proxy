@@ -24,6 +24,11 @@ pub(crate) struct HarExport {
     pub(crate) path: PathBuf,
 }
 
+pub(crate) enum HarAction {
+    Close,
+    Export(HarExport),
+}
+
 /// Numbers of records each scope would export.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ScopeCounts {
@@ -63,19 +68,23 @@ impl HarDialog {
         self.open
     }
 
-    /// Shows the window while it is open and returns the confirmed export.
+    pub(crate) const fn close(&mut self) {
+        self.open = false;
+    }
+
+    /// Shows the form and reports what the user chose.
     pub(crate) fn show(
         &mut self,
         context: &egui::Context,
         counts: ScopeCounts,
         busy: bool,
         escape_enabled: bool,
-    ) -> Option<HarExport> {
+    ) -> Option<HarAction> {
         if !self.open {
             return None;
         }
         let mut open = true;
-        let mut confirmed = None;
+        let mut action = None;
         let viewport = context.content_rect();
         let center = viewport.center();
         let max_width = Layout::HAR_WIDTH.fit(viewport.width());
@@ -89,10 +98,9 @@ impl HarDialog {
             .vscroll(true)
             .collapsible(false)
             .resizable(false)
-            .show(context, |ui| confirmed = self.contents(ui, counts, busy));
+            .show(context, |ui| action = self.contents(ui, counts, busy));
         let escaped = escape_enabled && context.input(|input| input.key_pressed(egui::Key::Escape));
-        self.open = self.open && open && confirmed.is_none() && !escaped;
-        confirmed
+        action.or_else(|| (!open || escaped).then_some(HarAction::Close))
     }
 
     fn contents(
@@ -100,7 +108,7 @@ impl HarDialog {
         ui: &mut egui::Ui,
         counts: ScopeCounts,
         busy: bool,
-    ) -> Option<HarExport> {
+    ) -> Option<HarAction> {
         ui.label("Records");
         ui.radio_value(
             &mut self.scope,
@@ -137,29 +145,61 @@ impl HarDialog {
         ui.weak("An existing file is never replaced.");
         let count = counts.of(self.scope);
         let ready = count > 0 && !self.path.trim().is_empty() && !busy;
-        let mut confirmed = None;
         ui.horizontal_wrapped(|ui| {
-            if ui
+            let export = ui
                 .add_enabled(ready, egui::Button::new(format!("Export {count} requests")))
-                .clicked()
-            {
-                confirmed = Some(HarExport {
+                .clicked();
+            let cancel = ui.button("Cancel").clicked();
+            if export {
+                Some(HarAction::Export(HarExport {
                     scope: self.scope,
                     options: self.options,
                     path: PathBuf::from(self.path.trim()),
-                });
+                }))
+            } else {
+                cancel.then_some(HarAction::Close)
             }
-            if ui.button("Cancel").clicked() {
-                self.open = false;
-            }
-        });
-        confirmed
+        })
+        .inner
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn escape_reports_close_without_changing_the_window_state() {
+        let mut dialog = HarDialog::default();
+        dialog.open("fixture.har".to_owned());
+        let context = egui::Context::default();
+        let input = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..egui::RawInput::default()
+        };
+        let mut output = context.run_ui(input, |ui| {
+            let action = dialog.show(
+                ui.ctx(),
+                ScopeCounts {
+                    all: 1,
+                    filtered: 1,
+                },
+                false,
+                true,
+            );
+            assert!(matches!(action, Some(HarAction::Close)));
+            assert!(dialog.is_open());
+        });
+        output.textures_delta.clear();
+        dialog.close();
+        assert!(!dialog.is_open());
+    }
 
     #[test]
     fn reopening_restores_the_safe_defaults() {

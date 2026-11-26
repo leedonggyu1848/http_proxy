@@ -155,7 +155,12 @@ impl TreeView {
     }
 
     /// Shows the controls and the visible rows, colored for `theme`.
-    pub(super) fn show(&mut self, ui: &mut egui::Ui, theme: Theme, font: &FontId) {
+    pub(super) fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        theme: Theme,
+        font: &FontId,
+    ) -> Option<String> {
         ui.weak("Right-click a node to copy its path or value.");
         ui.horizontal_wrapped(|ui| {
             if ui.button("Expand all").clicked() {
@@ -181,33 +186,30 @@ impl TreeView {
             .interact_size
             .y
             .max(ui.text_style_height(&egui::TextStyle::Monospace));
+        let mut copied = None;
         egui::ScrollArea::both()
             .id_salt("tree_rows")
             .max_height(Layout::DETAIL_TREE_HEIGHT)
             .show_rows(ui, height, visible.len(), |ui, range| {
                 for row in range {
-                    if let Some(&index) = visible.get(row) {
-                        self.row(ui, index);
+                    if let Some(&index) = visible.get(row)
+                        && let Some(text) = self.row(ui, index)
+                    {
+                        copied = Some(text);
                     }
                 }
             });
+        copied
     }
 
-    fn row(&mut self, ui: &mut egui::Ui, index: usize) {
-        let Some(node) = self.model.node(index) else {
-            return;
-        };
-        let Some(job) = self
-            .labels
-            .as_ref()
-            .and_then(|labels| labels.jobs.get(index))
-        else {
-            return;
-        };
+    fn row(&mut self, ui: &mut egui::Ui, index: usize) -> Option<String> {
+        let node = self.model.node(index)?;
+        let job = self.labels.as_ref()?.jobs.get(index)?;
         let expandable = self.expandable(index);
         let open = self.is_open(index);
         let matched = self.matched.get(index).copied().unwrap_or_default();
         let mut toggled = false;
+        let mut copied = None;
         ui.horizontal(|ui| {
             toggled = tree_row_prefix(ui, node.depth, expandable, open);
             let job = if matched {
@@ -233,12 +235,12 @@ impl TreeView {
                 if let Some(path) = &node.path {
                     ui.weak(path.as_str());
                     if ui.button(copy.path).clicked() {
-                        ui.ctx().copy_text(path.clone());
+                        copied = Some(path.clone());
                         ui.close();
                     }
                 }
                 if ui.button(copy.value).clicked() {
-                    ui.ctx().copy_text(node.value.clone());
+                    copied = Some(node.value.clone());
                     ui.close();
                 }
             });
@@ -246,6 +248,7 @@ impl TreeView {
         if toggled {
             self.toggle(index);
         }
+        copied
     }
 }
 
