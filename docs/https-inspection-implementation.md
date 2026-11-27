@@ -8,7 +8,7 @@
 
 `http_inspector_core::interception::ProxyConfig::with_https_inspection`에 `http_inspector_core::https::HttpsInspection`을 전달하면 복호화 모드를 사용한다. `HttpsInspection`은 CA 디렉터리와 선택적 업스트림 루트 인증서 경로를 받는다. `ProxyHandle::ca_info`로 공개 인증서 경로와 SHA-256 지문을 읽는다.
 
-현재 사용자의 CA 신뢰 상태 조회, 등록과 제거는 `https::CaTrustStore`가 담당한다. Chrome과 Chromium은 Linux의 공용 NSS 저장소 또는 macOS의 로그인 키체인을 사용한다. Firefox 검사 창은 임시 프로필에 앱의 공개 인증서를 등록한다. 검사 브라우저 실행과 임시 프로필 관리는 `launcher`가 담당한다. [HTTPS 복호화와 검사 브라우저](guide/https.md)
+현재 사용자의 CA 신뢰 상태 조회, 등록과 제거는 `https::CaTrustStore`가 담당한다. Chrome과 Chromium은 Linux의 공용 NSS 저장소 또는 macOS의 로그인 키체인을 사용한다. Firefox 검사 창은 임시 프로필에 앱의 공개 인증서를 등록한다. 검사 브라우저 실행과 임시 프로필 관리는 `launcher`가 담당한다. 검사 셸의 프록시·CA 환경 변수와 시스템 루트에 로컬 공개 인증서를 덧붙인 통합 CA 묶음은 `shell`이, 외부 터미널 실행은 `launcher::Terminal`이 담당한다. [HTTPS 복호화와 검사 브라우저](guide/https.md)
 
 ## CA 소유권
 

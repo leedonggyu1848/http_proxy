@@ -44,15 +44,7 @@ fn discover(paths: &[PathBuf]) -> Vec<Browser> {
     CANDIDATES
         .iter()
         .filter_map(|&(command, name, kind)| {
-            let executable = paths
-                .iter()
-                .filter(|path| path.is_absolute())
-                .map(|path| path.join(command))
-                .find(|path| {
-                    fs::metadata(path).is_ok_and(|metadata| {
-                        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
-                    })
-                })?;
+            let executable = find_executable(paths, command)?;
             let canonical = fs::canonicalize(&executable).ok()?;
             if !seen.insert(canonical.clone()) {
                 return None;
@@ -82,6 +74,19 @@ fn discover(paths: &[PathBuf]) -> Vec<Browser> {
             })
         })
         .collect()
+}
+
+/// The first executable file named `command` in the absolute `paths`.
+pub(super) fn find_executable(paths: &[PathBuf], command: &str) -> Option<PathBuf> {
+    paths
+        .iter()
+        .filter(|path| path.is_absolute())
+        .map(|path| path.join(command))
+        .find(|path| {
+            fs::metadata(path).is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            })
+        })
 }
 
 fn is_snap_wrapper(path: &std::path::Path) -> bool {

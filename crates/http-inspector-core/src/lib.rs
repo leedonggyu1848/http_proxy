@@ -1,6 +1,7 @@
 //! Runtime proxy core for HTTP Inspector: local HTTP/HTTPS interception,
 //! CA and OS trust store management, session recording and body storage,
-//! request replay, browser launching, and settings.
+//! request replay, browser and terminal launching, inspection shell
+//! environments, and settings.
 //!
 //! This crate owns async networking (`tokio`, `hyper`, `rustls`) and OS
 //! integration while remaining free of any UI (`eframe`/`egui`) dependency.
@@ -15,6 +16,7 @@ pub mod process;
 pub mod recording;
 pub mod replay;
 pub mod settings;
+pub mod shell;
 
 /// Default loopback proxy listener port.
 pub const DEFAULT_PORT: u16 = 8080;

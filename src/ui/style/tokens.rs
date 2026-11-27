@@ -176,7 +176,7 @@ impl Layout {
     pub(crate) const PRIMARY_PANE_FRACTION: f32 = 0.62;
     /// Narrowest window that fits the toolbar on one row. Narrower windows
     /// move the view switch and the filter to a second toolbar row.
-    pub(crate) const TOOLBAR_ONE_ROW_MIN_WIDTH: f32 = 960.0;
+    pub(crate) const TOOLBAR_ONE_ROW_MIN_WIDTH: f32 = 1_080.0;
     /// Padding of a one-line row inside a pane, such as the Map filter row.
     pub(crate) const PANE_ROW_MARGIN: egui::Margin = egui::Margin::symmetric(12, 4);
     /// Padding around the request line at the top of the inspector.

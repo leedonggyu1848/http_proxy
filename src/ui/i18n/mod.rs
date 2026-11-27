@@ -216,6 +216,12 @@ impl Language {
         dialogs::browser::BrowserText::for_language(self)
     }
 
+    /// Returns the inspection terminal button UI text catalog for this language.
+    #[must_use]
+    pub(crate) const fn terminal(self) -> &'static dialogs::terminal::TerminalText {
+        dialogs::terminal::TerminalText::for_language(self)
+    }
+
     /// Returns the CA registration panel UI text catalog for this language.
     #[must_use]
     pub(crate) const fn ca(self) -> &'static dialogs::ca::CaText {

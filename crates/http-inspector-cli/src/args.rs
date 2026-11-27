@@ -56,6 +56,17 @@ pub(crate) enum Command {
     /// Show the local HTTPS inspection CA certificate.
     #[command(subcommand)]
     Ca(CaCommand),
+    /// Open an interactive shell whose programs use the running proxy.
+    /// Its CA bundle is removed when the shell exits.
+    #[command(
+        after_help = "Example:\n  http-proxy shell\n  curl https://example.test/   # captured, no options needed\n  exit"
+    )]
+    Shell(ShellArgs),
+    /// Run one command through the running proxy and return its exit code.
+    #[command(
+        after_help = "Example:\n  http-proxy exec -- curl -sS https://example.test/api/users"
+    )]
+    Exec(ExecArgs),
     /// Print every command, output field, error code, and exit code as JSON.
     Schema,
     /// Run the daemon in this process (used by `proxy start`).
@@ -82,10 +93,52 @@ pub(crate) enum ProxyCommand {
 
 #[derive(Debug, Args)]
 pub(crate) struct EnvArgs {
-    /// Also export `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, and `REQUESTS_CA_BUNDLE`.
-    /// These replace the system CA bundle for the programs that read them.
+    /// Also write a bundle of the system roots and the local CA and export
+    /// `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`,
+    /// `GIT_SSL_CAINFO`, `AWS_CA_BUNDLE`, and `DENO_CERT` naming it.
+    /// `proxy stop` removes the bundle.
     #[arg(long)]
     pub(crate) ca_bundle: bool,
+}
+
+/// Options shared by `shell` and `exec`.
+#[derive(Debug, Args)]
+pub(crate) struct InspectionArgs {
+    /// Keep inherited `NO_PROXY` and `no_proxy`. By default they are removed
+    /// so requests to local servers are captured too.
+    #[arg(long)]
+    pub(crate) keep_no_proxy: bool,
+    /// Use this proxy instead of asking the daemon (used by the app).
+    #[arg(long, hide = true)]
+    pub(crate) proxy: Option<std::net::SocketAddr>,
+    /// Trust the CA in this directory (used by the app with `--proxy`).
+    #[arg(long, hide = true, requires = "proxy")]
+    pub(crate) ca_directory: Option<PathBuf>,
+    /// Wait for Enter after a setup error, so a new terminal window does
+    /// not close before the error is read (used by the app).
+    #[arg(long, hide = true)]
+    pub(crate) hold_on_error: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ShellArgs {
+    #[command(flatten)]
+    pub(crate) options: InspectionArgs,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ExecArgs {
+    #[command(flatten)]
+    pub(crate) options: InspectionArgs,
+    /// The command and its arguments, after `--`.
+    #[arg(
+        required = true,
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        value_name = "COMMAND",
+        value_parser = clap::value_parser!(std::ffi::OsString)
+    )]
+    pub(crate) command: Vec<std::ffi::OsString>,
 }
 
 #[derive(Debug, Subcommand)]

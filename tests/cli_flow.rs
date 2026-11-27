@@ -304,6 +304,56 @@ fn proxy_records_and_log_work_without_a_display() -> TestResult {
     stop(&sandbox, proxy)
 }
 
+/// `exec` runs one command through the daemon's proxy with a temporary CA
+/// bundle, returns its exit code, and removes the bundle afterwards.
+#[test]
+fn exec_captures_a_command_and_removes_its_bundle() -> TestResult {
+    let sandbox = Sandbox::new()?;
+    let stopped = sandbox.run(&["exec", "--", "true"])?;
+    assert_eq!(stopped.status.code(), Some(3));
+    sandbox.json(&[
+        "proxy",
+        "start",
+        "--port",
+        "0",
+        "--https-inspection",
+        "--json",
+    ])?;
+    let upstream = TcpListener::bind("127.0.0.1:0")?;
+    let target = format!("http://{}/exec-check", upstream.local_addr()?);
+    let served = serve_once(upstream);
+    let record = sandbox.root.path().join("bundle-path");
+    let script = format!(
+        "printf '%s' \"$SSL_CERT_FILE\" > '{}'; \
+         [ \"$GIT_SSL_CAINFO\" = \"$SSL_CERT_FILE\" ] || exit 90; \
+         [ \"$(ls -l \"$SSL_CERT_FILE\" | cut -c1-10)\" = -rw------- ] || exit 91; \
+         ! grep -q 'PRIVATE KEY' \"$SSL_CERT_FILE\" || exit 92; \
+         curl -sS -o /dev/null \"$1\" || exit 93; \
+         exit 7",
+        record.display()
+    );
+    let output = sandbox.run(&["exec", "--", "sh", "-c", &script, "sh", &target])?;
+    assert_eq!(output.status.code(), Some(7), "{output:?}");
+    served.join().map_err(|_| "server panicked")??;
+    let wait = sandbox.json(&[
+        "records",
+        "wait",
+        "--filter",
+        "url:/exec-check",
+        "--timeout",
+        "5s",
+        "--json",
+    ])?;
+    assert_eq!(wait["record"]["status"], 200);
+    let bundle = PathBuf::from(fs::read_to_string(&record)?);
+    assert!(bundle.starts_with(sandbox.runtime.path()));
+    assert!(!bundle.exists());
+    assert!(!bundle.parent().is_some_and(Path::exists));
+    let missing = sandbox.run(&["exec", "--", "/nonexistent/command"])?;
+    assert_eq!(missing.status.code(), Some(127));
+    Ok(())
+}
+
 #[test]
 fn refuses_a_control_directory_other_users_can_open() -> TestResult {
     let sandbox = Sandbox::new()?;
@@ -458,9 +508,17 @@ fn env_and_ca_info_describe_the_proxy_without_the_private_key() -> TestResult {
     // Without HTTPS inspection there is no CA to export.
     assert_eq!(
         names,
-        ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]
+        [
+            "HTTP_INSPECTOR_PROXY",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy"
+        ]
     );
-    assert_eq!(env["variables"][2]["value"], proxy_url.as_str());
+    assert_eq!(env["variables"][3]["value"], proxy_url.as_str());
     let text = String::from_utf8(sandbox.run(&["proxy", "env"])?.stdout)?;
     assert!(
         text.contains(&format!("export http_proxy='{proxy_url}'")),
@@ -485,29 +543,58 @@ fn env_and_ca_info_describe_the_proxy_without_the_private_key() -> TestResult {
     );
     assert!(ca["valid_from"].as_str() < ca["valid_until"].as_str());
 
+    check_combined_bundle(&sandbox, &certificate)
+}
+
+/// `proxy env --ca-bundle` with HTTPS inspection on exports the combined
+/// bundle, which keeps the system roots, adds only the public CA, is
+/// private to the user, and goes away with the daemon.
+fn check_combined_bundle(sandbox: &Sandbox, certificate: &Path) -> TestResult {
     sandbox.json(&["proxy", "set", "--https-inspection", "on", "--json"])?;
     let inspected = sandbox.json(&["proxy", "env", "--ca-bundle", "--json"])?;
-    let exported: Vec<(&str, bool)> =
+    let bundle = sandbox.socket_directory().join("combined-ca.pem");
+    let exported: Vec<(&str, &str, bool)> =
         inspected["variables"]
             .as_array()
             .map_or_else(Vec::new, |variables| {
                 variables
                     .iter()
-                    .filter(|v| v["value"] == ca["certificate_path"])
                     .filter_map(|v| {
-                        Some((v["name"].as_str()?, v["replaces_system_roots"].as_bool()?))
+                        Some((
+                            v["name"].as_str()?,
+                            v["value"].as_str()?,
+                            v["replaces_system_roots"].as_bool()?,
+                        ))
                     })
+                    .filter(|(name, _, _)| name.contains("CA") || name.contains("CERT"))
                     .collect()
             });
-    assert_eq!(
-        exported,
-        [
-            ("NODE_EXTRA_CA_CERTS", false),
-            ("SSL_CERT_FILE", true),
-            ("CURL_CA_BUNDLE", true),
-            ("REQUESTS_CA_BUNDLE", true),
-        ]
+    let certificate = certificate.to_string_lossy();
+    let combined = bundle.to_string_lossy();
+    let expected: Vec<(&str, &str, bool)> =
+        std::iter::once(("NODE_EXTRA_CA_CERTS", &*certificate, false))
+            .chain(
+                [
+                    "SSL_CERT_FILE",
+                    "CURL_CA_BUNDLE",
+                    "REQUESTS_CA_BUNDLE",
+                    "GIT_SSL_CAINFO",
+                    "AWS_CA_BUNDLE",
+                    "DENO_CERT",
+                ]
+                .map(|name| (name, &*combined, false)),
+            )
+            .collect();
+    assert_eq!(exported, expected);
+    let text = fs::read_to_string(&bundle)?;
+    assert!(
+        text.trim_end()
+            .ends_with(fs::read_to_string(&*certificate)?.trim_end())
     );
+    assert!(!text.contains("PRIVATE KEY"));
+    assert_eq!(fs::metadata(&bundle)?.permissions().mode() & 0o777, 0o600);
+    sandbox.json(&["proxy", "stop", "--json"])?;
+    assert!(!bundle.exists());
     Ok(())
 }
 

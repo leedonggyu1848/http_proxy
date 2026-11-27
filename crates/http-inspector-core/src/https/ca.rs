@@ -39,6 +39,28 @@ impl CaInfo {
         CertificateAuthority::load_or_create(directory).map(|ca| ca.info)
     }
 
+    /// Reads the existing CA's public certificate only.
+    ///
+    /// The identity file holding the private key is never opened, and
+    /// nothing is created: a directory without `root-ca.pem` is an error.
+    /// Use this where only trust is configured, such as an inspection shell.
+    pub fn load_public(directory: &Path) -> Result<Self, HttpsSetupError> {
+        let certificate_path = directory.join(CERTIFICATE_FILE);
+        if !certificate_path.is_file() {
+            return Err(HttpsSetupError::MissingCertificate(certificate_path));
+        }
+        let public = read_file(&certificate_path)?;
+        let certificate = CertificateDer::from_pem_slice(&public)
+            .map_err(|error| HttpsSetupError::InvalidIdentity(error.to_string()))?;
+        let (valid_from, valid_until) = validity(&certificate)?;
+        Ok(Self {
+            fingerprint_sha256: fingerprint(&certificate),
+            certificate_path,
+            valid_from,
+            valid_until,
+        })
+    }
+
     /// Returns the certificate-only PEM path that clients can trust.
     #[must_use]
     pub fn certificate_path(&self) -> &Path {
@@ -80,6 +102,8 @@ pub enum HttpsSetupError {
     UnsafeIdentity(PathBuf),
     #[error("CA identity is incomplete; both files must exist: {0}")]
     IncompleteIdentity(PathBuf),
+    #[error("CA certificate does not exist: {0}")]
+    MissingCertificate(PathBuf),
     #[error("CA identity is invalid: {0}")]
     InvalidIdentity(String),
     #[error("no trusted upstream root certificates were loaded")]
@@ -317,6 +341,31 @@ mod tests {
 
     use super::*;
     use crate::settings::paths;
+
+    #[test]
+    fn public_loader_reads_only_the_certificate_and_never_creates_a_ca()
+    -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let directory = root.path().join("ca");
+        let missing = CaInfo::load_public(&directory);
+        assert!(matches!(
+            missing,
+            Err(HttpsSetupError::MissingCertificate(_))
+        ));
+        assert!(!directory.exists(), "the public loader created files");
+
+        let created = CaInfo::load_or_create(&directory)?;
+        let identity = directory.join(IDENTITY_FILE);
+        // An unreadable identity does not matter: it is never opened.
+        fs::set_permissions(&identity, fs::Permissions::from_mode(0o000))?;
+        assert_eq!(CaInfo::load_public(&directory)?, created);
+        fs::remove_file(&identity)?;
+        let entries = fs::read_dir(&directory)?.count();
+        assert_eq!(CaInfo::load_public(&directory)?, created);
+        assert_eq!(fs::read_dir(&directory)?.count(), entries);
+        assert!(!identity.exists());
+        Ok(())
+    }
 
     #[test]
     fn ca_identity_survives_restart_with_private_permissions() -> Result<(), HttpsSetupError> {

@@ -130,6 +130,11 @@ pub(crate) fn raw(document: &Value) {
     write_out(&format!("{text}\n"));
 }
 
+/// Prints a notice for people to stderr, such as the `shell` banner.
+pub(crate) fn notice(text: &str) {
+    write_err(text);
+}
+
 /// Prints the daemon's single readiness line for `proxy start`.
 pub(crate) fn ready_line(line: &Value) {
     write_out(&format!("{line}\n"));
