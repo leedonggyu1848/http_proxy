@@ -17,6 +17,14 @@ pub(super) struct UpstreamFailure {
 }
 
 impl UpstreamFailure {
+    pub(super) const fn new(stage: FailureStage, status: StatusCode, message: String) -> Self {
+        Self {
+            stage,
+            status,
+            message,
+        }
+    }
+
     pub(super) fn connect_timeout(engine: &Engine) -> Self {
         Self {
             stage: FailureStage::ConnectTimeout,

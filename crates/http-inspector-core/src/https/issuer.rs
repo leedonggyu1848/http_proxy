@@ -12,6 +12,7 @@ use rcgen::{
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
@@ -48,9 +49,22 @@ impl HttpsInspection {
     }
 }
 
+/// Fingerprint of upstream TLS verification settings used to isolate pooled
+/// HTTPS connections by certificate trust configuration.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum UpstreamTlsKey {
+    /// Verifies upstream certificates only against platform native roots.
+    SystemRoots,
+    /// Verifies upstream certificates against platform native roots plus
+    /// additional PEM root certificates whose sorted DER encodings hash to the
+    /// stored SHA-256 digest.
+    SystemPlusAdditionalRoots([u8; 32]),
+}
+
 pub(crate) struct TlsInspector {
     issuer: Issuer<'static, KeyPair>,
     connector: TlsConnector,
+    upstream_tls_key: UpstreamTlsKey,
 }
 
 pub(crate) struct Destination {
@@ -93,8 +107,20 @@ impl TlsInspector {
     pub(crate) fn open(settings: &HttpsInspection) -> Result<(Arc<Self>, CaInfo), HttpsSetupError> {
         let (issuer, info) =
             CertificateAuthority::load_or_create(&settings.ca_directory)?.into_parts();
-        let connector = build_upstream_connector(settings.additional_upstream_root.as_deref())?;
-        Ok((Arc::new(Self { issuer, connector }), info))
+        let (connector, upstream_tls_key) =
+            build_upstream_connector_with_key(settings.additional_upstream_root.as_deref())?;
+        Ok((
+            Arc::new(Self {
+                issuer,
+                connector,
+                upstream_tls_key,
+            }),
+            info,
+        ))
+    }
+
+    pub(crate) const fn upstream_tls_key(&self) -> &UpstreamTlsKey {
+        &self.upstream_tls_key
     }
 
     pub(crate) fn prepare(
@@ -155,6 +181,14 @@ impl Destination {
         })
     }
 
+    pub(crate) fn host(&self) -> &str {
+        &self.host
+    }
+
+    pub(crate) const fn port(&self) -> u16 {
+        self.port
+    }
+
     pub(crate) fn socket_target(&self) -> String {
         if self.host.parse::<IpAddr>().is_ok_and(|ip| ip.is_ipv6()) {
             format!("[{}]:{}", self.host, self.port)
@@ -192,6 +226,12 @@ impl PreparedInspection {
 pub(crate) fn build_upstream_connector(
     additional_root: Option<&Path>,
 ) -> Result<TlsConnector, HttpsSetupError> {
+    build_upstream_connector_with_key(additional_root).map(|(connector, _)| connector)
+}
+
+fn build_upstream_connector_with_key(
+    additional_root: Option<&Path>,
+) -> Result<(TlsConnector, UpstreamTlsKey), HttpsSetupError> {
     let native = rustls_native_certs::load_native_certs();
     let mut roots = RootCertStore::empty();
     let (valid, _) = roots.add_parsable_certificates(native.certs);
@@ -199,7 +239,7 @@ pub(crate) fn build_upstream_connector(
         return Err(HttpsSetupError::NoUpstreamRoots);
     }
 
-    if let Some(path) = additional_root {
+    let upstream_tls_key = if let Some(path) = additional_root {
         let certificates = CertificateDer::pem_file_iter(path)
             .map_err(|_| HttpsSetupError::InvalidAdditionalRoot(path.to_owned()))?
             .collect::<Result<Vec<_>, _>>()
@@ -207,18 +247,30 @@ pub(crate) fn build_upstream_connector(
         if certificates.is_empty() {
             return Err(HttpsSetupError::InvalidAdditionalRoot(path.to_owned()));
         }
+        let mut sorted_ders: Vec<&[u8]> = certificates.iter().map(AsRef::as_ref).collect();
+        sorted_ders.sort_unstable();
+        let mut hasher = Sha256::new();
+        for der in sorted_ders {
+            let len = u64::try_from(der.len()).unwrap_or(u64::MAX);
+            hasher.update(len.to_be_bytes());
+            hasher.update(der);
+        }
+        let digest: [u8; 32] = hasher.finalize().into();
         for certificate in certificates {
             roots
                 .add(certificate)
                 .map_err(|_| HttpsSetupError::InvalidAdditionalRoot(path.to_owned()))?;
         }
-    }
+        UpstreamTlsKey::SystemPlusAdditionalRoots(digest)
+    } else {
+        UpstreamTlsKey::SystemRoots
+    };
 
     let mut config = ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth();
     config.alpn_protocols = vec![ALPN_HTTP_1_1.to_vec()];
-    Ok(TlsConnector::from(Arc::new(config)))
+    Ok((TlsConnector::from(Arc::new(config)), upstream_tls_key))
 }
 
 #[cfg(test)]

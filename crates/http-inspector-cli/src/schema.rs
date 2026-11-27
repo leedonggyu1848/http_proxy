@@ -59,6 +59,7 @@ fn show_fields() -> Value {
         "tunnel": {"state": "open | closed | failed | incomplete", "failure": "object or null",
             "client_to_upstream_bytes": "integer", "upstream_to_client_bytes": "integer",
             "duration_ms": "number"},
+        "connection": {"id": "integer", "reused": "boolean"},
         "timing": {"connect_ms": "number or null", "send_ms": "number or null",
             "wait_ms": "number or null", "receive_ms": "number or null",
             "settled_label": "string", "settled_ms": "number or null", "total_ms": "number or null"},

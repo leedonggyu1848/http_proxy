@@ -20,8 +20,8 @@ use crate::capture::{
     response_body_preview,
 };
 use crate::exchange::{
-    BodyLifecycle, BodyPreviewWriter, CaptureSource, Exchange, ExchangeWriter, FailureStage,
-    Outcome, RecordId, SessionId, TunnelState, TunnelWriter,
+    BodyLifecycle, BodyPreviewWriter, CaptureSource, ConnectionId, Exchange, ExchangeWriter,
+    FailureStage, Outcome, RecordId, SessionId, TunnelState, TunnelWriter, UpstreamConnection,
 };
 
 /// Request head and connection timing shared by every kind of fixture.
@@ -33,6 +33,7 @@ struct RequestHead {
     headers: HeaderMap,
     session: Option<SessionId>,
     connect: Option<Duration>,
+    upstream_connection: Option<UpstreamConnection>,
 }
 
 impl RequestHead {
@@ -44,6 +45,7 @@ impl RequestHead {
             headers: HeaderMap::new(),
             session: None,
             connect: None,
+            upstream_connection: None,
         }
     }
 
@@ -61,10 +63,20 @@ impl RequestHead {
         writer
     }
 
-    /// Records the upstream connection. The proxy does this only after the
-    /// connection succeeded, right before it forwards a request or opens a
-    /// tunnel, so no other state carries a connect time.
-    fn connected(&self, writer: &ExchangeWriter) {
+    /// Records the upstream connection for a forwarded HTTP/HTTPS exchange.
+    /// Reused connections omit the `connect` timing phase.
+    fn connected_http(&self, writer: &ExchangeWriter) {
+        let connection = self
+            .upstream_connection
+            .unwrap_or_else(|| UpstreamConnection::fresh(ConnectionId::next()));
+        writer.record_upstream_connection(connection);
+        if !connection.is_reused() {
+            writer.record_connect(self.connect.unwrap_or_default());
+        }
+    }
+
+    /// Records the upstream connection time for an opaque `CONNECT` tunnel.
+    fn connected_tunnel(&self, writer: &ExchangeWriter) {
         writer.record_connect(self.connect.unwrap_or_default());
     }
 }
@@ -327,12 +339,26 @@ impl ExchangeBuilder {
     }
 
     /// Sets how long connecting to the upstream server took. As in the
-    /// proxy, it is recorded only once the request is forwarded (a response,
-    /// a `Response` or `ResponseTimeout` failure, or any state with a request
-    /// body); forwarded fixtures without one record zero, and every other
-    /// state, such as a `Connect` failure, has no connect time.
+    /// proxy, it is recorded only once the request is forwarded over a fresh
+    /// connection (a response, a `Response` or `ResponseTimeout` failure, or
+    /// any state with a request body); forwarded fixtures without one record
+    /// zero, and every other state, such as a `Connect` failure or a reused
+    /// connection, has no connect time.
     pub const fn connect_time(mut self, duration: Duration) -> Self {
         self.head.connect = Some(duration);
+        self
+    }
+
+    /// Marks the exchange as having reused an existing pooled upstream
+    /// connection. Reused exchanges have no `connect` timing phase.
+    pub const fn reused_connection(mut self, id: ConnectionId) -> Self {
+        self.head.upstream_connection = Some(UpstreamConnection::reused(id));
+        self
+    }
+
+    /// Sets the upstream connection metadata recorded once forwarding begins.
+    pub const fn upstream_connection(mut self, connection: UpstreamConnection) -> Self {
+        self.head.upstream_connection = Some(connection);
         self
     }
 
@@ -463,7 +489,7 @@ impl ExchangeBuilder {
     fn forward(self) -> Result<ExchangeWriter, FixtureError> {
         self.route.check_target(&self.head.target)?;
         let writer = self.head.start(self.replay_of);
-        self.head.connected(&writer);
+        self.head.connected_http(&writer);
         let (bytes, end) = self
             .request_body
             .unwrap_or((Vec::new(), BodyLifecycle::Complete));
@@ -540,7 +566,7 @@ impl ConnectExchangeBuilder {
             }
         }
         let writer = self.head.start(None);
-        self.head.connected(&writer);
+        self.head.connected_tunnel(&writer);
         let tunnel = TunnelWriter::new();
         writer.settle(Outcome::Tunnel(tunnel.preview()));
         tunnel.add_client_to_upstream(client_to_upstream);

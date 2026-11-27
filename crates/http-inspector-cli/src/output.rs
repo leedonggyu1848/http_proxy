@@ -505,6 +505,18 @@ fn show(data: &Value) -> String {
             millis(&tunnel["duration_ms"]),
         );
     }
+    if let Some(connection) = data.get("connection").filter(|value| value.is_object()) {
+        let state = if connection["reused"].as_bool() == Some(true) {
+            "reused"
+        } else {
+            "new"
+        };
+        let _ = writeln!(
+            out,
+            "\nConnection\n  #{} ({state})",
+            text(&connection["id"])
+        );
+    }
     let timing = &data["timing"];
     let _ = writeln!(out, "\nTiming");
     for (label, key) in [

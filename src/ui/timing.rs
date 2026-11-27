@@ -4,7 +4,7 @@
 
 use std::time::{Duration, Instant};
 
-use http_inspector_exchange::{Exchange, Outcome, PhaseSpan};
+use http_inspector_exchange::{Exchange, Outcome, PhaseSpan, UpstreamConnection};
 
 use crate::ui::i18n::Language;
 use crate::ui::requests::outcome_view;
@@ -92,8 +92,11 @@ impl ExchangeTiming {
         } else {
             None
         };
+        let reused = record
+            .upstream_connection()
+            .is_some_and(UpstreamConnection::is_reused);
         Self {
-            connect: timing.connect_span(),
+            connect: if reused { None } else { timing.connect_span() },
             send: timing.send_span(),
             wait: timing.wait_span(),
             receive: timing.receive_span(),
@@ -285,5 +288,27 @@ mod tests {
             Some(PhaseSpan::new(Duration::ZERO, Duration::from_millis(10)))
         );
         assert_eq!(timing.span(TimingPhase::Wait), None);
+    }
+
+    #[test]
+    fn omits_connect_phase_for_reused_upstream_connection() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let reused = ExchangeBuilder::http(Method::GET, "http://example.test/reused")?
+            .connect_time(Duration::from_millis(12))
+            .reused_connection(http_inspector_exchange::ConnectionId::new(9))
+            .respond(ResponseFixture::new(StatusCode::OK).body("ok", BodyLifecycle::Complete))?;
+        let timing = ExchangeTiming::from_exchange(&reused, Instant::now());
+        assert_eq!(timing.span(TimingPhase::Connect), None);
+        let entries = timing.entries(reused.outcome(), Language::English);
+        assert_eq!(entries.first().and_then(|entry| entry.millis), None);
+        assert_eq!(
+            entries
+                .first()
+                .map(|entry| entry.value_text(Language::English)),
+            Some("—".to_owned())
+        );
+        assert!(entries.get(4).is_some_and(|entry| entry.millis.is_some()));
+        assert!(entries.get(5).is_some_and(|entry| entry.millis.is_some()));
+        Ok(())
     }
 }

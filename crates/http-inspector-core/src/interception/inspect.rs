@@ -1,6 +1,7 @@
 use super::capture_context::{CaptureContext, TunnelCapture};
-use super::forward::forward_over_stream;
+use super::forward::{forward_pooled, handshake_http1};
 use super::handle::{ConnectionPermit, Engine, server_builder};
+use super::pool::{PoolKey, PooledConnection};
 use super::upstream::{UpstreamFailure, connect_deadline, connect_within, resolve_within};
 use super::{ProxyBody, empty_response, failed_response, tunnel};
 use crate::https::{Destination, PreparedInspection, TlsInspector, UpstreamTlsError};
@@ -253,6 +254,18 @@ pub(super) async fn forward_https(
         .uri()
         .path_and_query()
         .map_or_else(|| Uri::from_static("/"), |value| value.clone().into());
+    let key = PoolKey::https(destination, inspector.upstream_tls_key().clone());
+    forward_pooled(request, path, key, engine, capture, || {
+        dial_https(destination, inspector, engine)
+    })
+    .await
+}
+
+async fn dial_https(
+    destination: &Destination,
+    inspector: &TlsInspector,
+    engine: &Engine,
+) -> Result<(PooledConnection, Duration), UpstreamFailure> {
     let connect_started = Instant::now();
     let stream = match timeout(
         engine.connect_timeout,
@@ -262,46 +275,66 @@ pub(super) async fn forward_https(
     {
         Ok(Ok(stream)) => stream,
         Ok(Err(error)) => {
-            return failed_response(
-                capture,
+            return Err(UpstreamFailure::new(
                 FailureStage::Connect,
                 StatusCode::BAD_GATEWAY,
-                &error.to_string(),
-            );
+                error.to_string(),
+            ));
         }
-        Err(_) => return UpstreamFailure::connect_timeout(engine).respond(capture),
+        Err(_) => return Err(UpstreamFailure::connect_timeout(engine)),
     };
     let stream = match timeout(TLS_TIMEOUT, inspector.handshake(destination, stream)).await {
         Ok(Ok(stream)) => stream,
         Ok(Err(UpstreamTlsError::Handshake(error))) => {
-            return failed_response(
-                capture,
+            return Err(UpstreamFailure::new(
                 FailureStage::UpstreamTls,
                 StatusCode::BAD_GATEWAY,
-                &error.to_string(),
-            );
+                error.to_string(),
+            ));
         }
         Err(_) => {
-            return failed_response(
-                capture,
+            return Err(UpstreamFailure::new(
                 FailureStage::UpstreamTls,
                 StatusCode::GATEWAY_TIMEOUT,
-                "upstream TLS handshake timed out",
-            );
+                "upstream TLS handshake timed out".to_owned(),
+            ));
         }
     };
-    capture.writer.record_connect(connect_started.elapsed());
-    forward_over_stream(request, stream, engine, capture, path).await
+    let connect_duration = connect_started.elapsed();
+    let connection = handshake_http1(stream).await?;
+    Ok((connection, connect_duration))
 }
 
 #[cfg(test)]
 mod inner_request_tests {
-    use super::{Destination, InnerRequestError, validate_inner_request};
+    use super::super::capture_context::{CaptureContext, EventSink};
+    use super::super::handle::Engine;
+    use super::super::infallible_to_hyper;
+    use super::super::pool::UpstreamPool;
+    use super::{Destination, InnerRequestError, forward_https, validate_inner_request};
+    use crate::https::{HttpsInspection, TlsInspector};
+    use bytes::Bytes;
     use http::{
         Method, Request,
         header::{HOST, UPGRADE},
         uri::Authority,
     };
+    use http_body_util::{BodyExt, Empty};
+    use http_inspector_exchange::{CaptureSource, Outcome, SessionId};
+    use rcgen::{
+        BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose,
+        IsCa, Issuer, KeyPair, KeyUsagePurpose,
+    };
+    use rustls::ServerConfig;
+    use rustls::pki_types::PrivatePkcs8KeyDer;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+    use std::sync::{Arc, OnceLock};
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::sync::{Semaphore, mpsc};
+    use tokio_rustls::TlsAcceptor;
 
     #[test]
     fn rejects_invalid_tunnel_requests_by_kind() -> Result<(), Box<dyn std::error::Error>> {
@@ -356,6 +389,190 @@ mod inner_request_tests {
                 expected.map_or(Ok(()), Err)
             );
         }
+        Ok(())
+    }
+
+    fn self_signed_root(
+        common_name: &str,
+    ) -> Result<(String, Issuer<'static, KeyPair>), Box<dyn std::error::Error>> {
+        let key = KeyPair::generate()?;
+        let mut params = CertificateParams::default();
+        let now = time::OffsetDateTime::now_utc();
+        params.not_before = now - time::Duration::days(1);
+        params.not_after = now + time::Duration::days(30);
+        params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+        params.key_usages = vec![KeyUsagePurpose::KeyCertSign];
+        let mut name = DistinguishedName::new();
+        name.push(DnType::CommonName, common_name);
+        params.distinguished_name = name;
+        let cert = params.self_signed(&key)?;
+        Ok((cert.pem(), Issuer::new(params, key)))
+    }
+
+    fn tls_acceptor(
+        issuer: &Issuer<'_, KeyPair>,
+    ) -> Result<TlsAcceptor, Box<dyn std::error::Error>> {
+        let server_key = KeyPair::generate()?;
+        let mut server_params = CertificateParams::new(vec!["localhost".to_owned()])?;
+        let now = time::OffsetDateTime::now_utc();
+        server_params.not_before = now - time::Duration::days(1);
+        server_params.not_after = now + time::Duration::days(7);
+        server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        server_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        let cert = server_params.signed_by(&server_key, issuer)?;
+        let private_key = PrivatePkcs8KeyDer::from(server_key.serialize_der()).into();
+        let mut config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert.der().clone()], private_key)?;
+        config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        Ok(TlsAcceptor::from(Arc::new(config)))
+    }
+
+    async fn read_http_head<S: tokio::io::AsyncRead + Unpin>(
+        stream: &mut S,
+    ) -> std::io::Result<bool> {
+        let mut data = Vec::new();
+        while !data.ends_with(b"\r\n\r\n") {
+            let mut byte = [0_u8; 1];
+            let n = stream.read(&mut byte).await?;
+            if n == 0 {
+                return Ok(false);
+            }
+            data.extend_from_slice(&byte);
+        }
+        Ok(true)
+    }
+
+    fn test_engine() -> (Engine, mpsc::Receiver<http_inspector_exchange::Exchange>) {
+        let (sender, receiver) = mpsc::channel(16);
+        let engine = Engine {
+            events: EventSink {
+                sender,
+                dropped: Arc::new(AtomicU64::new(0)),
+                notifier: Arc::new(OnceLock::new()),
+                log: None,
+                body_store: None,
+            },
+            session: SessionId::next(),
+            stopped: Arc::new(AtomicBool::new(false)),
+            inspector: None,
+            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            connect_timeout: Duration::from_secs(5),
+            response_timeout: Duration::from_secs(5),
+            connections: Arc::new(Semaphore::new(16)),
+            upstream_pool: Arc::new(UpstreamPool::new(4, Duration::from_secs(30))),
+        };
+        (engine, receiver)
+    }
+
+    async fn send_https_request(
+        engine: &Engine,
+        destination: &Destination,
+        inspector: &TlsInspector,
+        port: u16,
+        path: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(path)
+            .header(HOST, format!("localhost:{port}"))
+            .body(Empty::<Bytes>::new().map_err(infallible_to_hyper).boxed())?;
+        let capture = CaptureContext::start(
+            &req,
+            CaptureSource::InspectedHttps,
+            &destination.absolute_target(path),
+            engine,
+        );
+        let resp = forward_https(req, engine, &capture, inspector, destination).await;
+        let _ = resp.into_body().collect().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn does_not_share_pooled_https_connections_across_tls_configs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let (primary_pem, primary_issuer) = self_signed_root("Upstream Root A")?;
+        let (extra_pem, _extra_issuer) = self_signed_root("Upstream Root B")?;
+        let primary_bundle = temp.path().join("root-a.pem");
+        let combined_bundle = temp.path().join("root-ab.pem");
+        std::fs::write(&primary_bundle, &primary_pem)?;
+        std::fs::write(&combined_bundle, format!("{primary_pem}\n{extra_pem}"))?;
+
+        let (first_inspector, _) = TlsInspector::open(
+            &HttpsInspection::new(temp.path().join("ca-a"))
+                .with_additional_upstream_root(primary_bundle),
+        )?;
+        let (second_inspector, _) = TlsInspector::open(
+            &HttpsInspection::new(temp.path().join("ca-b"))
+                .with_additional_upstream_root(combined_bundle),
+        )?;
+        assert_ne!(
+            first_inspector.upstream_tls_key(),
+            second_inspector.upstream_tls_key()
+        );
+
+        let acceptor = tls_acceptor(&primary_issuer)?;
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let handshakes = Arc::new(AtomicUsize::new(0));
+        let server_handshakes = Arc::clone(&handshakes);
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let acceptor = acceptor.clone();
+                let count = Arc::clone(&server_handshakes);
+                tokio::spawn(async move {
+                    let Ok(mut tls) = acceptor.accept(stream).await else {
+                        return;
+                    };
+                    count.fetch_add(1, Ordering::SeqCst);
+                    while read_http_head(&mut tls).await.unwrap_or(false) {
+                        if tls
+                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+
+        let (engine, mut receiver) = test_engine();
+        let destination =
+            Destination::from_authority(&format!("localhost:{port}").parse::<Authority>()?)?;
+
+        send_https_request(&engine, &destination, &first_inspector, port, "/a1").await?;
+        let r1 = receiver.recv().await.ok_or("missing r1")?;
+        assert!(matches!(r1.outcome(), Outcome::Response(_)));
+        let c1 = r1.upstream_connection().ok_or("missing c1")?;
+        assert!(!c1.is_reused());
+
+        // Different TLS verification roots must NOT reuse c1.
+        send_https_request(&engine, &destination, &second_inspector, port, "/b1").await?;
+        let r2 = receiver.recv().await.ok_or("missing r2")?;
+        assert!(matches!(r2.outcome(), Outcome::Response(_)));
+        let c2 = r2.upstream_connection().ok_or("missing c2")?;
+        assert!(!c2.is_reused());
+        assert_ne!(c1.id(), c2.id());
+        assert_eq!(handshakes.load(Ordering::SeqCst), 2);
+
+        // Second request with the first inspector reuses c1 without another TLS handshake.
+        send_https_request(&engine, &destination, &first_inspector, port, "/a2").await?;
+        let r3 = receiver.recv().await.ok_or("missing r3")?;
+        assert!(matches!(r3.outcome(), Outcome::Response(_)));
+        let c3 = r3.upstream_connection().ok_or("missing c3")?;
+        assert!(c3.is_reused());
+        assert_eq!(c3.id(), c1.id());
+        assert_eq!(r3.timing().connect(), None);
+        assert_eq!(handshakes.load(Ordering::SeqCst), 2);
+
+        engine.upstream_pool.close_all();
+        server.abort();
         Ok(())
     }
 }

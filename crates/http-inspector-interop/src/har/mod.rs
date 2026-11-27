@@ -122,6 +122,12 @@ fn entry(record: &Exchange, options: HarOptions, now: SystemTime) -> Value {
     let _ = entry.insert("response".into(), response);
     let _ = entry.insert("cache".into(), json!({}));
     let _ = entry.insert("timings".into(), phases.to_json());
+    if let Some(connection) = record.upstream_connection() {
+        let _ = entry.insert(
+            "connection".into(),
+            json!(connection.id().value().to_string()),
+        );
+    }
     let notes = entry_notes(record);
     if !notes.is_empty() {
         let _ = entry.insert("comment".into(), json!(notes.join(" ")));

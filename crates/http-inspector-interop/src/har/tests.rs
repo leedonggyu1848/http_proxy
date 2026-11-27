@@ -534,3 +534,19 @@ fn assert_timings(entry: &Value) {
     let time = entry["time"].as_f64().unwrap_or(f64::NAN);
     assert!((time - sum).abs() < 0.01, "time {time} != timings {sum}");
 }
+
+#[test]
+fn reused_connection_exports_connection_id_and_unobserved_connect_timing() -> TestResult {
+    let conn_id = http_inspector_exchange::ConnectionId::new(42);
+    let record = ExchangeBuilder::http(Method::GET, format!("http://{TEST_HOST}/reused"))?
+        .reused_connection(conn_id)
+        .respond(ResponseFixture::new(StatusCode::OK).body("ok", BodyLifecycle::Complete))?;
+    let har = document(&[record], HarOptions::default(), SystemTime::now());
+    assert_har_1_2(&har);
+    let [entry] = entries(&har) else {
+        return Err("expected one entry".into());
+    };
+    assert_eq!(entry["connection"], "42");
+    assert_eq!(entry["timings"]["connect"], -1);
+    Ok(())
+}
