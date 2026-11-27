@@ -357,6 +357,10 @@ pub(crate) fn https_setup_error(lang: Language, error: &HttpsSetupError) -> Stri
                 path.display()
             ),
         },
+        HttpsSetupError::MissingCertificate(path) => match lang {
+            Language::English => format!("CA certificate does not exist: {}", path.display()),
+            Language::Korean => format!("CA 인증서가 없습니다: {}", path.display()),
+        },
         HttpsSetupError::InvalidIdentity(detail) => match lang {
             Language::English => format!("CA identity is invalid: {detail}"),
             Language::Korean => format!("CA 인증서/키가 올바르지 않습니다: {detail}"),

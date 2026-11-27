@@ -26,15 +26,31 @@ pub(crate) fn ca_info() -> Result<Value, CliError> {
 }
 
 fn load_ca() -> Result<CaInfo, CliError> {
-    let directory = paths::ca_directory(|name| std::env::var_os(name)).ok_or_else(|| {
+    CaInfo::load_or_create(&ca_directory()?)
+        .map_err(|error| CliError::new(ErrorCode::HttpsUnavailable, error.to_string()))
+}
+
+/// The CA directory from `XDG_DATA_HOME` or `HOME`.
+pub(crate) fn ca_directory() -> Result<std::path::PathBuf, CliError> {
+    paths::ca_directory(|name| std::env::var_os(name)).ok_or_else(|| {
         CliError::new(
             ErrorCode::HttpsUnavailable,
             "No data directory for the HTTPS inspection CA",
         )
         .with_hint("set HOME or XDG_DATA_HOME")
-    })?;
-    CaInfo::load_or_create(&directory)
-        .map_err(|error| CliError::new(ErrorCode::HttpsUnavailable, error.to_string()))
+    })
+}
+
+/// Reads the existing CA's public certificate for trust settings. The
+/// private key file is never opened and no CA is created, so a missing or
+/// mismatched CA directory fails instead of trusting a CA nobody uses.
+pub(crate) fn load_public_ca(directory: &std::path::Path) -> Result<CaInfo, CliError> {
+    CaInfo::load_public(directory).map_err(|error| {
+        CliError::new(ErrorCode::HttpsUnavailable, error.to_string()).with_hint(
+            "start HTTPS inspection with the same XDG_DATA_HOME, \
+             such as `http-proxy proxy set --https-inspection on`",
+        )
+    })
 }
 
 /// The `proxy env` document for a running proxy's `status`. With
@@ -53,7 +69,7 @@ pub(crate) fn proxy_env(
     let https = status.get("https_inspection").and_then(Value::as_bool) == Some(true);
     let mut notes = Vec::new();
     let environment = if https {
-        let ca = load_ca()?;
+        let ca = load_public_ca(&ca_directory()?)?;
         let bundle = if ca_bundle {
             control.prepare_directory()?;
             let bundle = CaBundle::write_shared(control.directory(), &ca)

@@ -13,8 +13,6 @@ use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::Duration;
 
-use http_inspector_core::https::CaInfo;
-use http_inspector_core::settings::paths;
 use http_inspector_core::shell::{self, NoProxy, ShellEnvironment, SystemRoots};
 use rustix::process::{Pid, Signal};
 use serde_json::Value;
@@ -63,8 +61,7 @@ pub(crate) fn shell(
         Ok(environment) => environment,
         Err(error) if args.options.hold_on_error => {
             output.error(&error);
-            output::notice("Press Enter to close this window.\n");
-            let _closed = io::stdin().read_line(&mut String::new()).is_err();
+            hold();
             return Ok(error.code.exit_code());
         }
         Err(error) => return Err(error),
@@ -73,7 +70,19 @@ pub(crate) fn shell(
     let program = std::env::var_os("SHELL")
         .filter(|shell| Path::new(shell).is_absolute())
         .unwrap_or_else(|| OsString::from("/bin/sh"));
-    run(&environment, &program, &[], output)
+    run(
+        &environment,
+        &program,
+        &[],
+        output,
+        args.options.hold_on_error,
+    )
+}
+
+/// Keeps a terminal window opened by the app until the error is read.
+fn hold() {
+    output::notice("Press Enter to close this window.\n");
+    let _closed = io::stdin().read_line(&mut String::new()).is_err();
 }
 
 /// Runs one command and returns its exit code.
@@ -84,7 +93,13 @@ pub(crate) fn exec(args: &ExecArgs, control: &ControlPath, output: Output) -> Re
         .command
         .split_first()
         .ok_or_else(|| CliError::new(ErrorCode::Usage, "exec needs a command"))?;
-    run(&environment, program, rest, output)
+    run(
+        &environment,
+        program,
+        rest,
+        output,
+        args.options.hold_on_error,
+    )
 }
 
 /// The proxy to use and, when HTTPS is decrypted, the CA directory.
@@ -104,15 +119,7 @@ fn target(options: &InspectionArgs, control: &ControlPath) -> Result<Target, Cli
     let proxy = proxy_address(&status)?;
     let https = status.get("https_inspection").and_then(Value::as_bool) == Some(true);
     let ca_directory = if https {
-        Some(
-            paths::ca_directory(|name| std::env::var_os(name)).ok_or_else(|| {
-                CliError::new(
-                    ErrorCode::HttpsUnavailable,
-                    "No data directory for the HTTPS inspection CA",
-                )
-                .with_hint("set HOME or XDG_DATA_HOME")
-            })?,
-        )
+        Some(crate::local::ca_directory()?)
     } else {
         None
     };
@@ -147,11 +154,10 @@ fn environment(options: &InspectionArgs, target: &Target) -> Result<ShellEnviron
     let Some(directory) = &target.ca_directory else {
         return Ok(environment);
     };
-    let unavailable = |message: String| CliError::new(ErrorCode::HttpsUnavailable, message);
-    let ca = CaInfo::load_or_create(directory).map_err(|error| unavailable(error.to_string()))?;
+    let ca = crate::local::load_public_ca(directory)?;
     environment
         .with_temporary_bundle(&ca, &shell::private_parent(|name| std::env::var_os(name)))
-        .map_err(|error| unavailable(error.to_string()))
+        .map_err(|error| CliError::new(ErrorCode::HttpsUnavailable, error.to_string()))
 }
 
 /// The lines printed when an interactive shell starts.
@@ -183,11 +189,13 @@ fn banner(environment: &ShellEnvironment) -> String {
 
 /// Runs the program to completion and returns its exit code. The
 /// environment, and with it the CA bundle, is dropped after the child exits.
+/// With `hold_on_error`, a program that cannot start waits for Enter.
 fn run(
     environment: &ShellEnvironment,
     program: &OsStr,
     args: &[OsString],
     output: Output,
+    hold_on_error: bool,
 ) -> Result<u8, CliError> {
     let mut command = std::process::Command::new(program);
     command.args(args);
@@ -207,6 +215,9 @@ fn run(
                 &format!("Could not run {}", program.to_string_lossy()),
                 &error,
             ));
+            if hold_on_error {
+                hold();
+            }
             Ok(code)
         }
         Err(Failure::Wait(error)) => Err(CliError::io("Could not wait for the command", &error)),
@@ -314,7 +325,9 @@ mod tests {
 
     /// Runs `script` through `exec` with the given proxy and CA directory.
     fn exec_script(script: &str, ca_directory: Option<&Path>) -> Result<u8, CliError> {
-        let options = inspection("127.0.0.1:18080", ca_directory)?;
+        let mut options = inspection("127.0.0.1:18080", ca_directory)?;
+        // Holding would wait for Enter on the test's stdin.
+        options.hold_on_error = false;
         let args = ExecArgs {
             options,
             command: ["/bin/sh", "-c", script].map(OsString::from).into(),
@@ -337,8 +350,10 @@ mod tests {
             0
         );
         assert_eq!(exec_script("kill -TERM $$", None)?, 128 + 15);
+        let mut options = inspection("127.0.0.1:18080", None)?;
+        options.hold_on_error = false;
         let missing = ExecArgs {
-            options: inspection("127.0.0.1:18080", None)?,
+            options,
             command: vec![OsString::from("/nonexistent/command")],
         };
         let control = ControlPath::in_directory(PathBuf::from("/nonexistent"));
@@ -351,6 +366,9 @@ mod tests {
         let root = tempfile::tempdir()?;
         let ca_directory = root.path().join("ca");
         let record = root.path().join("bundle");
+        // The shell reads only the public certificate: no identity needed.
+        http_inspector_core::https::CaInfo::load_or_create(&ca_directory)?;
+        fs::remove_file(ca_directory.join("ca-identity.pem"))?;
         let script = format!(
             "printf '%s' \"$SSL_CERT_FILE\" > '{}'; [ \"$GIT_SSL_CAINFO\" = \"$SSL_CERT_FILE\" ] && [ \"$NODE_EXTRA_CA_CERTS\" = '{}' ] && ! grep -q 'PRIVATE KEY' \"$SSL_CERT_FILE\" && [ \"$(ls -l \"$SSL_CERT_FILE\" | cut -c1-10)\" = -rw------- ] && [ \"$(ls -ld \"$(dirname \"$SSL_CERT_FILE\")\" | cut -c1-10)\" = drwx------ ]",
             record.display(),
@@ -362,6 +380,18 @@ mod tests {
         assert!(!bundle.exists());
         assert!(!bundle.parent().is_some_and(Path::exists));
         Ok(())
+    }
+
+    #[test]
+    fn missing_ca_fails_without_creating_one() {
+        let root = tempfile::tempdir().ok();
+        let ca_directory = root.as_ref().map(|root| root.path().join("ca"));
+        let result = exec_script("exit 0", ca_directory.as_deref());
+        assert_eq!(
+            result.err().map(|error| error.code),
+            Some(ErrorCode::HttpsUnavailable)
+        );
+        assert!(!ca_directory.is_some_and(|directory| directory.exists()));
     }
 
     #[test]

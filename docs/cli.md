@@ -276,7 +276,7 @@ http-proxy proxy stop
 - 시스템 묶음은 절대 경로인 기존 `SSL_CERT_FILE`, `/etc/ssl/certs/ca-certificates.crt`(Debian·Ubuntu·Arch), `/etc/pki/tls/certs/ca-bundle.crt`(Fedora·RHEL), `/etc/ssl/ca-bundle.pem`(openSUSE), `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`, `/etc/ssl/cert.pem`(Alpine·macOS), `/usr/local/etc/openssl/cert.pem` 순서로 찾은 첫 PEM 파일이다.
 - 시스템 묶음을 찾지 못하면 로컬 CA만 담고, 시작 안내에 프록시를 거치지 않는 HTTPS는 인증서 검사에 실패한다고 한 줄 보인다.
 - 파일은 `$XDG_RUNTIME_DIR`(없으면 시스템 임시 디렉터리) 아래 새 `0700` 디렉터리 `http-inspector-shell-*`에 `0600`으로 만든다. 셸이 끝나거나 `SIGHUP`(터미널 창 닫기)·`SIGTERM`을 받으면 셸에 신호를 전달하고, 셸이 끝난 뒤 디렉터리째 지운다. `SIGKILL`로 강제 종료하면 남을 수 있으며, `$XDG_RUNTIME_DIR`은 로그아웃할 때 비워진다.
-- 공개 인증서 `root-ca.pem`만 읽는다. CA 개인키 파일(`ca-identity.pem`)의 경로와 내용은 어떤 변수·파일·출력에도 넣지 않는다.
+- 이미 있는 공개 인증서 `root-ca.pem`만 읽는다. CA 개인키 파일(`ca-identity.pem`)은 열지 않고, 그 경로와 내용은 어떤 변수·파일·출력에도 넣지 않는다. CA를 새로 만들지 않으므로 `root-ca.pem`이 없으면(예: 데몬과 다른 `XDG_DATA_HOME`) `https_unavailable`로 실패한다.
 
 Go의 `net/http`는 `localhost`·`127.0.0.1` 요청에 프록시 변수를 쓰지 않는다. 프록시 변수를 무시하는 프로그램의 요청은 캡처되지 않는다.
 
@@ -372,7 +372,7 @@ http-proxy exec -- python3 -c 'import requests; requests.get("https://example.te
 - **제어 채널**: `$XDG_RUNTIME_DIR/http-inspector/control.sock`, 이 변수가 없거나 절대 경로가 아니면 시스템 임시 디렉터리의 `http-inspector-<uid>/control.sock`을 쓴다. 디렉터리는 `0700`, 소켓은 `0600`으로 만든다. 소켓은 잠금 아래에서 임시 이름(`pending.sock`)으로 만들어 `0600`으로 바꾼 뒤 제자리로 옮기므로, 제어 경로에는 처음부터 `0600`으로만 나타난다. 디렉터리나 소켓이 다른 사용자 소유이거나 그룹·다른 사용자 권한이 있으면 고치지 않고 `insecure_control_path`로 거부한다. TCP 제어 포트는 없다.
 - **프록시**: 앱과 같이 `127.0.0.1`에만 바인딩한다.
 - **가려진 헤더**: `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie` 값은 캡처할 때 `[REDACTED]`로 바뀌므로 명령 출력, 소켓 메시지, 세션 로그 어디에도 원래 값이 없다. 원래 값을 복원하는 옵션은 없다.
-- **CA 개인키**: 어떤 명령·출력·소켓 메시지·환경 변수·CA 묶음에도 포함하지 않는다. `ca info`는 공개 인증서의 경로와 지문만 출력한다.
+- **CA 개인키**: 어떤 명령·출력·소켓 메시지·환경 변수·CA 묶음에도 포함하지 않는다. `ca info`는 공개 인증서의 경로와 지문만 출력한다. `shell`·`exec`·`proxy env`는 개인키 파일을 열지 않고 공개 인증서만 읽는다.
 - **CA 묶음**: `shell`·`exec`의 묶음은 셸·명령이 끝나면, `proxy env --ca-bundle`의 묶음은 데몬이 끝나면 지운다. 둘 다 현재 사용자만 읽을 수 있다.
 - **재전송·cURL**: 가려진 헤더를 되살리지 않는다. 재전송에 직접 준 자격 증명 값도 출력에서는 `[REDACTED]`로 보인다.
 - **세션 로그**: 데몬의 전체 로그는 만들자마자 이름을 지운 임시 파일에 기록한다. `proxy stop`, `SIGTERM`·`SIGINT`, 강제 종료 어느 경우에도 본문이 담긴 파일이 임시 디렉터리에 남지 않는다. 신호로 끝난 데몬의 소켓 파일은 다음 `proxy start`가 응답이 없음을 확인한 뒤 지운다.

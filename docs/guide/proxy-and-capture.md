@@ -39,7 +39,7 @@ http_proxy=http://127.0.0.1:8080 https_proxy=http://127.0.0.1:8080 curl http://e
 - **터미널 선택:** `$TERMINAL`, `x-terminal-emulator`, `gnome-terminal`, `konsole`, `xfce4-terminal`, `kitty`, `alacritty`, `wezterm`, `foot`, `xterm` 순서로 처음 찾은 것을 쓴다. macOS에서는 Terminal.app을 쓴다. 찾지 못하면 툴바 아래에 한 줄로 알린다.
 - **변수:** `HTTP_PROXY`·`HTTPS_PROXY`·`ALL_PROXY`와 소문자 변수를 프록시 주소로 정하고, `NO_PROXY`·`no_proxy`를 지워 `localhost`의 테스트 서버도 캡처한다. 프록시 자신의 주소로 가는 요청은 프록시가 루프로 막는다. `HTTP_INSPECTOR_PROXY`에는 프록시 주소가 들어 있다.
 - **HTTPS 복호화가 켜졌을 때:** 시스템 루트 CA 묶음 뒤에 로컬 공개 인증서 `root-ca.pem`을 덧붙인 `combined-ca.pem`을 만들어 `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `GIT_SSL_CAINFO`, `AWS_CA_BUNDLE`, `DENO_CERT`에 지정하고, `NODE_EXTRA_CA_CERTS`에는 `root-ca.pem`을 지정한다. 시스템 루트를 유지하므로 프록시를 거치지 않는 HTTPS도 인증서 검사를 통과한다. 시스템 묶음을 찾지 못하면 로컬 CA만 담고, 셸 시작 안내에 그 사실을 한 줄로 보인다.
-- **정리:** 묶음은 `$XDG_RUNTIME_DIR`(없으면 시스템 임시 디렉터리) 아래 현재 사용자 전용 `0700` 디렉터리에 `0600` 파일로 만들고, `exit`로 셸을 끝내거나 터미널 창을 닫으면 지운다. CA 개인키 파일(`ca-identity.pem`)은 읽지 않는다.
+- **정리:** 묶음은 `$XDG_RUNTIME_DIR`(없으면 시스템 임시 디렉터리) 아래 현재 사용자 전용 `0700` 디렉터리에 `0600` 파일로 만들고, `exit`로 셸을 끝내거나 터미널 창을 닫으면 지운다. CA 개인키 파일(`ca-identity.pem`)은 열지 않고 CA를 새로 만들지도 않는다. 공개 인증서 `root-ca.pem`이 없으면 셸을 열지 않고 오류를 창에 보인 채 Enter를 기다린다. `$SHELL`을 실행하지 못했을 때도 같다.
 - **주소가 바뀌면:** 이미 연 셸의 변수는 바뀌지 않는다. 셸은 시작할 때 이 사실을 안내한다. 프록시를 멈추거나 다른 포트로 다시 시작했다면 셸을 나와 **Open Terminal**로 새로 연다. 터미널 창은 앱을 끝내도 남는다.
 
 프록시 변수를 무시하는 프로그램의 요청은 캡처되지 않는다. Go의 `net/http`는 `localhost`·`127.0.0.1` 요청에 프록시를 쓰지 않는다. 명령줄에서는 `http-proxy shell`로 같은 셸을, `http-proxy exec -- <명령>`으로 명령 하나를 실행한다. [명령줄 인터페이스](../cli.md#http-proxy-shell)
