@@ -27,6 +27,34 @@ cargo build --release
 
 `cargo fmt`가 파일을 바꾸면 포맷 검사에 실패한다. Clippy 경고와 rustdoc 경고도 빌드 실패로 처리한다.
 
+### 일괄 실행
+
+`scripts/verify-pr.py`는 위 검사를 다음 순서로 실행한다. 앞 단계가 실패하면 뒤 단계를 실행하지 않는다.
+
+| 순서 | 단계 | 명령 | `--quick` |
+| --- | --- | --- | --- |
+| 1 | `diff-check` | `git diff --check <merge-base>` | 실행 |
+| 2 | `check-boundaries` | `python3 scripts/check-boundaries.py` | 실행 |
+| 3 | `fmt` | `cargo fmt --all --check` | 실행 |
+| 4 | `clippy` | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | 실행 |
+| 5 | `test` | `cargo test --workspace --all-features` | 실행 |
+| 6 | `doc` | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps` | 생략 |
+| 7 | `deny` | `cargo deny check` | 생략 |
+| 8 | `build-release` | `cargo build --release` | 생략 |
+
+```bash
+python3 scripts/verify-pr.py --quick   # 개발 중 반복 검사
+python3 scripts/verify-pr.py           # PR 전 전체 검사
+```
+
+`diff-check`는 `origin/main`(없으면 `main`)과 `HEAD`의 merge base를 작업 트리와 비교해 브랜치의 커밋과 미커밋 변경의 공백 오류를 함께 검사한다. 다른 기준이 필요하면 `--base <rev>`를 준다. 추적하지 않는 새 파일은 검사하지 않으므로 먼저 스테이징한다.
+
+로그 확인 기준은 다음과 같다.
+
+- 각 단계의 전체 출력은 `/tmp/verify-pr-*/NN-<step>.log`에 저장된다. 성공하면 단계마다 `PASS: <step> (<elapsed>s)` 한 줄과 마지막 `OK:` 요약만 출력한다.
+- 실패하면 `FAIL: <step>`, 핵심 오류 줄(최대 20줄), 로그 마지막 40줄, `Full log:` 경로를 출력하고 그 단계의 종료 코드로 끝난다.
+- 출력만으로 원인을 알 수 없을 때만 `Full log:` 파일에서 필요한 오류 라인을 `grep`으로 찾아 읽는다. 로그 전체를 읽거나 성공한 단계의 로그를 열지 않는다.
+
 ## 컴파일러 규칙
 
 루트 `Cargo.toml`은 Rust와 Clippy lint를 workspace 단위로 설정한다. 모든 패키지는 해당 설정을 상속한다.

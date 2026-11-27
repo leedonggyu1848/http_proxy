@@ -52,6 +52,15 @@ cargo deny check
 cargo build --release
 ```
 
+- 검증은 `scripts/verify-pr.py`로 한 번에 실행한다. 기본 모드는 위 전체 검증과 `git diff --check`, `python3 scripts/check-boundaries.py`를 순서대로 실행하고, `--quick`은 개발 중 반복용으로 `git diff --check`, 경계 검사, `fmt`, `clippy`, `test`만 실행한다.
+
+```bash
+python3 scripts/verify-pr.py --quick   # 개발 중
+python3 scripts/verify-pr.py           # PR 전
+```
+
+- 스크립트는 단계별 로그를 임시 디렉터리에 저장하고 성공한 단계마다 `PASS: <step> (<elapsed>s)` 한 줄만 출력한다. 실패하면 핵심 오류 줄, 로그 마지막 40줄, 전체 로그 경로를 출력하고 즉시 0이 아닌 코드로 끝난다. 출력만으로 원인을 알 수 없을 때만 로그 파일에서 오류 라인을 `grep`으로 발췌해 읽고, 성공한 단계의 로그는 열지 않는다.
+
 ## 이슈 해결 지침
 
 이슈 해결 요청을 받은 메인 agent는 직접 코드를 쓰지 않고 아래 순서로 subagent를 조율한다.
