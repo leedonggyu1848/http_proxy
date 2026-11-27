@@ -1,6 +1,7 @@
 //! Command arguments are sanitized before they leave the process lookup.
 
 use std::fmt::Write as _;
+use std::net::Ipv6Addr;
 use std::path::Path;
 
 use http_inspector_exchange::http_semantics::{REDACTED_VALUE, is_sensitive_header};
@@ -9,7 +10,7 @@ use http_inspector_exchange::http_semantics::{REDACTED_VALUE, is_sensitive_heade
 enum Value {
     Secret,
     Header { expanded: bool },
-    Authority { expanded: bool },
+    Authority { curl: bool },
     Variable,
 }
 
@@ -18,11 +19,7 @@ impl Value {
         match self {
             Self::Secret => REDACTED_VALUE.to_owned(),
             Self::Header { expanded } => redact_header(argument, expanded),
-            // Expansion can introduce userinfo even when the template has no @.
-            Self::Authority { expanded: true } if argument.contains("{{") => {
-                REDACTED_VALUE.to_owned()
-            }
-            Self::Authority { .. } => redact_authority(argument),
+            Self::Authority { curl } => redact_authority(argument, curl),
             Self::Variable => redact_variable(argument),
         }
     }
@@ -61,7 +58,7 @@ pub(super) fn command(bytes: &[u8], executable: Option<&Path>) -> Option<String>
         let redacted = option_value(&argument, curl).map_or_else(
             || {
                 if curl && !argument.starts_with('-') {
-                    redact_authority(&argument)
+                    redact_authority(&argument, true)
                 } else {
                     redact_urls(&argument)
                 }
@@ -117,7 +114,7 @@ fn option_value(argument: &str, curl: bool) -> Option<OptionValue<'_>> {
 }
 
 fn long_option_value(name: &str, curl: bool, expanded: bool) -> Option<Value> {
-    let authority = Value::Authority { expanded };
+    let authority = Value::Authority { curl };
     let common: [(&[&str], Value); 3] = [
         (&["header", "proxy-header"], Value::Header { expanded }),
         (
@@ -182,7 +179,7 @@ fn curl_short_option(argument: &str) -> Option<OptionValue<'_>> {
         let value = match option {
             'u' | 'U' | 'b' | 'E' => Value::Secret,
             'H' => Value::Header { expanded: false },
-            'e' | 'x' => Value::Authority { expanded: false },
+            'e' | 'x' => Value::Authority { curl: true },
             // Only flag options can precede another short option in a group.
             '#' | ':' | '0' | '1' | '2' | '3' | '4' | '6' | 'a' | 'B' | 'f' | 'g' | 'G' | 'i'
             | 'I' | 'j' | 'J' | 'k' | 'l' | 'L' | 'M' | 'n' | 'N' | 'O' | 'p' | 'q' | 'R' | 's'
@@ -236,13 +233,31 @@ fn redact_header(argument: &str, expanded: bool) -> String {
     redact_urls(argument)
 }
 
-fn redact_authority(argument: &str) -> String {
+fn redact_authority(argument: &str, curl: bool) -> String {
+    if curl && curl_url_may_expand_userinfo(argument) {
+        return REDACTED_VALUE.to_owned();
+    }
     if let Some(at) = userinfo_end(argument)
         && let Some(host) = argument.get(at..)
     {
         return format!("{REDACTED_VALUE}{host}");
     }
     redact_urls(argument)
+}
+
+fn curl_url_may_expand_userinfo(argument: &str) -> bool {
+    // Variables can insert an @. Globs rearrange the literal text into
+    // multiple authorities, so an existing @ cannot be treated as path data.
+    argument.contains("{{")
+        || (argument.contains('@')
+            && (argument.contains('{')
+                || argument.split('[').skip(1).any(|part| {
+                    let Some((range, _)) = part.split_once(']') else {
+                        return false;
+                    };
+                    let address = range.split_once('%').map_or(range, |(ip, _)| ip);
+                    range.contains('-') && address.parse::<Ipv6Addr>().is_err()
+                })))
 }
 
 fn redact_variable(argument: &str) -> String {
@@ -425,6 +440,37 @@ mod tests {
             command(bytes, None).as_deref(),
             Some(
                 "curl -xhttp:/[REDACTED]@proxy.test:8080 --preproxy=socks5:///[REDACTED]@hop.test --socks5-hostname [REDACTED]@socks.test --doh-url https://[REDACTED]@dns.test/query -ehttp:///[REDACTED]@origin.test/path@name --expand-url http:/[REDACTED]@site.test/a"
+            )
+        );
+    }
+
+    #[test]
+    fn hides_entire_curl_globs_with_schemed_or_schemeless_credentials() {
+        let bytes = b"curl\0{http://demo:glob-first@127.0.0.1:8765/first,http://demo:glob-second@127.0.0.1:8765/second}\0{demo:glob-first@127.0.0.1:8765/first,demo:glob-second@127.0.0.1:8765/second}\0--url={http:///demo:glob-first@127.0.0.1:8765/first,demo:glob-second@127.0.0.1:8765/second}\0";
+        assert_eq!(
+            command(bytes, None).as_deref(),
+            Some("curl [REDACTED] [REDACTED] --url=[REDACTED]")
+        );
+    }
+
+    #[test]
+    fn hides_curl_combined_globs_and_variables_in_url_options() {
+        let bytes = b"curl\0--url\0http://demo:{secret,other}[1-2]@localhost:8765/path\0--socks5-hostname=demo:{fixture-one,fixture-two}@socks.test\0-xhttp://demo:fixture[a-b]@proxy.test:8080\0--expand-url\0{{credential_url}}\0";
+        assert_eq!(
+            command(bytes, None).as_deref(),
+            Some(
+                "curl --url [REDACTED] --socks5-hostname=[REDACTED] -x[REDACTED] --expand-url [REDACTED]"
+            )
+        );
+    }
+
+    #[test]
+    fn keeps_static_ipv6_and_globs_without_userinfo() {
+        let bytes = b"curl\0http://[fe80::1%25some-interface]/path@name\0http://demo:fixture@[::1]/path@name\0http://example.test/{one,two}[1-2]\0http://example.test/a%7Bb%7D@name\0";
+        assert_eq!(
+            command(bytes, None).as_deref(),
+            Some(
+                "curl http://[fe80::1%25some-interface]/path@name http://[REDACTED]@[::1]/path@name http://example.test/{one,two}[1-2] http://example.test/a%7Bb%7D@name"
             )
         );
     }
