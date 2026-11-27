@@ -476,7 +476,7 @@ mod tests {
 
     #[test]
     fn marks_meet_three_to_one_on_every_surface() {
-        // Dots, ticks, bars, and focus rings are non-text contrast (WCAG 1.4.11).
+        // Dots, ticks, waterfall bars, and focus rings are non-text contrast (WCAG 1.4.11).
         for theme in [Theme::Light, Theme::Dark] {
             let tokens = ThemeTokens::for_theme(theme);
             for mark in [
@@ -485,6 +485,8 @@ mod tests {
                 tokens.status.ok,
                 tokens.status.warn,
                 tokens.status.error,
+                tokens.text.primary,
+                tokens.text.secondary,
                 tokens.category(Category::Gray),
             ] {
                 assert_contrast(theme, mark, &text_backgrounds(theme), 3.0);

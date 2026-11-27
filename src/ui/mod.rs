@@ -37,6 +37,11 @@ mod style;
     clippy::redundant_pub_crate,
     reason = "cross-screen items in a private module; `pub` triggers `unreachable_pub`"
 )]
+mod timing;
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "cross-screen items in a private module; `pub` triggers `unreachable_pub`"
+)]
 mod workbench;
 
 pub use app::main;
