@@ -97,6 +97,11 @@ fn all_static_entries(lang: Language) -> Vec<(&'static str, &'static str, &'stat
         "dialogs::browser.tooltips",
         lang.browser().tooltips.entries(),
     );
+    push("dialogs::terminal", lang.terminal().entries());
+    push(
+        "dialogs::terminal.tooltips",
+        lang.terminal().tooltips.entries(),
+    );
     push("dialogs::ca", lang.ca().entries());
     push("dialogs::ca.tooltips", lang.ca().tooltips.entries());
     push(
@@ -156,6 +161,10 @@ fn all_static_tooltips(lang: Language) -> Vec<(&'static str, &'static str, &'sta
     push(
         "dialogs::browser.tooltips",
         lang.browser().tooltips.entries(),
+    );
+    push(
+        "dialogs::terminal.tooltips",
+        lang.terminal().tooltips.entries(),
     );
     push("dialogs::ca.tooltips", lang.ca().tooltips.entries());
     push(

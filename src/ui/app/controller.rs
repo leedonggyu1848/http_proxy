@@ -44,6 +44,7 @@ pub(crate) enum AppAction {
     SetLanguage(LanguagePreference),
     SetBodyStorageLimit(u64),
     Browser(BrowserAction),
+    OpenTerminal,
     Ca(ca_panel::Action),
     Har(har_dialog::HarAction),
     Replay(ReplayAction),
@@ -83,6 +84,7 @@ impl InspectorApp {
         self.dialogs.hls.poll(context);
         self.session.body_saving.poll(context);
         self.poll_range_plan(context);
+        self.dialogs.terminal.receive();
         if self.dialogs.browsers.receive() {
             self.dialogs.ca_panel.refresh();
         }
@@ -137,6 +139,7 @@ impl InspectorApp {
             }
             AppAction::SetBodyStorageLimit(limit) => self.session.body_saving.set_limit(limit),
             AppAction::Browser(action) => self.apply_browser(action),
+            AppAction::OpenTerminal => self.open_terminal(),
             AppAction::Ca(action) => {
                 if let Some(directory) = self.session.capture.ca_directory.as_deref() {
                     self.dialogs.ca_panel.start(action, directory, context);
@@ -211,6 +214,19 @@ impl InspectorApp {
                 .as_deref()
                 .filter(|_| capture.https_inspection),
         );
+    }
+
+    fn open_terminal(&mut self) {
+        let capture = &self.session.capture;
+        if let Some(proxy) = capture.proxy.as_ref() {
+            self.dialogs.terminal.open(
+                proxy.local_addr(),
+                capture
+                    .ca_directory
+                    .as_deref()
+                    .filter(|_| capture.https_inspection),
+            );
+        }
     }
 
     fn apply_save_menu(&mut self, context: &egui::Context, action: SaveMenuAction) {

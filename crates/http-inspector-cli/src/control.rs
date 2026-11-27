@@ -57,6 +57,11 @@ impl ControlPath {
         Self { directory, socket }
     }
 
+    /// The private control directory.
+    pub(crate) fn directory(&self) -> &Path {
+        &self.directory
+    }
+
     pub(crate) fn socket(&self) -> &Path {
         &self.socket
     }
@@ -188,6 +193,8 @@ impl ControlPath {
     pub(crate) fn close(&self, bound: Bound) {
         let lock = self.lock();
         let _already_gone = fs::remove_file(&self.socket).is_err();
+        // The `proxy env --ca-bundle` bundle names this daemon's CA setup.
+        http_inspector_core::shell::remove_shared(&self.directory);
         drop(bound.listener);
         drop(lock);
     }

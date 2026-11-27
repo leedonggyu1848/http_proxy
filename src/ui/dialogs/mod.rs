@@ -10,3 +10,4 @@ pub(super) mod range_merge;
 pub(super) mod replay_panel;
 pub(super) mod save;
 pub(super) mod scope_help;
+pub(super) mod terminal_panel;

@@ -19,6 +19,7 @@ http-inspector-interop.workspace = true
 rustix.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["signal"] }
 
 [dev-dependencies]
 http-inspector-exchange = { workspace = true, features = ["test-support"] }

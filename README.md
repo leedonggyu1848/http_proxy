@@ -111,7 +111,9 @@ brew install nss
 3. 툴바 오른쪽의 **Open Browser** 메뉴에서 설치된 Firefox, Chrome 또는 Chromium을 선택한다. 프록시가 설정된 검사 전용 비공개 창이 열린다.
 4. 열린 창에서 확인할 사이트에 접속한다. 요청이 앱의 목록에 나타나며, 행을 선택하면 **Headers**와 **Body** 탭에서 상세를 본다.
 
-명령줄 프로그램은 프록시 주소를 직접 지정한다. 툴바의 프록시 주소를 누르면 나오는 메뉴에서 프록시 URL, `curl` 예시, 프록시 환경 변수 설정 예시를 복사할 수 있다.
+명령줄 프로그램은 툴바의 **Open Terminal**로 연 검사 전용 셸에서 실행하면 옵션 없이 캡처된다. 이 셸에는 프록시 변수와, HTTPS 복호화가 켜졌을 때 시스템 루트와 로컬 CA를 합친 임시 CA 묶음이 설정되며 셸을 닫으면 묶음이 지워진다. [검사 터미널](docs/guide/proxy-and-capture.md#검사-터미널)
+
+프록시 주소를 직접 지정할 수도 있다. 툴바의 프록시 주소를 누르면 나오는 메뉴에서 프록시 URL, `curl` 예시, 프록시 환경 변수 설정 예시를 복사할 수 있다.
 
 ```bash
 curl --proxy http://127.0.0.1:8080 http://example.com/
@@ -126,8 +128,8 @@ HTTPS 복호화를 끈 상태에서는 호스트, 포트, 전송 바이트 수�
 
 ```bash
 http-proxy proxy start --port 0 --json      # 빈 포트로 시작하고 주소 출력
-eval "$(http-proxy proxy env)"              # 이 셸의 프로그램을 프록시로 보냄
-curl http://example.test/api/users
+http-proxy exec -- curl http://example.test/api/users   # 명령 하나를 프록시·CA 설정으로 실행
+http-proxy shell                            # 프록시·CA 설정이 주입된 대화형 셸
 http-proxy records wait --filter 'method:GET url:/api/users' --timeout 10s
 http-proxy records body <ID> --view pretty --max-bytes 4096
 http-proxy records replay <ID> --header 'X-Debug: 1'   # 고쳐서 재전송, 새 기록 출력
@@ -138,7 +140,7 @@ http-proxy log save ./session.log
 http-proxy proxy stop
 ```
 
-필터 문법, 본문 정리, 헤더 마스킹, 재전송 확인 규칙, cURL 변환은 앱과 같은 코드를 쓴다. 명령줄은 캡처한 요청을 확인하고 고쳐서 재현하는 데 필요한 기능만 제공하며, 검사 브라우저·CA 등록·URL 맵 같은 기능은 앱에서 쓴다. 제어 채널은 현재 사용자만 열 수 있는 Unix 소켓이다. 전체 명령, 출력 필드, 종료 코드는 [명령줄 인터페이스](docs/cli.md) 또는 `http-proxy schema`에 있다. AI 에이전트에게는 [`http-inspector-cli` 스킬](.agents/skills/http-inspector-cli/SKILL.md)을 준다.
+필터 문법, 본문 정리, 헤더 마스킹, 재전송 확인 규칙, cURL 변환은 앱과 같은 코드를 쓴다. 명령줄은 캡처한 요청을 확인하고 고쳐서 재현하는 데 필요한 기능만 제공하며, 검사 브라우저·CA 등록·URL 맵 같은 기능은 앱에서 쓴다. `exec`·`shell`은 셸·명령이 끝나면 임시 CA 묶음을 지우고 종료 코드를 그대로 돌려준다. 제어 채널은 현재 사용자만 열 수 있는 Unix 소켓이다. 전체 명령, 출력 필드, 종료 코드는 [명령줄 인터페이스](docs/cli.md) 또는 `http-proxy schema`에 있다. AI 에이전트에게는 [`http-inspector-cli` 스킬](.agents/skills/http-inspector-cli/SKILL.md)을 준다.
 
 ## 요청 필터
 

@@ -11,3 +11,4 @@ pub(crate) mod range_merge;
 pub(crate) mod replay;
 pub(crate) mod save;
 pub(crate) mod scope_help;
+pub(crate) mod terminal;
