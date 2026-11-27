@@ -13,10 +13,11 @@ use crate::ui::i18n::Language;
 use crate::ui::style::fonts;
 use crate::ui::style::theme::Palette;
 use crate::ui::style::tokens::{Layout, Space, StrokeWidth, ThemeTokens};
-use crate::ui::workbench::text::ShellText;
 
 /// Renders the docked relationship graph legend inside `ui`.
 pub(super) fn show(ui: &mut egui::Ui, lang: Language) {
+    let map = lang.map();
+    let shared = lang.shared();
     egui::ScrollArea::vertical()
         .id_salt("map-graph-legend-scroll")
         .auto_shrink([false, false])
@@ -26,76 +27,54 @@ pub(super) fn show(ui: &mut egui::Ui, lang: Language) {
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = Space::SM;
 
+                    swatch_row(ui, map.node, map.legend_node_desc, paint_node_swatch);
                     swatch_row(
                         ui,
-                        ShellText::Node.text(lang),
-                        ShellText::LegendNodeDesc.text(lang),
-                        paint_node_swatch,
-                    );
-                    swatch_row(
-                        ui,
-                        ShellText::LegendNodeSize.text(lang),
-                        ShellText::LegendNodeSizeDesc.text(lang),
+                        map.legend_node_size,
+                        map.legend_node_size_desc,
                         paint_node_size_swatch,
                     );
                     swatch_row(
                         ui,
-                        ShellText::FirstParty.text(lang),
-                        ShellText::LegendFirstPartyDesc.text(lang),
+                        shared.first_party,
+                        map.legend_first_party_desc,
                         |ui, rect| paint_party_swatch(ui, rect, false),
                     );
                     swatch_row(
                         ui,
-                        ShellText::ThirdParty.text(lang),
-                        ShellText::LegendThirdPartyDesc.text(lang),
+                        shared.third_party,
+                        map.legend_third_party_desc,
                         |ui, rect| paint_party_swatch(ui, rect, true),
                     );
 
                     section_divider(ui);
 
+                    swatch_row(ui, map.referer, map.legend_referer_desc, |ui, rect| {
+                        paint_edge_swatch(ui, rect, EdgeKind::Referer);
+                    });
+                    swatch_row(ui, map.origin_cors, map.legend_origin_desc, |ui, rect| {
+                        paint_edge_swatch(ui, rect, EdgeKind::Origin);
+                    });
+                    swatch_row(ui, map.redirect, map.legend_redirect_desc, |ui, rect| {
+                        paint_edge_swatch(ui, rect, EdgeKind::Redirect);
+                    });
                     swatch_row(
                         ui,
-                        ShellText::Referer.text(lang),
-                        ShellText::LegendRefererDesc.text(lang),
-                        |ui, rect| paint_edge_swatch(ui, rect, EdgeKind::Referer),
-                    );
-                    swatch_row(
-                        ui,
-                        ShellText::OriginCors.text(lang),
-                        ShellText::LegendOriginDesc.text(lang),
-                        |ui, rect| paint_edge_swatch(ui, rect, EdgeKind::Origin),
-                    );
-                    swatch_row(
-                        ui,
-                        ShellText::Redirect.text(lang),
-                        ShellText::LegendRedirectDesc.text(lang),
-                        |ui, rect| paint_edge_swatch(ui, rect, EdgeKind::Redirect),
-                    );
-                    swatch_row(
-                        ui,
-                        ShellText::LegendActive.text(lang),
-                        ShellText::LegendActiveDesc.text(lang),
+                        map.legend_active,
+                        map.legend_active_desc,
                         paint_active_swatch,
                     );
                     swatch_row(
                         ui,
-                        ShellText::LegendSelfLoop.text(lang),
-                        ShellText::LegendSelfLoopDesc.text(lang),
+                        map.legend_self_loop,
+                        map.legend_self_loop_desc,
                         paint_self_loop_swatch,
                     );
 
                     section_divider(ui);
 
-                    control_row(
-                        ui,
-                        ShellText::LegendDrag.text(lang),
-                        ShellText::LegendDragDesc.text(lang),
-                    );
-                    control_row(
-                        ui,
-                        ShellText::LegendClick.text(lang),
-                        ShellText::LegendClickDesc.text(lang),
-                    );
+                    control_row(ui, map.legend_drag, map.legend_drag_desc);
+                    control_row(ui, map.legend_click, map.legend_click_desc);
                 });
         });
 }

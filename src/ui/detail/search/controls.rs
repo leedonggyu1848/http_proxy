@@ -7,7 +7,7 @@ use http_inspector_analysis::search::{MatchOptions, SearchScope};
 use http_inspector_exchange::Exchange;
 
 use super::{RequestSearch, SearchSettings};
-use crate::ui::i18n::{Language, domain};
+use crate::ui::i18n::{self, Language, domain};
 use crate::ui::requests::filter_menu::field_term;
 use crate::ui::style::{
     fonts,
@@ -15,7 +15,7 @@ use crate::ui::style::{
 };
 use crate::ui::workbench::controls;
 use crate::ui::workbench::field::{self, Field};
-use crate::ui::workbench::text::{self, ShellText};
+use crate::ui::workbench::text;
 
 const MAX_SUGGESTIONS: usize = 32;
 
@@ -31,6 +31,7 @@ impl RequestSearch {
         dialog_open: bool,
         lang: Language,
     ) -> Option<SearchSettings> {
+        let detail = lang.detail();
         let mut settings = self.settings().clone();
         let diagnostics = self.parsed().diagnostics.as_slice();
         let regex = settings.options.regex;
@@ -42,16 +43,16 @@ impl RequestSearch {
         let can_clear = !settings.text.is_empty();
         let field = Field::new(width)
             .hint(if regex {
-                ShellText::FilterRegex.text(lang)
+                detail.filter_regex
             } else {
-                ShellText::Filter.text(lang)
+                detail.filter
             })
             .search_icon()
             .monospace()
             .error(if self.regex_error().is_some() {
-                Some(ShellText::InvalidFilter.text(lang))
+                Some(detail.invalid_filter)
             } else {
-                (!diagnostics.is_empty()).then_some(ShellText::InvalidCondition.text(lang))
+                (!diagnostics.is_empty()).then_some(detail.invalid_condition)
             });
         let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, _| {
             let text = buffer.as_str();
@@ -72,8 +73,8 @@ impl RequestSearch {
                 let height = 2.0f32.mul_add(-Space::XS, Layout::INPUT_HEIGHT);
                 clear = ui
                     .add_enabled(can_clear, controls::ghost("×", height))
-                    .accessible_name(ShellText::ClearFilter.text(lang))
-                    .on_hover_text(ShellText::ClearFilter.text(lang))
+                    .accessible_name(detail.tooltips.clear_filter)
+                    .on_hover_text(detail.tooltips.clear_filter)
                     .clicked();
                 filter_help(ui, height, lang);
                 options(ui, &mut settings.scope, &mut settings.options, lang);
@@ -106,11 +107,11 @@ impl RequestSearch {
         diagnostics: &[FilterDiagnostic],
         lang: Language,
     ) {
-        let response = response.accessible_name(ShellText::FilterRequests.text(lang));
+        let response = response.accessible_name(lang.detail().filter_requests);
         if let Some(error) = self.regex_error() {
             response.on_hover_text(domain::matcher_error(lang, error));
         } else if diagnostics.is_empty() {
-            response.on_hover_text(text::focus_filter(
+            response.on_hover_text(i18n::detail::focus_filter(
                 lang,
                 &ui.ctx().format_shortcut(&FOCUS_FILTER),
             ));
@@ -163,6 +164,7 @@ fn layout_filter_text(
 }
 
 fn filter_help(ui: &mut egui::Ui, height: f32, lang: Language) {
+    let detail = lang.detail();
     controls::ghost_menu(ui, "?", height, |ui| {
         for (keys, example) in [
             ("method", "method:GET,POST"),
@@ -177,8 +179,8 @@ fn filter_help(ui: &mut egui::Ui, height: f32, lang: Language) {
             ("size", "size:>10kb"),
             ("duration, time", "duration:>500ms"),
             ("is", "is:failed,pending,tunnel,replay,https"),
-            (ShellText::Exclude.text(lang), "-url:/static/"),
-            (ShellText::Phrase.text(lang), "\"connection refused\""),
+            (detail.exclude, "-url:/static/"),
+            (detail.phrase, "\"connection refused\""),
         ] {
             ui.horizontal(|ui| {
                 ui.label(keys);
@@ -187,8 +189,8 @@ fn filter_help(ui: &mut egui::Ui, height: f32, lang: Language) {
         }
     })
     .response
-    .accessible_name(ShellText::FilterSyntax.text(lang))
-    .on_hover_text(ShellText::FilterSyntax.text(lang));
+    .accessible_name(detail.tooltips.filter_syntax)
+    .on_hover_text(detail.tooltips.filter_syntax);
 }
 
 /// Search options inside the right end of the filter input: scope, case,
@@ -199,20 +201,21 @@ fn options(
     match_options: &mut MatchOptions,
     lang: Language,
 ) {
+    let tooltips = &lang.detail().tooltips;
     controls::ghost_scope(ui, |ui| {
         let height = 2.0f32.mul_add(-Space::XS, Layout::INPUT_HEIGHT);
         toggle(
             ui,
             &mut match_options.regex,
             ".*",
-            ShellText::UseRegex.text(lang),
+            tooltips.use_regex,
             height,
         );
         toggle(
             ui,
             &mut match_options.case_sensitive,
             "Aa",
-            ShellText::MatchCase.text(lang),
+            tooltips.match_case,
             height,
         );
         egui::containers::menu::MenuButton::from_button(controls::ghost(
@@ -230,7 +233,7 @@ fn options(
             }
         })
         .0
-        .on_hover_text(ShellText::SearchScope.text(lang));
+        .on_hover_text(tooltips.search_scope);
     });
 }
 

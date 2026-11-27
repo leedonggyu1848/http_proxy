@@ -8,12 +8,11 @@ mod tree_pane;
 
 pub(crate) use detail_pane::RecordMatchCache;
 
-use crate::ui::i18n::{Language, domain};
+use crate::ui::i18n::{self, Language, domain};
 use crate::ui::style::theme::Palette;
 use crate::ui::style::tokens::{Layout, Space, StrokeWidth};
 use crate::ui::workbench::field::{self, Field};
-use crate::ui::workbench::text::{self, ShellText};
-use crate::ui::workbench::{chrome, controls};
+use crate::ui::workbench::{chrome, controls, text};
 use std::collections::{HashMap, HashSet};
 
 use eframe::egui;
@@ -235,10 +234,10 @@ impl MapPanel {
                 controls::ghost_style(ui);
                 let clear = ui
                     .add(controls::ghost(
-                        ShellText::Clear.text(lang),
+                        lang.shared().clear,
                         Layout::PANE_BUTTON_HEIGHT,
                     ))
-                    .on_hover_text(ShellText::ClearHint.text(lang))
+                    .on_hover_text(lang.map().tooltips.clear_hint)
                     .clicked()
                     .then_some(MapAction::ClearAll);
                 let action = Self::export_menu(ui, map, save_busy, lang).or(clear);
@@ -427,12 +426,13 @@ impl MapPanel {
     }
 
     fn sub_view_tabs(&mut self, ui: &mut egui::Ui, lang: Language) {
-        controls::tab_list(ui, ShellText::MapView.text(lang), |ui| {
+        let map = lang.map();
+        controls::tab_list(ui, map.map_view, |ui| {
             for (view, label) in [
-                (MapSubView::Tree, ShellText::Tree),
-                (MapSubView::Graph, ShellText::Graph),
+                (MapSubView::Tree, lang.shared().tree),
+                (MapSubView::Graph, map.graph),
             ] {
-                if controls::text_tab(ui, self.sub_view == view, label.text(lang)).clicked() {
+                if controls::text_tab(ui, self.sub_view == view, label).clicked() {
                     self.sub_view = view;
                 }
             }
@@ -440,9 +440,11 @@ impl MapPanel {
     }
 
     fn tree_controls(&mut self, ui: &mut egui::Ui, lang: Language) {
+        let map = lang.map();
+        let shared = lang.shared();
         let width = Layout::MAP_SEARCH_WIDTH.fit(ui.available_width());
         let field = Field::new(width)
-            .hint(ShellText::FilterHosts.text(lang))
+            .hint(map.filter_hosts)
             .search_icon()
             .monospace();
         let _ = field::single_line(ui, &mut self.filter.host_query, field, |_| {});
@@ -461,14 +463,14 @@ impl MapPanel {
         let fold = controls::ghost_toggle(
             ui,
             self.filter.fold_ids,
-            ShellText::FoldIds.text(lang),
+            map.fold_ids,
             Layout::PANE_BUTTON_HEIGHT,
         )
-        .on_hover_text(ShellText::FoldIdsHint.text(lang));
+        .on_hover_text(map.tooltips.fold_ids_hint);
         if fold.clicked() {
             self.filter.fold_ids = !self.filter.fold_ids;
         }
-        let sort = text::sort_label(lang, domain::tree_sort_field(lang, self.sort));
+        let sort = i18n::map::sort_label(lang, domain::tree_sort_field(lang, self.sort));
         let _ = controls::ghost_menu(
             ui,
             text::menu_label(&sort),
@@ -484,28 +486,22 @@ impl MapPanel {
             },
         );
         let direction = match self.direction {
-            SortDirection::Asc => ShellText::Ascending,
-            SortDirection::Desc => ShellText::Descending,
+            SortDirection::Asc => map.tooltips.ascending,
+            SortDirection::Desc => map.tooltips.descending,
         };
         if ui
             .add(controls::ghost(
                 self.direction.arrow(),
                 Layout::PANE_BUTTON_HEIGHT,
             ))
-            .on_hover_text(direction.text(lang))
+            .on_hover_text(direction)
             .clicked()
         {
             self.direction = self.direction.toggled();
         }
-        for (label, expanded) in [
-            (ShellText::ExpandAll, true),
-            (ShellText::CollapseAll, false),
-        ] {
+        for (label, expanded) in [(shared.expand_all, true), (shared.collapse_all, false)] {
             if ui
-                .add(controls::ghost(
-                    label.text(lang),
-                    Layout::PANE_BUTTON_HEIGHT,
-                ))
+                .add(controls::ghost(label, Layout::PANE_BUTTON_HEIGHT))
                 .clicked()
             {
                 self.set_all_expanded(expanded);
@@ -516,12 +512,10 @@ impl MapPanel {
     /// Legend toggle, edge kind toggles, the domain limit, and Relayout,
     /// laid out right to left in the graph's pane header.
     fn graph_actions(&mut self, ui: &mut egui::Ui, lang: Language) {
+        let map = lang.map();
         if ui
-            .add(controls::ghost(
-                ShellText::Relayout.text(lang),
-                Layout::PANE_BUTTON_HEIGHT,
-            ))
-            .on_hover_text(ShellText::RelayoutHint.text(lang))
+            .add(controls::ghost(map.relayout, Layout::PANE_BUTTON_HEIGHT))
+            .on_hover_text(map.tooltips.relayout_hint)
             .clicked()
         {
             self.layout = ForceLayout::new(self.layout.max_domains());
@@ -529,28 +523,24 @@ impl MapPanel {
         let mut limit = self.layout.max_domains();
         let _ = controls::ghost_menu(
             ui,
-            text::menu_label(&text::top_domains(lang, limit)),
+            text::menu_label(&i18n::map::top_domains(lang, limit)),
             Layout::PANE_BUTTON_HEIGHT,
             |ui| {
                 for count in [15_usize, 40, 80, 150] {
-                    ui.selectable_value(&mut limit, count, text::top_domains(lang, count));
+                    ui.selectable_value(&mut limit, count, i18n::map::top_domains(lang, count));
                 }
             },
         );
         self.layout.set_max_domains(limit);
         let _ = controls::ghost_menu(
             ui,
-            text::menu_label(ShellText::Edges.text(lang)),
+            text::menu_label(map.edges),
             Layout::PANE_BUTTON_HEIGHT,
             |ui| graph_pane::edges_menu(ui, &mut self.edge_visibility, lang),
         );
-        let legend = controls::ghost_toggle(
-            ui,
-            self.legend_open,
-            ShellText::Legend.text(lang),
-            Layout::PANE_BUTTON_HEIGHT,
-        )
-        .on_hover_text(ShellText::LegendHint.text(lang));
+        let legend =
+            controls::ghost_toggle(ui, self.legend_open, map.legend, Layout::PANE_BUTTON_HEIGHT)
+                .on_hover_text(map.tooltips.legend_hint);
         if legend.clicked() {
             self.legend_open = !self.legend_open;
         }
@@ -562,44 +552,51 @@ impl MapPanel {
         save_busy: bool,
         lang: Language,
     ) -> Option<MapAction> {
+        let text_cat = lang.map();
         let has_data = map.node_count() > 0;
         ui.add_enabled_ui(!save_busy && has_data, |ui| {
             controls::ghost_menu(
                 ui,
-                text::menu_label(ShellText::Export.text(lang)),
+                text::menu_label(text_cat.export),
                 Layout::PANE_BUTTON_HEIGHT,
                 |ui| {
                     let mut action = None;
-                    for (label, chosen) in [
+                    for (separator, label, chosen) in [
                         (
-                            ShellText::SaveTreeText,
+                            false,
+                            text_cat.save_tree_text,
                             MapAction::Export(MapExportFormat::TreeText),
                         ),
                         (
-                            ShellText::SaveMapJson,
+                            false,
+                            text_cat.save_map_json,
                             MapAction::Export(MapExportFormat::TreeJson),
                         ),
                         (
-                            ShellText::SaveGraphMermaid,
+                            true,
+                            text_cat.save_graph_mermaid,
                             MapAction::Export(MapExportFormat::GraphMermaid),
                         ),
                         (
-                            ShellText::SaveGraphDot,
+                            false,
+                            text_cat.save_graph_dot,
                             MapAction::Export(MapExportFormat::GraphDot),
                         ),
                         (
-                            ShellText::CopyMermaid,
+                            true,
+                            text_cat.copy_mermaid,
                             MapAction::Copy(MapExportFormat::GraphMermaid),
                         ),
                         (
-                            ShellText::CopyDot,
+                            false,
+                            text_cat.copy_dot,
                             MapAction::Copy(MapExportFormat::GraphDot),
                         ),
                     ] {
-                        if matches!(label, ShellText::SaveGraphMermaid | ShellText::CopyMermaid) {
+                        if separator {
                             ui.separator();
                         }
-                        if ui.button(label.text(lang)).clicked() {
+                        if ui.button(label).clicked() {
                             action = Some(chosen);
                             ui.close();
                         }

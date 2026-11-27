@@ -11,14 +11,13 @@ use http_inspector_exchange::{ByteSize, Exchange, Outcome, RecordId};
 
 use crate::ui::AppAction;
 use crate::ui::dialogs::copy_curl;
-use crate::ui::i18n::{Language, Text};
+use crate::ui::i18n::Language;
 use crate::ui::requests::filter_menu;
 use crate::ui::requests::outcome_view::{outcome_summary, outcome_text, status_rank};
 use crate::ui::requests::target_view::{host_fits, middle_ellipsis, shared_host};
 use crate::ui::requests::waterfall::{self, TimelineWindow};
 use crate::ui::style::tokens::{Layout, Radius, Space, StrokeWidth, ThemeTokens, TypeScale};
 use crate::ui::style::{indicator, theme::Palette};
-use crate::ui::workbench::text::ShellText;
 use http_inspector_core::recording::SaveFormat;
 
 #[derive(Clone, Copy, Default)]
@@ -57,14 +56,15 @@ impl Field {
     ];
 
     const fn title(self, lang: Language) -> &'static str {
+        let text = lang.requests();
         match self {
-            Self::Method => lang.text(Text::ColMethod),
-            Self::Target => lang.text(Text::ColPath),
-            Self::Status => lang.text(Text::ColStatus),
-            Self::Type => lang.text(Text::ColType),
-            Self::Size => lang.text(Text::ColSize),
-            Self::Duration => lang.pick("Duration", "시간"),
-            Self::Waterfall => lang.text(Text::ColWaterfall),
+            Self::Method => text.col_method,
+            Self::Target => text.col_path,
+            Self::Status => lang.shared().status,
+            Self::Type => text.col_type,
+            Self::Size => text.col_size,
+            Self::Duration => text.col_duration,
+            Self::Waterfall => text.col_waterfall,
         }
     }
 
@@ -204,11 +204,11 @@ fn keyboard_selection(
 }
 
 pub(super) const fn follow_newest_label(lang: Language) -> &'static str {
-    lang.pick("Follow newest", "최신 항목 따라가기")
+    lang.requests().follow_newest
 }
 
 pub(super) const fn arrival_order_label(lang: Language) -> &'static str {
-    lang.pick("Arrival order", "도착순")
+    lang.requests().arrival_order
 }
 
 /// Sort state and scrolling preference of the request list.
@@ -248,10 +248,7 @@ impl RequestTable {
     /// Shows the list options in the request pane header.
     pub(super) fn controls(&mut self, ui: &mut egui::Ui, lang: Language) {
         ui.checkbox(&mut self.follow_newest, follow_newest_label(lang))
-            .on_hover_text(lang.pick(
-                "Keep the newest request in view while sorted by arrival.",
-                "도착순으로 정렬된 동안 가장 최근 요청이 보이도록 유지합니다.",
-            ));
+            .on_hover_text(lang.requests().tooltips.follow_newest);
         if self.follow_newest {
             self.keyboard_row = None;
         }
@@ -466,7 +463,7 @@ impl RequestTable {
                 .truncate()
                 .sense(egui::Sense::click());
             ui.add(label)
-                .on_hover_text(ShellText::SharedHost.text(lang))
+                .on_hover_text(lang.requests().tooltips.shared_host)
                 .context_menu(|ui| {
                     if let Some(action) =
                         filter_menu::items(ui, FilterKey::Host, host, menus.filter_enabled, lang)
@@ -633,7 +630,7 @@ fn row_menu(
         if ui
             .add_enabled(
                 record.source() != http_inspector_exchange::CaptureSource::Connect,
-                egui::Button::new(ShellText::EditAndResend.text(lang)),
+                egui::Button::new(lang.shared().edit_and_resend),
             )
             .clicked()
         {
@@ -659,6 +656,7 @@ fn save_body_items(
     idle: bool,
     lang: Language,
 ) -> Option<http_inspector_exchange::BodySide> {
+    let text = lang.requests();
     let has_response = matches!(
         record.outcome(),
         http_inspector_exchange::Outcome::Response(_)
@@ -667,25 +665,19 @@ fn save_body_items(
     for (side, label, enabled) in [
         (
             http_inspector_exchange::BodySide::Response,
-            lang.pick("Save response body", "응답 본문 저장"),
+            text.save_response_body,
             has_response,
         ),
         (
             http_inspector_exchange::BodySide::Request,
-            lang.pick("Save request body", "요청 본문 저장"),
+            text.save_request_body,
             record.request().body().is_some(),
         ),
     ] {
         if ui
             .add_enabled(enabled && idle, egui::Button::new(label))
-            .on_hover_text(lang.pick(
-                "Save the decoded body to the Save directory.",
-                "디코딩된 본문을 저장 폴더에 저장합니다.",
-            ))
-            .on_disabled_hover_text(lang.pick(
-                "Unavailable while another body is being saved, or when the body was not observed.",
-                "다른 본문을 저장 중이거나 관찰된 본문이 없을 때는 사용할 수 없습니다.",
-            ))
+            .on_hover_text(text.tooltips.save_body)
+            .on_disabled_hover_text(text.tooltips.save_body_disabled)
             .clicked()
         {
             chosen = Some(side);
@@ -851,10 +843,7 @@ fn method_text(ui: &mut egui::Ui, method: &str) -> egui::Response {
 fn target_cell(ui: &mut egui::Ui, record: &Exchange, show_host: bool, lang: Language) {
     let target = record.request().target();
     if let Some(original) = record.replay_of() {
-        let label = match lang {
-            Language::English => format!("Replay of #{} ·", original.value()),
-            Language::Korean => format!("재전송 #{} ·", original.value()),
-        };
+        let label = crate::ui::i18n::requests::replay_prefix(lang, original.value());
         ui.add(egui::Label::new(RichText::new(label).weak()))
             .on_hover_text(target);
     }
@@ -894,7 +883,7 @@ fn status_cell(ui: &mut egui::Ui, record: &Exchange, lang: Language) {
     indicator::tick(ui, tone);
     let status = ui.add(egui::Label::new(RichText::new(text).monospace()).truncate());
     if matches!(record.outcome(), Outcome::Tunnel(_)) {
-        status.on_hover_text(ShellText::TunnelHint.text(lang));
+        status.on_hover_text(lang.shared().tooltips.tunnel_hint);
     } else {
         status.on_hover_text(outcome_summary(record.outcome(), lang));
     }

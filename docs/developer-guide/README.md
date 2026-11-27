@@ -43,3 +43,4 @@ HTTP Inspector에 처음 기여하는 개발자를 위한 가이드다. 로컬 H
 | 화면에 보이는 본문의 뒷부분을 검색할 수 없다 | [검색 문서 생성과 본문 범위](../../crates/http-inspector-analysis/src/search/document.rs) |
 | 요청 행은 있지만 엔드포인트 구조가 아직 비어 있다 | [`AnalysisPipeline::update`](../../crates/http-inspector-analysis/src/pipeline.rs)와 [본문 분석 작업](../../crates/http-inspector-analysis/src/endpoint_analysis.rs) |
 | **Clear** 뒤에도 전체 로그에서 요청을 찾을 수 있다 | [`InspectorApp::clear_session`](../../src/ui/app/mod.rs)과 [세션 저널](../../crates/http-inspector-core/src/recording/journal.rs) |
+| UI 문구를 추가하거나 번역 경계 검사에 걸린다 | [UI 번역 카탈로그](ui-and-analysis.md#ui-번역-카탈로그-srcuii18n)와 [`src/ui/i18n/`](../../src/ui/i18n/mod.rs) |

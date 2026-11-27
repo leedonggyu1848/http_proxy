@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use crate::ui::style::tokens::Layout;
 use crate::ui::workbench::controls;
-use crate::ui::workbench::text::ShellText;
 use eframe::egui;
 use http_inspector_core::launcher::{Browser, BrowserEvent, BrowserLaunchError, BrowserSession};
 
@@ -34,13 +33,6 @@ impl Default for BrowserPanel {
     }
 }
 
-const fn profile_note(lang: Language) -> &'static str {
-    lang.pick(
-        "Opens a separate private profile that closes when the proxy stops.",
-        "프록시가 중지되면 함께 닫히는 별도의 임시 비공개 프로필로 엽니다.",
-    )
-}
-
 impl BrowserPanel {
     /// The toolbar's primary action while the proxy runs: the Open Browser
     /// menu, or the open session and its Close button. Laid out right to
@@ -51,39 +43,36 @@ impl BrowserPanel {
         decrypt: bool,
         lang: Language,
     ) -> Option<BrowserAction> {
+        let text = lang.browser();
         if self.session.is_some() {
             ui.ctx().request_repaint_after(Duration::from_millis(100));
             let close = controls::ghost_scope(ui, |ui| {
                 ui.add(controls::ghost(
-                    ShellText::CloseBrowser.text(lang),
+                    text.close_browser,
                     Layout::TOOLBAR_BUTTON_HEIGHT,
                 ))
-                .on_hover_text(profile_note(lang))
+                .on_hover_text(text.tooltips.profile)
                 .clicked()
             });
             if self.opened {
-                ui.label(ShellText::BrowserOpen.text(lang));
+                ui.label(text.browser_open);
             } else {
-                ui.label(lang.pick("Opening browser…", "브라우저 여는 중…"));
+                ui.label(text.opening_browser);
                 ui.spinner();
             }
             return close.then_some(BrowserAction::Close);
         }
-        let menu = controls::primary_menu(
-            ui,
-            lang.pick("Open Browser ▼", "브라우저 열기 ▼"),
-            |ui| self.menu(ui, decrypt, lang),
-        );
-        menu.response.on_hover_text(profile_note(lang));
+        let menu = controls::primary_menu(ui, text.open_browser_menu, |ui| {
+            self.menu(ui, decrypt, lang)
+        });
+        menu.response.on_hover_text(text.tooltips.profile);
         menu.inner.flatten()
     }
 
     fn menu(&self, ui: &mut egui::Ui, decrypt: bool, lang: Language) -> Option<BrowserAction> {
+        let text = lang.browser();
         if self.installed.is_empty() {
-            ui.weak(lang.pick(
-                "No Firefox or Chrome found on PATH.",
-                "PATH에서 Firefox 또는 Chrome을 찾지 못했습니다.",
-            ));
+            ui.weak(text.no_browsers_found);
         }
         let mut action = None;
         for browser in &self.installed {
@@ -97,10 +86,7 @@ impl BrowserPanel {
             }
         }
         ui.separator();
-        if ui
-            .button(lang.pick("Refresh browsers", "브라우저 목록 새로고침"))
-            .clicked()
-        {
+        if ui.button(text.refresh_browsers).clicked() {
             action = Some(BrowserAction::Refresh);
         }
         action
@@ -159,17 +145,12 @@ impl BrowserPanel {
 
 /// How the chosen browser trusts the CA while HTTPS is decrypted.
 const fn ca_note(browser: &Browser, decrypt: bool, lang: Language) -> &'static str {
+    let tips = &lang.browser().tooltips;
     if !decrypt {
-        profile_note(lang)
+        tips.profile
     } else if browser.uses_shared_ca_store() {
-        lang.pick(
-            "Registers the CA in your user's shared Chrome/Chromium store until you remove it in CA details.",
-            "CA 정보에서 제거할 때까지 현재 사용자의 공용 Chrome/Chromium 저장소에 CA를 등록합니다.",
-        )
+        tips.chrome_shared_ca
     } else {
-        lang.pick(
-            "Firefox trusts the CA only in the temporary inspection profile.",
-            "Firefox는 임시 검사 프로필 안에서만 이 CA를 신뢰합니다.",
-        )
+        tips.firefox_profile_ca
     }
 }

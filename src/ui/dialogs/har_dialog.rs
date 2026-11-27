@@ -1,6 +1,6 @@
 //! The `Export HAR` window: which records, what to include, and where to save.
 
-use crate::ui::i18n::{Language, Text};
+use crate::ui::i18n::{self, Language};
 use crate::ui::style::tokens::Layout;
 use crate::ui::workbench::field::{self, Field};
 use std::path::PathBuf;
@@ -92,7 +92,7 @@ impl HarDialog {
         let center = viewport.center();
         let max_width = Layout::HAR_WIDTH.fit(viewport.width());
         let max_height = Layout::HAR_HEIGHT.fit(viewport.height());
-        egui::Window::new(lang.pick("Export HAR", "HAR 내보내기"))
+        egui::Window::new(lang.har().window_title)
             .id(egui::Id::unique("export-har"))
             .open(&mut open)
             .pivot(egui::Align2::CENTER_CENTER)
@@ -114,68 +114,40 @@ impl HarDialog {
         busy: bool,
         lang: Language,
     ) -> Option<HarAction> {
-        ui.label(lang.pick("Records", "내보낼 기록"));
-        let all_label = match lang {
-            Language::English => format!("All requests in the list ({})", counts.all),
-            Language::Korean => format!("목록의 모든 요청 ({}건)", counts.all),
-        };
-        let filtered_label = match lang {
-            Language::English => format!("Requests matching the filter ({})", counts.filtered),
-            Language::Korean => format!("현재 필터와 일치하는 요청 ({}건)", counts.filtered),
-        };
+        let text = lang.har();
+        ui.label(text.records);
+        let all_label = i18n::dialogs::har::scope_all(lang, counts.all);
+        let filtered_label = i18n::dialogs::har::scope_filtered(lang, counts.filtered);
         ui.radio_value(&mut self.scope, HarScope::All, all_label);
         ui.radio_value(&mut self.scope, HarScope::Filtered, filtered_label);
-        ui.weak(lang.pick(
-            "Only requests kept in the list since the last Clear are exported.",
-            "마지막 비우기 이후 목록에 유지된 요청만 내보냅니다.",
-        ));
+        ui.weak(text.scope_note);
         ui.separator();
-        ui.label(lang.pick("Include (off by default)", "포함 항목 (기본 꺼짐)"));
-        ui.checkbox(
-            &mut self.options.include_bodies,
-            lang.pick("Request and response bodies", "요청 및 응답 본문"),
-        )
-        .on_hover_text(lang.pick(
-            "Includes in-memory previews (8 KiB per direction, 8 MiB for images; truncated bodies are noted in HAR comments and may contain secrets).",
-            "메모리 미리보기(방향당 8 KiB, 이미지 최대 8 MiB)를 포함하며, 잘린 본문은 HAR 주석으로 표시되고 비밀번호·토큰이 포함될 수 있습니다.",
-        ));
+        ui.label(text.include_heading);
+        ui.checkbox(&mut self.options.include_bodies, text.include_bodies)
+            .on_hover_text(text.tooltips.include_bodies);
         ui.checkbox(
             &mut self.options.include_sensitive_headers,
-            lang.pick(
-                "Authorization and cookie header names",
-                "Authorization 및 Cookie 헤더 이름",
-            ),
+            text.include_sensitive_headers,
         )
-        .on_hover_text(lang.pick(
-            "Adds Authorization, Proxy-Authorization, Cookie, and Set-Cookie as [REDACTED] without keeping original values.",
-            "Authorization, Proxy-Authorization, Cookie, Set-Cookie 헤더를 원본 값 없이 [REDACTED]로 추가합니다.",
-        ));
+        .on_hover_text(text.tooltips.include_sensitive_headers);
         ui.separator();
-        ui.label(lang.pick("File", "파일"));
+        ui.label(text.file_label);
         let path_width = Layout::HAR_PATH_WIDTH.fit(ui.available_width());
         let _ = field::single_line(
             ui,
             &mut self.path,
-            Field::new(path_width)
-                .hint(lang.pick("Path of a new .har file", "새 .har 파일 경로"))
-                .monospace(),
+            Field::new(path_width).hint(text.path_hint).monospace(),
             |_| {},
         )
-        .on_hover_text(lang.pick(
-            "An existing file is never replaced.",
-            "이미 존재하는 파일은 덮어쓰지 않습니다.",
-        ));
+        .on_hover_text(text.tooltips.path_no_overwrite);
         let count = counts.of(self.scope);
         let ready = count > 0 && !self.path.trim().is_empty() && !busy;
-        let export_label = match lang {
-            Language::English => format!("Export {count} requests"),
-            Language::Korean => format!("요청 {count}건 내보내기"),
-        };
+        let export_label = i18n::dialogs::har::export_button(lang, count);
         ui.horizontal_wrapped(|ui| {
             let export = ui
                 .add_enabled(ready, egui::Button::new(export_label))
                 .clicked();
-            let cancel = ui.button(lang.text(Text::Cancel)).clicked();
+            let cancel = ui.button(lang.shared().cancel).clicked();
             if export {
                 Some(HarAction::Export(HarExport {
                     scope: self.scope,

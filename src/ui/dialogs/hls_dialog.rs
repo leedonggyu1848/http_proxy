@@ -17,7 +17,7 @@ use http_inspector_core::recording::BodyStore;
 use http_inspector_exchange::{ByteSize, Exchange, RecordId};
 
 use super::background_task::{BackgroundTask, TaskPoll};
-use crate::ui::i18n::{Language, Text, domain};
+use crate::ui::i18n::{self, Language, domain};
 use crate::ui::style::theme::Palette;
 use crate::ui::style::tokens::{Layout, Radius, Space, StrokeWidth, ThemeTokens, TypeScale};
 
@@ -43,12 +43,7 @@ impl HlsInspectFailure {
     fn localized(&self, lang: Language) -> String {
         match self {
             Self::Inspect(error) => domain::hls_inspect_error(lang, error),
-            Self::WorkerDisconnected => lang
-                .pick(
-                    "HLS inspection worker stopped unexpectedly",
-                    "HLS 검사 작업자가 예기치 않게 중지되었습니다",
-                )
-                .to_owned(),
+            Self::WorkerDisconnected => lang.hls().worker_disconnected.to_owned(),
             Self::Io(error) => error.to_string(),
         }
     }
@@ -305,7 +300,7 @@ impl HlsDialog {
             ui.set_max_height(max_height);
             ui.spacing_mut().item_spacing.y = Space::SM;
 
-            ui.heading(lang.pick("HLS media", "HLS 미디어"));
+            ui.heading(lang.hls().heading);
             if let Some(plan) = &self.plan {
                 let palette = Palette::of(ui);
                 ui.add(
@@ -359,7 +354,7 @@ impl HlsDialog {
         if self.inspecting.is_some() && self.plan.is_none() {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label(lang.pick("Inspecting playlist…", "재생목록 검사 중…"));
+                ui.label(lang.hls().inspecting_playlist);
             });
             return None;
         }
@@ -427,6 +422,7 @@ impl HlsDialog {
     }
 
     fn render_footer(&self, ui: &mut egui::Ui, lang: Language) -> Option<HlsAction> {
+        let text = lang.hls();
         let can_download = self
             .selected_entry()
             .is_some_and(HlsVariantEntry::can_download)
@@ -435,25 +431,21 @@ impl HlsDialog {
 
         let mut action = None;
         ui.horizontal_wrapped(|ui| {
-            let download_resp =
-                primary_button(ui, lang.pick("Download .ts", ".ts 다운로드"), can_download);
+            let download_resp = primary_button(ui, text.download_ts, can_download);
             if download_resp.clicked() {
                 action = Some(HlsAction::Download);
             }
             if self.is_downloading() {
-                if ui.button(lang.text(Text::Cancel)).clicked() {
+                if ui.button(lang.shared().cancel).clicked() {
                     action = Some(HlsAction::CancelDownload);
                 }
             } else if ui
-                .add_enabled(
-                    self.inspecting.is_none(),
-                    egui::Button::new(lang.pick("Refresh", "새로고침")),
-                )
+                .add_enabled(self.inspecting.is_none(), egui::Button::new(text.refresh))
                 .clicked()
             {
                 action = Some(HlsAction::Refresh);
             }
-            if ui.button(lang.pick("Close", "닫기")).clicked() {
+            if ui.button(text.close).clicked() {
                 action = Some(HlsAction::Close);
             }
         });
@@ -487,8 +479,9 @@ fn render_variants_table(
     lang: Language,
 ) -> Option<usize> {
     let palette = Palette::of(ui);
+    let hls = lang.hls();
     ui.label(
-        RichText::new(lang.pick("Media playlists", "미디어 재생목록"))
+        RichText::new(hls.media_playlists)
             .size(TypeScale::PANEL_TITLE)
             .color(palette.secondary),
     );
@@ -515,34 +508,10 @@ fn render_variants_table(
             .column(Column::remainder().at_least(cols.playlist_min))
             .column(Column::exact(cols.status))
             .header(Layout::TABLE_HEADER_HEIGHT, |mut header| {
-                header_col(
-                    &mut header,
-                    lang.pick("Quality", "화질"),
-                    false,
-                    ROW_LEAD,
-                    false,
-                );
-                header_col(
-                    &mut header,
-                    lang.pick("Bitrate", "비트레이트"),
-                    true,
-                    Space::MD,
-                    false,
-                );
-                header_col(
-                    &mut header,
-                    lang.pick("Playlist", "재생목록"),
-                    false,
-                    Space::S,
-                    false,
-                );
-                header_col(
-                    &mut header,
-                    lang.text(Text::ColStatus),
-                    false,
-                    Space::S,
-                    true,
-                );
+                header_col(&mut header, hls.col_quality, false, ROW_LEAD, false);
+                header_col(&mut header, hls.col_bitrate, true, Space::MD, false);
+                header_col(&mut header, hls.col_playlist, false, Space::S, false);
+                header_col(&mut header, lang.shared().status, false, Space::S, true);
             })
             .body(|mut body| {
                 body.ui_mut().style_mut().interaction.selectable_labels = false;
@@ -647,26 +616,22 @@ const fn variant_status_cell(
     palette: &Palette,
     lang: Language,
 ) -> (&'static str, egui::Color32) {
+    let hls = lang.hls();
     match &entry.state {
-        VariantMediaState::NotCaptured => (lang.pick("Not captured", "미캡처"), palette.secondary),
-        VariantMediaState::Failed(_) => (lang.pick("Parse error", "해석 오류"), palette.error),
+        VariantMediaState::NotCaptured => (hls.status_not_captured, palette.secondary),
+        VariantMediaState::Failed(_) => (hls.status_parse_error, palette.error),
         VariantMediaState::Ready(plan) => match &plan.blocked {
-            None => (lang.pick("Ready", "준비됨"), palette.text),
-            Some(HlsBlockedReason::MissingChromeSegmentRequest) => (
-                lang.pick("Play in Chrome", "Chrome 재생 필요"),
-                palette.secondary,
-            ),
-            Some(HlsBlockedReason::Unsupported(_)) => {
-                (lang.pick("Unsupported", "미지원"), palette.secondary)
+            None => (hls.status_ready, palette.text),
+            Some(HlsBlockedReason::MissingChromeSegmentRequest) => {
+                (hls.status_play_in_chrome, palette.secondary)
             }
-            Some(HlsBlockedReason::NoSegments) => {
-                (lang.pick("No segments", "세그먼트 없음"), palette.secondary)
-            }
+            Some(HlsBlockedReason::Unsupported(_)) => (hls.status_unsupported, palette.secondary),
+            Some(HlsBlockedReason::NoSegments) => (hls.status_no_segments, palette.secondary),
             Some(HlsBlockedReason::PlaylistNotCaptured) => {
-                (lang.pick("Not captured", "미캡처"), palette.secondary)
+                (hls.status_not_captured, palette.secondary)
             }
             Some(HlsBlockedReason::PlaylistParseFailed(_)) => {
-                (lang.pick("Parse error", "해석 오류"), palette.error)
+                (hls.status_parse_error, palette.error)
             }
         },
     }
@@ -682,13 +647,12 @@ fn segments_summary_text(
         return None;
     }
     let Some(statuses) = live_statuses else {
-        let total = media.segments.len();
-        let cached = media.cached_count;
-        let missing = media.missing_count;
-        return Some(match lang {
-            Language::English => format!("{total} total · {cached} cached · {missing} missing"),
-            Language::Korean => format!("전체 {total} · 캐시 {cached} · 누락 {missing}"),
-        });
+        return Some(i18n::dialogs::hls::planned_segments_summary(
+            lang,
+            media.segments.len(),
+            media.cached_count,
+            media.missing_count,
+        ));
     };
 
     let mut cached = 0usize;
@@ -706,41 +670,17 @@ fn segments_summary_text(
         }
     }
 
-    let mut parts = vec![match lang {
-        Language::English => format!("{} total", statuses.len()),
-        Language::Korean => format!("전체 {}", statuses.len()),
-    }];
-    if cached > 0 {
-        parts.push(match lang {
-            Language::English => format!("{cached} cached"),
-            Language::Korean => format!("캐시 {cached}"),
-        });
-    }
-    if fetched > 0 {
-        parts.push(match lang {
-            Language::English => format!("{fetched} fetched"),
-            Language::Korean => format!("수신 {fetched}"),
-        });
-    }
-    if failed > 0 {
-        parts.push(match lang {
-            Language::English => format!("{failed} failed"),
-            Language::Korean => format!("실패 {failed}"),
-        });
-    }
-    if cancelled > 0 {
-        parts.push(match lang {
-            Language::English => format!("{cancelled} cancelled"),
-            Language::Korean => format!("취소 {cancelled}"),
-        });
-    }
-    if pending > 0 {
-        parts.push(match lang {
-            Language::English => format!("{pending} remaining"),
-            Language::Korean => format!("대기 {pending}"),
-        });
-    }
-    Some(parts.join(" · "))
+    Some(i18n::dialogs::hls::live_segments_summary(
+        lang,
+        i18n::dialogs::hls::LiveSegmentCounts {
+            total: statuses.len(),
+            cached,
+            fetched,
+            failed,
+            cancelled,
+            pending,
+        },
+    ))
 }
 
 fn render_segments_section(
@@ -751,9 +691,10 @@ fn render_segments_section(
     lang: Language,
 ) {
     let palette = Palette::of(ui);
+    let hls = lang.hls();
     ui.horizontal(|ui| {
         ui.label(
-            RichText::new(lang.pick("Segments", "세그먼트"))
+            RichText::new(hls.segments)
                 .size(TypeScale::PANEL_TITLE)
                 .color(palette.secondary),
         );
@@ -790,27 +731,9 @@ fn render_segments_section(
             .column(Column::exact(cols.status))
             .header(Layout::TABLE_HEADER_HEIGHT, |mut header| {
                 header_col(&mut header, "#", true, Space::MD, false);
-                header_col(
-                    &mut header,
-                    lang.pick("Segment", "세그먼트"),
-                    false,
-                    Space::S,
-                    false,
-                );
-                header_col(
-                    &mut header,
-                    lang.pick("Duration", "길이"),
-                    true,
-                    Space::MD,
-                    false,
-                );
-                header_col(
-                    &mut header,
-                    lang.text(Text::ColStatus),
-                    false,
-                    Space::S,
-                    true,
-                );
+                header_col(&mut header, hls.col_segment, false, Space::S, false);
+                header_col(&mut header, hls.col_duration, true, Space::MD, false);
+                header_col(&mut header, lang.shared().status, false, Space::S, true);
             })
             .body(|body| {
                 body.rows(Layout::TABLE_ROW_HEIGHT, media.segments.len(), |mut row| {
@@ -894,31 +817,18 @@ fn segment_status_cell(
     palette: &Palette,
     lang: Language,
 ) -> (String, egui::Color32, Option<String>) {
+    let hls = lang.hls();
     match live {
-        Some(SegmentStatus::Cached) => {
-            (lang.pick("Cached", "캐시됨").to_owned(), palette.text, None)
-        }
-        Some(SegmentStatus::Queued) => (
-            lang.pick("Queued", "대기 중").to_owned(),
-            palette.secondary,
-            None,
-        ),
-        Some(SegmentStatus::Downloading) => (
-            lang.pick("Downloading", "받는 중").to_owned(),
-            palette.text,
-            None,
-        ),
-        Some(SegmentStatus::Done) => (lang.pick("Done", "완료").to_owned(), palette.text, None),
-        Some(SegmentStatus::Cancelled) => (
-            lang.pick("Cancelled", "취소됨").to_owned(),
-            palette.warning,
-            None,
-        ),
+        Some(SegmentStatus::Cached) => (hls.seg_cached.to_owned(), palette.text, None),
+        Some(SegmentStatus::Queued) => (hls.seg_queued.to_owned(), palette.secondary, None),
+        Some(SegmentStatus::Downloading) => (hls.seg_downloading.to_owned(), palette.text, None),
+        Some(SegmentStatus::Done) => (hls.seg_done.to_owned(), palette.text, None),
+        Some(SegmentStatus::Cancelled) => (hls.seg_cancelled.to_owned(), palette.warning, None),
         Some(SegmentStatus::Failed { status, message }) => {
             let (label, color) = match status {
                 Some(code) if *code >= 500 => (format!("HTTP {code}"), palette.error),
                 Some(code) => (format!("HTTP {code}"), palette.warning),
-                None => (lang.pick("Failed", "실패").to_owned(), palette.error),
+                None => (hls.seg_failed.to_owned(), palette.error),
             };
             (
                 label,
@@ -928,13 +838,9 @@ fn segment_status_cell(
         }
         None => {
             if plan.is_cached() {
-                (lang.pick("Cached", "캐시됨").to_owned(), palette.text, None)
+                (hls.seg_cached.to_owned(), palette.text, None)
             } else {
-                (
-                    lang.pick("Missing", "누락").to_owned(),
-                    palette.secondary,
-                    None,
-                )
+                (hls.seg_missing.to_owned(), palette.secondary, None)
             }
         }
     }
@@ -952,10 +858,11 @@ fn render_progress_row(ui: &mut egui::Ui, progress: &HlsDownloadProgress, lang: 
             (progress.completed_segments as f32 / progress.total_segments as f32).clamp(0.0, 1.0)
         }
     };
+    let hls = lang.hls();
     let phase_label = match progress.phase {
-        HlsDownloadPhase::Downloading => lang.pick("Downloading", "다운로드 중"),
-        HlsDownloadPhase::Merging => lang.pick("Merging", "병합 중"),
-        HlsDownloadPhase::Finished => lang.pick("Finishing", "마무리 중"),
+        HlsDownloadPhase::Downloading => hls.phase_downloading,
+        HlsDownloadPhase::Merging => hls.phase_merging,
+        HlsDownloadPhase::Finished => hls.phase_finishing,
     };
     let tokens = ThemeTokens::for_theme(ui.ctx().theme());
     ui.horizontal_wrapped(|ui| {
@@ -997,22 +904,14 @@ fn render_outcome_line(ui: &mut egui::Ui, outcome: &HlsDownloadOutcome, lang: La
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("output.ts");
-            let size = ByteSize::new(summary.total_bytes);
-            let text = match lang {
-                Language::English => format!("Saved {file_name} ({size})"),
-                Language::Korean => format!("{file_name} 저장됨 ({size})"),
-            };
+            let text = i18n::dialogs::hls::saved_file(lang, file_name, summary.total_bytes);
             ui.add(egui::Label::new(RichText::new(text).color(palette.text)).wrap())
                 .on_hover_text(summary.path.display().to_string());
         }
         HlsDownloadOutcome::Cancelled => {
             ui.add(
                 egui::Label::new(
-                    RichText::new(lang.pick(
-                        "Download cancelled. No file was saved.",
-                        "다운로드가 취소되어 파일이 저장되지 않았습니다.",
-                    ))
-                    .color(palette.warning),
+                    RichText::new(lang.hls().download_cancelled).color(palette.warning),
                 )
                 .wrap(),
             );

@@ -1,17 +1,14 @@
 //! Interactive force-directed domain relationship graph rendered directly with
 //! [`egui::Painter`].
 
+use super::EdgeVisibility;
+use crate::ui::i18n::{self, Language};
+use crate::ui::style::tokens::{Layout, Radius, Space, StrokeWidth, ThemeTokens};
+use crate::ui::style::{fonts, theme::Palette};
 use eframe::egui::{self, Align2, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use http_inspector_analysis::url_map::{
     EdgeKind, ForceLayout, GraphEdge, GraphNode, RelationshipGraph, STEPS_PER_FRAME,
 };
-use http_inspector_exchange::ByteSize;
-
-use super::EdgeVisibility;
-use crate::ui::i18n::Language;
-use crate::ui::style::tokens::{Layout, Radius, Space, StrokeWidth, ThemeTokens};
-use crate::ui::style::{fonts, theme::Palette};
-use crate::ui::workbench::text::{self, ShellText};
 
 /// Inputs describing how to render the relationship graph.
 pub(super) struct GraphView<'a> {
@@ -45,8 +42,7 @@ pub(super) fn show(
     if layout.nodes().is_empty() {
         ui.centered_and_justified(|ui| {
             ui.add(
-                egui::Label::new(egui::RichText::new(ShellText::NoRelationships.text(lang)).weak())
-                    .wrap(),
+                egui::Label::new(egui::RichText::new(lang.map().no_relationships).weak()).wrap(),
             );
         });
         return None;
@@ -136,7 +132,7 @@ pub(super) fn summary_text(
         .filter(|edge| visibility.allows(edge.kind))
         .count();
     (
-        text::graph_count(lang, shown, total, visible_edges, total_edges),
+        i18n::toolbar::graph_count(lang, shown, total, visible_edges, total_edges),
         total > shown,
     )
 }
@@ -180,12 +176,13 @@ pub(super) const fn active_stroke(tokens: &ThemeTokens) -> Stroke {
 /// Swatches and descriptions live in [`super::legend_pane`] so the menu and
 /// the legend panel do not repeat the same samples (S15).
 pub(super) fn edges_menu(ui: &mut egui::Ui, visibility: &mut EdgeVisibility, lang: Language) {
+    let text = lang.map();
     for (shown, label) in [
-        (&mut visibility.referer, ShellText::Referer),
-        (&mut visibility.origin, ShellText::OriginCors),
-        (&mut visibility.redirect, ShellText::Redirect),
+        (&mut visibility.referer, text.referer),
+        (&mut visibility.origin, text.origin_cors),
+        (&mut visibility.redirect, text.redirect),
     ] {
-        ui.checkbox(shown, label.text(lang));
+        ui.checkbox(shown, label);
     }
 }
 
@@ -500,11 +497,6 @@ fn hit_test(positions: &[(Pos2, f32)], pointer: Pos2) -> Option<usize> {
 }
 
 fn format_node_tooltip(graph: &RelationshipGraph, node: &GraphNode, lang: Language) -> String {
-    let party = if node.third_party {
-        ShellText::ThirdParty.text(lang)
-    } else {
-        ShellText::FirstParty.text(lang)
-    };
     let bytes = graph
         .domains()
         .get(&node.host)
@@ -519,17 +511,19 @@ fn format_node_tooltip(graph: &RelationshipGraph, node: &GraphNode, lang: Langua
         .keys()
         .filter(|key| key.to_host == node.host)
         .count();
-    let size = ByteSize::new(bytes);
-    match lang {
-        Language::English => format!(
-            "{}\nSite (eTLD+1): {}\nParty: {party}\nRequests: {} · Errors: {} · Size: {size}\nEdges: {outgoing} outgoing, {incoming} incoming",
-            node.host, node.site, node.request_count, node.error_count,
-        ),
-        Language::Korean => format!(
-            "{}\n사이트 (eTLD+1): {}\n구분: {party}\n요청: {} · 오류: {} · 크기: {size}\n연결선: 발신 {outgoing}, 수신 {incoming}",
-            node.host, node.site, node.request_count, node.error_count,
-        ),
-    }
+    i18n::map::graph_node_tooltip(
+        lang,
+        i18n::map::GraphNodeSummary {
+            host: &node.host,
+            site: &node.site,
+            third_party: node.third_party,
+            request_count: node.request_count,
+            error_count: node.error_count,
+            total_bytes: bytes,
+            outgoing,
+            incoming,
+        },
+    )
 }
 
 #[cfg(test)]

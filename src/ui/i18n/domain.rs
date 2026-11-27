@@ -31,7 +31,7 @@ use http_inspector_core::settings::port::{PortError, PortSaveError, ProxyPort};
 use http_inspector_exchange::{BodyLifecycle, FailureStage, TunnelState};
 use http_inspector_interop::curl::CurlUnavailable;
 
-use super::{Language, Text};
+use super::Language;
 
 #[must_use]
 pub(crate) const fn record_filter(lang: Language, filter: RecordFilter) -> &'static str {
@@ -56,10 +56,11 @@ pub(crate) const fn search_scope(lang: Language, scope: SearchScope) -> &'static
 
 #[must_use]
 pub(crate) const fn view_mode(lang: Language, mode: ViewMode) -> &'static str {
+    let shared = lang.shared();
     match mode {
-        ViewMode::Pretty => lang.text(Text::Pretty),
-        ViewMode::Raw => lang.text(Text::Raw),
-        ViewMode::Tree => lang.text(Text::Tree),
+        ViewMode::Pretty => shared.pretty,
+        ViewMode::Raw => shared.raw,
+        ViewMode::Tree => shared.tree,
     }
 }
 
@@ -160,8 +161,8 @@ pub(crate) const fn failure_stage(lang: Language, stage: FailureStage) -> &'stat
 #[must_use]
 pub(crate) fn tunnel_state(lang: Language, state: &TunnelState) -> String {
     match state {
-        TunnelState::Open => lang.text(Text::Open).to_owned(),
-        TunnelState::Closed => lang.text(Text::Closed).to_owned(),
+        TunnelState::Open => lang.shared().open.to_owned(),
+        TunnelState::Closed => lang.shared().closed.to_owned(),
         TunnelState::Failed { stage, message } => {
             let stage_label = failure_stage(lang, *stage);
             match lang {
@@ -809,11 +810,9 @@ pub(crate) fn localize_content_notice(lang: Language, raw: &str) -> String {
 }
 
 fn localize_content_notice_ko(raw: &str) -> String {
-    let lang = Language::Korean;
+    let detail_text = Language::Korean.detail();
     if raw == "first 8 KiB of retained bytes" {
-        return lang
-            .text(Text::DetailBodyNoticeFirst8KiBRetained)
-            .to_owned();
+        return detail_text.notice_first_8kib_retained.to_owned();
     }
     if let Some(rest) = raw.strip_prefix("Showing the first ")
         && let Some(kib) = rest.strip_suffix(" KiB captured")
@@ -830,10 +829,10 @@ fn localize_content_notice_ko(raw: &str) -> String {
         && let Some((names, detail)) = rest.split_once(" · ")
     {
         let translated_detail = match detail {
-            "first 8 KiB of decoded bytes" => lang.text(Text::DetailBodyNoticeFirst8KiBDecoded),
-            "complete decoded preview" => lang.text(Text::DetailBodyNoticeCompleteDecoded),
+            "first 8 KiB of decoded bytes" => detail_text.notice_first_8kib_decoded,
+            "complete decoded preview" => detail_text.notice_complete_decoded,
             "decoded prefix; compressed capture is incomplete" => {
-                lang.text(Text::DetailBodyNoticeIncompleteDecoded)
+                detail_text.notice_incomplete_decoded
             }
             other => other,
         };
@@ -852,7 +851,7 @@ fn localize_content_notice_ko(raw: &str) -> String {
     if raw
         == "Incomplete or invalid CSS; showing the available prefix. CSS property values are not validated."
     {
-        return lang.text(Text::DetailBodyNoticeCssIncomplete).to_owned();
+        return detail_text.notice_css_incomplete.to_owned();
     }
     if let Some(rest) = raw.strip_prefix("XML is incomplete (")
         && let Some(reason) = rest.strip_suffix("); showing the part read so far.")
@@ -980,12 +979,12 @@ fn localize_format_reason_ko(reason: &str) -> String {
 }
 
 fn localize_image_note_ko(raw: &str) -> Option<String> {
-    let lang = Language::Korean;
+    let detail = Language::Korean.detail();
     if raw == "text is not drawn; use Source to read it" {
-        return Some(lang.text(Text::DetailBodyImageSvgTextNote).to_owned());
+        return Some(detail.svg_text_note.to_owned());
     }
     if raw == "embedded images and foreign content are not loaded" {
-        return Some(lang.text(Text::DetailBodyImageSvgExternalNote).to_owned());
+        return Some(detail.svg_external_note.to_owned());
     }
     if let Some(rest) = raw.strip_prefix("drawn scaled down from ") {
         return Some(format!("{rest}에서 축소하여 표시"));

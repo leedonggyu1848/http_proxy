@@ -1545,7 +1545,7 @@ fn narrow_toolbar_moves_the_view_switch_and_filter_to_a_second_row() {
     let first_row = margin + Layout::TOOLBAR_HEIGHT;
     for label in [
         "Requests",
-        crate::ui::workbench::text::ShellText::Filter.text(crate::ui::i18n::Language::English),
+        crate::ui::i18n::Language::English.detail().filter,
     ] {
         let y = text_center_y(&drawn, label).unwrap_or_default();
         assert!(

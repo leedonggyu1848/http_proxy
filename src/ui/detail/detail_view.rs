@@ -7,12 +7,11 @@ use crate::ui::detail::detail_tabs::{self, DetailTab};
 use crate::ui::detail::search::{Query, highlight};
 use crate::ui::detail::{headers_tab, image_view, timing_tab};
 use crate::ui::dialogs::{body_saving::BodySaving, copy_curl};
-use crate::ui::i18n::Language;
+use crate::ui::i18n::{self, Language};
 use crate::ui::requests::outcome_view;
 use crate::ui::style::fonts;
 use crate::ui::style::theme::{MatchColors, Palette};
 use crate::ui::style::tokens::{Layout, Space, StrokeWidth};
-use crate::ui::workbench::text::{self, ShellText};
 use crate::ui::workbench::{chrome, controls};
 use eframe::egui;
 use http_inspector_content::format::ViewMode;
@@ -51,10 +50,8 @@ impl DetailView<'_> {
             });
             ui.centered_and_justified(|ui| {
                 ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(ShellText::NoRequestSelected.text(lang)).weak(),
-                    )
-                    .wrap(),
+                    egui::Label::new(egui::RichText::new(lang.detail().no_request_selected).weak())
+                        .wrap(),
                 );
             });
             if tab != self.tab {
@@ -153,10 +150,6 @@ fn header(
     );
 }
 
-const fn hls_media_label(lang: Language) -> &'static str {
-    lang.pick("HLS media…", "HLS 미디어…")
-}
-
 /// Edit and Resend, Copy as cURL, and (for HLS playlists) HLS media, laid out
 /// right to left in the pane header, or left to right under the request line
 /// when the header is too narrow.
@@ -168,10 +161,7 @@ fn header_actions(
 ) {
     controls::ghost_style(ui);
     let resend = |ui: &mut egui::Ui, actions: &mut Vec<AppAction>| {
-        let button = controls::ghost(
-            ShellText::EditAndResend.text(lang),
-            Layout::PANE_BUTTON_HEIGHT,
-        );
+        let button = controls::ghost(lang.shared().edit_and_resend, Layout::PANE_BUTTON_HEIGHT);
         if ui
             .add_enabled(record.source() != CaptureSource::Connect, button)
             .clicked()
@@ -188,7 +178,7 @@ fn header_actions(
         if http_inspector_core::hls::is_hls_playlist_record(record)
             && ui
                 .add(controls::ghost(
-                    hls_media_label(lang),
+                    lang.detail().hls_media,
                     Layout::PANE_BUTTON_HEIGHT,
                 ))
                 .clicked()
@@ -209,15 +199,12 @@ fn header_actions(
 
 /// Width the header actions need, so the header can tell whether they fit.
 fn header_actions_width(ui: &egui::Ui, record: &Exchange, lang: Language) -> f32 {
-    let mut width: f32 = [
-        ShellText::EditAndResend.text(lang),
-        copy_curl::copy_label(lang),
-    ]
-    .iter()
-    .map(|label| controls::button_width(ui, label) + ui.spacing().item_spacing.x)
-    .sum();
+    let mut width: f32 = [lang.shared().edit_and_resend, copy_curl::copy_label(lang)]
+        .iter()
+        .map(|label| controls::button_width(ui, label) + ui.spacing().item_spacing.x)
+        .sum();
     if http_inspector_core::hls::is_hls_playlist_record(record) {
-        width += controls::button_width(ui, hls_media_label(lang)) + ui.spacing().item_spacing.x;
+        width += controls::button_width(ui, lang.detail().hls_media) + ui.spacing().item_spacing.x;
     }
     width
 }
@@ -292,5 +279,5 @@ fn request_line(ui: &mut egui::Ui, record: &Exchange, search: Option<&Query>) {
 /// Link to the request a replay was sent from. Links keep the text color
 /// and are told apart by their underline.
 fn replay_link(original: RecordId, lang: Language) -> egui::RichText {
-    egui::RichText::new(text::replay_of(lang, original.value())).underline()
+    egui::RichText::new(i18n::detail::replay_of(lang, original.value())).underline()
 }

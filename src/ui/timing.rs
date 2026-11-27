@@ -8,7 +8,7 @@ use http_inspector_exchange::{Exchange, Outcome, PhaseSpan};
 
 use crate::ui::i18n::Language;
 use crate::ui::requests::outcome_view;
-use crate::ui::workbench::text::{self, ShellText};
+use crate::ui::workbench::text;
 
 /// One sequential timing phase that can appear in the Timing tab and on a
 /// Waterfall bar.
@@ -26,11 +26,12 @@ impl TimingPhase {
 
     /// Localized phase label shared by the Timing tab and Waterfall hover table.
     pub(crate) const fn label(self, lang: Language) -> &'static str {
+        let requests = lang.requests();
         match self {
-            Self::Connect => ShellText::Connect.text(lang),
-            Self::Send => ShellText::Send.text(lang),
-            Self::Wait => ShellText::Wait.text(lang),
-            Self::Receive => ShellText::Receive.text(lang),
+            Self::Connect => requests.connect,
+            Self::Send => requests.send,
+            Self::Wait => requests.wait,
+            Self::Receive => requests.receive,
         }
     }
 }
@@ -50,7 +51,7 @@ impl TimingEntry {
     /// Formats this entry's numeric time, or `—` when unobserved.
     pub(crate) fn value_text(&self, lang: Language) -> String {
         self.millis.map_or_else(
-            || ShellText::NotObserved.text(lang).to_owned(),
+            || lang.shared().not_observed.to_owned(),
             |millis| {
                 if self.running {
                     text::milliseconds_running(millis)
@@ -183,7 +184,7 @@ impl ExchangeTiming {
             },
             TimingEntry {
                 phase: None,
-                label: ShellText::Total.text(lang),
+                label: lang.requests().total,
                 millis: millis(self.complete),
                 running: false,
             },

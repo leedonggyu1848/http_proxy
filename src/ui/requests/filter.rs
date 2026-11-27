@@ -14,12 +14,11 @@ use super::request_table::{RequestTable, TableMenus};
 use crate::ui::AppAction;
 use crate::ui::app::state::RequestsState;
 use crate::ui::detail::search::RequestSearch;
-use crate::ui::i18n::{Language, Text, domain};
+use crate::ui::i18n::{Language, domain, requests};
 use crate::ui::map::RecordMatchCache;
 use crate::ui::style::indicator;
 use crate::ui::style::theme::Palette;
 use crate::ui::style::tokens::{Layout, Space, StrokeWidth, Tone};
-use crate::ui::workbench::text::ShellText;
 use crate::ui::workbench::{chrome, controls};
 
 pub(crate) struct ListView<'a> {
@@ -61,7 +60,7 @@ impl ListView<'_> {
     /// the status bar has them (S16).
     fn outcome_tabs(&self, ui: &mut egui::Ui) -> Option<RecordFilter> {
         let lang = self.lang;
-        controls::tab_list(ui, ShellText::RequestOutcome.text(lang), |ui| {
+        controls::tab_list(ui, lang.requests().request_outcome, |ui| {
             let mut chosen = None;
             for filter in RecordFilter::ALL {
                 let selected = filter == self.requests.record_filter;
@@ -80,6 +79,7 @@ impl ListView<'_> {
             return;
         };
         let lang = self.lang;
+        let text = lang.requests();
         let retained = self.requests.map_filter_cache.matched_count();
         let counted = self.map_scope_total(key);
         let evicted = counted.saturating_sub(u64::try_from(retained).unwrap_or(u64::MAX));
@@ -87,8 +87,7 @@ impl ListView<'_> {
         let frame = egui::Frame::new().inner_margin(Layout::PANE_ROW_MARGIN);
         let row = frame.show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                let prefix = lang.pick("Map filter", "맵 필터");
-                let scope = format!("{prefix}: {}", key.display());
+                let scope = format!("{}: {}", text.map_filter, key.display());
                 ui.add(egui::Label::new(egui::RichText::new(&scope).monospace()).truncate())
                     .on_hover_text(scope);
                 let retention = map_retention_label(retained, evicted, approximate, lang);
@@ -100,15 +99,9 @@ impl ListView<'_> {
                     ui.label(egui::RichText::new(retention).weak())
                 };
                 if approximate {
-                    count.on_hover_text(lang.pick(
-                        "Estimate based on requests included in endpoint analysis.",
-                        "엔드포인트 분석에 포함된 요청을 기준으로 추정한 값입니다.",
-                    ));
+                    count.on_hover_text(text.tooltips.estimate_hint);
                 }
-                if ui
-                    .small_button(lang.pick("Clear map filter", "맵 필터 해제"))
-                    .clicked()
-                {
+                if ui.small_button(text.clear_map_filter).clicked() {
                     actions.push(AppAction::ClearMapFilter);
                 }
             })
@@ -177,13 +170,10 @@ fn list_actions(
         controls::ghost_style(ui);
         if ui
             .add(controls::ghost(
-                lang.text(Text::Clear),
+                lang.shared().clear,
                 Layout::PANE_BUTTON_HEIGHT,
             ))
-            .on_hover_text(lang.pick(
-                "Clear the listed requests and the URL map; the full-session log is kept.",
-                "전체 세션 로그는 유지한 채 표시된 요청 목록과 URL 맵을 비웁니다.",
-            ))
+            .on_hover_text(lang.requests().tooltips.clear_list)
             .clicked()
         {
             actions.push(AppAction::ClearSession);
@@ -195,7 +185,7 @@ fn list_actions(
 /// Width [`list_actions`] takes.
 fn list_actions_width(ui: &egui::Ui, table: &RequestTable, lang: Language) -> f32 {
     let spacing = ui.spacing().item_spacing.x;
-    let mut width = controls::button_width(ui, lang.text(Text::Clear))
+    let mut width = controls::button_width(ui, lang.shared().clear)
         + controls::checkbox_width(ui, super::request_table::follow_newest_label(lang))
         + spacing;
     if table.is_sorted() {
@@ -206,26 +196,7 @@ fn list_actions_width(ui: &egui::Ui, table: &RequestTable, lang: Language) -> f3
 }
 
 fn map_retention_label(retained: usize, evicted: u64, approximate: bool, lang: Language) -> String {
-    match lang {
-        Language::English => {
-            if approximate {
-                format!("({retained} retained · ≈{evicted} older removed)")
-            } else if evicted > 0 {
-                format!("({retained} retained · {evicted} older removed)")
-            } else {
-                format!("({retained} matching)")
-            }
-        }
-        Language::Korean => {
-            if approximate {
-                format!("({retained}건 유지 · 오래된 기록 ≈{evicted}건 정리됨)")
-            } else if evicted > 0 {
-                format!("({retained}건 유지 · 오래된 기록 {evicted}건 정리됨)")
-            } else {
-                format!("({retained}건 일치)")
-            }
-        }
-    }
+    requests::map_retention_label(lang, retained, evicted, approximate)
 }
 
 /// Records that match the outcome filter, optional Map node prefix, and search, in arrival order.
@@ -247,20 +218,11 @@ pub(crate) fn visible_records<'a>(
 /// One line for a list without rows: why it is empty and, while capturing,
 /// the proxy address to point a client at.
 fn empty_list_text(captured: usize, proxy: Option<std::net::SocketAddr>, lang: Language) -> String {
+    let text = lang.requests();
     match proxy {
-        _ if captured > 0 => lang
-            .pick(
-                "No requests match the filter",
-                "필터와 일치하는 요청이 없습니다",
-            )
-            .to_owned(),
-        Some(address) => match lang {
-            Language::English => format!("No requests yet · proxy http://{address}"),
-            Language::Korean => format!("요청 없음 · 프록시 http://{address}"),
-        },
-        None => lang
-            .pick("No requests · proxy stopped", "요청 없음 · 프록시 중지됨")
-            .to_owned(),
+        _ if captured > 0 => text.no_requests_match.to_owned(),
+        Some(address) => requests::empty_list_running(lang, address),
+        None => text.no_requests_stopped.to_owned(),
     }
 }
 

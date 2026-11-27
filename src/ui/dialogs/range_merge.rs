@@ -2,7 +2,7 @@
 
 use crate::ui::app::state::{RangeMergeError, SessionError};
 use crate::ui::dialogs::body_saving::privacy_notice;
-use crate::ui::i18n::{Language, Text, domain};
+use crate::ui::i18n::{self, Language, domain};
 use crate::ui::style::theme::Palette;
 use crate::ui::style::tokens::Layout;
 use std::path::PathBuf;
@@ -11,7 +11,7 @@ use std::time::Duration;
 use eframe::egui;
 use http_inspector_core::recording::body_store::response_range;
 use http_inspector_core::recording::{RangePlan, SaveBody, SaveFormat};
-use http_inspector_exchange::{BodySide, ByteSize, Exchange};
+use http_inspector_exchange::{BodySide, Exchange};
 
 use crate::ui::InspectorApp;
 
@@ -47,61 +47,16 @@ pub(super) fn menu_items(ui: &mut egui::Ui, record: &Exchange, lang: Language) -
     let Some(range) = response_range(record) else {
         return false;
     };
+    let text = lang.range_merge();
     ui.separator();
     ui.weak(range_text(range.start(), range.end(), range.total(), lang));
-    ui.button(lang.pick("Merge ranges…", "범위 응답 병합…"))
-        .on_hover_text(lang.pick(
-            "Join the 206 responses for this URL with the same ETag or Last-Modified into one file, in position order.",
-            "같은 ETag 또는 Last-Modified를 가진 이 URL의 206 응답들을 바이트 위치 순서대로 하나의 파일로 합칩니다.",
-        ))
+    ui.button(text.menu_item)
+        .on_hover_text(text.tooltips.menu_item_hint)
         .clicked()
 }
 
 fn range_text(start: u64, end: u64, total: Option<u64>, lang: Language) -> String {
-    match lang {
-        Language::English => {
-            let total = total.map_or_else(|| "unknown".to_owned(), |total| total.to_string());
-            format!("206 range: bytes {start}-{end} of {total}")
-        }
-        Language::Korean => total.map_or_else(
-            || format!("206 범위: {start}-{end} / 전체 알 수 없음"),
-            |total| format!("206 범위: {start}-{end} / 전체 {total}바이트"),
-        ),
-    }
-}
-
-fn plan_text(plan: &RangePlan, lang: Language) -> String {
-    let covered = ByteSize::new(plan.covered_bytes());
-    let file_size = ByteSize::new(plan.file_bytes());
-    let parts = plan.parts();
-    match lang {
-        Language::English => {
-            let total = plan.total().map_or_else(
-                || "unknown length".to_owned(),
-                |bytes| ByteSize::new(bytes).to_string(),
-            );
-            let validator = plan.validator().map_or_else(
-                || "no ETag or Last-Modified".to_owned(),
-                |value| format!("validator {value}"),
-            );
-            format!(
-                "{parts} responses cover {covered} of {total} · {validator}. The file will be {file_size}."
-            )
-        }
-        Language::Korean => {
-            let total = plan.total().map_or_else(
-                || "전체 길이 알 수 없음".to_owned(),
-                |bytes| ByteSize::new(bytes).to_string(),
-            );
-            let validator = plan.validator().map_or_else(
-                || "ETag 또는 Last-Modified 없음".to_owned(),
-                |value| format!("검증자 {value}"),
-            );
-            format!(
-                "응답 {parts}건이 전체 {total} 중 {covered} 범위를 포함 · {validator}. 생성될 파일 크기는 {file_size}입니다."
-            )
-        }
-    }
+    i18n::dialogs::range_merge::range_text(lang, start, end, total)
 }
 
 fn gap_lines(plan: &RangePlan, lang: Language) -> Vec<String> {
@@ -109,72 +64,54 @@ fn gap_lines(plan: &RangePlan, lang: Language) -> Vec<String> {
         .gaps_with_lengths()
         .take(SHOWN_GAPS)
         .map(|(first, last, length)| {
-            let len = ByteSize::new(length);
-            match lang {
-                Language::English => format!("Missing bytes {first}-{last} ({len})"),
-                Language::Korean => format!("누락된 바이트 구간 {first}-{last} ({len})"),
-            }
+            i18n::dialogs::range_merge::missing_gap(lang, first, last, length)
         })
         .collect();
     if plan.gaps().len() > SHOWN_GAPS {
         let more = plan.gaps().len() - SHOWN_GAPS;
-        lines.push(match lang {
-            Language::English => format!("… and {more} more gaps"),
-            Language::Korean => format!("… 외 누락 구간 {more}개"),
-        });
+        lines.push(i18n::dialogs::range_merge::more_gaps(lang, more));
     }
     lines
 }
 
 /// Shows the plan and returns `Some(true)` to save, `Some(false)` to cancel.
 fn dialog(context: &egui::Context, plan: &RangePlan, lang: Language) -> Option<bool> {
+    let text = lang.range_merge();
+    let shared = lang.shared();
     let mut choice = None;
     let viewport = context.content_rect();
     let max_width = Layout::BODY_EXPORT_WIDTH.fit(viewport.width());
     let max_scroll_height = Layout::BODY_EXPORT_HEIGHT.fit(viewport.height());
     let modal = egui::Modal::new(egui::Id::unique("merge-ranges")).show(context, |ui| {
         ui.set_max_width(max_width);
-        ui.heading(lang.pick("Merge ranges", "범위 응답 병합"));
+        ui.heading(text.heading);
         egui::ScrollArea::vertical()
             .max_height(max_scroll_height)
             .show(ui, |ui| {
-                ui.label(plan_text(plan, lang));
+                ui.label(i18n::dialogs::range_merge::plan_text(lang, plan));
                 let palette = Palette::of(ui);
                 if plan.validator().is_none() {
-                    ui.colored_label(
-                        palette.warning,
-                        lang.pick(
-                            "Without ETag or Last-Modified, parts of different versions of this URL may be mixed.",
-                            "ETag 또는 Last-Modified가 없으면 이 URL의 서로 다른 버전 조각이 섞일 수 있습니다.",
-                        ),
-                    );
+                    ui.colored_label(palette.warning, text.missing_validator_warning);
                 }
                 for line in gap_lines(plan, lang) {
                     ui.colored_label(palette.warning, line);
                 }
                 if let Some(reason) = domain::range_plan_incomplete_reason(lang, plan) {
-                    let note = match lang {
-                        Language::English => {
-                            format!("{reason} The file name will end in .partial.")
-                        }
-                        Language::Korean => {
-                            format!("{reason} 파일 이름 끝에 .partial이 붙습니다.")
-                        }
-                    };
+                    let note = i18n::dialogs::range_merge::partial_file_note(lang, &reason);
                     ui.colored_label(palette.warning, note);
                 }
                 ui.label(privacy_notice(lang));
             });
         ui.horizontal_wrapped(|ui| {
             let save = if plan.is_complete() {
-                lang.text(Text::Save)
+                shared.save
             } else {
-                lang.pick("Save incomplete file", "불완전한 파일 저장")
+                text.save_incomplete
             };
             if ui.button(save).clicked() {
                 choice = Some(true);
             }
-            if ui.button(lang.text(Text::Cancel)).clicked() {
+            if ui.button(shared.cancel).clicked() {
                 choice = Some(false);
             }
         });
@@ -193,11 +130,9 @@ impl InspectorApp {
             let modal = egui::Modal::new(egui::Id::unique("plan-ranges")).show(context, |ui| {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label(
-                        lang.pick("Checking the range responses…", "범위 응답을 확인하는 중…"),
-                    );
+                    ui.label(lang.range_merge().checking_ranges);
                 });
-                ui.button(lang.text(Text::Cancel)).clicked()
+                ui.button(lang.shared().cancel).clicked()
             });
             return (modal.should_close() || modal.inner).then_some(RangeAction::CancelPlanning);
         }

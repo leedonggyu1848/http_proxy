@@ -1,5 +1,5 @@
 //! Manual replay editor. Sensitive inputs live only as long as the editor.
-use crate::ui::i18n::{Language, Text, domain};
+use crate::ui::i18n::{self, Language, domain};
 use crate::ui::style::{theme::Palette, tokens::Layout};
 use crate::ui::workbench::field::{self as input, Field};
 use eframe::egui;
@@ -89,7 +89,7 @@ impl ReplayPanel {
         let viewport = context.content_rect();
         let max_width = Layout::REPLAY_WIDTH.fit(viewport.width());
         let max_height = Layout::REPLAY_HEIGHT.fit(viewport.height());
-        egui::Window::new(crate::ui::workbench::text::ShellText::EditAndResend.text(lang))
+        egui::Window::new(lang.shared().edit_and_resend)
             .id(egui::Id::unique("edit-and-resend"))
             .open(&mut open)
             .default_width(Layout::REPLAY_DIALOG.x.min(max_width))
@@ -114,12 +114,9 @@ impl ReplayPanel {
         lang: Language,
         actions: &mut Vec<ReplayAction>,
     ) {
+        let text = lang.replay();
         let orig_id = self.draft.original.id().value();
-        let orig_label = match lang {
-            Language::English => format!("Original #{orig_id}"),
-            Language::Korean => format!("원본 #{orig_id}"),
-        };
-        ui.label(orig_label);
+        ui.label(i18n::dialogs::replay::original_label(lang, orig_id));
         ui.horizontal(|ui| {
             egui::ComboBox::from_id_salt("replay-method")
                 .selected_text(&self.draft.method)
@@ -137,16 +134,11 @@ impl ReplayPanel {
             );
         });
         self.query_ui(ui, lang);
-        ui.checkbox(
-            &mut self.draft.automatic_host,
-            lang.pick("Update Host from URL", "URL에 맞춰 Host 자동 갱신"),
-        );
-        ui.strong(lang.pick("Headers", "헤더")).on_hover_text(lang.pick(
-            "Cookies are written as Cookie: name=value; name2=value2, hop-by-hop headers are removed, and Content-Length is recalculated.",
-            "쿠키는 Cookie: name=value; name2=value2 형식으로 쓰며 hop-by-hop 헤더는 제거되고 Content-Length는 자동 계산됩니다.",
-        ));
+        ui.checkbox(&mut self.draft.automatic_host, text.update_host_from_url);
+        ui.strong(text.headers)
+            .on_hover_text(text.tooltips.headers_hint);
         fields(ui, &mut self.draft.headers, lang);
-        ui.collapsing(lang.pick("Cookies", "쿠키"), |ui| {
+        ui.collapsing(text.cookies, |ui| {
             let is_cookie = |field: &ReplayField| field.name.eq_ignore_ascii_case("cookie");
             let count = self.draft.headers.iter().filter(|f| is_cookie(f)).count();
             self.cookies.resize_with(count, PairTable::default);
@@ -157,15 +149,12 @@ impl ReplayPanel {
                         ui,
                         &mut field.value,
                         PairSyntax::Cookie,
-                        lang.pick("Add cookie", "쿠키 추가"),
+                        text.add_cookie,
                         lang,
                     );
                 });
             }
-            if ui
-                .button(lang.pick("Add Cookie header", "Cookie 헤더 추가"))
-                .clicked()
-            {
+            if ui.button(text.add_cookie_header).clicked() {
                 self.draft.headers.push(ReplayField {
                     enabled: true,
                     name: "cookie".to_owned(),
@@ -179,27 +168,18 @@ impl ReplayPanel {
     }
 
     fn query_ui(&mut self, ui: &mut egui::Ui, lang: Language) {
-        ui.collapsing(
-            lang.pick(
-                "Query parameters (URL-encoded)",
-                "쿼리 파라미터 (URL 인코딩)",
-            ),
-            |ui| {
-                edit_query(&mut self.draft.url, |query| {
-                    self.query.show(
-                        ui,
-                        query,
-                        PairSyntax::UrlEncoded,
-                        lang.pick("Add parameter", "파라미터 추가"),
-                        lang,
-                    )
-                });
-            },
-        );
+        let text = lang.replay();
+        ui.collapsing(text.query_params, |ui| {
+            edit_query(&mut self.draft.url, |query| {
+                self.query
+                    .show(ui, query, PairSyntax::UrlEncoded, text.add_parameter, lang)
+            });
+        });
     }
 
     fn body_ui(&mut self, ui: &mut egui::Ui, lang: Language, actions: &mut Vec<ReplayAction>) {
-        ui.strong(lang.pick("Body", "본문"));
+        let text = lang.replay();
+        ui.strong(text.body);
         let content_type = self
             .draft
             .headers
@@ -209,7 +189,7 @@ impl ReplayPanel {
         if content_type.starts_with("application/json") {
             match self.body.json_error(&self.draft.body) {
                 None => {
-                    ui.label(lang.pick("Valid JSON", "유효한 JSON"));
+                    ui.label(text.valid_json);
                 }
                 Some(error) => {
                     ui.colored_label(crate::ui::style::theme::Palette::of(ui).warning, error);
@@ -217,27 +197,20 @@ impl ReplayPanel {
             }
         }
         let mut edited = false;
-        if let Some(text) = &mut self.body.text {
+        if let Some(body_text) = &mut self.body.text {
             if content_type.starts_with("application/x-www-form-urlencoded") {
-                ui.collapsing(
-                    lang.pick("Form fields (URL-encoded)", "폼 필드 (URL 인코딩)"),
-                    |ui| {
-                        edited |= self.form.show(
-                            ui,
-                            text,
-                            PairSyntax::UrlEncoded,
-                            lang.pick("Add field", "필드 추가"),
-                            lang,
-                        );
-                    },
-                );
+                ui.collapsing(text.form_fields, |ui| {
+                    edited |=
+                        self.form
+                            .show(ui, body_text, PairSyntax::UrlEncoded, text.add_field, lang);
+                });
             }
-            edited |= input::multi_line(ui, text, 6).changed();
+            edited |= input::multi_line(ui, body_text, 6).changed();
         } else {
             ui.label(self.non_editable_body_note(lang));
         }
-        if edited && let Some(text) = &self.body.text {
-            self.draft.body = text.clone().into();
+        if edited && let Some(body_text) = &self.body.text {
+            self.draft.body = body_text.clone().into();
             self.body.json = None;
             self.body_source = None;
         }
@@ -246,57 +219,28 @@ impl ReplayPanel {
             let _ = input::single_line(
                 ui,
                 &mut self.file,
-                Field::new(file_width)
-                    .hint(lang.pick("Body file path", "본문 파일 경로"))
-                    .monospace(),
+                Field::new(file_width).hint(text.body_file_hint).monospace(),
                 |_| {},
             );
-            if ui
-                .button(lang.pick("Load complete body file", "전체 본문 파일 불러오기"))
-                .clicked()
-            {
+            if ui.button(text.load_complete_body_file).clicked() {
                 actions.push(ReplayAction::LoadBody);
             }
         });
         if self.draft.body_missing {
             ui.colored_label(
                 crate::ui::style::theme::Palette::of(ui).warning,
-                lang.pick(
-                    "Capture incomplete; load the full body file, and capture again for omitted headers.",
-                    "캡처가 불완전하므로 전체 본문 파일을 불러오고, 누락된 헤더는 다시 캡처하세요.",
-                ),
+                text.capture_incomplete_warning,
             );
         }
     }
 
     fn non_editable_body_note(&self, lang: Language) -> String {
-        let size = self.draft.body.len();
-        match (lang, self.body_source.as_deref()) {
-            (Language::English, Some(file)) if size > EDITABLE_BODY_BYTES => format!(
-                "{size} bytes loaded from {file}. Too large to edit here; it is sent as loaded."
-            ),
-            (Language::English, None) if size > EDITABLE_BODY_BYTES => {
-                format!("{size} bytes. Too large to edit here; it is sent as loaded.")
-            }
-            (Language::Korean, Some(file)) if size > EDITABLE_BODY_BYTES => format!(
-                "{file}에서 불러온 {size}바이트입니다. 여기서 편집하기엔 크기가 커서 불러온 그대로 전송됩니다."
-            ),
-            (Language::Korean, None) if size > EDITABLE_BODY_BYTES => format!(
-                "{size}바이트입니다. 여기서 편집하기엔 크기가 커서 불러온 그대로 전송됩니다."
-            ),
-            (Language::English, Some(file)) => format!(
-                "Binary body: {size} bytes loaded from {file}. Load a replacement file to edit."
-            ),
-            (Language::English, None) => {
-                format!("Binary body: {size} bytes. Load a replacement file to edit.")
-            }
-            (Language::Korean, Some(file)) => format!(
-                "바이너리 본문: {file}에서 불러온 {size}바이트. 변경하려면 대체 파일을 불러오세요."
-            ),
-            (Language::Korean, None) => {
-                format!("바이너리 본문: {size}바이트. 변경하려면 대체 파일을 불러오세요.")
-            }
-        }
+        i18n::dialogs::replay::body_summary(
+            lang,
+            self.draft.body.len(),
+            EDITABLE_BODY_BYTES,
+            self.body_source.as_deref(),
+        )
     }
 
     fn send_ui(
@@ -306,22 +250,11 @@ impl ReplayPanel {
         lang: Language,
         actions: &mut Vec<ReplayAction>,
     ) {
+        let text = lang.replay();
         if self.draft.needs_confirmation() && !self.skip_confirmation {
-            ui.checkbox(
-                &mut self.confirmed,
-                lang.pick(
-                    "I confirm this request may change server state",
-                    "이 요청이 서버 상태를 변경할 수 있음을 확인했습니다",
-                ),
-            );
+            ui.checkbox(&mut self.confirmed, text.confirm_state_change);
             if self.confirmed {
-                ui.checkbox(
-                    &mut self.skip_confirmation,
-                    lang.pick(
-                        "Do not ask again while this editor is open",
-                        "이 편집기가 열려 있는 동안 다시 묻지 않기",
-                    ),
-                );
+                ui.checkbox(&mut self.skip_confirmation, text.skip_confirmation);
             }
         }
         let running = self.task.as_ref().is_some_and(|task| !task.is_finished());
@@ -331,25 +264,19 @@ impl ReplayPanel {
             if ui
                 .add_enabled(
                     !running && approved && proxy_running,
-                    egui::Button::new(lang.pick("Send", "전송")),
+                    egui::Button::new(text.send),
                 )
                 .clicked()
             {
                 actions.push(ReplayAction::Send);
             }
-            if running && ui.button(lang.text(Text::Cancel)).clicked() {
+            if running && ui.button(lang.shared().cancel).clicked() {
                 actions.push(ReplayAction::Cancel);
             }
-            if ui
-                .button(lang.pick("Reset to original", "원본으로 되돌리기"))
-                .clicked()
-            {
+            if ui.button(text.reset_to_original).clicked() {
                 actions.push(ReplayAction::Reset);
             }
-            ui.checkbox(
-                &mut self.compare,
-                lang.pick("Compare with original", "원본과 비교"),
-            );
+            ui.checkbox(&mut self.compare, text.compare_with_original);
         });
         if let Some(error) = &self.error {
             ui.colored_label(
@@ -432,10 +359,7 @@ impl ReplayPanel {
                     }
                 });
             } else {
-                ui.label(lang.pick(
-                    "Send a request to compare its captured result.",
-                    "요청을 전송하면 캡처된 결과를 원본과 비교합니다.",
-                ));
+                ui.label(lang.replay().send_to_compare);
             }
         }
     }
@@ -462,6 +386,7 @@ fn pair_input_widths(ui: &egui::Ui) -> (f32, f32) {
 }
 
 fn fields(ui: &mut egui::Ui, fields: &mut Vec<ReplayField>, lang: Language) {
+    let text = lang.replay();
     let (name_width, value_width) = pair_input_widths(ui);
     let mut remove = None;
     for (index, field) in fields.iter_mut().enumerate() {
@@ -475,16 +400,14 @@ fn fields(ui: &mut egui::Ui, fields: &mut Vec<ReplayField>, lang: Language) {
                 let _ = input::single_line(
                     ui,
                     &mut field.name,
-                    Field::new(name_width)
-                        .hint(lang.pick("Name", "이름"))
-                        .monospace(),
+                    Field::new(name_width).hint(text.name_hint).monospace(),
                     |_| {},
                 );
                 let _ = input::single_line(
                     ui,
                     &mut field.value,
                     Field::new(value_width)
-                        .hint(lang.pick("Value", "값"))
+                        .hint(text.value_hint)
                         .monospace()
                         .password(masked),
                     |_| {},
@@ -498,7 +421,7 @@ fn fields(ui: &mut egui::Ui, fields: &mut Vec<ReplayField>, lang: Language) {
     if let Some(index) = remove {
         fields.remove(index);
     }
-    if ui.button(lang.pick("Add header", "헤더 추가")).clicked() {
+    if ui.button(text.add_header).clicked() {
         fields.push(ReplayField {
             enabled: true,
             name: String::new(),
@@ -521,7 +444,7 @@ fn summary(record: &Exchange, lang: Language) -> String {
         text.push('\n');
     }
     if let http_inspector_exchange::Outcome::Response(response) = record.outcome() {
-        let status_label = lang.pick("Status", "상태");
+        let status_label = lang.shared().status;
         let _ = writeln!(text, "{status_label} {}", response.status());
         for field in response.headers().entries() {
             let _ = writeln!(text, "{}: {}", field.name(), field.value());
@@ -542,13 +465,14 @@ fn append_body_preview(
     preview: &http_inspector_exchange::BodyPreview,
     lang: Language,
 ) {
+    let replay_text = lang.replay();
     if let Some(body) = preview.snapshot() {
         text.push_str(&String::from_utf8_lossy(body.bytes()));
         if !body.is_complete() {
-            text.push_str(lang.pick("\n[Partial body preview]", "\n[부분 본문 미리보기]"));
+            text.push_str(replay_text.partial_body_preview_suffix);
         }
     } else {
-        text.push_str(lang.pick("[Preview is updating]", "[미리보기 업데이트 중]"));
+        text.push_str(replay_text.preview_updating);
     }
 }
 
@@ -685,6 +609,7 @@ fn pair_rows(
     add: &str,
     lang: Language,
 ) -> bool {
+    let text = lang.replay();
     let (name_width, value_width) = pair_input_widths(ui);
     let mut changed = false;
     let mut remove = None;
@@ -695,9 +620,7 @@ fn pair_rows(
                 let mut edited = input::single_line(
                     ui,
                     &mut row.name,
-                    Field::new(name_width)
-                        .hint(lang.pick("Name", "이름"))
-                        .monospace(),
+                    Field::new(name_width).hint(text.name_hint).monospace(),
                     |_| {},
                 )
                 .changed();
@@ -705,7 +628,7 @@ fn pair_rows(
                     ui,
                     &mut row.value,
                     Field::new(value_width)
-                        .hint(lang.pick("Value", "값"))
+                        .hint(text.value_hint)
                         .monospace()
                         .password(mask),
                     |_| {},

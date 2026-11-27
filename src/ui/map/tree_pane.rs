@@ -7,12 +7,11 @@ use eframe::egui::{self, Key, RichText};
 use http_inspector_analysis::url_map::{NodeStats, RowKind, UrlMap, ViewNodeKey, VisibleRow};
 
 use super::MapPanel;
-use crate::ui::i18n::Language;
+use crate::ui::i18n::{self, Language};
 use crate::ui::style::fonts;
 use crate::ui::style::theme::Palette;
 use crate::ui::style::tokens::{Layout, Space};
-use crate::ui::workbench::text::{self, ShellText};
-use crate::ui::workbench::tree;
+use crate::ui::workbench::{text, tree};
 
 const NEW_NODE_HIGHLIGHT: Duration = Duration::from_secs(2);
 
@@ -25,12 +24,12 @@ pub(super) fn show(
 ) {
     if panel.cached_rows.is_empty() {
         let message = if map.node_count() == 0 {
-            ShellText::NoUrlsYet
+            lang.map().no_urls_yet
         } else {
-            ShellText::NoNodesMatch
+            lang.map().no_nodes_match
         };
         ui.centered_and_justified(|ui| {
-            ui.add(egui::Label::new(RichText::new(message.text(lang)).weak()).wrap());
+            ui.add(egui::Label::new(RichText::new(message).weak()).wrap());
         });
         return;
     }
@@ -182,11 +181,14 @@ fn render_row_metrics(ui: &mut egui::Ui, row: &VisibleRow, palette: &Palette, la
         let data = |text: String, color| RichText::new(text).font(fonts::data()).color(color);
         column(
             ui,
-            data(text::request_total(lang, stats.request_count), palette.text),
+            data(
+                i18n::map::request_total(lang, stats.request_count),
+                palette.text,
+            ),
         );
         let errors = stats.status.errors();
         let errors_text = if errors > 0 {
-            data(text::error_total(lang, errors), palette.error)
+            data(i18n::map::error_total(lang, errors), palette.error)
         } else {
             RichText::new("")
         };
@@ -207,12 +209,13 @@ fn render_row_metrics(ui: &mut egui::Ui, row: &VisibleRow, palette: &Palette, la
                 .wrap_mode(egui::TextWrapMode::Extend)
                 .selectable(false),
         );
+        let shared = lang.shared();
         let mut markers = Vec::new();
         if stats.has_tunnel {
-            markers.push(ShellText::Tunnel.text(lang));
+            markers.push(shared.tunnel);
         }
         if stats.is_third_party() {
-            markers.push(ShellText::ThirdParty.text(lang));
+            markers.push(shared.third_party);
         }
         if !markers.is_empty() {
             ui.add(
@@ -245,16 +248,17 @@ fn column(ui: &mut egui::Ui, text: RichText) {
 fn status_breakdown(stats: &NodeStats, lang: Language) -> String {
     let counts = compact_status_numbers(stats, lang);
     if counts.is_empty() {
-        text::request_total(lang, stats.request_count)
+        i18n::map::request_total(lang, stats.request_count)
     } else {
         format!(
             "{} · {counts}",
-            text::request_total(lang, stats.request_count)
+            i18n::map::request_total(lang, stats.request_count)
         )
     }
 }
 
 fn compact_status_numbers(stats: &NodeStats, lang: Language) -> String {
+    let map = lang.map();
     let mut parts = Vec::new();
     if stats.status.s2xx > 0 {
         parts.push(format!("2xx:{}", stats.status.s2xx));
@@ -264,20 +268,15 @@ fn compact_status_numbers(stats: &NodeStats, lang: Language) -> String {
     }
     let errs = stats.status.errors();
     if errs > 0 {
-        parts.push(format!("{}:{errs}", lang.pick("err", "오류")));
+        parts.push(format!("{}:{errs}", map.status_err_short));
     }
     if stats.status.tunnel > 0 {
-        parts.push(format!(
-            "{}:{}",
-            lang.pick("tun", "터널"),
-            stats.status.tunnel
-        ));
+        parts.push(format!("{}:{}", map.status_tun_short, stats.status.tunnel));
     }
     if stats.status.pending > 0 {
         parts.push(format!(
             "{}:{}",
-            lang.pick("pend", "대기"),
-            stats.status.pending
+            map.status_pend_short, stats.status.pending
         ));
     }
     parts.join(" ")
