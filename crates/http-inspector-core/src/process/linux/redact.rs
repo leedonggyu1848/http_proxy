@@ -92,31 +92,22 @@ fn option_value(argument: &str, curl: bool) -> Option<OptionValue<'_>> {
     } else {
         None
     };
-    let long_option = expansion.or_else(|| name.strip_prefix("--"));
-    let value = match long_option {
-        Some("header" | "proxy-header") => Value::Header {
-            expanded: expansion.is_some(),
-        },
-        Some(
-            "user" | "proxy-user" | "oauth2-bearer" | "cookie" | "cert" | "proxy-cert" | "pass"
-            | "proxy-pass" | "ftp-account",
-        ) => Value::Secret,
-        Some("proxy" | "preproxy" | "proxy1.0") => Value::Authority {
-            expanded: expansion.is_some(),
-        },
-        Some("url") if curl => Value::Authority {
-            expanded: expansion.is_some(),
-        },
-        Some("variable") if curl => Value::Variable,
-        _ if (inline.is_some() || name.starts_with('-')) && sensitive_name(name) => Value::Secret,
-        _ if !curl && argument.starts_with("-p") && argument.len() > 2 => {
+    let value = match expansion
+        .or_else(|| name.strip_prefix("--"))
+        .and_then(|name| long_option_value(name, curl, expansion.is_some()))
+    {
+        Some(value) => value,
+        None if (inline.is_some() || name.starts_with('-')) && sensitive_name(name) => {
+            Value::Secret
+        }
+        None if !curl && argument.starts_with("-p") && argument.len() > 2 => {
             return Some(OptionValue {
                 name: "-p",
                 inline: Some(("", argument.get(2..)?)),
                 value: Value::Secret,
             });
         }
-        _ => return None,
+        None => return None,
     };
     Some(OptionValue {
         name,
@@ -125,12 +116,73 @@ fn option_value(argument: &str, curl: bool) -> Option<OptionValue<'_>> {
     })
 }
 
+fn long_option_value(name: &str, curl: bool, expanded: bool) -> Option<Value> {
+    let authority = Value::Authority { expanded };
+    let common: [(&[&str], Value); 3] = [
+        (&["header", "proxy-header"], Value::Header { expanded }),
+        (
+            &[
+                "user",
+                "proxy-user",
+                "oauth2-bearer",
+                "cookie",
+                "cert",
+                "proxy-cert",
+                "pass",
+                "proxy-pass",
+                "ftp-account",
+            ],
+            Value::Secret,
+        ),
+        (&["proxy", "preproxy", "proxy1.0"], authority),
+    ];
+    let curl_only: [(&[&str], Value); 3] = [
+        (
+            &[
+                "doh-url",
+                "referer",
+                "socks4",
+                "socks4a",
+                "socks5",
+                "socks5-hostname",
+                "url",
+            ],
+            authority,
+        ),
+        (
+            &[
+                "tlsuser",
+                "tlspassword",
+                "proxy-tlsuser",
+                "proxy-tlspassword",
+            ],
+            Value::Secret,
+        ),
+        (&["variable"], Value::Variable),
+    ];
+    let options = common
+        .into_iter()
+        .chain(curl_only.into_iter().filter(|_| curl))
+        .flat_map(|(names, value)| names.iter().map(move |&name| (name, value)));
+    if let Some((_, value)) = options.clone().find(|&(option, _)| option == name) {
+        return Some(value);
+    }
+    // Curl accepts unique prefixes. An exact non-secret option still wins
+    // when its name is a prefix, as with --head and --header.
+    if !curl || name.is_empty() || name == "head" {
+        return None;
+    }
+    let mut prefixes = options.filter(|&(option, _)| option.starts_with(name));
+    let (_, value) = prefixes.next()?;
+    prefixes.next().is_none().then_some(value)
+}
+
 fn curl_short_option(argument: &str) -> Option<OptionValue<'_>> {
     for (index, option) in argument.char_indices().skip(1) {
         let value = match option {
             'u' | 'U' | 'b' | 'E' => Value::Secret,
             'H' => Value::Header { expanded: false },
-            'x' => Value::Authority { expanded: false },
+            'e' | 'x' => Value::Authority { expanded: false },
             // Only flag options can precede another short option in a group.
             '#' | ':' | '0' | '1' | '2' | '3' | '4' | '6' | 'a' | 'B' | 'f' | 'g' | 'G' | 'i'
             | 'I' | 'j' | 'J' | 'k' | 'l' | 'L' | 'M' | 'n' | 'N' | 'O' | 'p' | 'q' | 'R' | 's'
@@ -205,12 +257,9 @@ fn redact_variable(argument: &str) -> String {
 fn redact_urls(argument: &str) -> String {
     let mut result = String::new();
     let mut copied = 0;
-    for (slashes, _) in argument.match_indices("//") {
-        if !starts_authority(argument, slashes) {
-            continue;
-        }
-        let start = slashes + 2;
-        if let Some(rest) = argument.get(start..)
+    for (slash, _) in argument.match_indices('/') {
+        if let Some(start) = slash_authority_start(argument, slash)
+            && let Some(rest) = argument.get(start..)
             && let Some(at) = userinfo_end(rest)
             && let Some(prefix) = argument.get(copied..start)
         {
@@ -223,20 +272,39 @@ fn redact_urls(argument: &str) -> String {
     result
 }
 
-fn starts_authority(argument: &str, slashes: usize) -> bool {
-    slashes == 0
-        || argument
-            .get(..slashes)
-            .and_then(|prefix| prefix.chars().next_back())
-            .is_some_and(|previous| {
-                matches!(previous, ':' | '=' | ',' | ';' | '|' | '(' | '[' | '"')
-                    || previous.is_whitespace()
-            })
+fn slash_authority_start(argument: &str, slash: usize) -> Option<usize> {
+    let (prefix, suffix) = argument.split_at_checked(slash)?;
+    if let Some(scheme_and_boundary) = prefix.strip_suffix(':') {
+        let boundary = scheme_and_boundary
+            .trim_end_matches(|c: char| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+        let scheme = scheme_and_boundary.get(boundary.len()..)?;
+        if !url_boundary(boundary)
+            || !scheme
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphabetic)
+            || scheme.eq_ignore_ascii_case("file")
+        {
+            return None;
+        }
+        // Curl permits one, two, or three slashes after the scheme.
+        let authority = suffix.trim_start_matches('/');
+        let slashes = suffix.len() - authority.len();
+        return (1..=3).contains(&slashes).then_some(slash + slashes);
+    }
+    (url_boundary(prefix) && suffix.starts_with("//")).then_some(slash + 2)
+}
+
+fn url_boundary(prefix: &str) -> bool {
+    prefix.chars().next_back().is_none_or(|previous| {
+        matches!(previous, '=' | ',' | ';' | '|' | '(' | '[' | '"' | '\'')
+            || previous.is_whitespace()
+    })
 }
 
 fn userinfo_end(value: &str) -> Option<usize> {
     value
-        .split(|c: char| matches!(c, '/' | '?' | '#' | '"') || c.is_whitespace())
+        .split(|c: char| matches!(c, '/' | '?' | '#') || c.is_ascii_whitespace())
         .next()?
         .rfind('@')
 }
@@ -324,6 +392,39 @@ mod tests {
             command(bytes, None).as_deref(),
             Some(
                 "curl --expand-url [REDACTED]@localhost:8765/a --url=https://[REDACTED]@example.test/b [REDACTED]@localhost:8765/c --expand-url=[REDACTED] --expand-url [REDACTED] https://example.test/a@name"
+            )
+        );
+    }
+
+    #[test]
+    fn hides_curl_authentication_and_headers_with_unique_prefixes() {
+        let bytes = b"curl\0--head\0--oauth2-b\0fixture-token\0--proxy-us=demo:fixture-password\0--heade\0Authorization: Bearer fixture-header\0--proxy-head=X-Api-Key: fixture-key\0--user-agent\0sample-agent\0--proxy-tlspass\0fixture-tls\0";
+        assert_eq!(
+            command(bytes, None).as_deref(),
+            Some(
+                "curl --head --oauth2-b [REDACTED] --proxy-us=[REDACTED] --heade \"Authorization: [REDACTED]\" \"--proxy-head=X-Api-Key: [REDACTED]\" --user-agent sample-agent --proxy-tlspass [REDACTED]"
+            )
+        );
+    }
+
+    #[test]
+    fn hides_curl_userinfo_with_one_or_three_slashes_and_raw_quotes() {
+        let bytes = b"curl\0http:/demo:fixture-one@localhost:8765/a@name\0http:///demo:fixture-three@localhost:8765/b\0http://demo:fix\"ture@localhost:8765/c\0http://example.test/path:/tag@name\0file:///fixture@name\0--url-list=http:/user:one@first.test/,http:///user:two@second.test/\0";
+        assert_eq!(
+            command(bytes, None).as_deref(),
+            Some(
+                "curl http:/[REDACTED]@localhost:8765/a@name http:///[REDACTED]@localhost:8765/b http://[REDACTED]@localhost:8765/c http://example.test/path:/tag@name file:///fixture@name --url-list=http:/[REDACTED]@first.test/,http:///[REDACTED]@second.test/"
+            )
+        );
+    }
+
+    #[test]
+    fn hides_userinfo_in_documented_curl_url_options() {
+        let bytes = b"curl\0-xhttp:/demo:fixture@proxy.test:8080\0--preproxy=socks5:///demo:fixture@hop.test\0--socks5-hostname\0demo:fixture@socks.test\0--doh-url\0https://demo:fixture@dns.test/query\0-ehttp:///demo:fixture@origin.test/path@name\0--expand-url\0http:/demo:fixture@site.test/a\0";
+        assert_eq!(
+            command(bytes, None).as_deref(),
+            Some(
+                "curl -xhttp:/[REDACTED]@proxy.test:8080 --preproxy=socks5:///[REDACTED]@hop.test --socks5-hostname [REDACTED]@socks.test --doh-url https://[REDACTED]@dns.test/query -ehttp:///[REDACTED]@origin.test/path@name --expand-url http:/[REDACTED]@site.test/a"
             )
         );
     }
