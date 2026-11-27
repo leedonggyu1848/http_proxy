@@ -349,16 +349,19 @@ impl InspectorApp {
     /// The one Primary button (S9): Start while the proxy is stopped, since
     /// nothing is captured until it runs, and Open Browser while it runs,
     /// since an inspection browser is the shortest way to send traffic
-    /// through it.
+    /// through it. Open Terminal, a Ghost button, follows; it stays visible
+    /// but disabled while the proxy is stopped, with the reason as tooltip.
     fn primary_action(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
         let lang = self.language();
-        if self.session.capture.proxy.is_none() {
+        let running = self.session.capture.proxy.is_some();
+        if !running {
             if ui
                 .add(controls::primary(ui, lang.toolbar().start))
                 .clicked()
             {
                 actions.push(AppAction::StartProxy);
             }
+            self.terminal_button(ui, running, actions);
             return;
         }
         actions.extend(
@@ -372,6 +375,13 @@ impl InspectorApp {
                 )
                 .map(AppAction::Browser),
         );
+        self.terminal_button(ui, running, actions);
+    }
+
+    fn terminal_button(&self, ui: &mut egui::Ui, running: bool, actions: &mut Vec<AppAction>) {
+        if self.dialogs.terminal.toolbar(ui, running, self.language()) {
+            actions.push(AppAction::OpenTerminal);
+        }
     }
 
     /// Errors and warnings that need attention, one line each, in a chrome
@@ -428,6 +438,11 @@ impl InspectorApp {
             });
         }
         if let Some(error) = self.dialogs.browsers.error(lang) {
+            line(ui, &mut |ui| {
+                indicator::dot_label(ui, Tone::Danger, &error);
+            });
+        }
+        if let Some(error) = self.dialogs.terminal.error(lang) {
             line(ui, &mut |ui| {
                 indicator::dot_label(ui, Tone::Danger, &error);
             });

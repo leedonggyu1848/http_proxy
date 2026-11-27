@@ -9,7 +9,7 @@
 명령은 앱과 같은 실행 파일 `http-proxy`로 실행한다. 이슈 #126의 `http-inspector`는 이 실행 파일을 가리킨다. 실행 파일 이름 변경은 설치 경로·데스크톱 항목과 함께 바뀌는 별도의 호환성 변경으로 다룬다.
 
 - 인자 없이 실행하거나 `--port N`만 주면 지금처럼 데스크톱 앱이 열린다.
-- 첫 인자가 `proxy`, `records`, `log`, `ca`, `schema`, `help`, `--help`, `--version`, `--json`이면 명령줄로 동작한다.
+- 첫 인자가 `proxy`, `records`, `log`, `ca`, `shell`, `exec`, `schema`, `help`, `--help`, `--version`, `--json`이면 명령줄로 동작한다.
 
 ## 에이전트용 안내
 
@@ -44,8 +44,7 @@ flowchart LR
 http-proxy proxy start --port 0 --json
 # {"schema":1,"running":true,"address":"127.0.0.1:43127","port":43127,"https_inspection":false,...}
 
-eval "$(http-proxy proxy env)"          # 이 셸의 프로그램을 프록시로 보낸다
-curl http://127.0.0.1:18190/api/users
+http-proxy exec -- curl http://127.0.0.1:18190/api/users   # 이 명령 하나만 프록시로 보낸다
 
 http-proxy records wait --filter 'method:GET url:/api/users' --timeout 10s --json
 http-proxy records body 42 --side response --view pretty --max-bytes 4096
@@ -61,7 +60,7 @@ http-proxy proxy stop
 - **`--json`**: 모든 명령이 지원한다. 결과는 한 줄짜리 JSON 문서이며 최상위에 `"schema": 1`이 있다. 필드 순서는 정해져 있지 않으므로 이름으로 읽는다. 오류도 JSON 모드에서는 stdout에 `{"schema":1,"error":{"code":…,"message":…,"hint":…}}`로 나온다.
 - **스트림**: `records watch`는 이벤트마다 한 줄(NDJSON)을 쓴다.
 - **텍스트 모드**: 결과는 stdout, 오류와 본문 안내(`note: …`)는 stderr로 나온다.
-- **비대화식**: 어떤 명령도 입력을 기다리지 않는다.
+- **비대화식**: `shell`을 빼면 어떤 명령도 입력을 기다리지 않는다.
 - **기록 ID**: 목록·감시·대기·상세·본문이 같은 정수 ID를 쓴다. ID는 데몬이 실행되는 동안 늘어나기만 한다.
 - **자체 설명**: `http-proxy --help`, 각 명령의 `--help`, `http-proxy schema`로 전체 명령·인자·출력 필드·오류 코드를 읽는다.
 
@@ -254,17 +253,55 @@ http-proxy proxy stop
 - 앱과 같은 조건이 필요하다. 현재 데몬 세션에 해당 화질의 미디어 재생목록과 Chrome `.ts` 세그먼트 요청이 캡처되어 있어야 하며, 없으면 `hls_unavailable`로 이유(예: `No Chrome .ts segment request captured for this quality`)를 알려 준다. 이미 보관한 세그먼트는 재사용하고 나머지는 프록시를 거쳐 받는다.
 - 진행 중에 명령을 끝내면(Ctrl+C) 다운로드를 취소한다.
 
+### `http-proxy shell`
+
+실행 중인 데몬의 프록시와 CA 설정을 주입한 대화형 서브셸(`$SHELL`, 없으면 `/bin/sh`)을 연다. 이 셸과 자식 프로세스의 HTTP·HTTPS만 프록시를 거치며, 루트 권한, 시스템 CA 저장소, 방화벽 규칙, `~/.bashrc`·`~/.zshrc`는 건드리지 않는다. 시작할 때 stderr에 프록시 주소와 HTTPS 복호화 여부를 한 줄씩 보여 주고, `exit`로 나오면 아래 CA 묶음을 지운다. 종료 코드는 셸의 종료 코드다.
+
+- `--keep-no-proxy`: 물려받은 `NO_PROXY`·`no_proxy`를 유지한다. 기본값은 두 변수를 지워 `localhost`의 테스트 서버도 캡처한다. 프록시 자신의 주소로 가는 요청은 프록시가 루프로 막는다.
+- 이미 연 셸의 변수는 바뀌지 않는다. 프록시를 멈추거나 다른 포트로 다시 시작하면 셸을 나와 새로 연다. 셸 안에서는 `HTTP_INSPECTOR_PROXY`가 프록시 주소를 담으므로 프롬프트나 스크립트가 검사 셸인지 확인할 수 있다.
+- 앱의 **Open Terminal**도 같은 명령을 새 터미널 창에서 실행한다.
+
+설정하는 변수:
+
+| 변수 | 설정 조건 | 값 |
+| --- | --- | --- |
+| `HTTP_INSPECTOR_PROXY` | 항상 | `127.0.0.1:<port>` |
+| `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, `https_proxy`, `ALL_PROXY`, `all_proxy` | 항상 | `http://127.0.0.1:<port>`. curl은 소문자 `http_proxy`만 읽으므로 대소문자를 모두 쓴다 |
+| `NO_PROXY`, `no_proxy` | `--keep-no-proxy`가 없을 때 | 지운다 |
+| `NODE_EXTRA_CA_CERTS` | HTTPS 복호화가 켜졌을 때 | 로컬 공개 인증서 `root-ca.pem`. Node.js 기본 루트에 더해진다 |
+| `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `GIT_SSL_CAINFO`, `AWS_CA_BUNDLE`, `DENO_CERT` | HTTPS 복호화가 켜졌을 때 | 통합 CA 묶음 `combined-ca.pem` |
+
+**통합 CA 묶음**은 시스템 루트 CA 묶음 뒤에 로컬 공개 인증서를 덧붙인 PEM 파일이다. 시스템 루트를 유지하므로 프록시를 거치지 않는 HTTPS도 인증서 검사를 통과한다.
+
+- 시스템 묶음은 절대 경로인 기존 `SSL_CERT_FILE`, `/etc/ssl/certs/ca-certificates.crt`(Debian·Ubuntu·Arch), `/etc/pki/tls/certs/ca-bundle.crt`(Fedora·RHEL), `/etc/ssl/ca-bundle.pem`(openSUSE), `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`, `/etc/ssl/cert.pem`(Alpine·macOS), `/usr/local/etc/openssl/cert.pem` 순서로 찾은 첫 PEM 파일이다.
+- 시스템 묶음을 찾지 못하면 로컬 CA만 담고, 시작 안내에 프록시를 거치지 않는 HTTPS는 인증서 검사에 실패한다고 한 줄 보인다.
+- 파일은 `$XDG_RUNTIME_DIR`(없으면 시스템 임시 디렉터리) 아래 새 `0700` 디렉터리 `http-inspector-shell-*`에 `0600`으로 만든다. 셸이 끝나거나 `SIGHUP`(터미널 창 닫기)·`SIGTERM`을 받으면 셸에 신호를 전달하고, 셸이 끝난 뒤 디렉터리째 지운다. `SIGKILL`로 강제 종료하면 남을 수 있으며, `$XDG_RUNTIME_DIR`은 로그아웃할 때 비워진다.
+- 공개 인증서 `root-ca.pem`만 읽는다. CA 개인키 파일(`ca-identity.pem`)의 경로와 내용은 어떤 변수·파일·출력에도 넣지 않는다.
+
+Go의 `net/http`는 `localhost`·`127.0.0.1` 요청에 프록시 변수를 쓰지 않는다. 프록시 변수를 무시하는 프로그램의 요청은 캡처되지 않는다.
+
+### `http-proxy exec`
+
+`exec [--keep-no-proxy] -- COMMAND [ARGS...]`. `shell`과 같은 환경으로 명령 하나를 실행하고, 끝나면 CA 묶음을 지운다. 시작 안내는 출력하지 않으며 stdout·stderr는 명령의 출력 그대로다. 종료 코드는 명령의 종료 코드이고, 신호로 끝나면 128에 신호 번호를 더한 값이다. 명령을 찾지 못하면 `127`, 실행할 수 없으면 `126`이다. 데몬이나 프록시가 멈춰 있으면 명령을 실행하지 않고 `daemon_not_running`·`proxy_not_running`으로 실패한다.
+
+```bash
+http-proxy exec -- curl -sS https://example.test/api/users   # --cacert 없이 복호화해 캡처
+http-proxy exec -- python3 -c 'import requests; requests.get("https://example.test")'
+```
+
+`exec`는 Ctrl+C를 무시하고 명령이 끝날 때까지 기다린다. Ctrl+C는 터미널이 명령에도 보내므로 명령이 직접 처리한다.
+
 ### `http-proxy proxy env`
 
-실행 중인 프록시로 프로그램을 보내는 셸 `export` 줄을 출력한다. `eval "$(http-proxy proxy env)"`로 현재 셸에 적용한다.
+실행 중인 프록시로 프로그램을 보내는 셸 `export` 줄을 출력한다. `eval "$(http-proxy proxy env)"`로 현재 셸에 적용한다. 정리할 필요가 없는 `shell`·`exec`를 먼저 권한다.
 
 | 변수 | 내보내는 조건 | 효과 |
 | --- | --- | --- |
-| `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, `https_proxy` | 항상 | 프록시 주소. curl은 소문자 `http_proxy`만 읽으므로 대소문자를 모두 쓴다 |
+| `HTTP_INSPECTOR_PROXY`, `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, `https_proxy`, `ALL_PROXY`, `all_proxy` | 항상 | `shell`과 같은 프록시 주소 |
 | `NODE_EXTRA_CA_CERTS` | HTTPS 복호화가 켜졌을 때 | Node.js 기본 루트에 로컬 CA를 **더한다** |
-| `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE` | HTTPS 복호화가 켜지고 `--ca-bundle`을 줬을 때 | OpenSSL, curl, Python requests의 CA 묶음을 로컬 CA 하나로 **바꾼다** |
+| `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `GIT_SSL_CAINFO`, `AWS_CA_BUNDLE`, `DENO_CERT` | HTTPS 복호화가 켜지고 `--ca-bundle`을 줬을 때 | `shell`과 같은 통합 CA 묶음 |
 
-`--ca-bundle`의 세 변수는 시스템 CA 묶음을 대체한다. 프록시를 거치는 HTTPS는 모두 로컬 CA로 서명되므로 동작하지만, 프록시를 거치지 않는 HTTPS(`NO_PROXY` 대상, 프록시를 무시하는 프로그램)는 인증서 검사에 실패한다. 그래서 기본값에서 빼고 명시할 때만 내보낸다. 한 번만 쓸 때는 `curl --cacert "$(http-proxy ca info --json | jq -r .certificate_path)"`처럼 해당 명령에만 CA를 준다. `NO_PROXY`는 바꾸지 않는다.
+`--ca-bundle`은 `shell`과 같은 통합 CA 묶음을 제어 디렉터리(`$XDG_RUNTIME_DIR/http-inspector/combined-ca.pem`, `0600`)에 쓰고 덮어쓴다. `eval`한 셸이 언제 끝날지 알 수 없으므로 데몬이 `proxy stop`으로 끝날 때 지운다. 시스템 묶음을 찾지 못해 로컬 CA만 담았을 때만 `replaces_system_roots`가 `true`다. `proxy env`는 `NO_PROXY`를 바꾸지 않는다.
 
 출력: `proxy_url`, `https_inspection`, `variables`(`name`, `value`, `replaces_system_roots`), `notes`. 텍스트 모드의 안내는 `#` 주석 줄이라 `eval`해도 안전하다.
 
@@ -298,6 +335,10 @@ http-proxy proxy stop
 | `5` | 서버 상태를 바꿀 수 있는 요청이라 `--yes`가 필요함 |
 | `6` | `records wait` 시간 초과 |
 | `75` | 일시적으로 바쁨. 잠시 뒤 다시 실행 |
+| `126` | `exec`: 명령이 있지만 실행할 수 없음 |
+| `127` | `exec`: 명령을 찾지 못함 |
+
+`shell`과 `exec`는 위 코드 대신 셸·명령의 종료 코드를 그대로 돌려준다. 준비 단계에서 실패하면 위 오류 코드를 쓴다.
 
 ## 오류 코드
 
@@ -331,7 +372,8 @@ http-proxy proxy stop
 - **제어 채널**: `$XDG_RUNTIME_DIR/http-inspector/control.sock`, 이 변수가 없거나 절대 경로가 아니면 시스템 임시 디렉터리의 `http-inspector-<uid>/control.sock`을 쓴다. 디렉터리는 `0700`, 소켓은 `0600`으로 만든다. 소켓은 잠금 아래에서 임시 이름(`pending.sock`)으로 만들어 `0600`으로 바꾼 뒤 제자리로 옮기므로, 제어 경로에는 처음부터 `0600`으로만 나타난다. 디렉터리나 소켓이 다른 사용자 소유이거나 그룹·다른 사용자 권한이 있으면 고치지 않고 `insecure_control_path`로 거부한다. TCP 제어 포트는 없다.
 - **프록시**: 앱과 같이 `127.0.0.1`에만 바인딩한다.
 - **가려진 헤더**: `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie` 값은 캡처할 때 `[REDACTED]`로 바뀌므로 명령 출력, 소켓 메시지, 세션 로그 어디에도 원래 값이 없다. 원래 값을 복원하는 옵션은 없다.
-- **CA 개인키**: 어떤 명령·출력·소켓 메시지에도 포함하지 않는다. `ca info`는 공개 인증서의 경로와 지문만 출력한다.
+- **CA 개인키**: 어떤 명령·출력·소켓 메시지·환경 변수·CA 묶음에도 포함하지 않는다. `ca info`는 공개 인증서의 경로와 지문만 출력한다.
+- **CA 묶음**: `shell`·`exec`의 묶음은 셸·명령이 끝나면, `proxy env --ca-bundle`의 묶음은 데몬이 끝나면 지운다. 둘 다 현재 사용자만 읽을 수 있다.
 - **재전송·cURL**: 가려진 헤더를 되살리지 않는다. 재전송에 직접 준 자격 증명 값도 출력에서는 `[REDACTED]`로 보인다.
 - **세션 로그**: 데몬의 전체 로그는 만들자마자 이름을 지운 임시 파일에 기록한다. `proxy stop`, `SIGTERM`·`SIGINT`, 강제 종료 어느 경우에도 본문이 담긴 파일이 임시 디렉터리에 남지 않는다. 신호로 끝난 데몬의 소켓 파일은 다음 `proxy start`가 응답이 없음을 확인한 뒤 지운다.
 - **소켓 정리**: 데몬은 종료할 때 리스너를 닫기 전에 잠금 파일을 잡고 소켓 파일을 지운다. 그 사이 다른 `proxy start`는 살아 있는 데몬을 보고 물러나므로, 종료하는 데몬이 새로 뜬 데몬의 소켓을 지우는 일이 없다.
@@ -343,6 +385,7 @@ http-proxy proxy stop
 | 프록시 시작·포트 변경, 중지, 상태 | `proxy start --port N`, `proxy stop`, `proxy status` |
 | HTTPS 복호화 켜기·끄기 | `proxy start --https-inspection`, `proxy set --https-inspection on\|off` |
 | 프록시 URL·환경 변수 복사 | `proxy env` |
+| **Open Terminal** | `shell`, 명령 하나는 `exec` |
 | CA 상세(경로·지문) | `ca info` |
 | 요청 목록·결과 종류 탭·필터 | `records list --filter … --kind …` |
 | 새 요청 따라가기 | `records watch`, `records wait` |

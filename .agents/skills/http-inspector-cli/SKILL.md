@@ -31,15 +31,15 @@ description: "HTTP Inspector 명령줄(`http-proxy`)로 로컬 프록시를 띄�
 
 ```bash
 http-proxy proxy start --port 0 --json      # .address = 프록시 주소, 이미 떠 있으면 already_running: true
-curl -x http://<address> …                  # 한 명령만 프록시로 보낼 때는 .address를 그대로 쓴다
-eval "$(http-proxy proxy env)"              # 셸 전체(curl·Node·Python 등)를 프록시로 보낼 때
+http-proxy exec -- curl -sS …               # 한 명령만 프록시·CA 설정으로 실행. 종료 코드는 명령의 것
+eval "$(http-proxy proxy env)"              # 이미 열린 셸 전체를 프록시로 보낼 때
 
 http-proxy proxy status --json              # 실행 여부, 주소, 기록 수(데몬이 없으면 종료 코드 3)
 http-proxy log save ./session.log --json    # 필요하면 끝내기 전에 전체 로그 저장
 http-proxy proxy stop --json                # 데몬 종료. 보관한 기록은 사라진다
 ```
 
-HTTPS 본문까지 봐야 하면 `proxy start --https-inspection`(이미 떠 있으면 `proxy set --https-inspection on`)을 쓰고, 클라이언트가 로컬 CA를 믿게 한다: `curl --cacert "$(http-proxy ca info --json | jq -r .certificate_path)"`. `proxy env --ca-bundle`은 시스템 CA 묶음을 대체하므로 프록시를 거치지 않는 HTTPS가 실패한다는 점을 감안한다.
+HTTPS 본문까지 봐야 하면 `proxy start --https-inspection`(이미 떠 있으면 `proxy set --https-inspection on`)을 쓴다. `exec`는 시스템 루트와 로컬 CA를 합친 임시 CA 묶음을 `SSL_CERT_FILE` 등에 지정하므로 `--cacert` 없이 curl·Python·git·Node가 로컬 CA를 믿고, 명령이 끝나면 묶음을 지운다. `exec`는 대화형 셸이 필요한 `http-proxy shell`과 달리 입력을 기다리지 않는다.
 
 ## 흐름 1: 요청을 보내고 응답 확인
 

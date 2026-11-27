@@ -11,7 +11,7 @@ use crate::error::ErrorCode;
 use crate::protocol::SCHEMA_VERSION;
 
 /// Exit codes and their meaning.
-pub(crate) const EXIT_CODES: [(u8, &str); 8] = [
+pub(crate) const EXIT_CODES: [(u8, &str); 10] = [
     (0, "success"),
     (1, "the command failed; see error.code"),
     (2, "usage error or invalid filter"),
@@ -20,6 +20,8 @@ pub(crate) const EXIT_CODES: [(u8, &str); 8] = [
     (5, "the request may change server state; repeat with --yes"),
     (6, "records wait timed out"),
     (75, "temporarily busy; retry shortly"),
+    (126, "exec: the command exists but could not run"),
+    (127, "exec: the command was not found"),
 ];
 
 /// Output documents per command. Every document also has `"schema": 1`.
@@ -98,6 +100,14 @@ fn reproduce_outputs() -> Value {
             "proxy_url": "string", "https_inspection": "boolean",
             "variables": [{"name": "string", "value": "string", "replaces_system_roots": "boolean"}],
             "notes": ["string"],
+        },
+        "shell": {
+            "stderr": "banner lines naming the proxy; nothing on stdout",
+            "exit code": "the shell's exit status, 128 plus the signal number when a signal ended it",
+        },
+        "exec": {
+            "stdout and stderr": "the command's own output",
+            "exit code": "the command's exit status, 128 plus the signal number when a signal ended it; 126 or 127 when it could not run",
         },
         "ca info": {
             "certificate_path": "string", "fingerprint_sha256": "string",
@@ -317,6 +327,8 @@ mod tests {
             "records endpoints",
             "records hls",
             "proxy env",
+            "shell",
+            "exec",
             "ca info",
             "log save",
             "schema",

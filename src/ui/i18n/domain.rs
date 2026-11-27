@@ -21,7 +21,7 @@ use http_inspector_core::hls::{
 };
 use http_inspector_core::https::{CaTrustError, HttpsSetupError};
 use http_inspector_core::interception::{StartError, StopError};
-use http_inspector_core::launcher::BrowserLaunchError;
+use http_inspector_core::launcher::{BrowserLaunchError, TerminalLaunchError};
 use http_inspector_core::recording::{RangePlan, StoreGap, StoredBody};
 use http_inspector_core::replay::{
     REPLAY_BODY_FILE_LIMIT_BYTES, ReplayBodyFileError, ReplayError, ReplayHeaderError,
@@ -439,6 +439,24 @@ pub(crate) fn browser_launch_error(lang: Language, error: &BrowserLaunchError) -
         BrowserLaunchError::CaSetup(err) => https_setup_error(lang, err),
         BrowserLaunchError::CaTrust(err) => ca_trust_error(lang, err),
         BrowserLaunchError::Io(err) => err.to_string(),
+    }
+}
+
+/// Localized text for a terminal that did not open.
+#[must_use]
+pub(crate) fn terminal_launch_error(lang: Language, error: &TerminalLaunchError) -> String {
+    match error {
+        TerminalLaunchError::NotFound => lang
+            .pick(
+                "No terminal emulator found. Set TERMINAL or install one such as xterm.",
+                "터미널 에뮬레이터를 찾지 못했습니다. TERMINAL을 설정하거나 xterm 같은 터미널을 설치하세요.",
+            )
+            .to_owned(),
+        TerminalLaunchError::ExitedBeforeOpen { terminal, status } => match lang {
+            Language::English => format!("{terminal} exited before opening a window ({status})"),
+            Language::Korean => format!("{terminal}가 창을 열기 전에 종료되었습니다 ({status})"),
+        },
+        TerminalLaunchError::Io(err) => err.to_string(),
     }
 }
 

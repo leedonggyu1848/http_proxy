@@ -21,6 +21,7 @@ use crate::ui::dialogs::{
     hls_dialog::HlsDialog,
     replay_panel::{ReplayAction, ReplayPanel},
     save::SaveControls,
+    terminal_panel::TerminalPanel,
 };
 use crate::ui::i18n::{Language, LanguageSettings};
 use crate::ui::map::{MapPanel, RecordMatchCache};
@@ -216,6 +217,7 @@ impl MapState {
 pub(crate) struct Dialogs {
     pub(crate) ca_panel: CaPanel,
     pub(crate) browsers: BrowserPanel,
+    pub(crate) terminal: TerminalPanel,
     pub(crate) save: SaveControls,
     pub(crate) har: HarDialog,
     pub(crate) hls: HlsDialog,
@@ -227,6 +229,7 @@ impl Dialogs {
         Self {
             ca_panel: CaPanel::default(),
             browsers: BrowserPanel::default(),
+            terminal: TerminalPanel::default(),
             save: SaveControls::new(),
             har: HarDialog::default(),
             hls: HlsDialog::default(),
@@ -236,6 +239,7 @@ impl Dialogs {
 
     pub(super) fn close_proxy_controls(&mut self) {
         self.browsers.close();
+        self.terminal.clear_error();
         self.ca_panel.refresh();
     }
 }

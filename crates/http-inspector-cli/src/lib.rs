@@ -70,6 +70,11 @@ mod schema;
     clippy::redundant_pub_crate,
     reason = "crate-wide items of a private module; `pub` would trip `unreachable_pub`"
 )]
+mod shell;
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-wide items of a private module; `pub` would trip `unreachable_pub`"
+)]
 mod start;
 #[expect(
     clippy::redundant_pub_crate,
@@ -89,12 +94,16 @@ use error::{CliError, ErrorCode};
 use output::{Kind, Output};
 use protocol::Request;
 
+pub use shell::terminal_arguments;
+
 /// First arguments that select the command line instead of the desktop app.
-const COMMANDS: [&str; 12] = [
+const COMMANDS: [&str; 14] = [
     "proxy",
     "records",
     "log",
     "ca",
+    "shell",
+    "exec",
     "schema",
     "help",
     "__daemon",
@@ -116,7 +125,11 @@ pub fn is_cli_invocation(args: &[OsString]) -> bool {
 
 /// Runs one command and returns its exit code.
 pub fn run(args: Vec<OsString>) -> ExitCode {
-    let json = args.iter().any(|arg| arg == "--json");
+    // Arguments after `--` belong to the command `exec` runs.
+    let json = args
+        .iter()
+        .take_while(|arg| *arg != "--")
+        .any(|arg| arg == "--json");
     let cli = match Cli::try_parse_from(args) {
         Ok(cli) => cli,
         Err(error) => {
@@ -156,7 +169,10 @@ fn execute(command: &Command, control: &ControlPath, output: Output) -> Result<u
         }
         Command::Proxy(ProxyCommand::Env(env)) => {
             let status = client::call(control, &Request::Status)?;
-            output.document(Kind::Env, &local::proxy_env(&status, env.ca_bundle)?);
+            output.document(
+                Kind::Env,
+                &local::proxy_env(&status, env.ca_bundle, control)?,
+            );
         }
         Command::Ca(CaCommand::Info) => output.document(Kind::CaInfo, &local::ca_info()?),
         Command::Records(records) => run_records(records, control, output)?,
@@ -164,6 +180,8 @@ fn execute(command: &Command, control: &ControlPath, output: Output) -> Result<u
             let saved = client::call(control, &Request::SaveLog(absolute(path)?))?;
             output.document(Kind::LogSaved, &saved);
         }
+        Command::Shell(args) => return shell::shell(args, control, output),
+        Command::Exec(args) => return shell::exec(args, control, output),
         Command::Schema => output.document(Kind::Schema, &schema::document()),
         Command::Daemon(daemon) => return Ok(start::daemon_child(control, daemon)),
     }

@@ -1,7 +1,11 @@
-//! Dedicated private browser sessions using the inspector's proxy.
+//! Dedicated private browser sessions using the inspector's proxy, and
+//! terminal windows that run an inspection shell.
 
 mod discovery;
 mod launch;
+mod terminal;
+
+pub use terminal::{Terminal, TerminalLaunch, TerminalLaunchError};
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
