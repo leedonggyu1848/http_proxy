@@ -4,6 +4,7 @@ mod socket;
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{self, Read as _};
+use std::mem::MaybeUninit;
 use std::net::SocketAddr;
 use std::os::fd::AsRawFd as _;
 use std::os::unix::fs::MetadataExt as _;
@@ -12,6 +13,7 @@ use std::sync::{LazyLock, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use http_inspector_exchange::{ProcessAncestor, ProcessIdentity, ProcessInfo, ProcessUnavailable};
+use rustix::fs::{Mode, OFlags, RawDir, openat, readlinkat_raw};
 
 use super::ProcessStatus;
 
@@ -77,13 +79,13 @@ impl Lookup {
         if owner.uid != rustix::process::geteuid().as_raw() {
             return Err(ProcessUnavailable::DifferentUser(owner.uid));
         }
-        let link = PathBuf::from(format!("socket:[{}]", owner.inode));
+        let link = format!("socket:[{}]", owner.inode);
         let found = self.find_owner(owner.uid, &link)?;
         self.remember(found.stat.identity.pid);
         Ok(found.snapshot(owner.uid, self.accounts.get_or_init(Accounts::load), proxy))
     }
 
-    fn find_owner(&self, uid: u32, link: &Path) -> Result<ProcOwner, ProcessUnavailable> {
+    fn find_owner(&self, uid: u32, link: &str) -> Result<ProcOwner, ProcessUnavailable> {
         let recent = self
             .recent
             .lock()
@@ -123,7 +125,7 @@ impl Lookup {
     }
 }
 
-fn newly_created_owner(uid: u32, link: &Path, recent: &VecDeque<u32>) -> Option<ProcOwner> {
+fn newly_created_owner(uid: u32, link: &str, recent: &VecDeque<u32>) -> Option<ProcOwner> {
     let last: u32 = fs::read_to_string("/proc/sys/kernel/ns_last_pid")
         .ok()?
         .trim()
@@ -152,17 +154,17 @@ fn newly_created_owner(uid: u32, link: &Path, recent: &VecDeque<u32>) -> Option<
         })
 }
 
-fn find_pid(pid: u32, uid: u32, link: &Path) -> Option<ProcOwner> {
+fn find_pid(pid: u32, uid: u32, link: &str) -> Option<ProcOwner> {
     let directory = File::open(pid_path(pid)).ok()?;
     if directory.metadata().ok()?.uid() != uid {
         return None;
     }
     // Keep the proc directory open while reading through it, so Linux cannot
     // redirect a later read to a new process that reused this PID.
-    let path = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()));
-    if !has_socket(&path, link) {
+    if !has_socket(&directory, link) {
         return None;
     }
+    let path = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()));
     let stat = ProcStat::read_at(&path, pid).ok()?;
     Some(ProcOwner {
         directory,
@@ -185,12 +187,33 @@ impl ProcOwner {
     }
 }
 
-fn has_socket(path: &Path, link: &Path) -> bool {
-    fs::read_dir(path.join("fd")).is_ok_and(|entries| {
-        entries
-            .flatten()
-            .any(|entry| entry.path().read_link().is_ok_and(|target| target == link))
-    })
+fn has_socket(process: &File, link: &str) -> bool {
+    let Ok(descriptors) = openat(
+        process,
+        c"fd",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) else {
+        return false;
+    };
+    let mut directory_buffer = [MaybeUninit::uninit(); 2048];
+    let mut entries = RawDir::new(&descriptors, &mut directory_buffer);
+    // A socket link has "socket:[", at most 20 digits for u64, and "]".
+    let mut link_buffer = [0; 32];
+    while let Some(Ok(entry)) = entries.next() {
+        if entry
+            .file_name()
+            .to_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_digit)
+            && let Ok(length) =
+                readlinkat_raw(&descriptors, entry.file_name(), &mut link_buffer[..])
+            && link_buffer.get(..length) == Some(link.as_bytes())
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn pid_path(pid: u32) -> PathBuf {
@@ -271,7 +294,7 @@ impl ProcStat {
         let redacted_command = File::open(path.join("cmdline")).ok().and_then(|file| {
             let length = file.take(COMMAND_BYTES + 1).read_to_end(&mut bytes).ok()?;
             (u64::try_from(length).ok()? <= COMMAND_BYTES)
-                .then(|| redact::command(&bytes))
+                .then(|| redact::command(&bytes, executable.as_deref()))
                 .flatten()
         });
         let parents = parent_chain(&self, |pid| {
@@ -380,9 +403,9 @@ mod tests {
     use super::{
         PARENT_LIMIT, ProcStat, ProcessIdentity, ProcessStatus, has_socket, parent_chain, status,
     };
+    use std::fs::File;
     use std::io;
     use std::os::unix::fs::symlink;
-    use std::path::Path;
 
     #[test]
     fn selects_an_exact_socket_inode_link() -> io::Result<()> {
@@ -390,8 +413,9 @@ mod tests {
         std::fs::create_dir(proc.path().join("fd"))?;
         symlink("socket:[1234]", proc.path().join("fd/4"))?;
         symlink("socket:[91234]", proc.path().join("fd/6"))?;
-        assert!(has_socket(proc.path(), Path::new("socket:[1234]")));
-        assert!(!has_socket(proc.path(), Path::new("socket:[123]")));
+        let process = File::open(proc.path())?;
+        assert!(has_socket(&process, "socket:[1234]"));
+        assert!(!has_socket(&process, "socket:[123]"));
         Ok(())
     }
 
