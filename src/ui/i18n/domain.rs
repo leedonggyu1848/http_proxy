@@ -448,8 +448,8 @@ pub(crate) fn terminal_launch_error(lang: Language, error: &TerminalLaunchError)
     match error {
         TerminalLaunchError::NotFound => lang
             .pick(
-                "No terminal emulator found. Set TERMINAL or install one such as xterm.",
-                "터미널 에뮬레이터를 찾지 못했습니다. TERMINAL을 설정하거나 xterm 같은 터미널을 설치하세요.",
+                "No terminal emulator found; set TERMINAL or install xterm.",
+                "터미널 에뮬레이터가 없어 TERMINAL을 설정하거나 xterm을 설치해야 합니다.",
             )
             .to_owned(),
         TerminalLaunchError::ExitedBeforeOpen { terminal, status } => match lang {
