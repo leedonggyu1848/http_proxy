@@ -5,7 +5,7 @@ use crate::ui::detail::body_render::BodyViewCache;
 use crate::ui::detail::body_tab::{self, BodyPanel};
 use crate::ui::detail::detail_tabs::{self, DetailTab};
 use crate::ui::detail::search::{Query, highlight};
-use crate::ui::detail::{headers_tab, image_view, timing_tab};
+use crate::ui::detail::{headers_tab, image_view, process_tab, timing_tab};
 use crate::ui::dialogs::{body_saving::BodySaving, copy_curl};
 use crate::ui::i18n::{self, Language};
 use crate::ui::requests::outcome_view;
@@ -21,6 +21,7 @@ use http_inspector_exchange::{CaptureSource, Exchange, RecordId};
 pub(crate) struct DetailWidgets {
     body: BodyViewCache,
     image: image_view::ImagePanel,
+    process: process_tab::ProcessPanel,
 }
 
 pub(crate) struct DetailView<'a> {
@@ -30,6 +31,7 @@ pub(crate) struct DetailView<'a> {
     pub(crate) body_mode: ViewMode,
     /// Header rows offer filter terms in their context menu.
     pub(crate) field_menu_enabled: bool,
+    pub(crate) process_filter_active: bool,
     pub(crate) body_saving: &'a BodySaving,
     pub(crate) lang: Language,
 }
@@ -102,6 +104,12 @@ impl DetailView<'_> {
                     }
                     DetailTab::Timing => {
                         timing_tab::show(ui, record, lang);
+                        (None, None)
+                    }
+                    DetailTab::Process => {
+                        widgets
+                            .process
+                            .show(ui, record, self.process_filter_active, lang, actions);
                         (None, None)
                     }
                 }

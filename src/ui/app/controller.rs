@@ -13,6 +13,7 @@ use http_inspector_content::format::ViewMode;
 use http_inspector_core::recording::SaveFormat;
 use http_inspector_core::settings::port::PortOrigin;
 use http_inspector_exchange::Exchange;
+use http_inspector_exchange::ProcessIdentity;
 use http_inspector_exchange::{BodySide, RecordId};
 use http_inspector_interop::curl::RedactedHeaders;
 use http_inspector_interop::map_export::{
@@ -54,6 +55,7 @@ pub(crate) enum AppAction {
     SwitchView(MainView),
     ClearSession,
     ClearMapFilter,
+    ProcessFilter(Option<ProcessIdentity>),
     Filter(RecordFilter),
     SelectRecord(RecordId),
     DetailTab(DetailTab),
@@ -157,6 +159,7 @@ impl InspectorApp {
             AppAction::SwitchView(view) => self.layout.main_view = view,
             AppAction::ClearSession => self.clear_session(),
             AppAction::ClearMapFilter => self.requests.clear_map_filter(),
+            AppAction::ProcessFilter(filter) => self.requests.process_filter = filter,
             AppAction::Filter(filter) => self.requests.record_filter = filter,
             AppAction::Search(settings) => self.requests.search.set_settings(settings),
             AppAction::AppendFilter(term) => self.requests.search.append_filter(&term),

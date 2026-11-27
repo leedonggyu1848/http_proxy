@@ -332,16 +332,17 @@ mod tests {
     #[tokio::test]
     async fn reports_a_terminal_that_fails_at_startup_and_passes_the_command() -> TestResult {
         let directory = tempfile::tempdir()?;
+        let shell = PathBuf::from("sh");
         let failing = Terminal {
             name: "Broken".to_owned(),
-            executable: PathBuf::from("/bin/false"),
-            style: Style::DashE,
+            executable: shell.clone(),
+            style: Style::Plain,
         };
-        let mut launch = failing.open(Path::new("/bin/true"), &[])?;
+        let mut launch = failing.open(Path::new("-c"), &[OsString::from("exit 1")])?;
         let outcome = tokio::time::timeout(Duration::from_secs(5), result(&mut launch)).await?;
         assert!(matches!(
             outcome,
-            Err(TerminalLaunchError::ExitedBeforeOpen { .. })
+            Err(TerminalLaunchError::ExitedBeforeOpen { status, .. }) if status.code() == Some(1)
         ));
         let recorder = executable(
             directory.path(),
@@ -350,13 +351,14 @@ mod tests {
         )?;
         let working = Terminal {
             name: "Recorder".to_owned(),
-            executable: recorder.clone(),
+            executable: shell,
             style: Style::DoubleDash,
         };
-        let mut launch = working.open(Path::new("/opt/app"), &[OsString::from("shell")])?;
+        let args = [OsString::from("/opt/app"), OsString::from("shell")];
+        let mut launch = working.open(&recorder, &args)?;
         tokio::time::timeout(Duration::from_secs(5), result(&mut launch)).await??;
         let args = fs::read_to_string(recorder.with_extension("args"))?;
-        assert_eq!(args, "--\n/opt/app\nshell\n");
+        assert_eq!(args, "/opt/app\nshell\n");
         Ok(())
     }
 }

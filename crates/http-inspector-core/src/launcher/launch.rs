@@ -58,6 +58,7 @@ async fn run(
         _ = &mut stop => return Ok(()),
     };
     let mut child = command(browser, proxy, profile.path()).spawn()?;
+    let _registration = crate::process::register_browser(child.id(), proxy);
     // A missing package or sandbox failure should appear as an error, not "open".
     tokio::select! {
         status = child.wait() => {

@@ -12,7 +12,7 @@ use super::inspect::forward_https;
 use super::upstream::{connect_deadline, resolve_within};
 use super::{EngineState, ProxyHandle, failed_response, infallible_to_hyper};
 use crate::https::Destination;
-use http_inspector_exchange::{CaptureSource, FailureStage, RecordId};
+use http_inspector_exchange::{CaptureSource, FailureStage};
 
 /// Running replay; cancelling aborts the forwarding task.
 pub struct ReplayTask(tokio::task::JoinHandle<()>);
@@ -61,14 +61,7 @@ pub(crate) fn execute_replay(
         } else {
             CaptureSource::HttpProxy
         };
-        let capture = CaptureContext::start(
-            request.method(),
-            request.headers(),
-            request.extensions().get::<RecordId>().copied(),
-            source,
-            &target,
-            &engine,
-        );
+        let capture = CaptureContext::start(&request, source, &target, &engine);
         let request = request.map(|body| body.map_err(infallible_to_hyper).boxed());
         // Resolve before HTTPS as well, preserving the loop guard.
         let response = if source == CaptureSource::InspectedHttps {

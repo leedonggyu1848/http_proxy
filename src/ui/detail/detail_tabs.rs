@@ -1,4 +1,4 @@
-//! Headers, Body, and Timing tabs of the detail panel: keyboard switching and an
+//! Headers, Body, Timing, and Process tabs of the detail panel: keyboard switching and an
 //! accessible tab list.
 
 use eframe::egui::{self, Key, Modifiers};
@@ -12,6 +12,7 @@ pub(crate) enum DetailTab {
     Headers,
     Body,
     Timing,
+    Process,
 }
 
 /// Direction of a keyboard tab switch.
@@ -22,7 +23,7 @@ enum TabStep {
 }
 
 impl DetailTab {
-    const ALL: [Self; 3] = [Self::Headers, Self::Body, Self::Timing];
+    const ALL: [Self; 4] = [Self::Headers, Self::Body, Self::Timing, Self::Process];
 
     const fn title(self, lang: Language) -> &'static str {
         let text = lang.detail();
@@ -30,6 +31,7 @@ impl DetailTab {
             Self::Headers => text.headers,
             Self::Body => text.body,
             Self::Timing => text.timing,
+            Self::Process => lang.process().tab,
         }
     }
 
@@ -107,10 +109,14 @@ mod tests {
     fn steps_wrap_around_both_ends() {
         assert_eq!(DetailTab::Headers.stepped(TabStep::Next), DetailTab::Body);
         assert_eq!(DetailTab::Body.stepped(TabStep::Next), DetailTab::Timing);
-        assert_eq!(DetailTab::Timing.stepped(TabStep::Next), DetailTab::Headers);
+        assert_eq!(DetailTab::Timing.stepped(TabStep::Next), DetailTab::Process);
+        assert_eq!(
+            DetailTab::Process.stepped(TabStep::Next),
+            DetailTab::Headers
+        );
         assert_eq!(
             DetailTab::Headers.stepped(TabStep::Previous),
-            DetailTab::Timing
+            DetailTab::Process
         );
         assert_eq!(
             DetailTab::Body.stepped(TabStep::Previous),
@@ -226,6 +232,7 @@ mod tests {
                 (egui::Role::Tab, "Headers".to_owned(), Some(false), None),
                 (egui::Role::Tab, "Body".to_owned(), Some(true), None),
                 (egui::Role::Tab, "Timing".to_owned(), Some(false), None),
+                (egui::Role::Tab, "Process".to_owned(), Some(false), None),
             ]
         );
         Ok(())

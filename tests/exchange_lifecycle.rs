@@ -228,3 +228,59 @@ async fn upstream_replying(reply: Option<&'static [u8]>) -> std::io::Result<Sock
     });
     Ok(address)
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn attributes_two_requests_to_the_same_live_connection() -> Result<(), TestError> {
+    let upstream = TcpListener::bind("127.0.0.1:0").await?;
+    let address = upstream.local_addr()?;
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = upstream.accept().await?;
+            read_headers(&mut stream).await?;
+            stream.write_all(b"HTTP/1.1 204 No Content\r\n\r\n").await?;
+        }
+        Ok::<_, std::io::Error>(())
+    });
+    let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0))?;
+    let mut client = TcpStream::connect(proxy.local_addr()).await?;
+    let peer = client.local_addr()?;
+    for path in ["/first", "/second"] {
+        let request = format!("GET http://{address}{path} HTTP/1.1\r\nHost: {address}\r\n\r\n");
+        client.write_all(request.as_bytes()).await?;
+        let head = timeout(TEST_TIMEOUT, read_headers(&mut client)).await??;
+        assert!(head.starts_with(b"HTTP/1.1 204"));
+    }
+
+    let first = next_record(&mut proxy).await?;
+    let second = next_record(&mut proxy).await?;
+    let connection = first.connection().ok_or("missing client connection")?;
+    assert_eq!(connection.peer(), peer);
+    assert_eq!(
+        second
+            .connection()
+            .map(http_inspector_exchange::ClientConnection::id),
+        Some(connection.id())
+    );
+    assert_eq!(connection.request_count(), 2);
+    let attribution = timeout(TEST_TIMEOUT, async {
+        loop {
+            if let Some(attribution) = connection.process() {
+                break attribution;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await?;
+    let process = attribution
+        .as_ref()
+        .map_err(|reason| format!("could not look up test process: {reason:?}"))?;
+    assert_eq!(process.identity.pid, std::process::id());
+    assert!(process.started_at.is_some());
+    assert_ne!(process.name, "");
+    assert!(process.executable.is_some());
+    drop(client);
+    timeout(TEST_TIMEOUT, server).await???;
+    proxy.stop()?;
+    Ok(())
+}

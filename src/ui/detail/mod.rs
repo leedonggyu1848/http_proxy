@@ -7,6 +7,7 @@ pub(super) mod detail_view;
 mod headers_tab;
 pub(super) mod highlight;
 pub(super) mod image_view;
+mod process_tab;
 pub(super) mod search;
 mod timing_tab;
 pub(super) mod tree_view;
