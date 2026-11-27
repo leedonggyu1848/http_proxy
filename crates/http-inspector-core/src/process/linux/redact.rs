@@ -8,16 +8,22 @@ use http_inspector_exchange::http_semantics::{REDACTED_VALUE, is_sensitive_heade
 #[derive(Clone, Copy)]
 enum Value {
     Secret,
-    Header,
-    Proxy,
+    Header { expanded: bool },
+    Authority { expanded: bool },
+    Variable,
 }
 
 impl Value {
     fn redact(self, argument: &str) -> String {
         match self {
             Self::Secret => REDACTED_VALUE.to_owned(),
-            Self::Header => redact_header(argument),
-            Self::Proxy => redact_proxy(argument),
+            Self::Header { expanded } => redact_header(argument, expanded),
+            // Expansion can introduce userinfo even when the template has no @.
+            Self::Authority { expanded: true } if argument.contains("{{") => {
+                REDACTED_VALUE.to_owned()
+            }
+            Self::Authority { .. } => redact_authority(argument),
+            Self::Variable => redact_variable(argument),
         }
     }
 }
@@ -53,7 +59,13 @@ pub(super) fn command(bytes: &[u8], executable: Option<&Path>) -> Option<String>
             continue;
         }
         let redacted = option_value(&argument, curl).map_or_else(
-            || redact_urls(&argument),
+            || {
+                if curl && !argument.starts_with('-') {
+                    redact_authority(&argument)
+                } else {
+                    redact_urls(&argument)
+                }
+            },
             |option| {
                 if let Some((separator, value)) = option.inline {
                     format!("{}{separator}{}", option.name, option.value.redact(value))
@@ -75,11 +87,27 @@ fn option_value(argument: &str, curl: bool) -> Option<OptionValue<'_>> {
     let (name, inline) = argument
         .split_once('=')
         .map_or((argument, None), |(name, value)| (name, Some(("=", value))));
-    let value = match name {
-        "--header" | "--proxy-header" => Value::Header,
-        "--user" | "--proxy-user" | "--oauth2-bearer" | "--cookie" | "--cert" | "--proxy-cert"
-        | "--pass" | "--proxy-pass" | "--ftp-account" => Value::Secret,
-        "--proxy" | "--preproxy" | "--proxy1.0" => Value::Proxy,
+    let expansion = if curl {
+        name.strip_prefix("--expand-")
+    } else {
+        None
+    };
+    let long_option = expansion.or_else(|| name.strip_prefix("--"));
+    let value = match long_option {
+        Some("header" | "proxy-header") => Value::Header {
+            expanded: expansion.is_some(),
+        },
+        Some(
+            "user" | "proxy-user" | "oauth2-bearer" | "cookie" | "cert" | "proxy-cert" | "pass"
+            | "proxy-pass" | "ftp-account",
+        ) => Value::Secret,
+        Some("proxy" | "preproxy" | "proxy1.0") => Value::Authority {
+            expanded: expansion.is_some(),
+        },
+        Some("url") if curl => Value::Authority {
+            expanded: expansion.is_some(),
+        },
+        Some("variable") if curl => Value::Variable,
         _ if (inline.is_some() || name.starts_with('-')) && sensitive_name(name) => Value::Secret,
         _ if !curl && argument.starts_with("-p") && argument.len() > 2 => {
             return Some(OptionValue {
@@ -101,8 +129,8 @@ fn curl_short_option(argument: &str) -> Option<OptionValue<'_>> {
     for (index, option) in argument.char_indices().skip(1) {
         let value = match option {
             'u' | 'U' | 'b' | 'E' => Value::Secret,
-            'H' => Value::Header,
-            'x' => Value::Proxy,
+            'H' => Value::Header { expanded: false },
+            'x' => Value::Authority { expanded: false },
             // Only flag options can precede another short option in a group.
             '#' | ':' | '0' | '1' | '2' | '3' | '4' | '6' | 'a' | 'B' | 'f' | 'g' | 'G' | 'i'
             | 'I' | 'j' | 'J' | 'k' | 'l' | 'L' | 'M' | 'n' | 'N' | 'O' | 'p' | 'q' | 'R' | 's'
@@ -131,19 +159,22 @@ fn sensitive_name(name: &str) -> bool {
         })
 }
 
-fn redact_header(argument: &str) -> String {
+fn redact_header(argument: &str, expanded: bool) -> String {
     let sensitive = |line: &str| {
-        line.split_once(':').is_some_and(|(name, _)| {
-            let name = name.trim();
-            is_sensitive_header(name) || sensitive_name(name)
-        })
+        let name = line.split(':').next().unwrap_or_default().trim();
+        (expanded && name.contains("{{")) || is_sensitive_header(name) || sensitive_name(name)
     };
     let mut lines = argument.lines();
     if let Some(first) = lines.next()
         && sensitive(first)
-        && let Some((name, _)) = first.split_once(':')
     {
-        return format!("{name}: {REDACTED_VALUE}");
+        return first
+            .split_once(':')
+            .filter(|(name, _)| !expanded || !name.contains("{{"))
+            .map_or_else(
+                || REDACTED_VALUE.to_owned(),
+                |(name, _)| format!("{name}: {REDACTED_VALUE}"),
+            );
     }
     // Header input can include multiple lines. If one of the later fields
     // contains credentials, mask the argument including any continuations.
@@ -153,11 +184,20 @@ fn redact_header(argument: &str) -> String {
     redact_urls(argument)
 }
 
-fn redact_proxy(argument: &str) -> String {
+fn redact_authority(argument: &str) -> String {
     if let Some(at) = userinfo_end(argument)
         && let Some(host) = argument.get(at..)
     {
         return format!("{REDACTED_VALUE}{host}");
+    }
+    redact_urls(argument)
+}
+
+fn redact_variable(argument: &str) -> String {
+    if let Some((name, _)) = argument.split_once('=')
+        && !name.contains('@')
+    {
+        return format!("{name}={REDACTED_VALUE}");
     }
     redact_urls(argument)
 }
@@ -252,6 +292,39 @@ mod tests {
         assert_eq!(
             command(b"python3\0-u\0script.py\0", None).as_deref(),
             Some("python3 -u script.py")
+        );
+    }
+
+    #[test]
+    fn hides_expanded_curl_authentication_and_header_values() {
+        let bytes = b"curl\0--expand-header\0Authorization: Bearer fixture-token\0--expand-header=X-Api-Key: review-api-key\0--expand-proxy-header=Proxy-Authorization: Basic fixture-proxy\0--expand-user\0demo:fixture-password\0--expand-proxy-user=demo:fixture-proxy-password\0--expand-oauth2-bearer\0fixture-bearer\0--expand-header\0Accept: {{media}}\0";
+        assert_eq!(
+            command(bytes, None).as_deref(),
+            Some(
+                "curl --expand-header \"Authorization: [REDACTED]\" \"--expand-header=X-Api-Key: [REDACTED]\" \"--expand-proxy-header=Proxy-Authorization: [REDACTED]\" --expand-user [REDACTED] --expand-proxy-user=[REDACTED] --expand-oauth2-bearer [REDACTED] --expand-header \"Accept: {{media}}\""
+            )
+        );
+    }
+
+    #[test]
+    fn hides_curl_variable_contents_and_headers_with_expanded_names() {
+        let bytes = b"curl\0--variable\0field=Authorization:\0--variable=value=fixtures-only\0--expand-header\0{{field}} Bearer fixture-token\0--expand-proxy-header={{field:trim}}: Basic fixture-proxy\0--expand-variable\0copy={{value}}-plaintext\0--variable\0from_file@fixture=example.txt\0";
+        assert_eq!(
+            command(bytes, None).as_deref(),
+            Some(
+                "curl --variable field=[REDACTED] --variable=value=[REDACTED] --expand-header [REDACTED] --expand-proxy-header=[REDACTED] --expand-variable copy=[REDACTED] --variable from_file@fixture=example.txt"
+            )
+        );
+    }
+
+    #[test]
+    fn hides_curl_userinfo_in_urls_with_an_optional_scheme() {
+        let bytes = b"curl\0--expand-url\0demo:fixture-pass@localhost:8765/a\0--url=https://demo:fixture-pass@example.test/b\0demo:fixture-pass@localhost:8765/c\0--expand-url={{scheme}}//demo:fixture-pass@localhost:8765/d\0--expand-url\0http://demo:fixture-pass{{destination}}\0https://example.test/a@name\0";
+        assert_eq!(
+            command(bytes, None).as_deref(),
+            Some(
+                "curl --expand-url [REDACTED]@localhost:8765/a --url=https://[REDACTED]@example.test/b [REDACTED]@localhost:8765/c --expand-url=[REDACTED] --expand-url [REDACTED] https://example.test/a@name"
+            )
         );
     }
 
