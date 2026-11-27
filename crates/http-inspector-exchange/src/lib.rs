@@ -20,8 +20,8 @@ pub use exchange::{
     BodySnapshot, BodySource, ByteSize, CaptureSource, CapturedHeader, CapturedRequest,
     CapturedResponse, ConnectionId, ExactByteSize, Exchange, ExchangeWriter, FailureStage,
     HeaderPreview, ImageFormat, MediaType, Outcome, PhaseSpan, ReadBodyOutcome, RecordId,
-    SessionId, Timing, TunnelPreview, TunnelSnapshot, TunnelState, TunnelWriter,
-    UpstreamConnection,
+    SendCompleteHandle, SessionId, Timing, TunnelPreview, TunnelSnapshot, TunnelState,
+    TunnelWriter, UpstreamConnection,
 };
 #[cfg(feature = "test-support")]
 pub use exchange_builder::{

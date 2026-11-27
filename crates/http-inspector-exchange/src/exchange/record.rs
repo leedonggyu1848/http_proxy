@@ -455,6 +455,45 @@ struct Settlement {
     after: Duration,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct SendTiming {
+    started: Option<Instant>,
+    ended_override: Option<Instant>,
+    awaiting_retry_end: bool,
+}
+
+/// Handle returned by [`ExchangeWriter::restart_send`] to mark when a retried
+/// request body finishes transmitting on the replacement connection.
+#[derive(Debug)]
+pub struct SendCompleteHandle {
+    send_timing: Arc<Mutex<SendTiming>>,
+    finished: bool,
+}
+
+impl SendCompleteHandle {
+    /// Marks the retried request body transmission as ended now.
+    pub fn finish(mut self) {
+        self.mark_finished();
+    }
+
+    fn mark_finished(&mut self) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        let mut timing = lock_recovering(&self.send_timing);
+        if timing.awaiting_retry_end && timing.ended_override.is_none() {
+            timing.ended_override = Some(Instant::now());
+        }
+    }
+}
+
+impl Drop for SendCompleteHandle {
+    fn drop(&mut self) {
+        self.mark_finished();
+    }
+}
+
 #[derive(Debug)]
 struct ExchangeInner {
     id: RecordId,
@@ -464,9 +503,9 @@ struct ExchangeInner {
     started_at: SystemTime,
     started: Instant,
     request: CapturedRequest,
-    connect: OnceLock<Duration>,
+    connect: OnceLock<PhaseSpan>,
     upstream_connection: Mutex<Option<UpstreamConnection>>,
-    send_started: OnceLock<Instant>,
+    send_timing: Arc<Mutex<SendTiming>>,
     settlement: OnceLock<Settlement>,
     settled_wakers: WakerSet,
 }
@@ -527,7 +566,7 @@ impl ExchangeWriter {
                     request,
                     connect: OnceLock::new(),
                     upstream_connection: Mutex::new(None),
-                    send_started: OnceLock::new(),
+                    send_timing: Arc::new(Mutex::new(SendTiming::default())),
                     settlement: OnceLock::new(),
                     settled_wakers: WakerSet::default(),
                 }),
@@ -550,13 +589,56 @@ impl ExchangeWriter {
     /// upstream connection, which starts the `send` phase.
     pub fn attach_request_body(&self, body: BodyPreview) {
         let inner = &self.exchange.inner;
-        let _already_started = inner.send_started.set(Instant::now()).is_err();
+        let mut timing = lock_recovering(&inner.send_timing);
+        if timing.started.is_none() {
+            timing.started = Some(Instant::now());
+        }
+        drop(timing);
         let _already_attached = inner.request.body.set(body).is_err();
     }
 
-    /// Records how long the upstream connection took to establish.
+    /// Restarts the `send` phase when an idempotent request retries on a fresh
+    /// connection after a stale pooled connection closed.
+    ///
+    /// Returns a [`SendCompleteHandle`] that marks when the retried request
+    /// body finishes sending so `connect`, `send`, and `wait` remain sequential
+    /// and never overlap.
+    #[must_use]
+    pub fn restart_send(&self) -> SendCompleteHandle {
+        let inner = &self.exchange.inner;
+        let mut timing = lock_recovering(&inner.send_timing);
+        timing.started = Some(Instant::now());
+        timing.ended_override = None;
+        timing.awaiting_retry_end = true;
+        drop(timing);
+        SendCompleteHandle {
+            send_timing: Arc::clone(&inner.send_timing),
+            finished: false,
+        }
+    }
+
+    /// Records how long the upstream connection took to establish from request
+    /// arrival.
     pub fn record_connect(&self, duration: Duration) {
-        let _already_recorded = self.exchange.inner.connect.set(duration).is_err();
+        let _already_recorded = self
+            .exchange
+            .inner
+            .connect
+            .set(PhaseSpan::new(Duration::ZERO, duration))
+            .is_err();
+    }
+
+    /// Records an upstream connection phase that began at `connect_started`
+    /// and lasted `duration`, such as a fresh dial triggered after a stale
+    /// pooled connection failed.
+    pub fn record_connect_at(&self, connect_started: Instant, duration: Duration) {
+        let start = connect_started.saturating_duration_since(self.exchange.inner.started);
+        let _already_recorded = self
+            .exchange
+            .inner
+            .connect
+            .set(PhaseSpan::new(start, duration))
+            .is_err();
     }
 
     /// Records which upstream connection forwarded this exchange and whether
@@ -680,12 +762,16 @@ impl Exchange {
         let since_start = |instant: Instant| instant.saturating_duration_since(self.inner.started);
         let settlement = self.inner.settlement.get();
         let settled = settlement.map(|settlement| settlement.after);
-        let send_started = self.inner.send_started.get().copied().map(since_start);
-        let request_ended = self
-            .request()
-            .body()
-            .and_then(BodyPreview::ended_at)
-            .map(since_start);
+        let send_timing = *lock_recovering(&self.inner.send_timing);
+        let send_started = send_timing.started.map(since_start);
+        let request_ended = if send_timing.awaiting_retry_end {
+            send_timing.ended_override.map(since_start)
+        } else {
+            self.request()
+                .body()
+                .and_then(BodyPreview::ended_at)
+                .map(since_start)
+        };
         let response = settlement.and_then(|settlement| match &settlement.outcome {
             Outcome::Response(response) => Some(response),
             _ => None,
@@ -701,11 +787,7 @@ impl Exchange {
             connect: if reused {
                 None
             } else {
-                self.inner
-                    .connect
-                    .get()
-                    .copied()
-                    .map(|duration| PhaseSpan::new(Duration::ZERO, duration))
+                self.inner.connect.get().copied()
             },
             send: span_between(send_started, request_ended),
             wait: span_between(request_ended, headers),
@@ -1079,5 +1161,50 @@ mod tests {
             reused_writer.exchange().timing().connect(),
             Some(Duration::from_millis(6))
         );
+    }
+
+    #[test]
+    fn keeps_sequential_non_overlapping_timing_after_stale_connection_retry() {
+        let writer = start();
+        let exchange = writer.exchange();
+        let stale_id = ConnectionId::new(20);
+        let fresh_id = ConnectionId::new(21);
+
+        // Attempt 1 on a reused connection: body preview completes early.
+        writer.record_upstream_connection(UpstreamConnection::reused(stale_id));
+        let request_body = BodyPreviewWriter::new(16);
+        writer.attach_request_body(request_body.preview());
+        request_body.complete();
+
+        // Simulate stale connection failure and fresh dial before retrying send.
+        let dial_started = Instant::now();
+        let connect_duration = dial_started.elapsed();
+        writer.record_connect_at(dial_started, connect_duration);
+        writer.record_upstream_connection(UpstreamConnection::fresh(fresh_id));
+
+        // Attempt 2 restarts the send phase and hides Attempt 1's stale ended_at
+        // until the retried body finishes sending.
+        let send_complete = writer.restart_send();
+        assert_eq!(exchange.timing().send(), None);
+        assert_eq!(exchange.timing().wait(), None);
+        send_complete.finish();
+        let response_body = BodyPreviewWriter::new(16);
+        assert!(writer.settle(response(&response_body.preview())));
+
+        let timing = exchange.timing();
+        let connect = timing.connect_span();
+        let send = timing.send_span();
+        let wait = timing.wait_span();
+        assert!(connect.is_some());
+        assert!(send.is_some());
+        assert!(wait.is_some());
+        if let (Some(connect), Some(send), Some(wait)) = (connect, send, wait) {
+            assert!(
+                connect.end() <= send.start(),
+                "connect {connect:?} must precede send {send:?}"
+            );
+            assert_eq!(send.end(), wait.start());
+            assert_eq!(Some(wait.end()), timing.settled());
+        }
     }
 }

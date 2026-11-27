@@ -56,6 +56,8 @@ impl RequestHead {
 
 struct ForwardContext<'a> {
     key: PoolKey,
+    request_method: Method,
+    request_version: Version,
     engine: &'a Engine,
     capture: &'a CaptureContext,
     request_body_preview: BodyPreview,
@@ -169,6 +171,8 @@ where
         .attach_request_body(request_body_preview.clone());
 
     let (parts, body) = request.into_parts();
+    let request_method = parts.method.clone();
+    let request_version = parts.version;
     let observed_body = ObservedBody::new(
         body,
         request_body_writer,
@@ -188,6 +192,8 @@ where
 
     let context = ForwardContext {
         key,
+        request_method,
+        request_version,
         engine,
         capture,
         request_body_preview,
@@ -233,16 +239,22 @@ where
         );
     };
 
+    let connect_started = Instant::now();
     let (mut fresh, connect_duration) = match dial().await {
         Ok(pair) => pair,
         Err(failure) => return failure.respond(context.capture),
     };
-    context.capture.writer.record_connect(connect_duration);
+    context
+        .capture
+        .writer
+        .record_connect_at(connect_started, connect_duration);
     context
         .capture
         .writer
         .record_upstream_connection(fresh.metadata());
 
+    let send_complete = context.capture.writer.restart_send();
+    let retry_body = retry_body.with_on_end(send_complete);
     let retry_request = head.into_request(retry_body.boxed());
     match send_once(
         &mut fresh,
@@ -322,7 +334,13 @@ fn finalize_response(
     conn: PooledConnection,
     context: ForwardContext<'_>,
 ) -> Response<ProxyBody> {
-    let keep_alive = response_allows_keep_alive(response.version(), response.headers());
+    let keep_alive = response_allows_keep_alive(
+        &context.request_method,
+        context.request_version,
+        response.status(),
+        response.version(),
+        response.headers(),
+    );
     if let Some(log) = context.capture.log.as_ref() {
         log.response_head(context.capture.id(), response.headers());
     }

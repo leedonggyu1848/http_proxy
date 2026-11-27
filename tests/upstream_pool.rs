@@ -408,13 +408,13 @@ async fn retries_idempotent_requests_when_upstream_closes_idle_connection() -> R
         "retried GET completed on a fresh connection"
     );
     assert_ne!(c1.id(), c2.id());
-    assert!(r2.timing().connect().is_some());
+    assert_sequential_retry_timing(&r2)?;
     assert!(
         !c3.is_reused(),
         "retried PUT completed on a fresh connection"
     );
     assert_ne!(c2.id(), c3.id());
-    assert!(r3.timing().connect().is_some());
+    assert_sequential_retry_timing(&r3)?;
 
     // The retried PUT body must be observed exactly once (7 bytes, not 14).
     let put_body = wait_for_body_end(r3.request().body().ok_or("missing PUT body")?).await?;
@@ -424,6 +424,27 @@ async fn retries_idempotent_requests_when_upstream_closes_idle_connection() -> R
     timeout(TEST_TIMEOUT, server).await???;
     assert_eq!(accepted.load(Ordering::SeqCst), 3);
     proxy.stop()?;
+    Ok(())
+}
+
+fn assert_sequential_retry_timing(
+    record: &http_inspector_exchange::Exchange,
+) -> Result<(), TestError> {
+    let timing = record.timing();
+    let connect = timing
+        .connect_span()
+        .ok_or("missing connect span on retry")?;
+    let send = timing.send_span().ok_or("missing send span on retry")?;
+    let wait = timing.wait_span().ok_or("missing wait span on retry")?;
+    assert!(
+        connect.end() <= send.start(),
+        "connect {connect:?} overlapped send {send:?}"
+    );
+    assert!(
+        send.end() <= wait.start(),
+        "send {send:?} overlapped wait {wait:?}"
+    );
+    assert_eq!(Some(wait.end()), timing.settled());
     Ok(())
 }
 
@@ -897,6 +918,203 @@ async fn discards_already_closed_idle_connection_before_sending_post() -> Result
     assert_eq!(post_count.load(Ordering::SeqCst), 1);
 
     timeout(TEST_TIMEOUT, server).await???;
+    proxy.stop()?;
+    Ok(())
+}
+
+fn spawn_non_pooled_server(
+    upstream: TcpListener,
+    accepted: Arc<AtomicUsize>,
+    first_reply: &'static [u8],
+    close_after_first: bool,
+) -> tokio::task::JoinHandle<io::Result<()>> {
+    tokio::spawn(async move {
+        let (mut first, _) = upstream.accept().await?;
+        accepted.fetch_add(1, Ordering::SeqCst);
+        let _ = read_optional_headers(&mut first).await?;
+        first.write_all(first_reply).await?;
+        if close_after_first {
+            first.shutdown().await?;
+            drop(first);
+        } else {
+            tokio::spawn(async move {
+                let _ = read_optional_headers(&mut first).await;
+            });
+        }
+
+        let (mut second, _) = upstream.accept().await?;
+        accepted.fetch_add(1, Ordering::SeqCst);
+        let _ = read_optional_headers(&mut second).await?;
+        second
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .await?;
+        Ok(())
+    })
+}
+
+async fn send_non_pooled_first(
+    proxy_addr: std::net::SocketAddr,
+    upstream_addr: std::net::SocketAddr,
+    label: &'static str,
+) -> Result<(), TestError> {
+    let mut client = TcpStream::connect(proxy_addr).await?;
+    let req = format!(
+        "GET http://{upstream_addr}/{label} HTTP/1.1\r\nHost: {upstream_addr}\r\nConnection: close\r\n\r\n"
+    );
+    client.write_all(req.as_bytes()).await?;
+    if label == "switching-protocols" {
+        let head = timeout(TEST_TIMEOUT, read_headers(&mut client)).await??;
+        assert!(head.starts_with(b"HTTP/1.1 101"), "{label}");
+    } else {
+        let mut raw = Vec::new();
+        timeout(TEST_TIMEOUT, client.read_to_end(&mut raw)).await??;
+        assert!(raw.starts_with(b"HTTP/1.1 200 OK"), "{label}");
+    }
+    Ok(())
+}
+
+async fn assert_non_pooled_case(
+    label: &'static str,
+    first_reply: &'static [u8],
+    close_after_first: bool,
+) -> Result<(), TestError> {
+    let upstream = TcpListener::bind("127.0.0.1:0").await?;
+    let upstream_addr = upstream.local_addr()?;
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let server = spawn_non_pooled_server(
+        upstream,
+        Arc::clone(&accepted),
+        first_reply,
+        close_after_first,
+    );
+
+    let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0))?;
+    send_non_pooled_first(proxy.local_addr(), upstream_addr, label).await?;
+
+    let mut client2 = TcpStream::connect(proxy.local_addr()).await?;
+    let req2 = format!(
+        "GET http://{upstream_addr}/next HTTP/1.1\r\nHost: {upstream_addr}\r\nConnection: close\r\n\r\n"
+    );
+    client2.write_all(req2.as_bytes()).await?;
+    let (head2, body2) = timeout(TEST_TIMEOUT, read_one_http_response(&mut client2)).await??;
+    assert!(head2.starts_with(b"HTTP/1.1 200 OK"), "{label}");
+    assert_eq!(body2, b"ok", "{label}");
+
+    let r1 = next_record(&mut proxy).await?;
+    let r2 = next_record(&mut proxy).await?;
+    let _ = settled(&r1).await?;
+    let _ = settled(&r2).await?;
+    let c1 = r1.upstream_connection().ok_or("missing c1")?;
+    let c2 = r2.upstream_connection().ok_or("missing c2")?;
+    assert!(!c2.is_reused(), "{label} must not reuse connection");
+    assert_ne!(c1.id(), c2.id(), "{label} must open a new connection");
+    assert!(r2.timing().connect().is_some(), "{label}");
+    timeout(TEST_TIMEOUT, server).await???;
+    assert_eq!(accepted.load(Ordering::SeqCst), 2, "{label}");
+    proxy.stop()?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn does_not_pool_connection_close_upgrade_or_close_delimited_responses()
+-> Result<(), TestError> {
+    let cases: [(&'static str, &'static [u8], bool); 3] = [
+        (
+            "connection-close",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+            false,
+        ),
+        (
+            "switching-protocols",
+            b"HTTP/1.1 101 Switching Protocols\r\nConnection: upgrade\r\nUpgrade: custom\r\n\r\n",
+            false,
+        ),
+        ("close-delimited", b"HTTP/1.1 200 OK\r\n\r\nhello", true),
+    ];
+    for (label, first_reply, close_after_first) in cases {
+        assert_non_pooled_case(label, first_reply, close_after_first).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn closes_and_does_not_pool_upstream_when_client_drops_response_early()
+-> Result<(), TestError> {
+    let upstream = TcpListener::bind("127.0.0.1:0").await?;
+    let upstream_addr = upstream.local_addr()?;
+    let first_closed = Arc::new(Notify::new());
+    let first_closed_signal = Arc::clone(&first_closed);
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let accepted_counter = Arc::clone(&accepted);
+
+    let server = tokio::spawn(async move {
+        // Connection #1 starts streaming a large body, then watches for EOF/reset
+        // caused by the proxy discarding the half-read upstream connection.
+        let (mut first, _) = upstream.accept().await?;
+        accepted_counter.fetch_add(1, Ordering::SeqCst);
+        let _ = read_optional_headers(&mut first).await?;
+        first
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\n\r\npartial")
+            .await?;
+        tokio::spawn(async move {
+            let mut buf = [0_u8; 16];
+            let _ = first.read(&mut buf).await;
+            first_closed_signal.notify_waiters();
+        });
+
+        // Connection #2 serves the follow-up request cleanly.
+        let (mut second, _) = upstream.accept().await?;
+        accepted_counter.fetch_add(1, Ordering::SeqCst);
+        let _ = read_optional_headers(&mut second).await?;
+        second
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .await?;
+        Ok::<_, io::Error>(())
+    });
+
+    let mut proxy = ProxyHandle::start(ProxyConfig::loopback(0))?;
+    let mut client1 = TcpStream::connect(proxy.local_addr()).await?;
+    client1
+        .write_all(
+            format!("GET http://{upstream_addr}/stream HTTP/1.1\r\nHost: {upstream_addr}\r\n\r\n")
+                .as_bytes(),
+        )
+        .await?;
+    let head = timeout(TEST_TIMEOUT, read_headers(&mut client1)).await??;
+    assert!(head.starts_with(b"HTTP/1.1 200 OK"));
+    let mut partial = [0_u8; 7];
+    timeout(TEST_TIMEOUT, client1.read_exact(&mut partial)).await??;
+    assert_eq!(&partial, b"partial");
+    // Client abandons the response body before EOF.
+    drop(client1);
+
+    timeout(Duration::from_secs(2), first_closed.notified()).await?;
+
+    let mut client2 = TcpStream::connect(proxy.local_addr()).await?;
+    client2
+        .write_all(
+            format!(
+                "GET http://{upstream_addr}/fresh HTTP/1.1\r\nHost: {upstream_addr}\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await?;
+    let (head2, body2) = timeout(TEST_TIMEOUT, read_one_http_response(&mut client2)).await??;
+    assert!(head2.starts_with(b"HTTP/1.1 200 OK"));
+    assert_eq!(body2, b"ok");
+
+    let r1 = next_record(&mut proxy).await?;
+    let r2 = next_record(&mut proxy).await?;
+    assert!(matches!(settled(&r1).await?, Outcome::Response(_)));
+    assert!(matches!(settled(&r2).await?, Outcome::Response(_)));
+    let c1 = r1.upstream_connection().ok_or("missing c1")?;
+    let c2 = r2.upstream_connection().ok_or("missing c2")?;
+    assert!(!c2.is_reused());
+    assert_ne!(c1.id(), c2.id());
+    assert!(r2.timing().connect().is_some());
+
+    timeout(TEST_TIMEOUT, server).await???;
+    assert_eq!(accepted.load(Ordering::SeqCst), 2);
     proxy.stop()?;
     Ok(())
 }

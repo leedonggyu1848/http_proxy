@@ -17,11 +17,13 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use http::header::CONNECTION;
+use http::header::{CONNECTION, CONTENT_LENGTH, TRANSFER_ENCODING, UPGRADE};
 use http::uri::Authority;
-use http::{HeaderMap, Method, Version};
+use http::{HeaderMap, Method, StatusCode, Version};
 use http_body::{Body, Frame, SizeHint};
-use http_inspector_exchange::{BodyLifecycle, BodyPreview, ConnectionId, UpstreamConnection};
+use http_inspector_exchange::{
+    BodyLifecycle, BodyPreview, ConnectionId, SendCompleteHandle, UpstreamConnection,
+};
 use hyper::client::conn::http1 as client_http1;
 use tokio::task::AbortHandle;
 
@@ -466,17 +468,33 @@ pub(super) const fn is_idempotent_method(method: &Method) -> bool {
     )
 }
 
-/// Reports whether the upstream response head permits keeping the HTTP/1
-/// connection persistent per RFC 9112 §9.3. Must be called before stripping
-/// hop-by-hop headers.
-pub(super) fn response_allows_keep_alive(version: Version, headers: &HeaderMap) -> bool {
+/// Reports whether the upstream exchange permits keeping the HTTP/1 connection
+/// persistent per RFC 9112 §6.3 and §9.3. Must be called before stripping
+/// hop-by-hop headers from the response.
+pub(super) fn response_allows_keep_alive(
+    request_method: &Method,
+    request_version: Version,
+    response_status: StatusCode,
+    response_version: Version,
+    response_headers: &HeaderMap,
+) -> bool {
+    // Requests are forwarded after stripping hop-by-hop headers, so HTTP/1.0
+    // requests do not send `Connection: keep-alive` and cannot stay persistent.
+    if request_version != Version::HTTP_11 {
+        return false;
+    }
+    // Protocol upgrades leave HTTP/1.1 framing and must never return to the pool.
+    if response_status == StatusCode::SWITCHING_PROTOCOLS || response_headers.contains_key(UPGRADE)
+    {
+        return false;
+    }
     let mut saw_keep_alive = false;
-    for value in headers.get_all(CONNECTION) {
+    for value in response_headers.get_all(CONNECTION) {
         let Ok(text) = value.to_str() else {
             continue;
         };
         for token in text.split(',').map(str::trim) {
-            if token.eq_ignore_ascii_case("close") {
+            if token.eq_ignore_ascii_case("close") || token.eq_ignore_ascii_case("upgrade") {
                 return false;
             }
             if token.eq_ignore_ascii_case("keep-alive") {
@@ -484,11 +502,25 @@ pub(super) fn response_allows_keep_alive(version: Version, headers: &HeaderMap) 
             }
         }
     }
-    match version {
+    let version_ok = match response_version {
         Version::HTTP_11 => true,
         Version::HTTP_10 => saw_keep_alive,
         _ => false,
+    };
+    if !version_ok {
+        return false;
     }
+    // Responses that may carry a body require explicit framing (`Content-Length`
+    // or `Transfer-Encoding`); otherwise EOF delimits the body.
+    let bodiless = *request_method == Method::HEAD
+        || response_status.is_informational()
+        || matches!(
+            response_status,
+            StatusCode::NO_CONTENT | StatusCode::NOT_MODIFIED
+        );
+    bodiless
+        || response_headers.contains_key(CONTENT_LENGTH)
+        || response_headers.contains_key(TRANSFER_ENCODING)
 }
 
 /// Reports whether a `hyper::Error` on a reused pooled connection indicates
@@ -544,6 +576,20 @@ pub(super) struct RetryBodyHandle<B> {
 pub(super) struct ReplayedBody<B> {
     chunks: VecDeque<Bytes>,
     remaining: Option<B>,
+    on_end: Option<SendCompleteHandle>,
+}
+
+impl<B> ReplayedBody<B> {
+    /// Attaches a completion marker that fires as soon as the retried request
+    /// body finishes streaming on the fresh connection.
+    pub(super) fn with_on_end(mut self, handle: SendCompleteHandle) -> Self {
+        if self.chunks.is_empty() && self.remaining.is_none() {
+            handle.finish();
+        } else {
+            self.on_end = Some(handle);
+        }
+        self
+    }
 }
 
 /// Splits `body` into a streaming first-attempt body and a retry handle.
@@ -580,7 +626,11 @@ impl<B> RetryBodyHandle<B> {
         let chunks = std::mem::take(&mut state.chunks);
         let remaining = state.inner.take();
         drop(state);
-        Some(ReplayedBody { chunks, remaining })
+        Some(ReplayedBody {
+            chunks,
+            remaining,
+            on_end: None,
+        })
     }
 }
 
@@ -657,20 +707,51 @@ where
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         let this = self.get_mut();
         if let Some(chunk) = this.chunks.pop_front() {
+            if this.chunks.is_empty()
+                && this.remaining.is_none()
+                && let Some(on_end) = this.on_end.take()
+            {
+                on_end.finish();
+            }
             return Poll::Ready(Some(Ok(Frame::data(chunk))));
         }
         let Some(remaining) = this.remaining.as_mut() else {
+            if let Some(on_end) = this.on_end.take() {
+                on_end.finish();
+            }
             return Poll::Ready(None);
         };
         let polled = Pin::new(&mut *remaining).poll_frame(context);
-        if matches!(polled, Poll::Ready(None)) || remaining.is_end_stream() {
+        let done = matches!(polled, Poll::Ready(None | Some(Err(_)))) || remaining.is_end_stream();
+        if done {
             this.remaining = None;
+            if let Some(on_end) = this.on_end.take() {
+                on_end.finish();
+            }
         }
         polled
     }
 
     fn is_end_stream(&self) -> bool {
         self.chunks.is_empty() && self.remaining.is_none()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        let buffered = self.chunks.iter().fold(0_u64, |total, chunk| {
+            total.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX))
+        });
+        let mut hint = SizeHint::new();
+        match &self.remaining {
+            Some(remaining) => {
+                let inner = remaining.size_hint();
+                hint.set_lower(buffered.saturating_add(inner.lower()));
+                if let Some(upper) = inner.upper() {
+                    hint.set_upper(buffered.saturating_add(upper));
+                }
+            }
+            None => hint.set_exact(buffered),
+        }
+        hint
     }
 }
 
@@ -737,7 +818,7 @@ mod tests {
     }
 
     #[test]
-    fn classifies_idempotent_methods_and_keep_alive_headers() {
+    fn classifies_idempotent_methods() {
         for method in [
             Method::GET,
             Method::HEAD,
@@ -751,20 +832,57 @@ mod tests {
         for method in [Method::POST, Method::PATCH, Method::CONNECT] {
             assert!(!is_idempotent_method(&method), "{method}");
         }
+    }
 
+    fn headers_with(pairs: &[(http::header::HeaderName, &'static str)]) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        for (name, value) in pairs {
+            map.append(name.clone(), HeaderValue::from_static(value));
+        }
+        map
+    }
+
+    #[test]
+    fn classifies_keep_alive_framing_and_upgrades() {
+        let h11 = Version::HTTP_11;
+        let ok = StatusCode::OK;
+        let sw = StatusCode::SWITCHING_PROTOCOLS;
+        let framed = headers_with(&[(CONTENT_LENGTH, "5")]);
+        let chunked = headers_with(&[(TRANSFER_ENCODING, "chunked")]);
         let empty = HeaderMap::new();
-        assert!(response_allows_keep_alive(Version::HTTP_11, &empty));
-        assert!(!response_allows_keep_alive(Version::HTTP_10, &empty));
+        let upgrade = headers_with(&[(CONNECTION, "upgrade"), (UPGRADE, "websocket")]);
 
-        let mut close = HeaderMap::new();
-        close.append(CONNECTION, HeaderValue::from_static("keep-alive, Close"));
-        assert!(!response_allows_keep_alive(Version::HTTP_11, &close));
-        assert!(!response_allows_keep_alive(Version::HTTP_10, &close));
+        let allows = |m: Method, s: StatusCode, h: &HeaderMap| {
+            response_allows_keep_alive(&m, h11, s, h11, h)
+        };
+        assert!(allows(Method::GET, ok, &framed));
+        assert!(allows(Method::GET, ok, &chunked));
+        assert!(allows(Method::HEAD, ok, &empty));
+        assert!(allows(Method::GET, StatusCode::NO_CONTENT, &empty));
+        assert!(allows(Method::GET, StatusCode::NOT_MODIFIED, &empty));
+        assert!(!allows(Method::GET, ok, &empty));
+        assert!(!allows(Method::GET, sw, &upgrade));
+        assert!(!allows(Method::GET, sw, &empty));
+        assert!(!allows(Method::GET, ok, &upgrade));
+    }
 
-        let mut keep = HeaderMap::new();
-        keep.append(CONNECTION, HeaderValue::from_static("Keep-Alive"));
-        assert!(response_allows_keep_alive(Version::HTTP_10, &keep));
-        assert!(response_allows_keep_alive(Version::HTTP_11, &keep));
+    #[test]
+    fn classifies_keep_alive_versions_and_connection_tokens() {
+        let h11 = Version::HTTP_11;
+        let h10 = Version::HTTP_10;
+        let ok = StatusCode::OK;
+        let framed = headers_with(&[(CONTENT_LENGTH, "5")]);
+        let close = headers_with(&[(CONTENT_LENGTH, "5"), (CONNECTION, "keep-alive, Close")]);
+        let keep = headers_with(&[(CONTENT_LENGTH, "5"), (CONNECTION, "Keep-Alive")]);
+
+        let allows = |req_v: Version, resp_v: Version, h: &HeaderMap| {
+            response_allows_keep_alive(&Method::GET, req_v, ok, resp_v, h)
+        };
+        assert!(!allows(h11, h11, &close));
+        assert!(!allows(h11, h10, &close));
+        assert!(!allows(h10, h11, &framed));
+        assert!(!allows(h11, h10, &framed));
+        assert!(allows(h11, h10, &keep));
     }
 
     #[tokio::test]
@@ -898,6 +1016,39 @@ mod tests {
         Ok(())
     }
 
+    struct ChunkedTestBody {
+        chunks: VecDeque<Bytes>,
+        known_upper: bool,
+    }
+
+    impl Body for ChunkedTestBody {
+        type Data = Bytes;
+        type Error = std::convert::Infallible;
+
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+            Poll::Ready(self.chunks.pop_front().map(|chunk| Ok(Frame::data(chunk))))
+        }
+
+        fn is_end_stream(&self) -> bool {
+            self.chunks.is_empty()
+        }
+
+        fn size_hint(&self) -> SizeHint {
+            let remaining = self.chunks.iter().fold(0_u64, |total, chunk| {
+                total.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX))
+            });
+            let mut hint = SizeHint::new();
+            hint.set_lower(remaining);
+            if self.known_upper {
+                hint.set_upper(remaining);
+            }
+            hint
+        }
+    }
+
     #[tokio::test]
     async fn replayed_body_emits_captured_chunks_once() -> Result<(), Box<dyn std::error::Error>> {
         let (first, handle) = replayable_body(
@@ -910,6 +1061,7 @@ mod tests {
         let replayed = handle
             .take_retry_body()
             .ok_or("expected small body to be replayable")?;
+        assert_eq!(replayed.size_hint().exact(), Some(5));
         let retry_bytes = replayed.collect().await?.to_bytes();
         assert_eq!(&retry_bytes[..], b"hello");
 
@@ -919,7 +1071,7 @@ mod tests {
         let _ = big.collect().await?;
         assert!(big_handle.take_retry_body().is_none());
 
-        // Empty bodies are trivially replayable.
+        // Empty bodies are trivially replayable with exact size hint 0.
         let (empty, empty_handle) = replayable_body(Empty::<Bytes>::new(), MAX_RETRY_BODY_BYTES);
         assert!(empty.is_end_stream());
         let req = Request::builder().uri("/").body(empty)?;
@@ -928,6 +1080,52 @@ mod tests {
             .take_retry_body()
             .ok_or("empty body must be replayable")?;
         assert!(retry_empty.is_end_stream());
+        assert_eq!(retry_empty.size_hint().exact(), Some(0));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn replayed_body_preserves_size_hint_across_buffered_and_remaining_frames()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Partially polled body with known upper bound: 3 buffered + 4 remaining = exact 7.
+        let bounded = ChunkedTestBody {
+            chunks: VecDeque::from([Bytes::from_static(b"abc"), Bytes::from_static(b"defg")]),
+            known_upper: true,
+        };
+        let (mut attempt, handle) = replayable_body(bounded, MAX_RETRY_BODY_BYTES);
+        let first_frame = attempt.frame().await.ok_or("missing first frame")??;
+        assert_eq!(first_frame.into_data().ok().as_deref(), Some(&b"abc"[..]));
+        drop(attempt);
+
+        let mut replayed = handle
+            .take_retry_body()
+            .ok_or("expected partially polled body to be replayable")?;
+        assert_eq!(replayed.size_hint().exact(), Some(7));
+        let replayed_first = replayed.frame().await.ok_or("missing replayed first")??;
+        assert_eq!(
+            replayed_first.into_data().ok().as_deref(),
+            Some(&b"abc"[..])
+        );
+        assert_eq!(replayed.size_hint().exact(), Some(4));
+        let rest = replayed.collect().await?.to_bytes();
+        assert_eq!(&rest[..], b"defg");
+
+        // Unbounded remaining body preserves lower bound and leaves upper None.
+        let unbounded = ChunkedTestBody {
+            chunks: VecDeque::from([Bytes::from_static(b"xy"), Bytes::from_static(b"123")]),
+            known_upper: false,
+        };
+        let (mut attempt, handle) = replayable_body(unbounded, MAX_RETRY_BODY_BYTES);
+        let _ = attempt.frame().await;
+        drop(attempt);
+
+        let replayed = handle
+            .take_retry_body()
+            .ok_or("expected unbounded body to be replayable")?;
+        let hint = replayed.size_hint();
+        assert_eq!(hint.lower(), 5);
+        assert_eq!(hint.upper(), None);
+        assert_eq!(&replayed.collect().await?.to_bytes()[..], b"xy123");
         Ok(())
     }
 }
