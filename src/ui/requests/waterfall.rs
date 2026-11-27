@@ -12,7 +12,7 @@ use crate::ui::requests::outcome_view;
 use crate::ui::style::theme::Palette;
 use crate::ui::style::tokens::{Layout, Radius, Space, StrokeWidth, ThemeTokens};
 use crate::ui::timing::{ExchangeTiming, TimingPhase};
-use crate::ui::workbench::text::{self, ShellText};
+use crate::ui::workbench::text;
 
 /// Shared horizontal time range across all visible rows in the request list.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -395,7 +395,7 @@ fn hover_table(
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = Space::S;
                 paint_legend_sample(ui, None, &tokens);
-                ui.label(RichText::new(ShellText::StartTime.text(lang)).color(palette.secondary));
+                ui.label(RichText::new(lang.requests().start_time).color(palette.secondary));
             });
             hover_value(ui, &start_value, palette.text);
             ui.end_row();

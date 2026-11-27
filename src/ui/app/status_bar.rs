@@ -13,12 +13,11 @@ use http_inspector_exchange::ByteSize;
 
 use super::state::MainView;
 use super::{AppAction, InspectorApp, MAX_RECORDS};
-use crate::ui::i18n::{Language, domain};
+use crate::ui::i18n::{Language, domain, toolbar};
 use crate::ui::map::MapSubView;
 use crate::ui::style::tokens::{Layout, Tone};
 use crate::ui::workbench::chrome;
 use crate::ui::workbench::status::{self, StatusItem};
-use crate::ui::workbench::text::{self, ShellText};
 
 /// Share of the row kept for save results and errors after the entries.
 const RESULT_SHARE: f32 = 0.4;
@@ -70,7 +69,7 @@ impl InspectorApp {
             MainView::Requests => {
                 // The request area counted the rows it showed this frame.
                 let shown = shown.unwrap_or(records.len());
-                items.push(StatusItem::count(text::request_count(
+                items.push(StatusItem::count(toolbar::request_count(
                     lang,
                     shown,
                     records.len(),
@@ -85,13 +84,13 @@ impl InspectorApp {
                     })
                     .count();
                 if failed > 0 {
-                    items.push(StatusItem::count(text::failure_count(lang, failed)));
+                    items.push(StatusItem::count(toolbar::failure_count(lang, failed)));
                 }
                 items.extend(self.requests.search.status_items(lang));
             }
             MainView::Map => {
                 let map = self.map.analysis.url_map();
-                items.push(StatusItem::count(text::request_count(
+                items.push(StatusItem::count(toolbar::request_count(
                     lang,
                     records.len(),
                     records.len(),
@@ -102,13 +101,13 @@ impl InspectorApp {
                         StatusItem::marked(
                             Tone::Warning,
                             summary,
-                            ShellText::DomainLimitHint.text(lang),
+                            lang.toolbar().tooltips.domain_limit_hint,
                         )
                     } else {
                         StatusItem::count(summary)
                     });
                 } else {
-                    items.push(StatusItem::count(text::map_count(
+                    items.push(StatusItem::count(toolbar::map_count(
                         lang,
                         map.origins().len(),
                         map.node_count(),
@@ -121,6 +120,7 @@ impl InspectorApp {
 
     /// Records the capture could not keep, and logging limits.
     fn limits(&self, lang: Language) -> Vec<StatusItem> {
+        let text = lang.toolbar();
         let mut items = Vec::new();
         let dropped = self
             .requests
@@ -129,24 +129,24 @@ impl InspectorApp {
         if dropped > 0 {
             items.push(StatusItem::marked(
                 Tone::Danger,
-                text::dropped(lang, dropped),
-                text::dropped_hint(lang),
+                toolbar::dropped(lang, dropped),
+                text.tooltips.dropped_hint,
             ));
         }
         let evicted = self.requests.records.evicted();
         if evicted > 0 {
             items.push(StatusItem::marked(
                 Tone::Warning,
-                text::older_removed(lang, evicted),
-                text::older_removed_hint(lang, MAX_RECORDS),
+                toolbar::older_removed(lang, evicted),
+                toolbar::older_removed_hint(lang, MAX_RECORDS),
             ));
         }
         let map = self.map.analysis.url_map();
         if map.node_limit_reached() {
             items.push(StatusItem::marked(
                 Tone::Warning,
-                ShellText::UrlMapLimit.text(lang),
-                text::url_map_limit_hint(lang, map.max_nodes()),
+                text.url_map_limit,
+                toolbar::url_map_limit_hint(lang, map.max_nodes()),
             ));
         }
         let log_error = self
@@ -166,7 +166,7 @@ impl InspectorApp {
         if let Some(error) = log_error {
             items.push(StatusItem::marked(
                 Tone::Danger,
-                ShellText::FullLogUnavailable.text(lang),
+                text.full_log_unavailable,
                 error,
             ));
         }
@@ -179,8 +179,8 @@ impl InspectorApp {
         {
             items.push(StatusItem::marked(
                 Tone::Warning,
-                ShellText::LogBodyLimit.text(lang),
-                text::log_body_limit_hint(
+                text.log_body_limit,
+                toolbar::log_body_limit_hint(
                     lang,
                     &ByteSize::new(log.body_limit()).exact().to_string(),
                 ),

@@ -10,8 +10,7 @@ use crate::ui::detail::search::highlight;
 use crate::ui::style::fonts;
 use crate::ui::style::theme::MatchColors;
 use crate::ui::style::tokens::Layout;
-use crate::ui::workbench::controls;
-use crate::ui::workbench::text::{self, ShellText};
+use crate::ui::workbench::{controls, text};
 
 /// One match: the line it is on (0 for text shown without line numbers)
 /// and its byte range in that line or text.
@@ -119,9 +118,10 @@ impl BodyMatches {
     /// Shows the position among matches with Previous and Next buttons.
     /// Returns `true` when the current match changed.
     pub(super) fn controls(&mut self, ui: &mut egui::Ui, lang: crate::ui::i18n::Language) -> bool {
+        let detail = lang.detail();
         let count = self.hits.len();
         if count == 0 {
-            ui.weak(ShellText::NoMatches.text(lang));
+            ui.weak(detail.no_matches);
             return false;
         }
         let mut step = None;
@@ -131,12 +131,9 @@ impl BodyMatches {
                 egui::RichText::new(text::match_position(self.current + 1, count))
                     .font(fonts::data()),
             );
-            for (label, offset) in [(ShellText::Previous, count - 1), (ShellText::Next, 1)] {
+            for (label, offset) in [(detail.previous, count - 1), (detail.next, 1)] {
                 if ui
-                    .add(controls::ghost(
-                        label.text(lang),
-                        Layout::PANE_BUTTON_HEIGHT,
-                    ))
+                    .add(controls::ghost(label, Layout::PANE_BUTTON_HEIGHT))
                     .clicked()
                 {
                     step = Some(offset);

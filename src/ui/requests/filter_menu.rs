@@ -3,7 +3,6 @@ use http_inspector_analysis::filter::FilterKey;
 
 use crate::ui::AppAction;
 use crate::ui::i18n::Language;
-use crate::ui::workbench::text::ShellText;
 
 pub(crate) fn items(
     ui: &mut egui::Ui,
@@ -12,13 +11,11 @@ pub(crate) fn items(
     enabled: bool,
     lang: Language,
 ) -> Option<AppAction> {
-    for (label, excluded) in [
-        (ShellText::FilterByValue.text(lang), false),
-        (ShellText::ExcludeValue.text(lang), true),
-    ] {
+    let text = lang.requests();
+    for (label, excluded) in [(text.filter_by_value, false), (text.exclude_value, true)] {
         let button = ui
             .add_enabled(enabled, egui::Button::new(label))
-            .on_disabled_hover_text(ShellText::FieldFilterNeedsText.text(lang));
+            .on_disabled_hover_text(text.tooltips.field_filter_needs_text);
         if button.clicked() {
             ui.close();
             return Some(AppAction::AppendFilter(field_term(key, value, excluded)));

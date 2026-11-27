@@ -11,10 +11,9 @@ use http_inspector_analysis::search::document::{self, BodyCache, Checked};
 use http_inspector_analysis::search::{MatchOptions, Query, SearchScope, SearchWorker, TextTerms};
 use http_inspector_exchange::{Exchange, RecordId};
 
-use crate::ui::i18n::Language;
+use crate::ui::i18n::{self, Language};
 use crate::ui::style::tokens::Tone;
 use crate::ui::workbench::status::StatusItem;
-use crate::ui::workbench::text::{self, ShellText};
 
 /// Wait after the last keystroke before a search starts, so typing a word
 /// does not start a search for every letter.
@@ -198,19 +197,10 @@ impl RequestSearch {
     pub(crate) fn status_items(&self, lang: Language) -> Vec<StatusItem> {
         let mut items = Vec::new();
         if let SearchBackend::Inline { reason, .. } = &self.backend {
-            let notice = match lang {
-                Language::English => {
-                    format!(
-                        "Background search is unavailable ({reason}); searching on the UI thread."
-                    )
-                }
-                Language::Korean => {
-                    format!("백그라운드 검색을 사용할 수 없어({reason}) UI 스레드에서 검색합니다.")
-                }
-            };
+            let notice = i18n::detail::background_search_unavailable(lang, reason);
             items.push(StatusItem::marked(
                 Tone::Warning,
-                ShellText::SearchOnUiThread.text(lang),
+                lang.toolbar().search_on_ui_thread,
                 notice,
             ));
         }
@@ -219,7 +209,7 @@ impl RequestSearch {
         };
         let summary = self.summary;
         if summary.checked < summary.total {
-            items.push(StatusItem::progress(text::search_progress(
+            items.push(StatusItem::progress(i18n::toolbar::search_progress(
                 lang,
                 summary.checked,
                 summary.total,
@@ -450,43 +440,18 @@ struct Coverage {
 }
 
 fn coverage_text(summary: Summary, lang: Language) -> Option<Coverage> {
-    let mut parts = Vec::new();
     let preview_kib = http_inspector_exchange::capture::BODY_PREVIEW_BYTES / 1024;
-    if summary.partial > 0 {
-        parts.push(match lang {
-            Language::English => {
-                format!("{} only in their first {preview_kib} KiB", summary.partial)
-            }
-            Language::Korean => format!("{}건은 처음 {preview_kib} KiB만 검색", summary.partial),
-        });
-    }
-    if summary.binary > 0 {
-        parts.push(match lang {
-            Language::English => format!("{} binary, skipped", summary.binary),
-            Language::Korean => format!("{}건은 바이너리여서 건너뜀", summary.binary),
-        });
-    }
-    if summary.undecodable > 0 {
-        parts.push(match lang {
-            Language::English => format!("{} could not be decoded", summary.undecodable),
-            Language::Korean => format!("{}건은 디코딩할 수 없음", summary.undecodable),
-        });
-    }
+    let detail = i18n::detail::search_coverage_detail(
+        lang,
+        summary.partial,
+        summary.binary,
+        summary.undecodable,
+        preview_kib,
+    )?;
     let unsearched = summary.partial + summary.binary + summary.undecodable;
-    (!parts.is_empty()).then(|| {
-        let joined = parts.join(", ");
-        let detail = match lang {
-            Language::English => format!(
-                "Captured previews were searched after decompression ({joined}); the full-session log keeps the rest."
-            ),
-            Language::Korean => format!(
-                "압축 해제 후 캡처된 미리보기에서 검색했으며({joined}), 나머지는 전체 세션 로그에 보관됩니다."
-            ),
-        };
-        Coverage {
-            short: text::partly_searched(lang, unsearched),
-            detail,
-        }
+    Some(Coverage {
+        short: i18n::toolbar::partly_searched(lang, unsearched),
+        detail,
     })
 }
 

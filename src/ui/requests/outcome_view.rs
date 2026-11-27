@@ -1,9 +1,8 @@
 //! Shared outcome presentation for the request list, details, and search.
 
-use http_inspector_analysis::outcome;
-use http_inspector_exchange::{Outcome, TunnelPreview, TunnelState};
+use http_inspector_exchange::{Outcome, TunnelState};
 
-use crate::ui::i18n::{Language, domain};
+use crate::ui::i18n::{Language, requests};
 use crate::ui::style::tokens::Tone;
 
 /// Orders responses by status code, then every other outcome after them.
@@ -21,32 +20,10 @@ pub(super) const fn status_rank(outcome: &Outcome) -> (u8, u16) {
 
 /// Short status text and the tone of an exceptional outcome.
 pub(crate) fn outcome_text(outcome: &Outcome, lang: Language) -> (String, Option<Tone>) {
-    (short_text(outcome, lang), outcome_tone(outcome))
-}
-
-/// Short status text for one outcome, independent of the theme.
-fn short_text(outcome: &Outcome, lang: Language) -> String {
-    match lang {
-        Language::English => outcome::short_text(outcome),
-        Language::Korean => match outcome {
-            Outcome::InFlight => "대기 중".to_owned(),
-            Outcome::Response(response) => {
-                let status = response.status();
-                format!(
-                    "{} {}",
-                    status.as_str(),
-                    status.canonical_reason().unwrap_or("알 수 없는 상태")
-                )
-            }
-            Outcome::Tunnel(tunnel) => tunnel_summary_ko(tunnel),
-            Outcome::InspectionEstablished => "HTTPS".to_owned(),
-            Outcome::Failed { stage, message } => {
-                format!("{}: {message}", domain::failure_stage(lang, *stage))
-            }
-            Outcome::Cancelled => "클라이언트 취소".to_owned(),
-            Outcome::Incomplete => "불완전 (프록시 중지)".to_owned(),
-        },
-    }
+    (
+        requests::outcome_short_text(lang, outcome),
+        outcome_tone(outcome),
+    )
 }
 
 /// Tone of an exceptional outcome: 4xx, cancelled, and incomplete
@@ -74,23 +51,13 @@ pub(crate) fn outcome_tone(outcome: &Outcome) -> Option<Tone> {
 /// Plain-language class of an HTTP status code, so that success and error do
 /// not depend on the status color alone.
 pub(crate) const fn status_class(code: u16, lang: Language) -> &'static str {
-    match lang {
-        Language::English => outcome::status_class(code),
-        Language::Korean => match code {
-            100..=199 => "정보 응답",
-            200..=299 => "성공",
-            300..=399 => "리다이렉트",
-            400..=499 => "클라이언트 오류",
-            500..=599 => "서버 오류",
-            _ => "비표준 상태",
-        },
-    }
+    requests::outcome_status_class(lang, code)
 }
 
 /// Status text with the response class appended, for tooltips and screen
 /// readers. Other outcomes already name their state in the text.
 pub(super) fn outcome_summary(outcome: &Outcome, lang: Language) -> String {
-    let text = short_text(outcome, lang);
+    let text = requests::outcome_short_text(lang, outcome);
     match outcome {
         Outcome::Response(response) => {
             format!(
@@ -102,47 +69,19 @@ pub(super) fn outcome_summary(outcome: &Outcome, lang: Language) -> String {
     }
 }
 
-fn tunnel_summary_ko(tunnel: &TunnelPreview) -> String {
-    match tunnel.snapshot().state() {
-        TunnelState::Open => "터널 · 열림".to_owned(),
-        TunnelState::Closed => "터널 · 닫힘".to_owned(),
-        TunnelState::Failed { stage, .. } => {
-            let stage_label = domain::failure_stage(Language::Korean, *stage);
-            format!("터널 · 실패 ({stage_label})")
-        }
-        TunnelState::Incomplete => "터널 · 불완전".to_owned(),
-    }
-}
-
 /// Status text of the inspector's result line and the tone of an
 /// exceptional outcome. A response shows the reason phrase as the server
 /// sent it and the HTTP version it answered with; other outcomes show the
 /// same text as the request list.
 pub(crate) fn detail_status(outcome: &Outcome, lang: Language) -> (String, Option<Tone>) {
-    let text = match lang {
-        Language::English => outcome::detail_text(outcome),
-        Language::Korean => match outcome {
-            Outcome::Response(response) => outcome::response_line(
-                response.status().as_u16(),
-                response.reason(),
-                &format!("{:?}", response.version()),
-            ),
-            _ => short_text(outcome, lang),
-        },
-    };
-    (text, outcome_tone(outcome))
+    (
+        requests::outcome_detail_text(lang, outcome),
+        outcome_tone(outcome),
+    )
 }
 
 pub(crate) const fn timing_label(outcome: &Outcome, lang: Language) -> &'static str {
-    match lang {
-        Language::English => outcome::timing_label(outcome),
-        Language::Korean => match outcome {
-            Outcome::InFlight => "대기",
-            Outcome::Response(_) => "응답 헤더",
-            Outcome::Tunnel(_) | Outcome::InspectionEstablished => "연결됨",
-            Outcome::Failed { .. } | Outcome::Cancelled | Outcome::Incomplete => "종료됨",
-        },
-    }
+    requests::outcome_timing_label(lang, outcome)
 }
 
 /// Converts a duration to milliseconds for UI timing displays.

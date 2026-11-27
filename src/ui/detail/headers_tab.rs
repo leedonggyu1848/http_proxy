@@ -14,8 +14,7 @@ use crate::ui::requests::filter_menu;
 use crate::ui::requests::outcome_view;
 use crate::ui::style::fonts;
 use crate::ui::style::theme::{MatchColors, Palette};
-use crate::ui::workbench::text::{self, ShellText};
-use crate::ui::workbench::tree;
+use crate::ui::workbench::{text, tree};
 
 /// Shows the groups of `record`. `search` marks matches in header names and
 /// values when the active search covers headers. Each header row offers
@@ -41,7 +40,7 @@ pub(super) fn show(
             tree::group(
                 ui,
                 "inspector-query",
-                ShellText::Query.text(lang),
+                lang.detail().query,
                 Some(pairs.len()),
                 |ui| {
                     for (key, value) in &pairs {
@@ -54,7 +53,7 @@ pub(super) fn show(
     rows.headers(
         ui,
         ("inspector-request", FilterKey::RequestHeader),
-        ShellText::Request,
+        lang.shared().request,
         request.headers(),
     );
     match record.outcome() {
@@ -62,7 +61,7 @@ pub(super) fn show(
             rows.headers(
                 ui,
                 ("inspector-response", FilterKey::ResponseHeader),
-                ShellText::Response,
+                lang.shared().response,
                 response.headers(),
             );
         }
@@ -87,12 +86,12 @@ impl Rows<'_> {
         &self,
         ui: &mut egui::Ui,
         (id, key): (&str, FilterKey),
-        title: ShellText,
+        title: &str,
         headers: &HeaderPreview,
     ) {
         let entries = headers.entries();
         let lang = self.lang;
-        tree::group(ui, id, title.text(lang), Some(entries.len()), |ui| {
+        tree::group(ui, id, title, Some(entries.len()), |ui| {
             for header in entries {
                 let masked = header.value() == REDACTED_VALUE;
                 let row = self.pair(ui, header.name(), header.value(), masked);
@@ -108,7 +107,7 @@ impl Rows<'_> {
             if headers.omitted() {
                 tree::row(ui, tree::TreeRow::new(1, ""), |ui| {
                     ui.label(
-                        egui::RichText::new(ShellText::HeadersOmitted.text(lang))
+                        egui::RichText::new(lang.detail().headers_omitted)
                             .color(Palette::of(ui).warning),
                     );
                 });
@@ -159,33 +158,28 @@ impl Rows<'_> {
 /// What a CONNECT tunnel recorded: its state, bytes each way, and duration.
 fn tunnel_group(ui: &mut egui::Ui, rows: &Rows<'_>, tunnel: &TunnelPreview) {
     let lang = rows.lang;
+    let detail = lang.detail();
     let snapshot = tunnel.snapshot();
     let duration = text::milliseconds(outcome_view::elapsed_millis(snapshot.duration()));
     let pairs = [
         (
-            ShellText::TunnelState,
+            detail.tunnel_state,
             domain::tunnel_state(lang, snapshot.state()),
         ),
         (
-            ShellText::TunnelSent,
+            detail.tunnel_sent,
             text::byte_count(snapshot.client_to_upstream()),
         ),
         (
-            ShellText::TunnelReceived,
+            detail.tunnel_received,
             text::byte_count(snapshot.upstream_to_client()),
         ),
-        (ShellText::Duration, duration),
+        (detail.duration, duration),
     ];
-    let header = tree::group(
-        ui,
-        "inspector-tunnel",
-        ShellText::Tunnel.text(lang),
-        None,
-        |ui| {
-            for (key, value) in &pairs {
-                let _ = rows.pair(ui, key.text(lang), value, false);
-            }
-        },
-    );
-    header.on_hover_text(ShellText::TunnelHint.text(lang));
+    let header = tree::group(ui, "inspector-tunnel", lang.shared().tunnel, None, |ui| {
+        for (key, value) in &pairs {
+            let _ = rows.pair(ui, key, value, false);
+        }
+    });
+    header.on_hover_text(lang.shared().tooltips.tunnel_hint);
 }

@@ -24,6 +24,10 @@ alone does not guarantee:
    `TunnelWriter`) may be used in production code only inside
    `http-inspector-exchange` and `http-inspector-core`'s `interception` and
    `replay` modules.
+5. UI translation boundary: production code outside `src/ui/i18n/` must not
+   call `.pick(...)` or branch on `Language::English` / `Language::Korean`
+   directly; all localized UI copy belongs in screen catalogs under
+   `src/ui/i18n/`.
 """
 
 from __future__ import annotations
@@ -956,6 +960,87 @@ def check_intra_crate(root: Path, spec: CrateBoundarySpec) -> list[Violation]:
     return violations
 
 
+LANGUAGE_VARIANTS: frozenset[str] = frozenset({"English", "Korean"})
+
+
+def check_ui_i18n_boundary(root: Path) -> list[Violation]:
+    """Ensure production UI code outside `src/ui/i18n/` contains no inline translations."""
+    src_dir = root / "src"
+    ui_dir = src_dir / "ui"
+    i18n_dir = (ui_dir / "i18n").resolve()
+    if not ui_dir.exists():
+        return []
+
+    violations: list[Violation] = []
+    test_files = discover_cfg_test_files(src_dir)
+
+    for rs_file in sorted(src_dir.rglob("*.rs")):
+        resolved = rs_file.resolve()
+        if resolved.is_relative_to(i18n_dir):
+            continue
+        whole_file_is_test = resolved in test_files
+        tokens = annotate_scopes(
+            tokenize_rust(rs_file.read_text()),
+            whole_file_is_test,
+            module_path_for(src_dir, rs_file),
+        )
+        n = len(tokens)
+        for idx, tok in enumerate(tokens):
+            if tok.in_test:
+                continue
+            if (
+                tok.text == "."
+                and idx + 2 < n
+                and tokens[idx + 1].kind == "IDENT"
+                and tokens[idx + 1].text == "pick"
+                and tokens[idx + 2].text == "("
+            ):
+                violations.append(
+                    Violation(
+                        rs_file,
+                        tokens[idx + 1].line,
+                        "inline translation `.pick(...)` is forbidden outside `src/ui/i18n/`; "
+                        "move strings into a screen catalog under `src/ui/i18n/`",
+                    )
+                )
+            elif (
+                tok.kind == "IDENT"
+                and tok.text == "Language"
+                and idx + 2 < n
+                and tokens[idx + 1].text == "::"
+            ):
+                next_tok = tokens[idx + 2]
+                if next_tok.kind == "IDENT" and next_tok.text in LANGUAGE_VARIANTS:
+                    violations.append(
+                        Violation(
+                            rs_file,
+                            tok.line,
+                            f"direct `Language::{next_tok.text}` branching is forbidden in "
+                            f"production code outside `src/ui/i18n/`; move localized copy "
+                            f"or formatting into `src/ui/i18n/`",
+                        )
+                    )
+                elif next_tok.text == "{":
+                    # Catch `use ...::Language::{English, Korean};` imports.
+                    j = idx + 3
+                    while j < n and tokens[j].text != "}":
+                        if (
+                            tokens[j].kind == "IDENT"
+                            and tokens[j].text in LANGUAGE_VARIANTS
+                        ):
+                            violations.append(
+                                Violation(
+                                    rs_file,
+                                    tokens[j].line,
+                                    f"importing `Language::{tokens[j].text}` is forbidden in "
+                                    f"production code outside `src/ui/i18n/`",
+                                )
+                            )
+                        j += 1
+
+    return violations
+
+
 def check_repository(root: Path) -> list[Violation]:
     violations: list[Violation] = []
     violations.extend(check_manifest_deps(root))
@@ -979,6 +1064,8 @@ def check_repository(root: Path) -> list[Violation]:
                 check_writer_handles_forbidden(rs_file, tokens, f"`{rel_src}`")
             )
 
+    violations.extend(check_ui_i18n_boundary(root))
+
     return violations
 
 
@@ -996,8 +1083,8 @@ def main(argv: list[str]) -> int:
         return 1
 
     print(
-        f"Boundary check passed ({len(FORBIDDEN_NORMAL_DEPS)} workspace crates and "
-        f"{len(INTRA_CRATE_SPECS)} intra-crate module graphs verified, 0 violations)."
+        f"Boundary check passed ({len(FORBIDDEN_NORMAL_DEPS)} workspace crates, "
+        f"{len(INTRA_CRATE_SPECS)} intra-crate module graphs, and UI i18n boundary verified, 0 violations)."
     )
     return 0
 

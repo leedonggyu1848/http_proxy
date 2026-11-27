@@ -6,7 +6,6 @@
 //! cookie, credential or body value, so none can appear here.
 
 use crate::ui::style::tokens::{Layout, Space};
-use crate::ui::workbench::text::{self, ShellText};
 use crate::ui::workbench::tree;
 use std::fmt::Write as _;
 
@@ -19,7 +18,7 @@ use http_inspector_analysis::url::{PathSegmentPattern, percent_decode_display};
 use http_inspector_analysis::url_map::{NodeId, RequestScope, ViewNode, ViewNodeKey};
 
 use super::MapAction;
-use crate::ui::i18n::{Language, domain};
+use crate::ui::i18n::{self, Language, domain};
 use crate::ui::style::theme::Palette;
 
 /// Per-method endpoint aggregates merged for the selected node, rebuilt only
@@ -63,12 +62,13 @@ pub(super) fn show(
     skipped: u64,
     lang: Language,
 ) -> Option<MapAction> {
+    let map_text = lang.map();
     let palette = Palette::of(ui);
     let mut action = None;
     tree::group(
         ui,
         "map-endpoints",
-        ShellText::Endpoints.text(lang),
+        map_text.endpoints,
         Some(endpoints.len()),
         |ui| {
             egui::Frame::new()
@@ -77,18 +77,13 @@ pub(super) fn show(
                     ui.spacing_mut().item_spacing.y = Space::XS;
                     if skipped > 0 {
                         ui.label(
-                            RichText::new(text::analysis_skipped(lang, skipped))
+                            RichText::new(i18n::map::analysis_skipped(lang, skipped))
                                 .color(palette.warning),
                         );
                     }
                     for (index, (method, schema)) in endpoints.iter().enumerate() {
                         let salt = format!("{}#{method}", node.key.display_url());
-                        let title = match lang {
-                            Language::English => {
-                                format!("{method} · {} request(s)", schema.requests())
-                            }
-                            Language::Korean => format!("{method} · 요청 {}건", schema.requests()),
-                        };
+                        let title = i18n::map::endpoint_header(lang, method, schema.requests());
                         egui::CollapsingHeader::new(RichText::new(title).monospace().strong())
                             .id_salt(&salt)
                             .default_open(index == 0)
@@ -103,7 +98,7 @@ pub(super) fn show(
                 });
         },
     )
-    .on_hover_text(ShellText::EndpointsHint.text(lang));
+    .on_hover_text(map_text.tooltips.endpoints_hint);
     action
 }
 
@@ -118,16 +113,10 @@ fn render_endpoint(
     let mut action = None;
     ui.horizontal_wrapped(|ui| {
         if let Ok(parsed) = Method::from_bytes(method.as_bytes()) {
-            let label = match lang {
-                Language::English => format!("Show {method} in Requests"),
-                Language::Korean => format!("요청 목록에서 {method} 보기"),
-            };
+            let label = i18n::map::show_method_in_requests(lang, method);
             if ui
                 .small_button(label)
-                .on_hover_text(lang.pick(
-                    "Switch to Requests filtered to this method and exact path.",
-                    "이 메서드와 정확한 경로로 필터링된 요청 목록으로 전환합니다.",
-                ))
+                .on_hover_text(lang.map().tooltips.show_method_in_requests_hint)
                 .clicked()
             {
                 action = Some(MapAction::ShowInRequests(RequestScope::endpoint(
@@ -149,33 +138,13 @@ fn render_endpoint(
 
 fn render_evidence(ui: &mut egui::Ui, schema: &EndpointSchema, lang: Language) {
     let palette = Palette::of(ui);
-    let mut parts = match lang {
-        Language::English => vec![
-            format!("{} request(s)", schema.requests()),
-            format!("{} body sample(s) described", schema.structured_bodies()),
-        ],
-        Language::Korean => vec![
-            format!("요청 {}건", schema.requests()),
-            format!("본문 샘플 {}건 분석", schema.structured_bodies()),
-        ],
-    };
-    let excluded = schema.excluded_bodies();
-    if excluded > 0 {
-        parts.push(match lang {
-            Language::English => format!("{excluded} excluded as truncated or unreadable"),
-            Language::Korean => format!("{excluded}건 제외(잘림 또는 읽기 불가)"),
-        });
-    }
-    if schema.missing_responses() > 0 {
-        parts.push(match lang {
-            Language::English => format!("{} without response", schema.missing_responses()),
-            Language::Korean => format!("응답 없음 {}건", schema.missing_responses()),
-        });
-    }
-    let summary = match lang {
-        Language::English => format!("Evidence: {}", parts.join(" · ")),
-        Language::Korean => format!("근거: {}", parts.join(" · ")),
-    };
+    let summary = i18n::map::endpoint_evidence(
+        lang,
+        schema.requests(),
+        schema.structured_bodies(),
+        schema.excluded_bodies(),
+        schema.missing_responses(),
+    );
     ui.label(RichText::new(summary).color(palette.secondary));
 }
 
@@ -199,22 +168,15 @@ fn render_path_params(
                     .join(", ")
             },
         );
-        let text = match lang {
-            Language::English => {
-                format!("Path parameter {{id}} (segment {}): {kinds}", position + 1)
-            }
-            Language::Korean => {
-                format!("경로 매개변수 {{id}} (세그먼트 {}): {kinds}", position + 1)
-            }
-        };
-        ui.label(text);
+        ui.label(i18n::map::endpoint_path_param(lang, position + 1, &kinds));
     }
 }
 
 fn render_query(ui: &mut egui::Ui, schema: &EndpointSchema, salt: &str, lang: Language) {
-    section_title(ui, lang.pick("Query parameters", "쿼리 매개변수"));
+    let map_text = lang.map();
+    section_title(ui, map_text.endpoint_query_params);
     if schema.query().is_empty() {
-        ui.weak(lang.pick("None observed.", "관측되지 않음."));
+        ui.weak(map_text.endpoint_none_observed);
         return;
     }
     let palette = Palette::of(ui);
@@ -232,21 +194,16 @@ fn render_query(ui: &mut egui::Ui, schema: &EndpointSchema, salt: &str, lang: La
     omitted_note(
         ui,
         schema.omitted_query(),
-        lang.pick("query parameter", "쿼리 매개변수"),
+        map_text.endpoint_query_item,
         lang,
     );
 }
 
 fn render_headers(ui: &mut egui::Ui, schema: &EndpointSchema, salt: &str, lang: Language) {
-    section_title(
-        ui,
-        lang.pick(
-            "Custom request headers (names only)",
-            "사용자 지정 요청 헤더 (이름만)",
-        ),
-    );
+    let map_text = lang.map();
+    section_title(ui, map_text.endpoint_custom_headers);
     if schema.headers().is_empty() {
-        ui.weak(lang.pick("None observed.", "관측되지 않음."));
+        ui.weak(map_text.endpoint_none_observed);
         return;
     }
     egui::Grid::new(format!("{salt}/headers"))
@@ -262,18 +219,16 @@ fn render_headers(ui: &mut egui::Ui, schema: &EndpointSchema, salt: &str, lang: 
     omitted_note(
         ui,
         schema.omitted_headers(),
-        lang.pick("header", "헤더"),
+        map_text.endpoint_header_item,
         lang,
     );
 }
 
 fn render_auth(ui: &mut egui::Ui, schema: &EndpointSchema, lang: Language) {
-    section_title(
-        ui,
-        lang.pick("Authentication (scheme names only)", "인증 (방식 이름만)"),
-    );
+    let map_text = lang.map();
+    section_title(ui, map_text.endpoint_auth);
     if schema.auth().is_empty() {
-        ui.weak(lang.pick("No credentials observed.", "관측된 인증 정보 없음."));
+        ui.weak(map_text.endpoint_no_credentials);
         return;
     }
     ui.horizontal_wrapped(|ui| {
@@ -284,18 +239,13 @@ fn render_auth(ui: &mut egui::Ui, schema: &EndpointSchema, lang: Language) {
 }
 
 fn render_request_bodies(ui: &mut egui::Ui, schema: &EndpointSchema, salt: &str, lang: Language) {
-    section_title(ui, lang.pick("Request body", "요청 본문"));
+    let map_text = lang.map();
+    section_title(ui, map_text.endpoint_request_body);
     if schema.request_bodies().is_empty() {
-        ui.weak(lang.pick(
-            "No request bodies observed.",
-            "관측된 요청 본문이 없습니다.",
-        ));
+        ui.weak(map_text.endpoint_no_request_bodies);
     }
     for (content_type, group) in schema.request_bodies() {
-        let title = match lang {
-            Language::English => format!("{content_type} · {} request(s)", group.bodies()),
-            Language::Korean => format!("{content_type} · 요청 {}건", group.bodies()),
-        };
+        let title = i18n::map::endpoint_request_body_title(lang, content_type, group.bodies());
         render_body_group(
             ui,
             RichText::new(title),
@@ -305,45 +255,30 @@ fn render_request_bodies(ui: &mut egui::Ui, schema: &EndpointSchema, salt: &str,
         );
     }
     if schema.requests_without_body() > 0 && !schema.request_bodies().is_empty() {
-        let note = match lang {
-            Language::English => format!(
-                "{} request(s) without a body",
-                schema.requests_without_body()
-            ),
-            Language::Korean => format!("본문 없는 요청 {}건", schema.requests_without_body()),
-        };
-        ui.weak(note);
+        ui.weak(i18n::map::endpoint_requests_without_body(
+            lang,
+            schema.requests_without_body(),
+        ));
     }
     omitted_note(
         ui,
         schema.omitted_groups(),
-        lang.pick("body group", "본문 그룹"),
+        map_text.endpoint_body_group_item,
         lang,
     );
 }
 
 fn render_responses(ui: &mut egui::Ui, schema: &EndpointSchema, salt: &str, lang: Language) {
-    section_title(ui, lang.pick("Responses", "응답"));
+    let map_text = lang.map();
+    section_title(ui, map_text.endpoint_responses);
     if schema.responses().is_empty() {
-        ui.weak(lang.pick("No responses observed.", "관측된 응답이 없습니다."));
+        ui.weak(map_text.endpoint_no_responses);
         return;
     }
     let palette = Palette::of(ui);
     for (key, group) in schema.responses() {
-        let title_text = match lang {
-            Language::English => format!(
-                "{} · {} · {} response(s)",
-                key.status,
-                key.content_type,
-                group.bodies()
-            ),
-            Language::Korean => format!(
-                "{} · {} · 응답 {}건",
-                key.status,
-                key.content_type,
-                group.bodies()
-            ),
-        };
+        let title_text =
+            i18n::map::endpoint_response_title(lang, key.status, &key.content_type, group.bodies());
         let title = RichText::new(title_text).color(status_color(key, &palette));
         render_body_group(
             ui,
@@ -375,11 +310,7 @@ fn render_body_group(
                     .keys()
                     .any(|kind| *kind != ValueKind::Object)
                 {
-                    let label = match lang {
-                        Language::English => format!("Body type: {}", root.types().summary()),
-                        Language::Korean => format!("본문 형식: {}", root.types().summary()),
-                    };
-                    ui.label(label);
+                    ui.label(i18n::map::endpoint_body_type(lang, &root.types().summary()));
                 }
                 render_children(ui, root, salt, lang);
             }
@@ -388,26 +319,18 @@ fn render_body_group(
 }
 
 fn render_body_evidence(ui: &mut egui::Ui, group: &BodySchema, lang: Language) {
+    let map_text = lang.map();
     let palette = Palette::of(ui);
     let described = group.structured_samples();
-    let mut parts = vec![match lang {
-        Language::English => format!("{described} described"),
-        Language::Korean => format!("분석 {described}건"),
-    }];
+    let mut parts = vec![i18n::map::endpoint_described_count(lang, described)];
     let counts = [
-        (group.empty(), lang.pick("empty", "비어 있음")),
-        (
-            group.unstructured(),
-            lang.pick("without field structure", "필드 구조 없음"),
-        ),
-        (group.invalid(), lang.pick("unparseable", "파싱 불가")),
+        (group.empty(), map_text.endpoint_empty),
+        (group.unstructured(), map_text.endpoint_unstructured),
+        (group.invalid(), map_text.endpoint_invalid),
     ];
     for (count, label) in counts {
         if count > 0 {
-            parts.push(match lang {
-                Language::English => format!("{count} {label}"),
-                Language::Korean => format!("{label} {count}건"),
-            });
+            parts.push(i18n::map::endpoint_labeled_count(lang, count, label));
         }
     }
     let excluded = group.excluded_total();
@@ -417,10 +340,9 @@ fn render_body_evidence(ui: &mut egui::Ui, group: &BodySchema, lang: Language) {
             .iter()
             .map(|(reason, count)| format!("{} {count}", domain::exclusion_reason(lang, *reason)))
             .collect();
-        parts.push(match lang {
-            Language::English => format!("{excluded} excluded ({})", reasons.join(", ")),
-            Language::Korean => format!("제외 {excluded}건 ({})", reasons.join(", ")),
-        });
+        parts.push(i18n::map::endpoint_excluded_reasons(
+            lang, excluded, &reasons,
+        ));
     }
     let color = if excluded > 0 {
         palette.warning
@@ -434,12 +356,13 @@ fn render_parts(ui: &mut egui::Ui, group: &BodySchema, lang: Language) {
     if group.parts().is_empty() {
         return;
     }
+    let map_text = lang.map();
     for (name, part) in group.parts() {
         let types: Vec<&str> = part.content_types().keys().map(String::as_str).collect();
         let kind = if part.files() > 0 {
-            lang.pick("file", "파일")
+            map_text.endpoint_file
         } else {
-            lang.pick("field", "필드")
+            map_text.endpoint_field
         };
         let types = if types.is_empty() {
             String::new()
@@ -451,11 +374,12 @@ fn render_parts(ui: &mut egui::Ui, group: &BodySchema, lang: Language) {
             ratio(part.seen(), group.part_samples())
         ));
     }
-    omitted_note(ui, group.omitted_parts(), lang.pick("part", "파트"), lang);
+    omitted_note(ui, group.omitted_parts(), map_text.endpoint_part, lang);
 }
 
 /// Renders an object's fields and an array's item structure.
 fn render_children(ui: &mut egui::Ui, shape: &FieldShape, salt: &str, lang: Language) {
+    let map_text = lang.map();
     let objects = shape.object_count();
     for (name, field) in shape.fields() {
         render_field(
@@ -477,12 +401,9 @@ fn render_children(ui: &mut egui::Ui, shape: &FieldShape, salt: &str, lang: Lang
             lang,
         );
     }
-    omitted_note(ui, shape.omitted_fields(), lang.pick("field", "필드"), lang);
+    omitted_note(ui, shape.omitted_fields(), map_text.endpoint_field, lang);
     if shape.depth_limited() {
-        ui.weak(lang.pick(
-            "Deeper nesting is not described.",
-            "더 깊은 중첩 구조는 표시하지 않습니다.",
-        ));
+        ui.weak(map_text.endpoint_depth_limited);
     }
 }
 
@@ -521,27 +442,25 @@ fn field_label(
     palette: &Palette,
     lang: Language,
 ) -> RichText {
+    let map_text = lang.map();
     let types = field.types();
     let mut text = format!("{name}: {}", types.summary());
     match presence {
         Presence::Ratio(total) => {
             let _ = write!(text, "  {}", ratio(field.seen(), total));
             if field.seen() < total {
-                text.push_str(lang.pick(" · optional", " · 선택"));
+                text.push_str(map_text.endpoint_optional_suffix);
             }
         }
         Presence::Items => {
-            let _ = match lang {
-                Language::English => write!(text, "  {} item(s)", field.seen()),
-                Language::Korean => write!(text, "  항목 {}개", field.seen()),
-            };
+            text.push_str(&i18n::map::endpoint_item_count(lang, field.seen()));
         }
     }
     if types.count(ValueKind::Null) > 0 {
-        text.push_str(lang.pick(" · nullable", " · null 허용"));
+        text.push_str(map_text.endpoint_nullable_suffix);
     }
     if types.is_mixed() {
-        text.push_str(lang.pick(" · mixed types", " · 혼합 형식"));
+        text.push_str(map_text.endpoint_mixed_suffix);
         return RichText::new(text).monospace().color(palette.warning);
     }
     RichText::new(text).monospace()
@@ -563,13 +482,7 @@ fn section_title(ui: &mut egui::Ui, title: &str) {
 
 fn omitted_note(ui: &mut egui::Ui, omitted: u64, what: &str, lang: Language) {
     if omitted > 0 {
-        let note = match lang {
-            Language::English => format!("{omitted} more {what}(s) not kept (limit reached)."),
-            Language::Korean => {
-                format!("한도에 도달해 {what} {omitted}개가 더 보관되지 않았습니다.")
-            }
-        };
-        ui.weak(note);
+        ui.weak(i18n::map::endpoint_omitted_note(lang, omitted, what));
     }
 }
 

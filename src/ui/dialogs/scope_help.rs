@@ -1,47 +1,18 @@
 //! Explains which traffic the proxy can and cannot record.
 
-use crate::ui::i18n::Language;
+use crate::ui::i18n::{self, Language};
 use crate::ui::style::tokens::{Layout, Space};
 use eframe::egui;
 
 /// Traffic the proxy records, as short labels (S1, D13). The explanation
 /// is in `docs/guide/proxy-and-capture.md`.
 const fn recorded(lang: Language) -> [&'static str; 3] {
-    match lang {
-        Language::English => [
-            "HTTP: method, URL, headers, bodies",
-            "HTTPS, Decrypt off: one Tunnel row per CONNECT",
-            "HTTPS, Decrypt on: each HTTP/1.1 request",
-        ],
-        Language::Korean => [
-            "HTTP: 메서드, URL, 헤더, 본문",
-            "HTTPS(복호화 끔): CONNECT당 터널 행 1개",
-            "HTTPS(복호화 켬): 각 HTTP/1.1 요청",
-        ],
-    }
+    i18n::dialogs::scope_help::recorded_lines(lang)
 }
 
 /// Traffic the proxy cannot see, as short labels.
 const fn not_recorded(lang: Language) -> [&'static str; 4] {
-    match lang {
-        Language::English => [
-            "Apps that ignore proxy settings",
-            "NO_PROXY and bypass-list hosts",
-            "HTTP/3 (QUIC) over UDP",
-            "Traffic through a VPN or another proxy",
-        ],
-        Language::Korean => [
-            "프록시 설정을 무시하는 앱",
-            "NO_PROXY 및 우회 목록 호스트",
-            "UDP 기반 HTTP/3 (QUIC)",
-            "VPN 또는 다른 프록시 경유 트래픽",
-        ],
-    }
-}
-
-/// Label of the Chrome command that keeps a self-started profile off QUIC.
-const fn quic_command(lang: Language) -> &'static str {
-    lang.pick("Chrome without QUIC", "QUIC 비활성화 Chrome 실행 명령")
+    i18n::dialogs::scope_help::not_recorded_lines(lang)
 }
 
 fn disable_quic_example(address: std::net::SocketAddr) -> String {
@@ -52,15 +23,14 @@ fn disable_quic_example(address: std::net::SocketAddr) -> String {
 
 /// Shows the Capture scope submenu that explains which traffic is recorded.
 pub(crate) fn submenu(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>, lang: Language) {
-    ui.menu_button(
-        crate::ui::workbench::text::ShellText::CaptureScope.text(lang),
-        |ui| contents(ui, address, lang),
-    )
-    .response
-    .on_hover_text(lang.pick("What is captured?", "무엇이 캡처되나요?"));
+    let text = lang.scope_help();
+    ui.menu_button(text.capture_scope, |ui| contents(ui, address, lang))
+        .response
+        .on_hover_text(text.tooltips.what_is_captured);
 }
 
 fn contents(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>, lang: Language) {
+    let text = lang.scope_help();
     let viewport = ui.ctx().content_rect();
     let max_width = Layout::SCOPE_HELP_WIDTH.fit(viewport.width());
     let max_height = Layout::TOOLBAR_POPOVER_HEIGHT.fit(viewport.height());
@@ -72,11 +42,8 @@ fn contents(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>, lang: Lang
                 let recorded_lines = recorded(lang);
                 let not_recorded_lines = not_recorded(lang);
                 for (title, lines) in [
-                    (lang.pick("Recorded", "기록되는 항목"), &recorded_lines[..]),
-                    (
-                        lang.pick("Not recorded", "기록되지 않는 항목"),
-                        &not_recorded_lines[..],
-                    ),
+                    (text.recorded, &recorded_lines[..]),
+                    (text.not_recorded, &not_recorded_lines[..]),
                 ] {
                     ui.strong(title);
                     for line in lines {
@@ -85,7 +52,7 @@ fn contents(ui: &mut egui::Ui, address: Option<std::net::SocketAddr>, lang: Lang
                     ui.add_space(Space::XS);
                 }
                 if let Some(address) = address {
-                    ui.strong(quic_command(lang));
+                    ui.strong(text.quic_command);
                     ui.add(
                         egui::Label::new(
                             egui::RichText::new(disable_quic_example(address)).monospace(),

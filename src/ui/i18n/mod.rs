@@ -1,11 +1,142 @@
-//! UI language selection, persistence, and translation catalogs.
+//! UI language selection, persistence, and screen-scoped translation catalogs.
 //!
 //! Domain crates under `crates/` remain language-agnostic; all user-facing UI
 //! text and localized domain error messages live inside this module.
+//!
+//! Screen modules outside `src/ui/i18n/` must never call [`Language::pick`] or
+//! branch on [`Language`] directly. Instead, they read static strings through
+//! the screen catalog accessors on [`Language`] (such as [`Language::shared`],
+//! [`Language::toolbar`], [`Language::requests`], [`Language::detail`],
+//! [`Language::map`], and the dialog accessors) or call typed formatting
+//! functions defined inside the corresponding catalog module.
 
+/// Defines a zero-allocation static catalog struct with English and Korean
+/// constant tables, a [`Language`] lookup method, and exhaustive test entry
+/// iteration so adding a new field is checked in both languages and in policy
+/// tests at compile time.
+macro_rules! define_catalog {
+    (
+        pub(crate) struct $name:ident {
+            $( $field:ident ),* $(,)?
+        }
+        en = {
+            $( $en_field:ident : $en_val:expr ),* $(,)?
+        }
+        ko = {
+            $( $ko_field:ident : $ko_val:expr ),* $(,)?
+        }
+    ) => {
+        pub(crate) struct $name {
+            $( pub(crate) $field: &'static str, )*
+        }
+
+        impl $name {
+            pub(crate) const EN: Self = Self {
+                $( $en_field: $en_val, )*
+            };
+
+            pub(crate) const KO: Self = Self {
+                $( $ko_field: $ko_val, )*
+            };
+
+            #[must_use]
+            pub(crate) const fn for_language(lang: $crate::ui::i18n::Language) -> &'static Self {
+                match lang {
+                    $crate::ui::i18n::Language::English => &Self::EN,
+                    $crate::ui::i18n::Language::Korean => &Self::KO,
+                }
+            }
+
+            #[cfg(test)]
+            pub(crate) fn entries(&self) -> Vec<(&'static str, &'static str)> {
+                vec![
+                    $( (stringify!($field), self.$field), )*
+                ]
+            }
+        }
+    };
+    (
+        pub(crate) struct $name:ident {
+            $( $field:ident ),* $(,)?
+        }
+        tooltips: pub(crate) struct $tip_name:ident {
+            $( $tip_field:ident ),* $(,)?
+        }
+        en = {
+            $( $en_field:ident : $en_val:expr ),* $(,)?
+        }
+        en_tooltips = {
+            $( $en_tip_field:ident : $en_tip_val:expr ),* $(,)?
+        }
+        ko = {
+            $( $ko_field:ident : $ko_val:expr ),* $(,)?
+        }
+        ko_tooltips = {
+            $( $ko_tip_field:ident : $ko_tip_val:expr ),* $(,)?
+        }
+    ) => {
+        pub(crate) struct $name {
+            $( pub(crate) $field: &'static str, )*
+            pub(crate) tooltips: $tip_name,
+        }
+
+        pub(crate) struct $tip_name {
+            $( pub(crate) $tip_field: &'static str, )*
+        }
+
+        impl $tip_name {
+            #[cfg(test)]
+            pub(crate) fn entries(&self) -> Vec<(&'static str, &'static str)> {
+                vec![
+                    $( (stringify!($tip_field), self.$tip_field), )*
+                ]
+            }
+        }
+
+        impl $name {
+            pub(crate) const EN: Self = Self {
+                $( $en_field: $en_val, )*
+                tooltips: $tip_name {
+                    $( $en_tip_field: $en_tip_val, )*
+                },
+            };
+
+            pub(crate) const KO: Self = Self {
+                $( $ko_field: $ko_val, )*
+                tooltips: $tip_name {
+                    $( $ko_tip_field: $ko_tip_val, )*
+                },
+            };
+
+            #[must_use]
+            pub(crate) const fn for_language(lang: $crate::ui::i18n::Language) -> &'static Self {
+                match lang {
+                    $crate::ui::i18n::Language::English => &Self::EN,
+                    $crate::ui::i18n::Language::Korean => &Self::KO,
+                }
+            }
+
+            #[cfg(test)]
+            pub(crate) fn entries(&self) -> Vec<(&'static str, &'static str)> {
+                vec![
+                    $( (stringify!($field), self.$field), )*
+                ]
+            }
+        }
+    };
+}
+
+pub(crate) mod detail;
+pub(crate) mod dialogs;
 pub(crate) mod domain;
 pub(crate) mod fmt;
-pub(crate) mod text;
+pub(crate) mod map;
+pub(crate) mod requests;
+pub(crate) mod shared;
+pub(crate) mod toolbar;
+
+#[cfg(test)]
+mod tests;
 
 use std::ffi::OsString;
 use std::fs;
@@ -19,8 +150,6 @@ use http_inspector_file::{ExistingFile, publish};
 use crate::ui::style::indicator;
 use crate::ui::style::tokens::Tone;
 
-pub(crate) use text::Text;
-
 const LANGUAGE_FILE: &str = "language";
 
 /// Resolved UI language used for rendering text.
@@ -32,22 +161,112 @@ pub(crate) enum Language {
 }
 
 impl Language {
-    /// Picks the localized static string for this language.
+    /// Picks the localized static string for this language inside `src/ui/i18n/`.
     ///
-    /// Keeping every language branch explicit here ensures adding a future
-    /// language triggers compile-time exhaustiveness checks across the UI.
+    /// Restricted to `i18n` submodules so screen code outside `src/ui/i18n/`
+    /// cannot add inline translations.
     #[must_use]
-    pub(crate) const fn pick(self, en: &'static str, ko: &'static str) -> &'static str {
+    const fn pick(self, en: &'static str, ko: &'static str) -> &'static str {
         match self {
             Self::English => en,
             Self::Korean => ko,
         }
     }
 
-    /// Resolves a static UI text key into this language.
+    /// Returns the shared static UI text catalog for this language.
     #[must_use]
-    pub(crate) const fn text(self, key: Text) -> &'static str {
-        key.resolve(self)
+    pub(crate) const fn shared(self) -> &'static shared::SharedText {
+        shared::SharedText::for_language(self)
+    }
+
+    /// Returns the toolbar and status bar UI text catalog for this language.
+    #[must_use]
+    pub(crate) const fn toolbar(self) -> &'static toolbar::ToolbarText {
+        toolbar::ToolbarText::for_language(self)
+    }
+
+    /// Returns the request list, filter, and timing UI text catalog for this language.
+    #[must_use]
+    pub(crate) const fn requests(self) -> &'static requests::RequestsText {
+        requests::RequestsText::for_language(self)
+    }
+
+    /// Returns the request detail panel UI text catalog for this language.
+    #[must_use]
+    pub(crate) const fn detail(self) -> &'static detail::DetailText {
+        detail::DetailText::for_language(self)
+    }
+
+    /// Returns the URL map and relationship graph UI text catalog for this language.
+    #[must_use]
+    pub(crate) const fn map(self) -> &'static map::MapText {
+        map::MapText::for_language(self)
+    }
+
+    /// Returns the browser launcher menu UI text catalog for this language.
+    #[must_use]
+    pub(crate) const fn browser(self) -> &'static dialogs::browser::BrowserText {
+        dialogs::browser::BrowserText::for_language(self)
+    }
+
+    /// Returns the CA registration panel UI text catalog for this language.
+    #[must_use]
+    pub(crate) const fn ca(self) -> &'static dialogs::ca::CaText {
+        dialogs::ca::CaText::for_language(self)
+    }
+
+    /// Returns the Copy as cURL UI text catalog for this language.
+    #[must_use]
+    pub(crate) const fn copy_curl(self) -> &'static dialogs::copy_curl::CopyCurlText {
+        dialogs::copy_curl::CopyCurlText::for_language(self)
+    }
+
+    /// Returns the Export HAR dialog UI text catalog for this language.
+    #[must_use]
+    pub(crate) const fn har(self) -> &'static dialogs::har::HarText {
+        dialogs::har::HarText::for_language(self)
+    }
+
+    /// Returns the capture scope help popover UI text catalog for this language.
+    #[must_use]
+    pub(crate) const fn scope_help(self) -> &'static dialogs::scope_help::ScopeHelpText {
+        dialogs::scope_help::ScopeHelpText::for_language(self)
+    }
+
+    /// Returns the Save menu UI text catalog for this language.
+    #[must_use]
+    pub(crate) const fn save(self) -> &'static dialogs::save::SaveText {
+        dialogs::save::SaveText::for_language(self)
+    }
+
+    /// Returns the bulk body save dialog UI text catalog for this language.
+    #[must_use]
+    pub(crate) const fn bulk_save(self) -> &'static dialogs::bulk_save::BulkSaveText {
+        dialogs::bulk_save::BulkSaveText::for_language(self)
+    }
+
+    /// Returns the single-body saving UI text catalog for this language.
+    #[must_use]
+    pub(crate) const fn body_saving(self) -> &'static dialogs::body_saving::BodySavingText {
+        dialogs::body_saving::BodySavingText::for_language(self)
+    }
+
+    /// Returns the range merge dialog UI text catalog for this language.
+    #[must_use]
+    pub(crate) const fn range_merge(self) -> &'static dialogs::range_merge::RangeMergeText {
+        dialogs::range_merge::RangeMergeText::for_language(self)
+    }
+
+    /// Returns the manual replay editor UI text catalog for this language.
+    #[must_use]
+    pub(crate) const fn replay(self) -> &'static dialogs::replay::ReplayText {
+        dialogs::replay::ReplayText::for_language(self)
+    }
+
+    /// Returns the HLS media dialog UI text catalog for this language.
+    #[must_use]
+    pub(crate) const fn hls(self) -> &'static dialogs::hls::HlsText {
+        dialogs::hls::HlsText::for_language(self)
     }
 }
 
@@ -88,7 +307,7 @@ impl LanguagePreference {
     /// and switch back to their preferred language.
     const fn menu_label(self, active: Language) -> &'static str {
         match self {
-            Self::System => active.text(Text::OptionSystem),
+            Self::System => active.shared().system,
             Self::English => "English",
             Self::Korean => "한국어",
         }
@@ -158,7 +377,7 @@ impl LanguageSettings {
     /// Shows the language radio options inside the Settings menu.
     pub(crate) fn menu(&self, ui: &mut egui::Ui) -> Option<LanguagePreference> {
         let active = self.language();
-        ui.label(active.text(Text::LanguageHeading));
+        ui.label(active.shared().language);
         let mut chosen = None;
         for option in LanguagePreference::ALL {
             if ui
@@ -253,155 +472,4 @@ fn save_to(path: &Path, preference: LanguagePreference) -> io::Result<()> {
     publish(path, ExistingFile::Replace, |file| {
         writeln!(file, "{}", preference.storage_value())
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn env_from<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl FnMut(&str) -> Option<OsString> + 'a {
-        move |name| {
-            pairs
-                .iter()
-                .find(|(key, _)| *key == name)
-                .map(|(_, value)| OsString::from(value))
-        }
-    }
-
-    #[test]
-    fn parses_known_preferences_and_rejects_unknown_values() {
-        assert_eq!(
-            LanguagePreference::parse("system"),
-            Some(LanguagePreference::System)
-        );
-        assert_eq!(
-            LanguagePreference::parse("  EN \n"),
-            Some(LanguagePreference::English)
-        );
-        assert_eq!(
-            LanguagePreference::parse("english"),
-            Some(LanguagePreference::English)
-        );
-        assert_eq!(
-            LanguagePreference::parse("ko\n"),
-            Some(LanguagePreference::Korean)
-        );
-        assert_eq!(
-            LanguagePreference::parse("KO"),
-            Some(LanguagePreference::Korean)
-        );
-        assert_eq!(
-            LanguagePreference::parse("korean"),
-            Some(LanguagePreference::Korean)
-        );
-        assert_eq!(LanguagePreference::parse(""), None);
-        assert_eq!(LanguagePreference::parse("ja"), None);
-        assert_eq!(LanguagePreference::parse("ko_KR"), None);
-    }
-
-    #[test]
-    fn saves_and_loads_language_preference_and_falls_back_on_invalid_file() -> io::Result<()> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("nested").join(LANGUAGE_FILE);
-
-        assert_eq!(load_from(&path), LanguagePreference::System);
-
-        for preference in LanguagePreference::ALL {
-            save_to(&path, preference)?;
-            assert_eq!(load_from(&path), preference);
-        }
-
-        fs::write(&path, "unexpected-value\n")?;
-        assert_eq!(load_from(&path), LanguagePreference::System);
-
-        fs::write(&path, "")?;
-        assert_eq!(load_from(&path), LanguagePreference::System);
-        Ok(())
-    }
-
-    #[test]
-    fn detects_system_language_following_posix_precedence() {
-        // LC_ALL overrides LC_MESSAGES and LANG.
-        assert_eq!(
-            detect_system_language(env_from(&[
-                ("LC_ALL", "ko_KR.UTF-8"),
-                ("LC_MESSAGES", "en_US.UTF-8"),
-                ("LANG", "en_US.UTF-8"),
-            ])),
-            Language::Korean
-        );
-        assert_eq!(
-            detect_system_language(env_from(&[
-                ("LC_ALL", "C"),
-                ("LC_MESSAGES", "ko_KR.UTF-8"),
-                ("LANG", "ko_KR.UTF-8"),
-            ])),
-            Language::English
-        );
-        // Empty LC_ALL falls through to LC_MESSAGES.
-        assert_eq!(
-            detect_system_language(env_from(&[
-                ("LC_ALL", "   "),
-                ("LC_MESSAGES", "ko-KR"),
-                ("LANG", "en_US.UTF-8"),
-            ])),
-            Language::Korean
-        );
-        // Empty LC_ALL and LC_MESSAGES fall through to LANG.
-        assert_eq!(
-            detect_system_language(env_from(&[
-                ("LC_ALL", ""),
-                ("LC_MESSAGES", ""),
-                ("LANG", "ko"),
-            ])),
-            Language::Korean
-        );
-        // Missing environment falls back to English.
-        assert_eq!(detect_system_language(env_from(&[])), Language::English);
-    }
-
-    #[test]
-    fn parses_locale_variants_without_false_positives() {
-        for korean in [
-            "ko",
-            "KO",
-            "ko_KR",
-            "ko-KR",
-            "ko_KR.UTF-8",
-            "ko_KR.utf8@modifier",
-        ] {
-            assert_eq!(language_from_locale(korean), Language::Korean, "{korean}");
-        }
-        for english in [
-            "en_US.UTF-8",
-            "C",
-            "POSIX",
-            "ja_JP.UTF-8",
-            "kok_IN.UTF-8",
-            "koi8-r",
-            "",
-        ] {
-            assert_eq!(
-                language_from_locale(english),
-                Language::English,
-                "{english}"
-            );
-        }
-    }
-
-    #[test]
-    fn language_menu_labels_preserve_native_endonyms() {
-        for active in [Language::English, Language::Korean] {
-            assert_eq!(LanguagePreference::English.menu_label(active), "English");
-            assert_eq!(LanguagePreference::Korean.menu_label(active), "한국어");
-        }
-        assert_eq!(
-            LanguagePreference::System.menu_label(Language::English),
-            "System"
-        );
-        assert_eq!(
-            LanguagePreference::System.menu_label(Language::Korean),
-            "시스템"
-        );
-    }
 }

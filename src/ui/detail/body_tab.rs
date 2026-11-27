@@ -20,7 +20,6 @@ use crate::ui::style::fonts;
 use crate::ui::style::indicator;
 use crate::ui::style::theme::Palette;
 use crate::ui::style::tokens::{Layout, Space, StrokeWidth, Tone};
-use crate::ui::workbench::text::ShellText;
 use crate::ui::workbench::{chrome, controls};
 
 /// Where and how the bodies of the selected exchange are shown.
@@ -144,7 +143,7 @@ fn view_mode_row(ui: &mut egui::Ui, mode: &mut ViewMode, has_tree: bool, lang: L
                             )
                         })
                         .inner
-                        .on_disabled_hover_text(ShellText::TreeUnavailable.text(lang));
+                        .on_disabled_hover_text(lang.detail().tooltips.tree_unavailable);
                     if response.clicked() {
                         *mode = option;
                     }
@@ -245,13 +244,13 @@ fn section_header(
 ) -> Option<AppAction> {
     let lang = panel.lang;
     let title = match side {
-        BodySide::Request => ShellText::RequestBody,
-        BodySide::Response => ShellText::ResponseBody,
+        BodySide::Request => lang.detail().request_body,
+        BodySide::Response => lang.detail().response_body,
     };
     let top = ui.cursor().top();
     let action = chrome::pane_header(ui, side_salt(side), |ui| {
         ui.label(
-            egui::RichText::new(title.text(lang))
+            egui::RichText::new(title)
                 .font(fonts::panel_title())
                 .color(Palette::of(ui).text),
         );
@@ -288,11 +287,11 @@ fn meta(ui: &mut egui::Ui, body: Option<&Body<'_>>, format: Option<BodyFormat>, 
         );
     };
     let Some(body) = body else {
-        data(ui, ShellText::NotObserved.text(lang));
+        data(ui, lang.shared().not_observed);
         return;
     };
     let Some(snapshot) = body.snapshot.as_ref() else {
-        data(ui, ShellText::Updating.text(lang));
+        data(ui, lang.detail().updating);
         return;
     };
     if let Some(format) = format {
@@ -300,7 +299,8 @@ fn meta(ui: &mut egui::Ui, body: Option<&Body<'_>>, format: Option<BodyFormat>, 
     }
     data(ui, &ByteSize::new(snapshot.observed_bytes()).to_string());
     if snapshot.retention() == BodyRetention::Omitted {
-        indicator::dot_label(ui, Tone::Warning, ShellText::PreviewOmitted.text(lang))
-            .on_hover_text(ShellText::PreviewOmittedHint.text(lang));
+        let detail = lang.detail();
+        indicator::dot_label(ui, Tone::Warning, detail.preview_omitted)
+            .on_hover_text(detail.tooltips.preview_omitted_hint);
     }
 }

@@ -170,10 +170,7 @@ impl<S: Clone + PartialEq> BodyCache<S> {
                             .map(|msg| Notice::warning(domain::localize_content_notice(lang, msg))),
                     );
                     if source.search.is_some() {
-                        notices.push(Notice::info(lang.pick(
-                            "Search matches are marked in Pretty and Raw.",
-                            "검색 일치 항목은 서식 및 원문 보기에서 표시됩니다.",
-                        )));
+                        notices.push(Notice::info(lang.detail().search_matches_in_text_views));
                     }
                     return PreparedBody::Tree {
                         format: decoded.format,
@@ -182,30 +179,21 @@ impl<S: Clone + PartialEq> BodyCache<S> {
                     };
                 }
                 Some(Err(reason)) => {
-                    let notice = match lang {
-                        Language::English => {
-                            view::tree_fallback_notice(decoded.format, Some(reason))
-                        }
-                        Language::Korean => {
-                            let detail = domain::format_error(lang, reason);
-                            Notice::warning(format!(
-                                "서식 보기로 표시: 트리를 읽을 수 없습니다({detail})."
-                            ))
-                        }
-                    };
-                    decoded.notices.push(notice);
+                    decoded
+                        .notices
+                        .push(crate::ui::i18n::detail::tree_fallback_error(
+                            lang,
+                            decoded.format,
+                            reason,
+                        ));
                 }
                 None => {
-                    let notice = match lang {
-                        Language::English => view::tree_fallback_notice(decoded.format, None),
-                        Language::Korean => {
-                            let format_name = domain::body_format(lang, decoded.format);
-                            Notice::warning(format!(
-                                "{format_name} 형식에는 트리 보기를 사용할 수 없어 서식 보기로 표시합니다."
-                            ))
-                        }
-                    };
-                    decoded.notices.push(notice);
+                    decoded
+                        .notices
+                        .push(crate::ui::i18n::detail::tree_fallback_unsupported(
+                            lang,
+                            decoded.format,
+                        ));
                 }
             }
         }

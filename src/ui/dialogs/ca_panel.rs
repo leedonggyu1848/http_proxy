@@ -4,7 +4,7 @@ use std::sync::mpsc::SendError;
 use std::time::Duration;
 
 use crate::ui::AppAction;
-use crate::ui::i18n::{Language, Text, domain};
+use crate::ui::i18n::{self, Language, domain};
 use crate::ui::style::indicator;
 use crate::ui::style::tokens::Tone;
 
@@ -34,10 +34,7 @@ enum NoticeKind {
 impl NoticeKind {
     const fn text(self, lang: Language) -> &'static str {
         match self {
-            Self::RestartBrowser => lang.pick(
-                "Restart Chrome/Chromium after changing CA registration.",
-                "CA 등록을 변경한 뒤에는 Chrome/Chromium을 다시 시작하세요.",
-            ),
+            Self::RestartBrowser => lang.ca().restart_browser_notice,
         }
     }
 }
@@ -76,17 +73,9 @@ impl CaRegistrationError {
             Self::Setup(err) => domain::https_setup_error(lang, err),
             Self::Trust(err) => domain::ca_trust_error(lang, err),
             Self::Io(err) => err.to_string(),
-            Self::Start(err) => match lang {
-                Language::English => format!("Could not start CA registration: {err}"),
-                Language::Korean => format!("CA 등록 작업을 시작하지 못했습니다: {err}"),
-            },
+            Self::Start(err) => i18n::dialogs::ca::start_failed(lang, err),
             Self::PreparedSend(err) => err.to_string(),
-            Self::WorkerStopped => lang
-                .pick(
-                    "CA registration worker stopped",
-                    "CA 등록 작업자가 예기치 않게 중지되었습니다",
-                )
-                .to_owned(),
+            Self::WorkerStopped => lang.ca().worker_stopped.to_owned(),
         }
     }
 }
@@ -107,17 +96,16 @@ enum Badge {
 
 impl Badge {
     const fn text(self, lang: Language) -> &'static str {
+        let text = lang.ca();
         match self {
-            Self::Busy(Action::Check) => lang.pick("Checking…", "확인 중…"),
-            Self::Busy(Action::Install) => lang.pick("Registering…", "등록 중…"),
-            Self::Busy(Action::Remove) => lang.pick("Removing…", "제거 중…"),
-            Self::Unknown => lang.pick("Not checked", "미확인"),
-            Self::Failed => lang.pick("Error", "오류"),
-            Self::Status(CaTrustStatus::NotInstalled) => lang.pick("Not registered", "미등록"),
-            Self::Status(CaTrustStatus::Trusted) => lang.pick("Trusted", "신뢰됨"),
-            Self::Status(CaTrustStatus::Untrusted) => {
-                lang.pick("Registered, not trusted", "등록됨(신뢰 안 됨)")
-            }
+            Self::Busy(Action::Check) => text.checking,
+            Self::Busy(Action::Install) => text.registering,
+            Self::Busy(Action::Remove) => text.removing,
+            Self::Unknown => text.not_checked,
+            Self::Failed => text.error,
+            Self::Status(CaTrustStatus::NotInstalled) => text.not_registered,
+            Self::Status(CaTrustStatus::Trusted) => text.trusted,
+            Self::Status(CaTrustStatus::Untrusted) => text.registered_untrusted,
         }
     }
 
@@ -140,21 +128,6 @@ impl Badge {
             Self::Unknown | Self::Failed | Self::Status(_) => Some(Action::Install),
         }
     }
-}
-
-const fn register_help(lang: Language) -> &'static str {
-    lang.pick(
-        "Trust the public CA in Chrome and Chromium for the current user.",
-        "현재 사용자의 Chrome 및 Chromium에서 공개 CA를 신뢰하도록 등록합니다.",
-    )
-}
-
-#[cfg(target_os = "macos")]
-const fn keychain_help(lang: Language) -> &'static str {
-    lang.pick(
-        "Approve the macOS keychain dialog to finish; cancelling leaves registration incomplete.",
-        "등록을 완료하려면 macOS 키체인 대화상자를 승인해야 하며, 취소하면 등록이 완료되지 않습니다.",
-    )
 }
 
 impl CaPanel {
@@ -199,16 +172,10 @@ impl CaPanel {
         directory: Option<&Path>,
         lang: Language,
     ) -> Option<AppAction> {
+        let text = lang.ca();
         let Some(directory) = directory else {
-            indicator::dot_label(
-                ui,
-                Tone::Danger,
-                lang.pick("CA storage unavailable", "CA 저장소를 사용할 수 없음"),
-            )
-            .on_hover_text(lang.pick(
-                "Check HOME and platform storage settings.",
-                "HOME 및 플랫폼 저장소 설정을 확인하세요.",
-            ));
+            indicator::dot_label(ui, Tone::Danger, text.storage_unavailable)
+                .on_hover_text(text.tooltips.storage_unavailable_hint);
             return None;
         };
         ui.horizontal(|ui| self.summary_row(ui, directory, lang))
@@ -221,6 +188,7 @@ impl CaPanel {
         directory: &Path,
         lang: Language,
     ) -> Option<AppAction> {
+        let text = lang.ca();
         let mut action = None;
         let badge = self.badge();
         ui.label("CA");
@@ -234,30 +202,26 @@ impl CaPanel {
         let badge_button = egui::Button::new(badge.text(lang)).frame(false);
         if ui
             .add_enabled(!matches!(badge, Badge::Busy(_)), badge_button)
-            .on_hover_text(lang.pick(
-                "CA registration status; click to check again.",
-                "CA 등록 상태이며, 클릭하면 다시 확인합니다.",
-            ))
+            .on_hover_text(text.tooltips.badge_status_hint)
             .clicked()
         {
             action = Some(AppAction::Ca(Action::Check));
         }
         if badge.primary() == Some(Action::Install)
             && ui
-                .button(lang.pick("Register CA", "CA 등록"))
-                .on_hover_text(register_help(lang))
+                .button(text.register_ca)
+                .on_hover_text(text.tooltips.register_help)
                 .clicked()
         {
             action = Some(AppAction::Ca(Action::Install));
         }
-        let menu = ui.menu_button(lang.pick("CA details", "CA 정보"), |ui| {
-            self.details(ui, directory, lang)
-        });
+        let menu = ui.menu_button(text.ca_details, |ui| self.details(ui, directory, lang));
         action.or_else(|| menu.inner.flatten())
     }
 
     /// Paths, fingerprint, and less frequent actions, shown only on request.
     fn details(&self, ui: &mut egui::Ui, directory: &Path, lang: Language) -> Option<AppAction> {
+        let text = lang.ca();
         let mut action = None;
         let viewport = ui.ctx().content_rect();
         let max_width = Layout::CA_DETAILS_WIDTH.fit(viewport.width());
@@ -269,25 +233,18 @@ impl CaPanel {
                 .show(ui, |ui| {
                     action = copyable(
                         ui,
-                        lang.pick("Public CA certificate", "공개 CA 인증서"),
+                        text.public_ca_cert,
                         &directory.join("root-ca.pem").display().to_string(),
                         lang,
                     );
                     if let Some(info) = &self.info {
-                        action = copyable(
-                            ui,
-                            lang.pick("SHA-256 fingerprint", "SHA-256 지문"),
-                            info.fingerprint_sha256(),
-                            lang,
-                        )
-                        .or_else(|| action.take());
+                        action =
+                            copyable(ui, text.sha256_fingerprint, info.fingerprint_sha256(), lang)
+                                .or_else(|| action.take());
                     }
                     if let Some(registration) = &self.registration {
                         let target = domain::ca_trust_store_description(lang);
-                        let label = match lang {
-                            Language::English => format!("Trust store: {target}"),
-                            Language::Korean => format!("신뢰 저장소: {target}"),
-                        };
+                        let label = i18n::dialogs::ca::trust_store_label(lang, target);
                         action = copyable(
                             ui,
                             &label,
@@ -299,10 +256,7 @@ impl CaPanel {
                     ui.separator();
                     ui.add_enabled_ui(self.pending_action.is_none(), |ui| {
                         ui.horizontal_wrapped(|ui| {
-                            if ui
-                                .button(lang.pick("Check registration", "등록 상태 확인"))
-                                .clicked()
-                            {
+                            if ui.button(text.check_registration).clicked() {
                                 action = Some(AppAction::Ca(Action::Check));
                             }
                             let registered =
@@ -310,14 +264,8 @@ impl CaPanel {
                                     registration.status != CaTrustStatus::NotInstalled
                                 });
                             if ui
-                                .add_enabled(
-                                    registered,
-                                    egui::Button::new(lang.pick("Remove CA", "CA 제거")),
-                                )
-                                .on_hover_text(lang.pick(
-                                    "Remove the CA that HTTP Inspector registered.",
-                                    "HTTP Inspector가 등록한 CA를 제거합니다.",
-                                ))
+                                .add_enabled(registered, egui::Button::new(text.remove_ca))
+                                .on_hover_text(text.tooltips.remove_ca_hint)
                                 .clicked()
                             {
                                 action = Some(AppAction::Ca(Action::Remove));
@@ -351,11 +299,11 @@ impl CaPanel {
         }
         #[cfg(target_os = "macos")]
         if matches!(self.pending_action, Some(Action::Install | Action::Remove)) {
-            ui.label(keychain_help(lang));
+            ui.label(i18n::dialogs::ca::keychain_help(lang));
         }
         if let Some(notice) = self.notice {
             indicator::dot_label(ui, Tone::Warning, notice.text(lang));
-            return ui.small_button(lang.text(Text::Dismiss)).clicked();
+            return ui.small_button(lang.shared().dismiss).clicked();
         }
         false
     }
@@ -440,7 +388,7 @@ fn copyable(ui: &mut egui::Ui, label: &str, value: &str, lang: Language) -> Opti
     let copied = ui
         .horizontal_wrapped(|ui| {
             ui.strong(label);
-            ui.small_button(lang.text(Text::Copy)).clicked()
+            ui.small_button(lang.shared().copy).clicked()
         })
         .inner;
     ui.add(egui::Label::new(RichText::new(value).monospace()).wrap());

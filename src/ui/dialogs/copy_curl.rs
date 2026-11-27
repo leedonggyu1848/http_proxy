@@ -5,19 +5,18 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use http_inspector_exchange::Exchange;
 use http_inspector_interop::curl::{
-    CURL_REDACTED_PLACEHOLDER, CurlUnavailable, RedactedHeaders, curl_command,
-    curl_unavailable_reason,
+    CurlUnavailable, RedactedHeaders, curl_command, curl_unavailable_reason,
 };
 
 use crate::ui::AppAction;
-use crate::ui::i18n::{Language, Text, domain};
+use crate::ui::i18n::{self, Language, domain};
 use crate::ui::style::indicator;
 use crate::ui::style::theme::Palette;
 use crate::ui::style::tokens::Tone;
 
 /// Label shared by the request-list menu and the details panel.
 pub(crate) const fn copy_label(lang: Language) -> &'static str {
-    lang.text(Text::CtxCopyAsCurl)
+    lang.copy_curl().copy_as_curl
 }
 
 /// How long a plain success notice stays before it hides itself.
@@ -50,34 +49,12 @@ impl NoticeBody {
 
     fn text(&self, lang: Language) -> String {
         match self {
-            Self::Copied => lang
-                .pick("Copied as cURL.", "cURL로 복사했습니다.")
-                .to_owned(),
+            Self::Copied => lang.copy_curl().copied.to_owned(),
             Self::CopiedWithPlaceholders(headers) => {
-                let names = headers.join(", ");
-                match lang {
-                    Language::English => format!(
-                        "Copied as cURL with {CURL_REDACTED_PLACEHOLDER} placeholders for redacted headers \
-                         ({names}). Replace them with real values before running."
-                    ),
-                    Language::Korean => format!(
-                        "가려진 헤더({names})에 {CURL_REDACTED_PLACEHOLDER} 자리표시자를 넣어 cURL로 복사했습니다. \
-                         실행하기 전에 실제 값으로 바꾸세요."
-                    ),
-                }
+                i18n::dialogs::copy_curl::copied_with_placeholders(lang, &headers.join(", "))
             }
             Self::CopiedWithoutRedacted(headers) => {
-                let names = headers.join(", ");
-                match lang {
-                    Language::English => format!(
-                        "Copied as cURL without redacted headers ({names}). Their values are not stored; \
-                         add them before running if the server needs them."
-                    ),
-                    Language::Korean => format!(
-                        "가려진 헤더({names})를 제외하고 cURL로 복사했습니다. 원래 값은 저장되지 않으므로 \
-                         서버에 필요하면 실행 전에 직접 추가하세요."
-                    ),
-                }
+                i18n::dialogs::copy_curl::copied_without_redacted(lang, &headers.join(", "))
             }
             Self::Refused(reason) => refused_text(reason, lang),
         }
@@ -97,19 +74,9 @@ impl CurlCopy {
     pub(crate) fn settings(&self, ui: &mut egui::Ui, lang: Language) -> Option<AppAction> {
         ui.label(egui::RichText::new(copy_label(lang)).color(Palette::of(ui).secondary));
         let mut placeholders = self.redacted == RedactedHeaders::Placeholder;
-        let hover = match lang {
-            Language::English => format!(
-                "Copied commands carry {CURL_REDACTED_PLACEHOLDER} for Authorization and Cookie values, which are never stored."
-            ),
-            Language::Korean => format!(
-                "저장되지 않는 Authorization 및 Cookie 값 자리에 {CURL_REDACTED_PLACEHOLDER} 자리표시자를 넣어 복사합니다."
-            ),
-        };
+        let hover = i18n::dialogs::copy_curl::redacted_placeholders_hint(lang);
         let changed = ui
-            .checkbox(
-                &mut placeholders,
-                lang.pick("Redacted placeholders", "가려진 헤더 자리표시자"),
-            )
+            .checkbox(&mut placeholders, lang.copy_curl().redacted_placeholders)
             .on_hover_text(hover)
             .changed();
         let redacted = if placeholders {
@@ -184,7 +151,7 @@ impl CurlCopy {
             } else {
                 indicator::dot_label(ui, Tone::Warning, text);
             }
-            ui.small_button(lang.text(Text::Dismiss)).clicked()
+            ui.small_button(lang.shared().dismiss).clicked()
         })
         .inner
     }
@@ -201,19 +168,13 @@ pub(crate) fn copy_button(ui: &mut egui::Ui, record: &Exchange, lang: Language) 
     let response = ui.add_enabled(unavailable.is_none(), button);
     match unavailable {
         Some(reason) => response.on_disabled_hover_text(domain::curl_unavailable(lang, &reason)),
-        None => response.on_hover_text(lang.pick(
-            "Copy this request as a curl command for bash or zsh.",
-            "이 요청을 bash 또는 zsh용 curl 명령으로 복사합니다.",
-        )),
+        None => response.on_hover_text(lang.copy_curl().tooltips.copy_button_hint),
     }
 }
 
 fn refused_text(reason: &CurlUnavailable, lang: Language) -> String {
     let detail = domain::curl_unavailable(lang, reason);
-    match lang {
-        Language::English => format!("Not copied as cURL: {detail}."),
-        Language::Korean => format!("cURL로 복사하지 못했습니다: {detail}."),
-    }
+    i18n::dialogs::copy_curl::refused(lang, &detail)
 }
 
 #[cfg(test)]

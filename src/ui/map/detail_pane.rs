@@ -15,12 +15,12 @@ use http_inspector_analysis::url_map::{NodeStats, RequestScope, ViewNode};
 use http_inspector_exchange::{ByteSize, Exchange, RecordId};
 
 use super::{MapAction, endpoint_view};
-use crate::ui::i18n::{Language, domain};
+use crate::ui::i18n::{self, Language, domain};
 use crate::ui::requests::outcome_view::outcome_text;
 use crate::ui::style::fonts;
 use crate::ui::style::theme::Palette;
 use crate::ui::style::tokens::Layout;
-use crate::ui::workbench::text::{self, ShellText};
+use crate::ui::workbench::text;
 use crate::ui::workbench::{chrome, controls, tree};
 
 /// Maximum matching retained requests listed directly inside the node detail pane.
@@ -47,11 +47,8 @@ enum TargetPreview {
 impl TargetPreview {
     fn display(&self, lang: Language) -> String {
         match self {
-            Self::Invalid => lang.pick("(invalid target)", "(잘못된 대상)").to_owned(),
-            Self::Tunnel(origin) => match lang {
-                Language::English => format!("{origin} (tunnel)"),
-                Language::Korean => format!("{origin} (터널)"),
-            },
+            Self::Invalid => lang.map().invalid_target.to_owned(),
+            Self::Tunnel(origin) => i18n::map::tunnel_target(lang, origin),
             Self::Path(path) => path.clone(),
         }
     }
@@ -143,14 +140,13 @@ pub(super) fn show(
     endpoints: &Endpoints<'_>,
     lang: Language,
 ) -> Option<MapAction> {
+    let map_text = lang.map();
     let Some(node) = node else {
         chrome::pane_header(ui, "map-detail-header", |ui| {
-            pane_title(ui, ShellText::Node.text(lang));
+            pane_title(ui, map_text.node);
         });
         ui.centered_and_justified(|ui| {
-            ui.add(
-                egui::Label::new(RichText::new(ShellText::NoNodeSelected.text(lang)).weak()).wrap(),
-            );
+            ui.add(egui::Label::new(RichText::new(map_text.no_node_selected).weak()).wrap());
         });
         return None;
     };
@@ -168,15 +164,9 @@ pub(super) fn show(
                 .request_count
                 .saturating_sub(u64::try_from(retained).unwrap_or(u64::MAX));
             let key_width = tree::key_width(ui.available_width());
-            tree::group(
-                ui,
-                "map-summary",
-                ShellText::Summary.text(lang),
-                None,
-                |ui| {
-                    render_stats_section(ui, node, retained, evicted, key_width, lang);
-                },
-            );
+            tree::group(ui, "map-summary", map_text.summary, None, |ui| {
+                render_stats_section(ui, node, retained, evicted, key_width, lang);
+            });
             if let Some(endpoint_action) =
                 endpoint_view::show(ui, node, endpoints.merged, endpoints.skipped, lang)
             {
@@ -193,16 +183,17 @@ pub(super) fn show(
 /// The pane header: the node's URL as the pane name and Show in Requests at
 /// the right (D22).
 fn header(ui: &mut egui::Ui, node: &ViewNode, lang: Language) -> Option<MapAction> {
+    let map_text = lang.map();
     chrome::pane_header(ui, "map-detail-header", |ui| {
         let action = ui
             .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 controls::ghost_style(ui);
                 let clicked = ui
                     .add(controls::ghost(
-                        ShellText::ShowInRequests.text(lang),
+                        map_text.show_in_requests,
                         Layout::PANE_BUTTON_HEIGHT,
                     ))
-                    .on_hover_text(ShellText::ShowInRequestsHint.text(lang))
+                    .on_hover_text(map_text.tooltips.show_in_requests_hint)
                     .clicked();
                 let url = node.key.display_url();
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -246,6 +237,8 @@ fn render_stats_section(
     key_width: f32,
     lang: Language,
 ) {
+    let shared = lang.shared();
+    let map_text = lang.map();
     let palette = Palette::of(ui);
     let stats = &node.subtree;
     let data = |text: String| RichText::new(text).font(fonts::data()).color(palette.text);
@@ -253,8 +246,8 @@ fn render_stats_section(
     pair(
         ui,
         key_width,
-        ShellText::Requests.text(lang),
-        data(text::node_requests(
+        shared.requests,
+        data(i18n::map::node_requests(
             lang,
             stats.request_count,
             node.direct.request_count,
@@ -266,52 +259,38 @@ fn render_stats_section(
     pair(
         ui,
         key_width,
-        ShellText::Methods.text(lang),
+        map_text.methods,
         data(if methods.is_empty() {
-            ShellText::NotObserved.text(lang).to_owned()
+            shared.not_observed.to_owned()
         } else {
             methods
         }),
     );
     let counts = status_counts(ui, stats, lang);
-    tree::row(
-        ui,
-        tree::TreeRow::new(1, ShellText::Status.text(lang)),
-        |ui| {
-            tree::key_value(
-                ui,
-                key_width,
-                tree::key_text(ui, ShellText::Status.text(lang)),
-                counts,
-            );
-        },
-    );
+    tree::row(ui, tree::TreeRow::new(1, shared.status), |ui| {
+        tree::key_value(ui, key_width, tree::key_text(ui, shared.status), counts);
+    });
     pair(
         ui,
         key_width,
-        ShellText::ContentType.text(lang),
+        map_text.content_type,
         data(format_content_types(stats)),
     );
     pair(
         ui,
         key_width,
-        ShellText::Transferred.text(lang),
+        map_text.transferred,
         data(ByteSize::new(stats.total_bytes).to_string()),
     );
     let timing_text = match (stats.avg_duration_ms(), stats.max_duration_ms()) {
-        (Some(avg), Some(max)) => text::avg_max(lang, avg, max),
-        _ => ShellText::NotObserved.text(lang).to_owned(),
+        (Some(avg), Some(max)) => i18n::map::avg_max(lang, avg, max),
+        _ => shared.not_observed.to_owned(),
     };
+    pair(ui, key_width, map_text.response_time, data(timing_text));
     pair(
         ui,
         key_width,
-        ShellText::ResponseTime.text(lang),
-        data(timing_text),
-    );
-    pair(
-        ui,
-        key_width,
-        ShellText::Observed.text(lang),
+        map_text.observed,
         data(format!(
             "{} – {}",
             format_wall_time(stats.first_seen),
@@ -324,6 +303,8 @@ fn render_stats_section(
 /// Rows that only some nodes have: party, folded IDs, tunnel, and merged
 /// requests.
 fn render_node_flags(ui: &mut egui::Ui, node: &ViewNode, key_width: f32, lang: Language) {
+    let shared = lang.shared();
+    let map_text = lang.map();
     let palette = Palette::of(ui);
     let stats = &node.subtree;
     let data = |text: String| RichText::new(text).font(fonts::data()).color(palette.text);
@@ -331,8 +312,8 @@ fn render_node_flags(ui: &mut egui::Ui, node: &ViewNode, key_width: f32, lang: L
         pair(
             ui,
             key_width,
-            ShellText::Party.text(lang),
-            data(text::third_party_hits(lang, stats.third_party_hits)),
+            map_text.party,
+            data(i18n::map::third_party_hits(lang, stats.third_party_hits)),
         );
     }
     if node.is_folded_id {
@@ -344,7 +325,7 @@ fn render_node_flags(ui: &mut egui::Ui, node: &ViewNode, key_width: f32, lang: L
         pair(
             ui,
             key_width,
-            ShellText::FoldedIds.text(lang),
+            map_text.folded_ids,
             data(text::folded_kinds(node.folded_count, &kinds)),
         );
     }
@@ -352,8 +333,8 @@ fn render_node_flags(ui: &mut egui::Ui, node: &ViewNode, key_width: f32, lang: L
         pair(
             ui,
             key_width,
-            ShellText::Tunnel.text(lang),
-            RichText::new(ShellText::NoPathInfo.text(lang))
+            shared.tunnel,
+            RichText::new(map_text.no_path_info)
                 .font(fonts::data())
                 .color(palette.secondary),
         );
@@ -362,8 +343,8 @@ fn render_node_flags(ui: &mut egui::Ui, node: &ViewNode, key_width: f32, lang: L
         pair(
             ui,
             key_width,
-            ShellText::Merged.text(lang),
-            RichText::new(text::merged_at_cap(lang, stats.overflow_merged))
+            map_text.merged,
+            RichText::new(i18n::map::merged_at_cap(lang, stats.overflow_merged))
                 .font(fonts::data())
                 .color(palette.warning),
         );
@@ -373,27 +354,16 @@ fn render_node_flags(ui: &mut egui::Ui, node: &ViewNode, key_width: f32, lang: L
 /// Status buckets with requests, such as `2xx 4 · 5xx 2`. Only 4xx and
 /// failures take a status color; the rest keep the text color (S7, D1).
 fn status_counts(ui: &egui::Ui, stats: &NodeStats, lang: Language) -> egui::text::LayoutJob {
+    let shared = lang.shared();
     let palette = Palette::of(ui);
     let buckets = [
         ("2xx", stats.status.s2xx, palette.text),
         ("3xx", stats.status.s3xx, palette.text),
         ("4xx", stats.status.s4xx, palette.warning),
         ("5xx", stats.status.s5xx, palette.error),
-        (
-            ShellText::Failed.text(lang),
-            stats.status.failed,
-            palette.error,
-        ),
-        (
-            ShellText::Tunnel.text(lang),
-            stats.status.tunnel,
-            palette.text,
-        ),
-        (
-            ShellText::Pending.text(lang),
-            stats.status.pending,
-            palette.text,
-        ),
+        (shared.failed, stats.status.failed, palette.error),
+        (shared.tunnel, stats.status.tunnel, palette.text),
+        (shared.pending, stats.status.pending, palette.text),
     ];
     let mut job = egui::text::LayoutJob::default();
     for (label, count, color) in buckets.into_iter().filter(|(_, count, _)| *count > 0) {
@@ -412,7 +382,7 @@ fn status_counts(ui: &egui::Ui, stats: &NodeStats, lang: Language) -> egui::text
     }
     if job.text.is_empty() {
         job.append(
-            ShellText::NotObserved.text(lang),
+            shared.not_observed,
             0.0,
             egui::TextFormat::simple(fonts::data(), palette.secondary),
         );
@@ -447,7 +417,7 @@ fn render_query_params_section(ui: &mut egui::Ui, node: &ViewNode, key_width: f3
     tree::group(
         ui,
         "map-query",
-        ShellText::QueryNames.text(lang),
+        lang.map().query_names,
         Some(pairs.len()),
         |ui| {
             for (name, count) in pairs.into_iter().take(MAX_QUERY_NAMES) {
@@ -481,19 +451,22 @@ fn render_requests_section(
     evicted: u64,
     lang: Language,
 ) -> Option<MapAction> {
+    let shared = lang.shared();
+    let map_text = lang.map();
     let palette = Palette::of(ui);
     let total_retained = cache.matched_count();
     let mut action = None;
     tree::group(
         ui,
         "map-requests",
-        ShellText::Requests.text(lang),
+        shared.requests,
         Some(total_retained),
         |ui| {
             if evicted > 0 {
                 tree::row(ui, tree::TreeRow::new(1, ""), |ui| {
                     ui.label(
-                        RichText::new(text::older_removed(lang, evicted)).color(palette.warning),
+                        RichText::new(i18n::toolbar::older_removed(lang, evicted))
+                            .color(palette.warning),
                     );
                 });
             }
@@ -518,7 +491,7 @@ fn render_requests_section(
                 );
                 if shown
                     .response
-                    .on_hover_text(ShellText::OpenInRequests.text(lang))
+                    .on_hover_text(map_text.tooltips.open_in_requests)
                     .clicked()
                 {
                     action = Some(MapAction::SelectRequest(record.id()));
@@ -527,8 +500,12 @@ fn render_requests_section(
             if total_retained > MAX_INLINE_REQUESTS {
                 tree::row(ui, tree::TreeRow::new(1, ""), |ui| {
                     ui.label(
-                        RichText::new(text::newest_of(lang, MAX_INLINE_REQUESTS, total_retained))
-                            .color(palette.secondary),
+                        RichText::new(i18n::map::newest_of(
+                            lang,
+                            MAX_INLINE_REQUESTS,
+                            total_retained,
+                        ))
+                        .color(palette.secondary),
                     );
                 });
             }

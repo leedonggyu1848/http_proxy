@@ -7,7 +7,6 @@ use crate::ui::style::fonts;
 use crate::ui::style::theme::{self, Palette, SyntaxPalette, Theme};
 use crate::ui::style::tokens::Layout;
 use crate::ui::workbench::field::{self, Field};
-use crate::ui::workbench::text::ShellText;
 use crate::ui::workbench::{controls, tree};
 use eframe::egui::{self, FontId, text::LayoutJob};
 use http_inspector_content::format::tree::TreeModel;
@@ -185,6 +184,7 @@ impl TreeView {
 
     /// Expand all, Collapse all, and the key filter, in one pane row.
     fn controls(&mut self, ui: &mut egui::Ui, lang: crate::ui::i18n::Language) {
+        let shared = lang.shared();
         egui::Frame::new()
             .inner_margin(Layout::PANE_ROW_MARGIN)
             .show(ui, |ui| {
@@ -193,20 +193,14 @@ impl TreeView {
                     let mut query = self.query.clone();
                     let width = Layout::TREE_SEARCH_WIDTH.fit(ui.available_width());
                     let field = Field::new(width)
-                        .hint(ShellText::FilterKeys.text(lang))
+                        .hint(lang.detail().filter_keys)
                         .search_icon();
                     if field::single_line(ui, &mut query, field, |_| {}).changed() {
                         self.search(&query);
                     }
-                    for (label, open) in [
-                        (ShellText::ExpandAll, true),
-                        (ShellText::CollapseAll, false),
-                    ] {
+                    for (label, open) in [(shared.expand_all, true), (shared.collapse_all, false)] {
                         if ui
-                            .add(controls::ghost(
-                                label.text(lang),
-                                Layout::PANE_BUTTON_HEIGHT,
-                            ))
+                            .add(controls::ghost(label, Layout::PANE_BUTTON_HEIGHT))
                             .clicked()
                         {
                             self.set_all(open);
@@ -263,12 +257,18 @@ impl TreeView {
         response.context_menu(|ui| {
             if let Some(path) = &node.path {
                 ui.weak(path.as_str());
-                if ui.button(tree_copy_label(lang, copy.path)).clicked() {
+                if ui
+                    .button(crate::ui::i18n::detail::tree_copy_label(lang, copy.path))
+                    .clicked()
+                {
                     copied = Some(path.clone());
                     ui.close();
                 }
             }
-            if ui.button(tree_copy_label(lang, copy.value)).clicked() {
+            if ui
+                .button(crate::ui::i18n::detail::tree_copy_label(lang, copy.value))
+                .clicked()
+            {
                 copied = Some(node.value.clone());
                 ui.close();
             }
@@ -277,19 +277,6 @@ impl TreeView {
             self.toggle(index);
         }
         copied
-    }
-}
-
-fn tree_copy_label(lang: crate::ui::i18n::Language, raw: &'static str) -> &'static str {
-    match lang {
-        crate::ui::i18n::Language::English => raw,
-        crate::ui::i18n::Language::Korean => match raw {
-            "Copy JSONPath" => "JSONPath 복사",
-            "Copy XPath" => "XPath 복사",
-            "Copy path" => "경로 복사",
-            "Copy value" => "값 복사",
-            other => other,
-        },
     }
 }
 #[cfg(test)]

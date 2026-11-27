@@ -1,8 +1,8 @@
-use crate::ui::i18n::Language;
+use crate::ui::i18n::dialogs::save::MISSING_SAVE_DIR_MSG;
+use crate::ui::i18n::{self, Language};
 use crate::ui::style::tokens::Layout;
 use crate::ui::workbench::controls;
 use crate::ui::workbench::field::{self, Field};
-use crate::ui::workbench::text::ShellText;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,8 +17,6 @@ use http_inspector_interop::har::{self, HarOptions};
 use super::background_task::{BackgroundTask, TaskPoll};
 
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
-
-const MISSING_SAVE_DIR_MSG: &str = "Choose an existing save directory in the Save menu";
 
 enum SaveFailure {
     MissingDirectory,
@@ -37,19 +35,10 @@ impl SaveFailure {
     }
 
     fn localized(&self, lang: Language) -> String {
+        let text = lang.save();
         match self {
-            Self::MissingDirectory => lang
-                .pick(
-                    MISSING_SAVE_DIR_MSG,
-                    "저장 메뉴에서 존재하는 저장 폴더를 선택하세요",
-                )
-                .to_owned(),
-            Self::WorkerStopped => lang
-                .pick(
-                    "The save worker stopped unexpectedly",
-                    "저장 작업자가 예기치 않게 중지되었습니다",
-                )
-                .to_owned(),
+            Self::MissingDirectory => text.missing_directory.to_owned(),
+            Self::WorkerStopped => text.worker_stopped.to_owned(),
             Self::Io(error) => error.to_string(),
         }
     }
@@ -58,11 +47,7 @@ impl SaveFailure {
 /// Formats an I/O error returned by [`SaveControls::directory`] in the active UI language.
 pub(crate) fn localize_directory_error(error: &io::Error, lang: Language) -> String {
     if error.kind() == io::ErrorKind::NotADirectory && error.to_string() == MISSING_SAVE_DIR_MSG {
-        lang.pick(
-            MISSING_SAVE_DIR_MSG,
-            "저장 메뉴에서 존재하는 저장 폴더를 선택하세요",
-        )
-        .to_owned()
+        lang.save().missing_directory.to_owned()
     } else {
         error.to_string()
     }
@@ -106,7 +91,7 @@ impl SaveControls {
     ) -> Vec<SaveMenuAction> {
         let actions = ui
             .add_enabled_ui(self.pending.is_none(), |ui| {
-                let label = format!("{} ▼", ShellText::Save.text(lang));
+                let label = crate::ui::workbench::text::menu_label(lang.shared().save);
                 controls::ghost_menu(ui, label, Layout::TOOLBAR_BUTTON_HEIGHT, |ui| {
                     self.menu_items(ui, log_available, lang)
                 })
@@ -188,57 +173,42 @@ impl SaveControls {
         log_available: bool,
         lang: Language,
     ) -> Vec<SaveMenuAction> {
+        let text = lang.save();
         let mut actions = Vec::new();
-        ui.label(lang.pick("Save directory", "저장 폴더"));
+        ui.label(text.save_directory);
         let input_width = Layout::SAVE_DIRECTORY_WIDTH.fit(ui.ctx().content_rect().width());
         let mut directory = self.directory.clone();
-        let field =
-            Field::new(input_width).hint(lang.pick("Existing directory", "존재하는 폴더 경로"));
+        let field = Field::new(input_width).hint(text.existing_directory_hint);
         if field::single_line(ui, &mut directory, field, |_| {}).changed() {
             actions.push(SaveMenuAction::Directory(directory));
         }
         if ui
-            .button(lang.pick("Save window PNG", "창 화면 PNG 저장"))
-            .on_hover_text(lang.pick(
-                "Save the visible app content, without the OS window border.",
-                "OS 창 테두리를 제외한 현재 앱 화면을 PNG로 저장합니다.",
-            ))
+            .button(text.save_window_png)
+            .on_hover_text(text.tooltips.save_window_png)
             .clicked()
         {
             actions.push(SaveMenuAction::SavePng);
             ui.close();
         }
         if ui
-            .add_enabled(
-                log_available,
-                egui::Button::new(lang.pick("Save all logs", "전체 로그 저장")),
-            )
-            .on_hover_text(lang.pick(
-                "Save all captured records and full bodies, regardless of the filter.",
-                "필터와 관계없이 캡처된 모든 기록과 전체 본문을 저장합니다.",
-            ))
+            .add_enabled(log_available, egui::Button::new(text.save_all_logs))
+            .on_hover_text(text.tooltips.save_all_logs)
             .clicked()
         {
             actions.push(SaveMenuAction::SaveLogs);
             ui.close();
         }
         if ui
-            .button(lang.pick("Export HAR…", "HAR 내보내기…"))
-            .on_hover_text(lang.pick(
-                "Save the listed requests as a HAR 1.2 file, without bodies or sensitive headers unless you include them.",
-                "목록의 요청을 HAR 1.2 파일로 저장하며, 본문과 민감 헤더는 직접 선택하지 않으면 제외됩니다.",
-            ))
+            .button(text.export_har)
+            .on_hover_text(text.tooltips.export_har)
             .clicked()
         {
             actions.push(SaveMenuAction::ExportHar);
             ui.close();
         }
         if ui
-            .button(lang.pick("Save bodies…", "본문 일괄 저장…"))
-            .on_hover_text(lang.pick(
-                "Save the request and response bodies of many requests into a new folder with a manifest.json.",
-                "여러 요청의 요청·응답 본문을 manifest.json과 함께 새 폴더에 저장합니다.",
-            ))
+            .button(text.save_bodies)
+            .on_hover_text(text.tooltips.save_bodies)
             .clicked()
         {
             actions.push(SaveMenuAction::SaveBodies);
@@ -256,19 +226,13 @@ impl SaveControls {
     pub(crate) fn status(&self, ui: &mut egui::Ui, lang: Language) {
         match &self.status {
             Some(Ok(path)) => {
-                let saved = match lang {
-                    Language::English => format!("Saved: {}", path.display()),
-                    Language::Korean => format!("저장됨: {}", path.display()),
-                };
+                let saved = i18n::dialogs::save::saved_path(lang, path);
                 ui.add(egui::Label::new(saved.as_str()).truncate())
                     .on_hover_text(saved);
             }
             Some(Err(error)) => {
                 let detail = error.localized(lang);
-                let text = match lang {
-                    Language::English => format!("Save failed: {detail}"),
-                    Language::Korean => format!("저장 실패: {detail}"),
-                };
+                let text = i18n::dialogs::save::save_failed(lang, &detail);
                 crate::ui::style::indicator::dot_label(
                     ui,
                     crate::ui::style::tokens::Tone::Danger,

@@ -301,25 +301,18 @@ impl ThemeSettings {
         ui: &mut egui::Ui,
         lang: crate::ui::i18n::Language,
     ) -> Option<egui::ThemePreference> {
-        use crate::ui::i18n::Text;
-
+        let text = lang.shared();
         let mut preference = self.preference;
-        ui.label(lang.text(Text::ThemeHeading));
+        ui.label(text.theme);
         for (value, label) in [
-            (egui::ThemePreference::System, lang.text(Text::OptionSystem)),
-            (egui::ThemePreference::Light, lang.text(Text::ThemeLight)),
-            (egui::ThemePreference::Dark, lang.text(Text::ThemeDark)),
+            (egui::ThemePreference::System, text.system),
+            (egui::ThemePreference::Light, text.theme_light),
+            (egui::ThemePreference::Dark, text.theme_dark),
         ] {
             ui.radio_value(&mut preference, value, label);
         }
         if preference == egui::ThemePreference::System && ui.ctx().system_theme().is_none() {
-            ui.colored_label(
-                Palette::of(ui).secondary,
-                lang.pick(
-                    "System appearance unavailable; using Dark.",
-                    "시스템 테마를 확인할 수 없어 어둡게를 사용합니다.",
-                ),
-            );
+            ui.colored_label(Palette::of(ui).secondary, text.theme_system_unavailable);
         }
         (preference != self.preference).then_some(preference)
     }

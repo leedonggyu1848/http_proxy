@@ -5,15 +5,14 @@ use std::fmt::Write as _;
 use crate::ui::style::tokens::{Layout, Radius};
 
 use eframe::egui::{self, TextureHandle, TextureOptions};
-use http_inspector_exchange::capture::{IMAGE_PREVIEW_BUDGET_BYTES, IMAGE_PREVIEW_BYTES};
 use http_inspector_exchange::{BodyLifecycle, BodySnapshot, ImageFormat, RecordId};
 
-use crate::ui::i18n::{Language, domain};
+use crate::ui::i18n::{self, Language, domain};
 use crate::ui::style::theme::Palette;
 use http_inspector_content::decode as body_view;
 use http_inspector_content::hex::{self, HEX_VIEW_BYTES};
 use http_inspector_content::image::{self as image_decode, PreviewImage};
-use http_inspector_content::image_file::{self, ImageFile};
+use http_inspector_content::image_file::ImageFile;
 
 /// SVG source bytes shown in the source view.
 const SOURCE_BYTES: usize = 256 * 1024;
@@ -37,14 +36,7 @@ impl ImageViewError {
                 width,
                 height,
                 max_side,
-            }) => match lang {
-                Language::English => format!(
-                    "The image is {width}×{height} px, larger than this display's {max_side} px texture limit."
-                ),
-                Language::Korean => format!(
-                    "이미지 크기가 {width}×{height} px로 이 디스플레이의 최대 텍스처 한도({max_side} px)를 초과합니다."
-                ),
-            },
+            }) => i18n::detail::image_texture_too_large(lang, *width, *height, *max_side),
         }
     }
 }
@@ -57,22 +49,6 @@ struct TextureTooLargeError {
     width: u32,
     height: u32,
     max_side: usize,
-}
-
-/// Explains that the body is drawn as another format than `Content-Type`
-/// names, or `None` when they agree.
-fn mismatch_text(declared: ImageFormat, format: ImageFormat, lang: Language) -> Option<String> {
-    match lang {
-        Language::English => image_file::mismatch_text(declared, format),
-        Language::Korean => (declared != format).then(|| {
-            format!(
-                "Content-Type은 {}(으)로 선언되었지만 본문 시작은 {} 형식이어서 {}(으)로 표시합니다.",
-                declared.name(),
-                format.name(),
-                format.name()
-            )
-        }),
-    }
 }
 
 /// Which body the cached decode belongs to.
@@ -136,7 +112,7 @@ impl ImagePanel {
             encodings,
             declared,
         } = *body;
-        let unavailable = unavailable_reason(snapshot, lang);
+        let unavailable = i18n::detail::image_unavailable_reason(lang, snapshot);
         let key = BodyKey {
             record,
             observed_bytes: snapshot.observed_bytes(),
@@ -165,15 +141,16 @@ impl ImagePanel {
         if view == View::Source && !svg {
             view = View::Image;
         }
+        let detail = lang.detail();
         ui.horizontal_wrapped(|ui| {
-            ui.selectable_value(&mut view, View::Image, lang.pick("Image", "이미지"));
+            ui.selectable_value(&mut view, View::Image, detail.image);
             if svg {
-                ui.selectable_value(&mut view, View::Source, lang.pick("Source", "소스"));
+                ui.selectable_value(&mut view, View::Source, detail.source);
             }
             ui.selectable_value(&mut view, View::Hex, "Hex");
         });
         if let Some(format) = loaded.and_then(|loaded| loaded.format)
-            && let Some(text) = mismatch_text(declared, format, lang)
+            && let Some(text) = i18n::detail::image_mismatch(lang, declared, format)
         {
             ui.colored_label(Palette::of(ui).warning, text);
         }
@@ -208,7 +185,7 @@ fn show_image(
             ui.label(format!(
                 "{}{}",
                 image_text(drawn, loaded.file_bytes, lang),
-                received_text(loaded.file_bytes, received_bytes, lang)
+                i18n::detail::image_received_text(lang, loaded.file_bytes, received_bytes)
             ));
             let size = egui::vec2(ui.available_width(), Layout::IMAGE_DISPLAY_HEIGHT);
             let image = egui::Image::from_texture(&drawn.texture).max_size(size);
@@ -225,15 +202,13 @@ fn show_image(
             None
         }
         Err(error) => {
+            let detail = lang.detail();
             ui.colored_label(Palette::of(ui).error, error.localized(lang));
             ui.horizontal_wrapped(|ui| {
-                let source = (svg
-                    && ui
-                        .button(lang.pick("Show SVG source", "SVG 소스 보기"))
-                        .clicked())
-                .then_some(View::Source);
+                let source =
+                    (svg && ui.button(detail.show_svg_source).clicked()).then_some(View::Source);
                 let hex = ui
-                    .button(lang.pick("Show bytes as hex", "바이트를 Hex로 보기"))
+                    .button(detail.show_bytes_as_hex)
                     .clicked()
                     .then_some(View::Hex);
                 source.or(hex)
@@ -250,31 +225,7 @@ fn show_source(ui: &mut egui::Ui, loaded: &Loaded, lang: Language) {
         }
         return;
     };
-    let summary = if loaded.file_bytes > SOURCE_BYTES {
-        match lang {
-            Language::English => format!(
-                "First {} KiB of {} bytes of SVG source, shown as text and never run.",
-                SOURCE_BYTES / 1024,
-                loaded.file_bytes
-            ),
-            Language::Korean => format!(
-                "SVG 소스 {}바이트 중 처음 {} KiB를 텍스트로 표시합니다(실행하지 않음).",
-                loaded.file_bytes,
-                SOURCE_BYTES / 1024
-            ),
-        }
-    } else {
-        match lang {
-            Language::English => format!(
-                "{} bytes of SVG source, shown as text and never run.",
-                loaded.file_bytes
-            ),
-            Language::Korean => format!(
-                "SVG 소스 {}바이트를 텍스트로 표시합니다(실행하지 않음).",
-                loaded.file_bytes
-            ),
-        }
-    };
+    let summary = i18n::detail::svg_source_summary(lang, loaded.file_bytes, SOURCE_BYTES);
     ui.weak(summary);
     let mut text = source.as_str();
     egui::ScrollArea::vertical()
@@ -291,71 +242,17 @@ fn show_source(ui: &mut egui::Ui, loaded: &Loaded, lang: Language) {
 
 /// Describes the format, pixel size, file size, and notes of a decoded image.
 fn image_text(drawn: &Drawn, file_bytes: usize, lang: Language) -> String {
-    let mut text = match lang {
-        Language::English => format!(
-            "{} · {}×{} px · {file_bytes} bytes",
-            drawn.format.name(),
-            drawn.width,
-            drawn.height
-        ),
-        Language::Korean => format!(
-            "{} · {}×{} px · {file_bytes}바이트",
-            drawn.format.name(),
-            drawn.width,
-            drawn.height
-        ),
-    };
+    let mut text = i18n::detail::image_meta_summary(
+        lang,
+        drawn.format.name(),
+        drawn.width,
+        drawn.height,
+        file_bytes,
+    );
     for note in &drawn.notes {
         let _ = write!(text, " · {}", domain::localize_content_notice(lang, note));
     }
     text
-}
-
-/// Notes the number of bytes received when `Content-Encoding` changed it.
-fn received_text(file_bytes: usize, received_bytes: u64, lang: Language) -> String {
-    match lang {
-        Language::English => image_file::received_text(file_bytes, received_bytes),
-        Language::Korean => {
-            if u64::try_from(file_bytes).unwrap_or(u64::MAX) == received_bytes {
-                String::new()
-            } else {
-                format!(" · Content-Encoding 적용 수신 크기 {received_bytes}바이트")
-            }
-        }
-    }
-}
-
-/// Explains why a body cannot be drawn yet, or `None` when it can be decoded.
-fn unavailable_reason(snapshot: &BodySnapshot, lang: Language) -> Option<String> {
-    match lang {
-        Language::English => image_file::unavailable_reason(snapshot),
-        Language::Korean => {
-            if snapshot.lifecycle() == BodyLifecycle::Streaming {
-                return Some(format!(
-                    "본문 수신이 끝나면 이미지를 표시합니다(현재 {}바이트 수신됨).",
-                    snapshot.observed_bytes()
-                ));
-            }
-            if matches!(
-                snapshot.lifecycle(),
-                BodyLifecycle::Interrupted | BodyLifecycle::Cancelled
-            ) {
-                return Some(
-                    "이미지 본문이 중간에 종료되었습니다. 보관된 바이트를 보려면 Hex를 사용하세요."
-                        .to_owned(),
-                );
-            }
-            (!snapshot.is_complete()).then(|| {
-                format!(
-                    "{}바이트 중 {}바이트만 보관되어 이미지를 표시할 수 없습니다. 이미지 미리보기는 응답당 최대 {} MiB, 전체 응답 합계 최대 {} MiB까지 보관합니다. 보관된 바이트는 Hex에서 확인하세요.",
-                    snapshot.observed_bytes(),
-                    snapshot.bytes().len(),
-                    IMAGE_PREVIEW_BYTES / (1024 * 1024),
-                    IMAGE_PREVIEW_BUDGET_BYTES / (1024 * 1024),
-                )
-            })
-        }
-    }
 }
 
 /// Removes `Content-Encoding`, decodes the image, and uploads it as a texture.
@@ -431,18 +328,7 @@ fn texture(
 fn show_hex(ui: &mut egui::Ui, snapshot: &BodySnapshot, lang: Language) {
     let bytes = snapshot.bytes();
     let (shown, _) = bytes.split_at(bytes.len().min(HEX_VIEW_BYTES));
-    let summary = match lang {
-        Language::English => format!(
-            "First {} of {} kept bytes, as received (before Content-Encoding is removed).",
-            shown.len(),
-            bytes.len()
-        ),
-        Language::Korean => format!(
-            "보관된 {}바이트 중 처음 {}바이트(Content-Encoding 제거 전 수신 원본).",
-            bytes.len(),
-            shown.len()
-        ),
-    };
+    let summary = i18n::detail::hex_view_summary(lang, shown.len(), bytes.len());
     ui.weak(summary);
     let dump = hex::dump(shown);
     let mut text = dump.as_str();
@@ -502,18 +388,19 @@ mod tests {
 
     use http_inspector_exchange::ImageFormat;
 
-    use super::{Language, mismatch_text, unavailable_reason};
+    use super::Language;
+    use crate::ui::i18n::detail::{image_mismatch, image_unavailable_reason};
 
     #[test]
     fn localizes_mismatch_and_unavailable_messages_in_korean() -> Result<(), Box<dyn Error>> {
         assert_eq!(
-            mismatch_text(ImageFormat::Png, ImageFormat::Gif, Language::Korean).as_deref(),
+            image_mismatch(Language::Korean, ImageFormat::Png, ImageFormat::Gif).as_deref(),
             Some(
                 "Content-Type은 PNG(으)로 선언되었지만 본문 시작은 GIF 형식이어서 GIF(으)로 표시합니다."
             )
         );
         assert_eq!(
-            mismatch_text(ImageFormat::WebP, ImageFormat::WebP, Language::Korean),
+            image_mismatch(Language::Korean, ImageFormat::WebP, ImageFormat::WebP),
             None
         );
 
@@ -522,11 +409,11 @@ mod tests {
         body.interrupt();
         let snapshot = body.preview().snapshot().ok_or("missing snapshot")?;
         assert_eq!(
-            unavailable_reason(&snapshot, Language::English).as_deref(),
+            image_unavailable_reason(Language::English, &snapshot).as_deref(),
             Some("The image body ended early. Use Hex to inspect the kept bytes.")
         );
         assert_eq!(
-            unavailable_reason(&snapshot, Language::Korean).as_deref(),
+            image_unavailable_reason(Language::Korean, &snapshot).as_deref(),
             Some("이미지 본문이 중간에 종료되었습니다. 보관된 바이트를 보려면 Hex를 사용하세요.")
         );
         Ok(())

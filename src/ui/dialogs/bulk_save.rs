@@ -1,6 +1,6 @@
 //! The `Save bodies…` dialog and the progress of a running bulk save.
 
-use crate::ui::i18n::{Language, Text};
+use crate::ui::i18n::{self, Language};
 use crate::ui::style::tokens::Layout;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -10,7 +10,7 @@ use eframe::egui;
 use http_inspector_core::recording::{
     BodyLayout, BodyStore, BulkSave, BulkSummary, SaveBody, SaveFormat,
 };
-use http_inspector_exchange::{BodySide, ByteSize, Exchange};
+use http_inspector_exchange::{BodySide, Exchange};
 
 use crate::ui::InspectorApp;
 use crate::ui::dialogs::body_saving::privacy_notice;
@@ -86,12 +86,7 @@ impl BulkFailure {
     fn localized(&self, lang: Language) -> String {
         match self {
             Self::Directory(err) => localize_directory_error(err, lang),
-            Self::Unavailable => lang
-                .pick(
-                    "Saving bodies is unavailable",
-                    "본문 저장을 사용할 수 없습니다",
-                )
-                .to_owned(),
+            Self::Unavailable => lang.bulk_save().unavailable.to_owned(),
             Self::Io(detail) => detail.clone(),
         }
     }
@@ -138,7 +133,7 @@ impl BulkControls {
         let max_scroll_height = Layout::BODY_EXPORT_HEIGHT.fit(viewport.height());
         let modal = egui::Modal::new(egui::Id::unique("save-bodies")).show(context, |ui| {
             ui.set_max_width(max_width);
-            ui.heading(lang.pick("Save bodies", "본문 일괄 저장"));
+            ui.heading(lang.bulk_save().heading);
             egui::ScrollArea::vertical()
                 .max_height(max_scroll_height)
                 .show(ui, |ui| choice_options(ui, choice, counts, lang));
@@ -204,30 +199,25 @@ impl BulkControls {
                     .desired_width(Layout::BULK_PROGRESS_WIDTH)
                     .text(format!("{}/{}", progress.done(), progress.total())),
             );
-            let bytes = ByteSize::new(progress.bytes());
-            let saving_label = match lang {
-                Language::English => format!("Saving bodies · {bytes}"),
-                Language::Korean => format!("본문 저장 중 · {bytes}"),
-            };
-            ui.label(saving_label);
+            ui.label(i18n::dialogs::bulk_save::saving_progress(
+                lang,
+                progress.bytes(),
+            ));
             if progress.is_cancelled() {
-                ui.weak(lang.pick("Cancelling…", "취소 중…"));
+                ui.weak(lang.bulk_save().cancelling);
                 return false;
             }
-            return ui.small_button(lang.text(Text::Cancel)).clicked();
+            return ui.small_button(lang.shared().cancel).clicked();
         }
         match &self.result {
             Some(BulkResult::Finished(summary)) => {
                 ui.separator();
-                ui.label(summary_text(summary, lang));
+                ui.label(i18n::dialogs::bulk_save::summary_text(lang, summary));
             }
             Some(BulkResult::Failed(error)) => {
                 ui.separator();
                 let detail = error.localized(lang);
-                let text = match lang {
-                    Language::English => format!("Saving bodies failed: {detail}"),
-                    Language::Korean => format!("본문 일괄 저장 실패: {detail}"),
-                };
+                let text = i18n::dialogs::bulk_save::failed(lang, &detail);
                 crate::ui::style::indicator::dot_label(
                     ui,
                     crate::ui::style::tokens::Tone::Danger,
@@ -263,127 +253,59 @@ impl BulkControls {
 }
 
 fn choice_options(ui: &mut egui::Ui, choice: &mut BulkChoice, counts: ScopeCounts, lang: Language) {
-    ui.label(lang.pick("Requests", "요청 범위"));
+    let text = lang.bulk_save();
+    ui.label(text.requests_label);
     ui.horizontal_wrapped(|ui| {
-        let filtered_label = match lang {
-            Language::English => format!("Filtered list ({})", counts.filtered),
-            Language::Korean => format!("필터된 목록 ({}건)", counts.filtered),
-        };
-        let all_label = match lang {
-            Language::English => format!("All ({})", counts.all),
-            Language::Korean => format!("전체 ({}건)", counts.all),
-        };
+        let filtered_label = i18n::dialogs::bulk_save::scope_filtered(lang, counts.filtered);
+        let all_label = i18n::dialogs::bulk_save::scope_all(lang, counts.all);
         ui.radio_value(&mut choice.scope, BulkScope::Filtered, filtered_label);
         ui.radio_value(&mut choice.scope, BulkScope::All, all_label);
         ui.add_enabled_ui(counts.selected > 0, |ui| {
             ui.radio_value(
                 &mut choice.scope,
                 BulkScope::Selected,
-                lang.pick("Selected request", "선택한 요청"),
+                text.selected_request,
             );
         });
     });
-    ui.label(lang.pick("Bodies", "대상 본문"));
+    ui.label(text.bodies_label);
     ui.horizontal_wrapped(|ui| {
-        ui.radio_value(
-            &mut choice.sides,
-            BulkSides::Responses,
-            lang.pick("Responses", "응답"),
-        );
-        ui.radio_value(
-            &mut choice.sides,
-            BulkSides::Requests,
-            lang.pick("Requests", "요청"),
-        );
-        ui.radio_value(
-            &mut choice.sides,
-            BulkSides::Both,
-            lang.pick("Both", "모두"),
-        );
+        ui.radio_value(&mut choice.sides, BulkSides::Responses, text.responses);
+        ui.radio_value(&mut choice.sides, BulkSides::Requests, text.requests);
+        ui.radio_value(&mut choice.sides, BulkSides::Both, text.both);
     });
-    ui.label(lang.pick("Format", "저장 형식"));
+    ui.label(text.format_label);
     ui.horizontal_wrapped(|ui| {
-        ui.radio_value(
-            &mut choice.format,
-            SaveFormat::Decoded,
-            lang.pick("Decoded", "디코딩됨"),
-        )
-        .on_hover_text(lang.pick(
-            "Remove gzip, deflate, br and zstd Content-Encoding.",
-            "gzip, deflate, br, zstd Content-Encoding을 해제해 저장합니다.",
-        ));
-        ui.radio_value(
-            &mut choice.format,
-            SaveFormat::AsReceived,
-            lang.pick("As received", "수신 원본 그대로"),
-        )
-        .on_hover_text(lang.pick(
-            "Keep the exact bytes that were received.",
-            "수신한 바이트 그대로 저장합니다.",
-        ));
+        ui.radio_value(&mut choice.format, SaveFormat::Decoded, text.decoded)
+            .on_hover_text(text.tooltips.decoded_hint);
+        ui.radio_value(&mut choice.format, SaveFormat::AsReceived, text.as_received)
+            .on_hover_text(text.tooltips.as_received_hint);
     });
-    ui.label(lang.pick("Folders", "폴더 구조"));
+    ui.label(text.folders_label);
     ui.horizontal_wrapped(|ui| {
-        ui.radio_value(
-            &mut choice.layout,
-            BodyLayout::Flat,
-            lang.pick("One folder", "단일 폴더"),
-        );
+        ui.radio_value(&mut choice.layout, BodyLayout::Flat, text.one_folder);
         ui.radio_value(
             &mut choice.layout,
             BodyLayout::HostPath,
-            lang.pick("host/path folders", "host/path 폴더 구조"),
+            text.host_path_folders,
         );
     });
-    ui.weak(lang.pick(
-        "Files go into a new folder inside the Save directory, with a manifest.json that lists each URL, status, size and SHA-256. Empty bodies are skipped.",
-        "저장 폴더 안의 새 폴더에 파일이 저장되며, 각 URL·상태·크기·SHA-256을 기록한 manifest.json이 함께 생성됩니다. 빈 본문은 건너뜁니다.",
-    ));
+    ui.weak(text.manifest_note);
     ui.label(privacy_notice(lang));
 }
 
 fn confirm_buttons(ui: &mut egui::Ui, lang: Language) -> Option<bool> {
+    let shared = lang.shared();
     let mut confirmed = None;
     ui.horizontal_wrapped(|ui| {
-        if ui.button(lang.text(Text::Save)).clicked() {
+        if ui.button(shared.save).clicked() {
             confirmed = Some(true);
         }
-        if ui.button(lang.text(Text::Cancel)).clicked() {
+        if ui.button(shared.cancel).clicked() {
             confirmed = Some(false);
         }
     });
     confirmed
-}
-
-fn summary_text(summary: &BulkSummary, lang: Language) -> String {
-    let mut parts = vec![match lang {
-        Language::English => format!(
-            "Saved {} bodies to {}",
-            summary.saved(),
-            summary.directory().display()
-        ),
-        Language::Korean => format!(
-            "본문 {}건을 {}에 저장했습니다",
-            summary.saved(),
-            summary.directory().display()
-        ),
-    }];
-    if summary.incomplete() > 0 {
-        parts.push(match lang {
-            Language::English => format!("{} incomplete", summary.incomplete()),
-            Language::Korean => format!("불완전 {}건", summary.incomplete()),
-        });
-    }
-    if summary.failed() > 0 {
-        parts.push(match lang {
-            Language::English => format!("{} failed (see manifest.json)", summary.failed()),
-            Language::Korean => format!("실패 {}건 (manifest.json 확인)", summary.failed()),
-        });
-    }
-    if summary.cancelled() {
-        parts.push(lang.pick("cancelled", "취소됨").to_owned());
-    }
-    parts.join(" · ")
 }
 
 /// Builds the bodies to save, skipping empty complete bodies and responses

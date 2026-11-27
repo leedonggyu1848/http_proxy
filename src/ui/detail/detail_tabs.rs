@@ -5,7 +5,6 @@ use eframe::egui::{self, Key, Modifiers};
 
 use crate::ui::i18n::Language;
 use crate::ui::workbench::controls;
-use crate::ui::workbench::text::ShellText;
 
 /// Section of the selected request shown in the detail panel.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -26,10 +25,11 @@ impl DetailTab {
     const ALL: [Self; 3] = [Self::Headers, Self::Body, Self::Timing];
 
     const fn title(self, lang: Language) -> &'static str {
+        let text = lang.detail();
         match self {
-            Self::Headers => ShellText::Headers.text(lang),
-            Self::Body => ShellText::Body.text(lang),
-            Self::Timing => ShellText::Timing.text(lang),
+            Self::Headers => text.headers,
+            Self::Body => text.body,
+            Self::Timing => text.timing,
         }
     }
 
@@ -83,7 +83,7 @@ pub(super) fn apply_shortcuts(ui: &egui::Ui, tab: &mut DetailTab) {
 /// report selection instead of a toggle-button state, and returns the area
 /// they occupy. Call it inside a pane header, whose height the tabs fill.
 pub(super) fn show(ui: &mut egui::Ui, current: &mut DetailTab, lang: Language) -> egui::Rect {
-    controls::tab_list(ui, lang.pick("Request details", "요청 상세"), |ui| {
+    controls::tab_list(ui, lang.detail().request_details, |ui| {
         let mut area = egui::Rect::NOTHING;
         for tab in DetailTab::ALL {
             let selected = *current == tab;
