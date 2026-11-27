@@ -49,7 +49,7 @@ enum InitError {
 impl InitError {
     fn localized(&self, lang: Language) -> String {
         match self {
-            Self::NoCacheDirectory => lang.body_saving().init_no_cache_dir.to_owned(),
+            Self::NoCacheDirectory => lang.body_saving().tooltips.init_no_cache_dir.to_owned(),
             Self::Open(detail) => i18n::dialogs::body_saving::init_open_failed(lang, detail),
         }
     }

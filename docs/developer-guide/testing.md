@@ -25,7 +25,7 @@ cargo test --test exchange_lifecycle publishes_an_exchange_before_its_response_a
 | HAR, cURL | [`har_export`](../../tests/har_export.rs) · [`copy_as_curl`](../../tests/copy_as_curl.rs) | 캡처를 소비하는 내보내기의 본문, 헤더, 형식 처리 |
 | UI 번역 카탈로그와 툴팁 정책 | [`ui::i18n::tests`](../../src/ui/i18n/tests.rs) · [`check-boundaries.py`](../../scripts/check-boundaries.py) | 정적 카탈로그 비어있지 않음, 툴팁 `S1` 한 문장 규칙, `src/ui/i18n/` 바깥 인라인 번역 차단 |
 
-표에 나온 통합 테스트는 `cargo test --test <이름>`으로 실행한다. 크레이트 단위로 확인하려면 `cargo test -p http-inspector-analysis`처럼 패키지 이름을 지정한다.
+표의 통합 테스트는 `cargo test --test <이름>`으로 실행하고, 크레이트 단위 테스트는 `cargo test -p http-inspector-analysis`처럼 패키지 이름을 지정한다. UI 번역 정책 단위 테스트와 경계 검사는 `cargo test ui::i18n::tests`와 `python3 scripts/check-boundaries.py`로 실행한다.
 
 ## 테스트에 데이터 제공
 

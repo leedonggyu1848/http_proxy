@@ -1020,6 +1020,15 @@ def check_ui_i18n_boundary(root: Path) -> list[Violation]:
                             f"or formatting into `src/ui/i18n/`",
                         )
                     )
+                elif next_tok.text == "*":
+                    violations.append(
+                        Violation(
+                            rs_file,
+                            next_tok.line,
+                            "glob-importing `Language::*` is forbidden in production code "
+                            "outside `src/ui/i18n/`",
+                        )
+                    )
                 elif next_tok.text == "{":
                     # Catch `use ...::Language::{English, Korean};` imports.
                     j = idx + 3

@@ -9,7 +9,6 @@ use crate::ui::i18n::Language;
 define_catalog! {
     pub(crate) struct BodySavingText {
         privacy_notice,
-        init_no_cache_dir,
         not_stored,
         no_response,
         worker_stopped,
@@ -22,6 +21,7 @@ define_catalog! {
         as_received,
     }
     tooltips: pub(crate) struct BodySavingTooltips {
+        init_no_cache_dir,
         busy_saving,
         not_stored_hint,
         limit_hint,
@@ -30,7 +30,6 @@ define_catalog! {
     }
     en = {
         privacy_notice: "Saved bodies can contain cookies, tokens and personal data. Files are created readable only by you; keep them private.",
-        init_no_cache_dir: "Saving bodies is unavailable: no cache directory; check HOME",
         not_stored: "This body was not stored.",
         no_response: "No response was received.",
         worker_stopped: "The save worker stopped unexpectedly",
@@ -43,6 +42,7 @@ define_catalog! {
         as_received: "As received",
     }
     en_tooltips = {
+        init_no_cache_dir: "Saving bodies is unavailable: no cache directory; check HOME",
         busy_saving: "Another body is being saved.",
         not_stored_hint: "This body was not stored.",
         limit_hint: "Maximum body bytes kept for saving in one session; later bodies are not stored once reached.",
@@ -51,7 +51,6 @@ define_catalog! {
     }
     ko = {
         privacy_notice: "저장된 본문에는 쿠키, 토큰, 개인정보가 포함될 수 있습니다. 파일은 현재 사용자만 읽을 수 있도록 생성됩니다. 안전하게 보관하세요.",
-        init_no_cache_dir: "본문 저장을 사용할 수 없습니다: 캐시 폴더를 찾을 수 없습니다(HOME을 확인하세요)",
         not_stored: "이 본문은 저장되지 않았습니다.",
         no_response: "수신된 응답이 없습니다.",
         worker_stopped: "저장 작업자가 예기치 않게 중지되었습니다",
@@ -64,6 +63,7 @@ define_catalog! {
         as_received: "수신 원본 그대로",
     }
     ko_tooltips = {
+        init_no_cache_dir: "본문 저장을 사용할 수 없습니다: 캐시 폴더를 찾을 수 없습니다(HOME을 확인하세요)",
         busy_saving: "다른 본문을 저장하는 중입니다.",
         not_stored_hint: "이 본문은 저장되지 않았습니다.",
         limit_hint: "한 세션에서 저장용으로 보관할 최대 본문 용량이며, 한도에 도달하면 이후 본문은 저장되지 않습니다.",

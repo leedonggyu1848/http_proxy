@@ -21,6 +21,10 @@ fn env_from<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl FnMut(&str) -> Option<O
     }
 }
 
+fn is_closing_punctuation(ch: char) -> bool {
+    matches!(ch, '"' | '\'' | '”' | '’' | ')' | ']' | '»' | '」' | '』')
+}
+
 /// Checks the `S1` tooltip policy from `.agents/skills/ui-unslop/SKILL.md`:
 /// a tooltip must be a single line and at most one sentence.
 fn is_single_sentence(text: &str) -> bool {
@@ -33,21 +37,29 @@ fn is_single_sentence(text: &str) -> bool {
         if !matches!(ch, '.' | '!' | '?') {
             continue;
         }
-        let Some(&(_, next)) = chars.get(pos + 1) else {
+        if ch == '.' && is_abbreviation_before(trimmed, byte_idx) {
+            continue;
+        }
+        let mut after = pos + 1;
+        while let Some(&(_, closing)) = chars.get(after) {
+            if is_closing_punctuation(closing) {
+                after += 1;
+            } else {
+                break;
+            }
+        }
+        let Some(&(_, next)) = chars.get(after) else {
             continue;
         };
         if !next.is_whitespace() {
             // Part of a filename, extension, IP address, or HTTP version (e.g. `.har`, `1.1`).
             continue;
         }
-        if ch == '.' && is_abbreviation_before(trimmed, byte_idx) {
-            continue;
-        }
         // Any remaining non-whitespace characters after this terminal punctuation
-        // indicate a second sentence.
+        // (and optional closing quote/bracket) indicate a second sentence.
         if chars
             .iter()
-            .skip(pos + 1)
+            .skip(after + 1)
             .any(|&(_, trailing)| !trailing.is_whitespace())
         {
             return false;
@@ -202,44 +214,157 @@ fn all_static_tooltips_follow_s1_single_sentence_rule() {
     }
 }
 
+fn all_curl_unavailable_variants() -> Vec<http_inspector_interop::curl::CurlUnavailable> {
+    use http_inspector_interop::curl::CurlUnavailable;
+
+    let variants = vec![
+        CurlUnavailable::Tunnel,
+        CurlUnavailable::TruncatedUrl,
+        CurlUnavailable::UnsupportedUrl,
+        CurlUnavailable::OmittedHeaders,
+        CurlUnavailable::UnreproducibleHeader("X-Raw".to_owned()),
+        CurlUnavailable::BodyInProgress,
+        CurlUnavailable::BodyIncomplete,
+        CurlUnavailable::BodyTruncated {
+            retained: 8192,
+            observed: 65536,
+        },
+        CurlUnavailable::BodyNotCaptured,
+    ];
+    for variant in &variants {
+        // Exhaustive match so new `CurlUnavailable` variants must be added to this test.
+        match variant {
+            CurlUnavailable::Tunnel
+            | CurlUnavailable::TruncatedUrl
+            | CurlUnavailable::UnsupportedUrl
+            | CurlUnavailable::OmittedHeaders
+            | CurlUnavailable::UnreproducibleHeader(_)
+            | CurlUnavailable::BodyInProgress
+            | CurlUnavailable::BodyIncomplete
+            | CurlUnavailable::BodyTruncated { .. }
+            | CurlUnavailable::BodyNotCaptured => {}
+        }
+    }
+    variants
+}
+
+fn all_matcher_error_variants() -> Vec<http_inspector_analysis::search::MatcherError> {
+    use http_inspector_analysis::search::MatcherError;
+
+    let variants = vec![
+        MatcherError::Empty,
+        MatcherError::Regex("unclosed group".to_owned()),
+    ];
+    for variant in &variants {
+        match variant {
+            MatcherError::Empty | MatcherError::Regex(_) => {}
+        }
+    }
+    variants
+}
+
+const FULL_LOG_RUNTIME_SAMPLES: &[&str] = &[
+    "Session logging stopped because its writer disconnected; the log is incomplete",
+    "The session journal queue is unavailable; the log is incomplete",
+    "Session logging failed; the log is incomplete: disk full",
+    "Session logging is busy; retry saving the log shortly",
+    "The session journal snapshot ended early",
+];
+
+const HLS_SEGMENT_FAILURE_SAMPLES: &[&str] = &[
+    "HTTP 403 Forbidden on segment #1 (seg001.ts)",
+    "Too many redirects on segment #2 (seg002.ts)",
+    "Invalid redirect on segment #3 (seg003.ts): missing Location",
+    "Network error on segment #4 (seg004.ts): connection reset",
+    "Decoding failed on segment #5 (seg005.ts): invalid gzip",
+    "Cached segment #6 (seg006.ts) could not be read: permission denied",
+    "TLS setup failed: certificate error",
+    "File write failed: disk full",
+];
+
+const FILTER_DIAGNOSTIC_SAMPLES: &[&str] = &[
+    "Unclosed quote",
+    "Empty search term",
+    "Reserved filter key `body`",
+    "Unknown filter key `foo`",
+    "Missing value for `status`",
+    "Invalid status value `abc`",
+];
+
+fn dynamic_tooltip_samples(lang: Language) -> Vec<(&'static str, String)> {
+    let mut samples = vec![
+        ("detail::focus_filter", detail::focus_filter(lang, "Ctrl+F")),
+        (
+            "detail::background_search_unavailable",
+            detail::background_search_unavailable(lang, "worker stopped"),
+        ),
+        (
+            "detail::search_coverage_detail",
+            detail::search_coverage_detail(lang, 2, 1, 1, 256).unwrap_or_default(),
+        ),
+        (
+            "toolbar::older_removed_hint",
+            toolbar::older_removed_hint(lang, 5000),
+        ),
+        (
+            "toolbar::url_map_limit_hint",
+            toolbar::url_map_limit_hint(lang, 2000),
+        ),
+        (
+            "toolbar::log_body_limit_hint",
+            toolbar::log_body_limit_hint(lang, "64 MiB"),
+        ),
+        (
+            "dialogs::copy_curl::redacted_placeholders_hint",
+            dialogs::copy_curl::redacted_placeholders_hint(lang),
+        ),
+        (
+            "dialogs::body_saving::init_open_failed",
+            dialogs::body_saving::init_open_failed(lang, "permission denied"),
+        ),
+        (
+            "domain::full_log_error",
+            domain::full_log_error(lang, &io::Error::other("disk full")),
+        ),
+    ];
+
+    for variant in &all_curl_unavailable_variants() {
+        samples.push((
+            "domain::curl_unavailable",
+            domain::curl_unavailable(lang, variant),
+        ));
+    }
+    for variant in &all_matcher_error_variants() {
+        samples.push((
+            "domain::matcher_error",
+            domain::matcher_error(lang, variant),
+        ));
+    }
+    for raw in FULL_LOG_RUNTIME_SAMPLES {
+        samples.push((
+            "domain::localize_full_log_runtime_error",
+            domain::localize_full_log_runtime_error(lang, raw),
+        ));
+    }
+    for raw in HLS_SEGMENT_FAILURE_SAMPLES {
+        samples.push((
+            "domain::localize_hls_segment_failure",
+            domain::localize_hls_segment_failure(lang, raw),
+        ));
+    }
+    for raw in FILTER_DIAGNOSTIC_SAMPLES {
+        samples.push((
+            "domain::localize_filter_diagnostic",
+            domain::localize_filter_diagnostic(lang, raw),
+        ));
+    }
+    samples
+}
+
 #[test]
 fn dynamic_tooltips_follow_s1_single_sentence_rule() {
     for lang in LANGUAGES {
-        let samples = [
-            ("detail::focus_filter", detail::focus_filter(lang, "Ctrl+F")),
-            (
-                "detail::background_search_unavailable",
-                detail::background_search_unavailable(lang, "worker stopped"),
-            ),
-            (
-                "detail::search_coverage_detail",
-                detail::search_coverage_detail(lang, 2, 1, 1, 256).unwrap_or_default(),
-            ),
-            (
-                "toolbar::older_removed_hint",
-                toolbar::older_removed_hint(lang, 5000),
-            ),
-            (
-                "toolbar::url_map_limit_hint",
-                toolbar::url_map_limit_hint(lang, 2000),
-            ),
-            (
-                "toolbar::log_body_limit_hint",
-                toolbar::log_body_limit_hint(lang, "64 MiB"),
-            ),
-            (
-                "dialogs::copy_curl::redacted_placeholders_hint",
-                dialogs::copy_curl::redacted_placeholders_hint(lang),
-            ),
-            (
-                "domain::curl_unavailable(Tunnel)",
-                domain::curl_unavailable(
-                    lang,
-                    &http_inspector_interop::curl::CurlUnavailable::Tunnel,
-                ),
-            ),
-        ];
-        for (name, value) in samples {
+        for (name, value) in dynamic_tooltip_samples(lang) {
             assert!(
                 !value.trim().is_empty() && is_single_sentence(&value),
                 "S1 violation: dynamic tooltip {name} for {lang:?} must be a non-empty single sentence: {value:?}"
@@ -250,33 +375,39 @@ fn dynamic_tooltips_follow_s1_single_sentence_rule() {
 
 #[test]
 fn single_sentence_detector_accepts_one_sentence_and_rejects_multiple() {
-    assert!(is_single_sentence(
-        "Save the listed requests as a HAR 1.2 file, without bodies."
-    ));
-    assert!(is_single_sentence(
-        "Loopback port to listen on; 0 picks a free port."
-    ));
-    assert!(is_single_sentence(
-        "Save bodies into a new folder with a manifest.json."
-    ));
-    assert!(is_single_sentence("What is captured?"));
-    assert!(is_single_sentence("무엇이 캡처되나요?"));
-    assert!(is_single_sentence(
-        "디코딩된 본문을 저장 폴더에 저장합니다."
-    ));
-    assert!(is_single_sentence(
-        "Use e.g. 127.0.0.1 for local HTTP/1.1 tests."
-    ));
+    let valid_cases = [
+        "Save the listed requests as a HAR 1.2 file, without bodies.",
+        "Loopback port to listen on; 0 picks a free port.",
+        "Save bodies into a new folder with a manifest.json.",
+        "What is captured?",
+        "무엇이 캡처되나요?",
+        "디코딩된 본문을 저장 폴더에 저장합니다.",
+        "Use e.g. 127.0.0.1 for local HTTP/1.1 tests.",
+        "Click \"Save.\"",
+        "Save bodies (e.g. manifest.json) to disk.",
+        "Use \"manifest.json\" here.",
+    ];
+    for case in valid_cases {
+        assert!(is_single_sentence(case), "expected valid: {case:?}");
+    }
 
-    assert!(!is_single_sentence(""));
-    assert!(!is_single_sentence("   "));
-    assert!(!is_single_sentence("First sentence. Second sentence."));
-    assert!(!is_single_sentence(
-        "첫 번째 문장입니다. 두 번째 문장입니다."
-    ));
-    assert!(!is_single_sentence("Question? Answer."));
-    assert!(!is_single_sentence("Warning! Do not proceed."));
-    assert!(!is_single_sentence("Line one\nLine two"));
+    let invalid_cases = [
+        "",
+        "   ",
+        "First sentence. Second sentence.",
+        "첫 번째 문장입니다. 두 번째 문장입니다.",
+        "Question? Answer.",
+        "Warning! Do not proceed.",
+        "Click \"Save.\" Then reopen.",
+        "(First sentence.) Second sentence.",
+        "\"복사했습니다.\" 다시 시도하세요.",
+        "Is it \"ready?\" Yes.",
+        "Watch out!) Now stop.",
+        "Line one\nLine two",
+    ];
+    for case in invalid_cases {
+        assert!(!is_single_sentence(case), "expected invalid: {case:?}");
+    }
 }
 
 #[test]
