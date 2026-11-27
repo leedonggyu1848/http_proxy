@@ -20,6 +20,7 @@ mod forward;
 mod handle;
 mod inspect;
 mod pool;
+mod process_lookup;
 mod status;
 mod target;
 mod tunnel;

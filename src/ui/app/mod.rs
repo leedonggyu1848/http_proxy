@@ -208,6 +208,7 @@ impl InspectorApp {
                     record,
                     search: self.requests.search.active_query().map(AsRef::as_ref),
                     tab: self.detail.tab,
+                    process_filter_active: self.requests.process_filter.is_some(),
                     body_mode: self.detail.body_mode,
                     body_saving: &self.session.body_saving,
                     field_menu_enabled: self.requests.search.field_menu_enabled(),

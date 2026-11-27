@@ -11,8 +11,8 @@ use http::{Method, StatusCode, Version};
 use super::lock_recovering;
 use super::wakers::WakerSet;
 use super::{
-    AuthScheme, BodyLifecycle, BodyPreview, FailureStage, HeaderPreview, MediaType, RecordId,
-    TunnelPreview, TunnelState,
+    AuthScheme, BodyLifecycle, BodyPreview, ClientConnection, FailureStage, HeaderPreview,
+    MediaType, RecordId, TunnelPreview, TunnelState,
 };
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
@@ -500,6 +500,7 @@ struct ExchangeInner {
     session: SessionId,
     source: CaptureSource,
     replay_of: OnceLock<RecordId>,
+    connection: OnceLock<ClientConnection>,
     started_at: SystemTime,
     started: Instant,
     request: CapturedRequest,
@@ -561,6 +562,7 @@ impl ExchangeWriter {
                     session,
                     source,
                     replay_of: OnceLock::new(),
+                    connection: OnceLock::new(),
                     started_at: SystemTime::now(),
                     started: Instant::now(),
                     request,
@@ -578,6 +580,14 @@ impl ExchangeWriter {
     #[must_use]
     pub const fn exchange(&self) -> &Exchange {
         &self.exchange
+    }
+
+    /// Attaches the TCP connection and counts this exchange once.
+    pub fn attach_connection(&self, connection: ClientConnection) {
+        self.exchange.inner.connection.get_or_init(|| {
+            connection.record_request();
+            connection
+        });
     }
 
     /// Links this exchange to the original record it replayed.
@@ -672,6 +682,12 @@ impl ExchangeWriter {
 }
 
 impl Exchange {
+    /// Returns the incoming client connection, when captured from a socket.
+    #[must_use]
+    pub fn connection(&self) -> Option<&ClientConnection> {
+        self.inner.connection.get()
+    }
+
     /// Returns the original record when this exchange was manually replayed.
     #[must_use]
     pub fn replay_of(&self) -> Option<RecordId> {

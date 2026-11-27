@@ -459,6 +459,14 @@ async fn decrypts_https_with_a_trusted_local_ca() -> Result<(), TestError> {
     let exchange = timeout(TEST_TIMEOUT, proxy.receive())
         .await?
         .ok_or("decrypted exchange capture missing")?;
+    let connection = setup.connection().ok_or("missing CONNECT client")?;
+    assert_eq!(
+        exchange
+            .connection()
+            .map(http_inspector_exchange::ClientConnection::id),
+        Some(connection.id())
+    );
+    assert_eq!(connection.request_count(), 2);
     assert_eq!(
         exchange.request().target(),
         format!("https://localhost:{}/secure", upstream_addr.port())

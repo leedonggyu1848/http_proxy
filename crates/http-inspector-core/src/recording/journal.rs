@@ -14,7 +14,7 @@ use http::{HeaderMap, Method};
 use super::lock_recovering;
 use http_inspector_exchange::http_semantics::redacted_value;
 use http_inspector_exchange::{
-    BodyLifecycle, BodySide, ByteSize, FailureStage, Outcome, RecordId, TunnelSnapshot,
+    BodyLifecycle, BodySide, ByteSize, FailureStage, Outcome, ProcessInfo, RecordId, TunnelSnapshot,
 };
 use http_inspector_file::{ExistingFile, publish};
 
@@ -153,11 +153,36 @@ impl FullLog {
         lock_recovering(&self.failure).get_or_insert_with(|| message.to_owned());
     }
 
-    pub(crate) fn request_head(&self, id: u64, method: &Method, target: &str, headers: &HeaderMap) {
-        self.text(format!(
+    pub(crate) fn request_head(
+        &self,
+        id: u64,
+        method: &Method,
+        target: &str,
+        headers: &HeaderMap,
+        connection: Option<u64>,
+    ) {
+        let mut text = format!(
             "[{id}] Request {method} {target}\n{}",
             full_headers(headers)
-        ));
+        );
+        if let Some(connection) = connection {
+            use std::fmt::Write as _;
+            let _written = writeln!(text, "[{id}] Connection #{connection}");
+        }
+        self.text(text);
+    }
+
+    pub(crate) fn connection_process(&self, connection: u64, info: &ProcessInfo) {
+        let mut line = format!(
+            "[Connection #{connection}] Process {} · PID {}",
+            info.name.escape_debug(),
+            info.identity.pid,
+        );
+        if let Some(path) = info.executable.as_ref() {
+            use std::fmt::Write as _;
+            let _written = write!(line, " · {}", path.to_string_lossy().escape_debug());
+        }
+        self.text(line);
     }
 
     pub(crate) fn replay_of(&self, id: u64, original: RecordId) {
@@ -476,7 +501,7 @@ mod tests {
     #[test]
     fn request_head_format() -> io::Result<()> {
         assert_output(
-            |log| log.request_head(1, &Method::GET, "http://example.test/", &headers()),
+            |log| log.request_head(1, &Method::GET, "http://example.test/", &headers(), None),
             "[1] Request GET http://example.test/\ncookie: [REDACTED]\nx-test: value\n",
         )
     }

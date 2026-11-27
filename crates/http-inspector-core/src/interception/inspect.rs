@@ -9,7 +9,7 @@ use http::header::{HOST, UPGRADE};
 use http::uri::Authority;
 use http::{Method, Request, Response, StatusCode, Uri};
 use http_body_util::BodyExt;
-use http_inspector_exchange::{CaptureSource, FailureStage, Outcome, RecordId};
+use http_inspector_exchange::{CaptureSource, FailureStage, Outcome};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
@@ -149,7 +149,11 @@ async fn run_inspected_connection(
     };
 
     capture.settle(Outcome::InspectionEstablished);
-    let service = service_fn(move |request| {
+    let attribution = capture.writer.exchange().connection().cloned();
+    let service = service_fn(move |mut request: Request<Incoming>| {
+        if let Some(attribution) = attribution.as_ref() {
+            request.extensions_mut().insert(attribution.clone());
+        }
         proxy_https_request(
             request,
             Arc::clone(&engine),
@@ -176,14 +180,7 @@ async fn proxy_https_request(
         .path_and_query()
         .map_or("/", http::uri::PathAndQuery::as_str);
     let target = destination.absolute_target(path);
-    let capture = CaptureContext::start(
-        request.method(),
-        request.headers(),
-        request.extensions().get::<RecordId>().copied(),
-        CaptureSource::InspectedHttps,
-        &target,
-        &engine,
-    );
+    let capture = CaptureContext::start(&request, CaptureSource::InspectedHttps, &target, &engine);
 
     let response = match validate_inner_request(&request, &destination) {
         Ok(()) => {
@@ -481,9 +478,7 @@ mod inner_request_tests {
             .header(HOST, format!("localhost:{port}"))
             .body(Empty::<Bytes>::new().map_err(infallible_to_hyper).boxed())?;
         let capture = CaptureContext::start(
-            req.method(),
-            req.headers(),
-            None,
+            &req,
             CaptureSource::InspectedHttps,
             &destination.absolute_target(path),
             engine,

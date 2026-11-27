@@ -2,13 +2,14 @@ use super::capture_context::{CaptureContext, EventNotifier, EventSink};
 use super::forward::forward_http;
 use super::inspect::connect_tunnel;
 use super::pool::UpstreamPool;
+use super::process_lookup::ConnectionLookup;
 use super::status::{AcceptAction, EngineStatus, accept_action};
 use super::{EngineState, ProxyBody, ProxyConfig};
 use crate::https::{CaInfo, HttpsSetupError, TlsInspector};
 use crate::recording::journal::FullLog;
 use http::{Method, Request, Response};
 use http_body_util::BodyExt;
-use http_inspector_exchange::{CaptureSource, Exchange, RecordId, SessionId};
+use http_inspector_exchange::{CaptureSource, ClientConnection, Exchange, SessionId};
 use hyper::body::Incoming;
 use hyper::server::conn::http1 as server_http1;
 use hyper::service::service_fn;
@@ -275,6 +276,7 @@ async fn run(
     let mut failures = AcceptFailures::default();
     let mut reaper = tokio::time::interval(engine.upstream_pool.reaper_interval());
     reaper.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let lookup = ConnectionLookup::new();
     loop {
         tokio::select! {
             () = wait_for_shutdown(&mut shutdown) => return Ok(()),
@@ -282,7 +284,8 @@ async fn run(
                 engine.upstream_pool.evict_expired();
             }
             accepted = listener.accept() => match accepted {
-                Ok((stream, _)) => {
+                Ok((stream, peer)) => {
+                    let attribution = lookup.start(peer, engine.local_addr, engine.events.log.as_ref());
                     let permit = tokio::select! {
                         () = wait_for_shutdown(&mut shutdown) => return Ok(()),
                         permit = Arc::clone(&connections).acquire_owned() => match permit {
@@ -293,7 +296,7 @@ async fn run(
                     failures.reset();
                     let connection_engine = Arc::clone(&engine);
                     tokio::spawn(async move {
-                        serve_connection(stream, connection_engine, permit).await;
+                        serve_connection(stream, connection_engine, permit, attribution).await;
                     });
                 }
                 Err(error) => {
@@ -344,9 +347,16 @@ pub(super) fn server_builder() -> server_http1::Builder {
     builder
 }
 
-async fn serve_connection(stream: TcpStream, engine: Arc<Engine>, permit: ConnectionPermit) {
-    let service =
-        service_fn(move |request| proxy_request(request, Arc::clone(&engine), Arc::clone(&permit)));
+async fn serve_connection(
+    stream: TcpStream,
+    engine: Arc<Engine>,
+    permit: ConnectionPermit,
+    attribution: ClientConnection,
+) {
+    let service = service_fn(move |mut request: Request<Incoming>| {
+        request.extensions_mut().insert(attribution.clone());
+        proxy_request(request, Arc::clone(&engine), Arc::clone(&permit))
+    });
     let connection = server_builder()
         .serve_connection(TokioIo::new(stream), service)
         .with_upgrades();
@@ -362,24 +372,10 @@ async fn proxy_request(
 ) -> Result<Response<ProxyBody>, Infallible> {
     let target = request.uri().to_string();
     let response = if request.method() == Method::CONNECT {
-        let capture = CaptureContext::start(
-            request.method(),
-            request.headers(),
-            request.extensions().get::<RecordId>().copied(),
-            CaptureSource::Connect,
-            &target,
-            &engine,
-        );
+        let capture = CaptureContext::start(&request, CaptureSource::Connect, &target, &engine);
         connect_tunnel(&mut request, &engine, capture, permit).await
     } else {
-        let capture = CaptureContext::start(
-            request.method(),
-            request.headers(),
-            request.extensions().get::<RecordId>().copied(),
-            CaptureSource::HttpProxy,
-            &target,
-            &engine,
-        );
+        let capture = CaptureContext::start(&request, CaptureSource::HttpProxy, &target, &engine);
         forward_http(request.map(BodyExt::boxed), &engine, &capture).await
     };
 
