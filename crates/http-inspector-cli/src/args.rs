@@ -10,8 +10,8 @@ use http_inspector_analysis::search::{MatchOptions, SearchScope};
 use http_inspector_exchange::BodySide;
 
 use crate::protocol::{
-    BodyRequest, BodyView, FilterSpec, Kind, MAX_WAIT, Part, RecordRef, Request, StartOptions,
-    TreePath,
+    BodyRequest, BodyView, ExportRequest, FilterSpec, HlsRequest, Kind, MAX_WAIT, Part, RecordRef,
+    ReplayRequest, Request, StartOptions, TreePath,
 };
 
 const EXAMPLES: &str = "\
@@ -53,6 +53,9 @@ pub(crate) enum Command {
     /// Save the full session log.
     #[command(subcommand)]
     Log(LogCommand),
+    /// Show the local HTTPS inspection CA certificate.
+    #[command(subcommand)]
+    Ca(CaCommand),
     /// Print every command, output field, error code, and exit code as JSON.
     Schema,
     /// Run the daemon in this process (used by `proxy start`).
@@ -72,6 +75,24 @@ pub(crate) enum ProxyCommand {
     /// Change a setting of the running proxy.
     #[command(after_help = "Example:\n  http-proxy proxy set --https-inspection on")]
     Set(SetArgs),
+    /// Print shell `export` lines that send programs through the proxy.
+    #[command(after_help = "Example:\n  eval \"$(http-proxy proxy env)\"")]
+    Env(EnvArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct EnvArgs {
+    /// Also export `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, and `REQUESTS_CA_BUNDLE`.
+    /// These replace the system CA bundle for the programs that read them.
+    #[arg(long)]
+    pub(crate) ca_bundle: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum CaCommand {
+    /// Print the CA certificate path, SHA-256 fingerprint, and validity.
+    /// Creates the CA when it does not exist. The private key is never printed.
+    Info,
 }
 
 #[derive(Debug, Args)]
@@ -127,6 +148,117 @@ pub(crate) enum RecordsCommand {
     Wait(WaitArgs),
     /// Remove every retained record, as the app's Clear does.
     Clear,
+    /// Send a captured request again, optionally changed, and print the new record.
+    #[command(
+        after_help = "Examples:\n  http-proxy records replay 42 --header 'X-Debug: 1'\n  http-proxy records replay 42 --method POST --body-file body.json --yes\n  http-proxy records replay 42 --dry-run --json"
+    )]
+    Replay(ReplayArgs),
+    /// Print a captured request as a `curl` command.
+    Curl(CurlArgs),
+    /// Write matching records as a HAR 1.2 file, or print it.
+    #[command(
+        after_help = "Examples:\n  http-proxy records export --output session.har\n  http-proxy records export --filter 'host:api.example.test' --include-bodies > api.har"
+    )]
+    Export(ExportArgs),
+    /// Show the request and response structure of each endpoint, or an `OpenAPI` document.
+    #[command(
+        after_help = "Examples:\n  http-proxy records endpoints --filter 'host:api.example.test' --json\n  http-proxy records endpoints --filter 'host:api.example.test' --format openapi > api.json"
+    )]
+    Endpoints(EndpointsArgs),
+    /// Inspect a captured HLS playlist, or download a variant as one `.ts` file.
+    #[command(
+        after_help = "Examples:\n  http-proxy records hls 12\n  http-proxy records hls 12 --variant 1 --output video.ts"
+    )]
+    Hls(HlsArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ExportArgs {
+    #[command(flatten)]
+    pub(crate) filter: FilterArgs,
+    /// File format. HAR 1.2 is the only one.
+    #[arg(long, value_enum, default_value = "har")]
+    pub(crate) format: ExportFormat,
+    /// Write to this new file; an existing file is never overwritten. Without it, print the HAR.
+    #[arg(long)]
+    pub(crate) output: Option<PathBuf>,
+    /// Include body previews, which may be truncated, as in the app's export.
+    #[arg(long)]
+    pub(crate) include_bodies: bool,
+    /// Include credential headers with their `[REDACTED]` marker instead of leaving them out.
+    #[arg(long)]
+    pub(crate) include_redacted_headers: bool,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub(crate) enum ExportFormat {
+    Har,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct EndpointsArgs {
+    #[command(flatten)]
+    pub(crate) filter: FilterArgs,
+    /// `summary` lists observed structure; `openapi` prints an `OpenAPI` 3.1 document for one host.
+    #[arg(long, value_enum, default_value = "summary")]
+    pub(crate) format: EndpointsFormat,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub(crate) enum EndpointsFormat {
+    Summary,
+    Openapi,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct HlsArgs {
+    /// ID of a captured `.m3u8` playlist record.
+    pub(crate) id: u64,
+    /// Variant index from the inspection; defaults to the app's choice.
+    #[arg(long)]
+    pub(crate) variant: Option<usize>,
+    /// Download the variant into this new `.ts` file; an existing file is never overwritten.
+    #[arg(long)]
+    pub(crate) output: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ReplayArgs {
+    /// Record ID from `records list`.
+    pub(crate) id: u64,
+    /// Replace the method.
+    #[arg(long)]
+    pub(crate) method: Option<String>,
+    /// Replace the absolute http:// or https:// URL.
+    #[arg(long)]
+    pub(crate) url: Option<String>,
+    /// Set a header, replacing captured headers of the same name: `'Name: value'`.
+    #[arg(long = "header", value_parser = parse_header)]
+    pub(crate) headers: Vec<(String, String)>,
+    /// Remove every captured header with this name.
+    #[arg(long = "remove-header")]
+    pub(crate) remove_headers: Vec<String>,
+    /// Send this file as the complete body (at most 16 MiB).
+    #[arg(long)]
+    pub(crate) body_file: Option<PathBuf>,
+    /// Confirm a request that may change server state (methods other than GET, HEAD, OPTIONS).
+    #[arg(long)]
+    pub(crate) yes: bool,
+    /// Print the request that would be sent, without sending it.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+    /// How long to wait for the replayed exchange to finish.
+    #[arg(long, default_value = "60s", value_parser = parse_duration)]
+    pub(crate) timeout: Duration,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct CurlArgs {
+    /// Record ID from `records list`.
+    pub(crate) id: u64,
+    /// Keep redacted headers as `<REDACTED>` placeholders instead of omitting them.
+    #[arg(long)]
+    pub(crate) placeholders: bool,
 }
 
 #[derive(Debug, Args)]
@@ -175,6 +307,9 @@ pub(crate) struct ListArgs {
     /// Only the newest N matching records.
     #[arg(long)]
     pub(crate) limit: Option<usize>,
+    /// Print every record field instead of the summary.
+    #[arg(long)]
+    pub(crate) full: bool,
 }
 
 #[derive(Debug, Args)]
@@ -226,7 +361,6 @@ pub(crate) enum ViewArg {
     Raw,
     Tree,
     Hex,
-    Image,
 }
 
 #[derive(Debug, Args)]
@@ -236,6 +370,9 @@ pub(crate) struct WatchArgs {
     /// Also report retained records with a larger ID. Defaults to new records only.
     #[arg(long)]
     pub(crate) since: Option<u64>,
+    /// Print every record field instead of the summary.
+    #[arg(long)]
+    pub(crate) full: bool,
 }
 
 #[derive(Debug, Args)]
@@ -257,6 +394,19 @@ pub(crate) enum LogCommand {
         /// Destination; an existing file is never overwritten.
         path: PathBuf,
     },
+}
+
+/// Parses `Name: value`. The name and value are checked when the request
+/// is built, by the same rules as the app's editor.
+pub(crate) fn parse_header(text: &str) -> Result<(String, String), String> {
+    let (name, value) = text
+        .split_once(':')
+        .ok_or_else(|| format!("{text:?} is not a header such as 'X-Debug: 1'"))?;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(format!("{text:?} has no header name"));
+    }
+    Ok((name.to_owned(), value.trim_start().to_owned()))
 }
 
 /// Parses `500ms`, `10s`, `2m`, `1h`, or a bare number of seconds.
@@ -329,7 +479,6 @@ impl From<&BodyArgs> for BodyRequest {
                 ViewArg::Raw => BodyView::Raw,
                 ViewArg::Tree => BodyView::Tree,
                 ViewArg::Hex => BodyView::Hex,
-                ViewArg::Image => BodyView::Image,
             }),
             max_bytes: args.max_bytes,
             path: args
@@ -349,6 +498,7 @@ impl RecordsCommand {
                 filter: FilterSpec::from(&args.filter),
                 since: args.since.map(RecordRef::new),
                 limit: args.limit,
+                full: args.full,
             },
             Self::Show(args) => Request::Show {
                 id: RecordRef::new(args.id),
@@ -362,6 +512,7 @@ impl RecordsCommand {
             Self::Watch(args) => Request::Watch {
                 filter: FilterSpec::from(&args.filter),
                 since: args.since.map(RecordRef::new),
+                full: args.full,
             },
             Self::Wait(args) => Request::Wait {
                 filter: FilterSpec::from(&args.filter),
@@ -369,6 +520,36 @@ impl RecordsCommand {
                 timeout: args.timeout,
             },
             Self::Clear => Request::Clear,
+            Self::Replay(args) => Request::Replay(ReplayRequest {
+                id: RecordRef::new(args.id),
+                method: args.method.clone(),
+                url: args.url.clone(),
+                headers: args.headers.clone(),
+                remove_headers: args.remove_headers.clone(),
+                body_file: args.body_file.clone(),
+                yes: args.yes,
+                dry_run: args.dry_run,
+                timeout: args.timeout,
+            }),
+            Self::Curl(args) => Request::Curl {
+                id: RecordRef::new(args.id),
+                placeholders: args.placeholders,
+            },
+            Self::Export(args) => Request::Export(ExportRequest {
+                filter: FilterSpec::from(&args.filter),
+                output: args.output.clone(),
+                include_bodies: args.include_bodies,
+                include_redacted_headers: args.include_redacted_headers,
+            }),
+            Self::Endpoints(args) => Request::Endpoints {
+                filter: FilterSpec::from(&args.filter),
+                openapi: matches!(args.format, EndpointsFormat::Openapi),
+            },
+            Self::Hls(args) => Request::Hls(HlsRequest {
+                id: RecordRef::new(args.id),
+                variant: args.variant,
+                output: args.output.clone(),
+            }),
         }
     }
 }
@@ -392,5 +573,11 @@ mod tests {
         assert!(parse_duration("2d").is_err());
         assert!(parse_duration("2h").is_err());
         assert!(parse_duration("s").is_err());
+        assert_eq!(
+            parse_header("X-Debug:  1 2"),
+            Ok(("X-Debug".to_owned(), "1 2".to_owned()))
+        );
+        assert!(parse_header("no colon").is_err());
+        assert!(parse_header(": value").is_err());
     }
 }

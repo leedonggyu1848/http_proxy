@@ -104,26 +104,44 @@ impl Drop for Sandbox {
 
 /// Serves one HTTP/1.1 response and returns the request it received.
 fn serve_once(listener: TcpListener) -> thread::JoinHandle<std::io::Result<String>> {
-    thread::spawn(move || {
-        let (stream, _) = listener.accept()?;
-        let mut reader = BufReader::new(stream.try_clone()?);
-        let mut head = String::new();
-        loop {
-            let mut line = String::new();
-            if reader.read_line(&mut line)? == 0 || line == "\r\n" {
-                break;
-            }
-            head.push_str(&line);
+    thread::spawn(move || answer(&listener))
+}
+
+/// Serves `count` requests and returns their heads and bodies.
+fn serve(listener: TcpListener, count: usize) -> thread::JoinHandle<std::io::Result<Vec<String>>> {
+    thread::spawn(move || (0..count).map(|_| answer(&listener)).collect())
+}
+
+/// Accepts one connection, reads its request including a `Content-Length`
+/// body, and answers with [`BODY`].
+fn answer(listener: &TcpListener) -> std::io::Result<String> {
+    let (stream, _) = listener.accept()?;
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut request = String::new();
+    let mut length = 0;
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line)? == 0 || line == "\r\n" {
+            break;
         }
-        let mut writer = stream;
-        write!(
-            writer,
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nSet-Cookie: id=cli-secret-set\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{BODY}",
-            BODY.len()
-        )?;
-        writer.flush()?;
-        Ok(head)
-    })
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            length = value.trim().parse().unwrap_or(0);
+        }
+        request.push_str(&line);
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body)?;
+    request.push_str(&String::from_utf8_lossy(&body));
+    let mut writer = stream;
+    write!(
+        writer,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nSet-Cookie: id=cli-secret-set\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{BODY}",
+        BODY.len()
+    )?;
+    writer.flush()?;
+    Ok(request)
 }
 
 fn get_through(proxy: SocketAddr, upstream: SocketAddr) -> TestResult<String> {
@@ -418,4 +436,466 @@ fn wait_for_exit(pid: &Value) -> TestResult {
 )]
 fn pause() {
     thread::sleep(std::time::Duration::from_millis(50));
+}
+
+#[test]
+fn env_and_ca_info_describe_the_proxy_without_the_private_key() -> TestResult {
+    let sandbox = Sandbox::new()?;
+    let started = sandbox.json(&["proxy", "start", "--port", "0", "--json"])?;
+    let proxy_url = format!(
+        "http://{}",
+        started["address"].as_str().ok_or("no address")?
+    );
+    let env = sandbox.json(&["proxy", "env", "--ca-bundle", "--json"])?;
+    let names: Vec<&str> = env["variables"]
+        .as_array()
+        .map_or_else(Vec::new, |variables| {
+            variables
+                .iter()
+                .filter_map(|v| v["name"].as_str())
+                .collect()
+        });
+    // Without HTTPS inspection there is no CA to export.
+    assert_eq!(
+        names,
+        ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]
+    );
+    assert_eq!(env["variables"][2]["value"], proxy_url.as_str());
+    let text = String::from_utf8(sandbox.run(&["proxy", "env"])?.stdout)?;
+    assert!(
+        text.contains(&format!("export http_proxy='{proxy_url}'")),
+        "{text}"
+    );
+
+    let ca = sandbox.run(&["ca", "info", "--json"])?;
+    assert!(ca.status.success());
+    let ca_text = String::from_utf8(ca.stdout)?;
+    assert!(
+        !ca_text.contains("PRIVATE KEY") && !ca_text.contains("ca-identity"),
+        "{ca_text}"
+    );
+    let ca: Value = serde_json::from_str(&ca_text)?;
+    let certificate = PathBuf::from(ca["certificate_path"].as_str().ok_or("no path")?);
+    assert!(fs::read_to_string(&certificate)?.starts_with("-----BEGIN CERTIFICATE-----"));
+    assert_eq!(
+        ca["fingerprint_sha256"]
+            .as_str()
+            .map(|text| text.split(':').count()),
+        Some(32)
+    );
+    assert!(ca["valid_from"].as_str() < ca["valid_until"].as_str());
+
+    sandbox.json(&["proxy", "set", "--https-inspection", "on", "--json"])?;
+    let inspected = sandbox.json(&["proxy", "env", "--ca-bundle", "--json"])?;
+    let exported: Vec<(&str, bool)> =
+        inspected["variables"]
+            .as_array()
+            .map_or_else(Vec::new, |variables| {
+                variables
+                    .iter()
+                    .filter(|v| v["value"] == ca["certificate_path"])
+                    .filter_map(|v| {
+                        Some((v["name"].as_str()?, v["replaces_system_roots"].as_bool()?))
+                    })
+                    .collect()
+            });
+    assert_eq!(
+        exported,
+        [
+            ("NODE_EXTRA_CA_CERTS", false),
+            ("SSL_CERT_FILE", true),
+            ("CURL_CA_BUNDLE", true),
+            ("REQUESTS_CA_BUNDLE", true),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn replay_and_curl_reproduce_a_capture_without_its_credentials() -> TestResult {
+    let sandbox = Sandbox::new()?;
+    let proxy = start(&sandbox)?;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let upstream = listener.local_addr()?;
+    let server = serve(listener, 3);
+    get_through(proxy, upstream)?;
+    // The record is listed at once, without waiting for it first.
+    let immediate = sandbox.json(&["records", "list", "--json"])?;
+    assert_eq!(immediate["matched"], 1);
+    let waited = sandbox.json(&["records", "wait", "--filter", "url:/api/users", "--json"])?;
+    let id = waited["record"]["id"].as_u64().ok_or("no id")?.to_string();
+
+    check_list_rows(&sandbox)?;
+    check_curl(&sandbox, &id)?;
+    check_replay_refusals(&sandbox, &id)?;
+    check_replays(&sandbox, &id)?;
+    let received = server.join().map_err(|_| "server panicked")??;
+    let [_, replay, post] = received.as_slice() else {
+        return Err(format!("expected 3 requests, got {received:?}").into());
+    };
+    assert!(
+        replay.to_ascii_lowercase().contains("x-debug: 1"),
+        "{replay}"
+    );
+    assert!(!replay.contains(SECRET), "{replay}");
+    assert!(
+        post.starts_with("POST ") && post.ends_with(r#"{"name":"gamma"}"#),
+        "{post}"
+    );
+    Ok(())
+}
+
+/// The default list row has only the summary fields; `--full` has all.
+fn check_list_rows(sandbox: &Sandbox) -> TestResult {
+    let listed = sandbox.json(&["records", "list", "--json"])?;
+    let row = listed["records"][0].as_object().ok_or("no row")?;
+    let mut keys: Vec<&str> = row.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "duration_ms",
+            "id",
+            "method",
+            "outcome",
+            "request_bytes",
+            "response_bytes",
+            "status",
+            "url"
+        ]
+    );
+    let full = sandbox.json(&["records", "list", "--full", "--json"])?;
+    assert_eq!(full["records"][0]["summary"], "200 OK");
+    Ok(())
+}
+
+/// A dry run prints the request only; a replay and a confirmed POST send.
+fn check_replays(sandbox: &Sandbox, id: &str) -> TestResult {
+    let dry = sandbox.json(&[
+        "records",
+        "replay",
+        id,
+        "--remove-header",
+        "Authorization",
+        "--remove-header",
+        "Cookie",
+        "--header",
+        "X-Debug: 1",
+        "--dry-run",
+        "--json",
+    ])?;
+    assert_eq!(dry["dry_run"], true);
+    assert!(dry.get("record").is_none());
+    assert!(dry["request"]["headers"].as_array().is_some_and(|headers| {
+        headers
+            .iter()
+            .any(|h| h["name"] == "x-debug" && h["value"] == "1")
+            && !headers.iter().any(|h| h["name"] == "authorization")
+    }));
+    let unchanged = sandbox.json(&["records", "list", "--json"])?;
+    assert_eq!(unchanged["matched"], 1, "a dry run must not send");
+
+    let replayed = sandbox.json(&[
+        "records",
+        "replay",
+        id,
+        "--remove-header",
+        "Authorization",
+        "--remove-header",
+        "Cookie",
+        "--header",
+        "X-Debug: 1",
+        "--json",
+    ])?;
+    assert_eq!(replayed["record"]["replay_of"].to_string(), id);
+    assert_eq!(replayed["record"]["status"], 200);
+    assert_ne!(replayed["record"]["id"].to_string(), id);
+
+    let body = sandbox.root.path().join("body.json");
+    fs::write(&body, r#"{"name":"gamma"}"#)?;
+    let posted = sandbox.json(&[
+        "records",
+        "replay",
+        id,
+        "--method",
+        "POST",
+        "--remove-header",
+        "Authorization",
+        "--remove-header",
+        "Cookie",
+        "--body-file",
+        body.to_str().ok_or("path")?,
+        "--yes",
+        "--json",
+    ])?;
+    assert_eq!(posted["record"]["method"], "POST");
+    assert_eq!(posted["request"]["body_bytes"], 16);
+    Ok(())
+}
+
+fn check_curl(sandbox: &Sandbox, id: &str) -> TestResult {
+    let curl = sandbox.json(&["records", "curl", id, "--json"])?;
+    let command = curl["command"].as_str().ok_or("no command")?;
+    assert!(
+        command.starts_with("curl ") && command.contains("/api/users?page=2"),
+        "{command}"
+    );
+    assert_no_secret("records curl", command);
+    assert!(
+        !command.to_ascii_lowercase().contains("authorization"),
+        "{command}"
+    );
+    assert_eq!(
+        curl["redacted_headers"],
+        serde_json::json!(["authorization", "cookie"])
+    );
+    let placeholders = sandbox.json(&["records", "curl", id, "--placeholders", "--json"])?;
+    assert!(
+        placeholders["command"]
+            .as_str()
+            .is_some_and(|text| text.contains("<REDACTED>"))
+    );
+    Ok(())
+}
+
+fn check_replay_refusals(sandbox: &Sandbox, id: &str) -> TestResult {
+    // Redacted credentials cannot be sent as captured.
+    let redacted = sandbox.run(&["records", "replay", id, "--json"])?;
+    assert_eq!(redacted.status.code(), Some(1));
+    let error: Value = serde_json::from_slice(&redacted.stdout)?;
+    assert_eq!(error["error"]["code"], "not_reproducible");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("authorization"))
+    );
+    // A state-changing method needs --yes.
+    let unconfirmed = sandbox.run(&[
+        "records",
+        "replay",
+        id,
+        "--method",
+        "DELETE",
+        "--remove-header",
+        "Authorization",
+        "--remove-header",
+        "Cookie",
+        "--json",
+    ])?;
+    assert_eq!(unconfirmed.status.code(), Some(5));
+    let error: Value = serde_json::from_slice(&unconfirmed.stdout)?;
+    assert_eq!(error["error"]["code"], "confirmation_required");
+    let listed = sandbox.json(&["records", "list", "--json"])?;
+    assert_eq!(listed["matched"], 1, "a refused replay must not send");
+    Ok(())
+}
+
+#[test]
+fn export_and_endpoints_describe_the_capture() -> TestResult {
+    let sandbox = Sandbox::new()?;
+    let proxy = start(&sandbox)?;
+    let _id = capture(&sandbox, proxy)?;
+
+    let har_path = sandbox.root.path().join("session.har");
+    let har_arg = har_path.to_str().ok_or("path")?;
+    let written = sandbox.json(&["records", "export", "--output", har_arg, "--json"])?;
+    assert_eq!(written["entries"], 1);
+    let har_text = fs::read_to_string(&har_path)?;
+    assert_no_secret("HAR file", &har_text);
+    let har: Value = serde_json::from_str(&har_text)?;
+    assert_eq!(har["log"]["version"], "1.2");
+    assert!(
+        har["log"]["entries"][0]["request"]["url"]
+            .as_str()
+            .is_some_and(|url| url.ends_with("/api/users?page=2"))
+    );
+    let again = sandbox.run(&["records", "export", "--output", har_arg, "--json"])?;
+    assert_eq!(
+        again.status.code(),
+        Some(1),
+        "an existing file is never overwritten"
+    );
+    let dangling = sandbox.root.path().join("dangling.har");
+    std::os::unix::fs::symlink(sandbox.root.path().join("missing.har"), &dangling)?;
+    let dangling_arg = dangling.to_str().ok_or("path")?;
+    for command in [
+        ["records", "export", "--output", dangling_arg, "--json"].as_slice(),
+        ["log", "save", dangling_arg, "--json"].as_slice(),
+    ] {
+        let refused = sandbox.run(command)?;
+        let error: Value = serde_json::from_slice(&refused.stdout)?;
+        assert_eq!(error["error"]["code"], "file_exists", "{command:?}");
+    }
+    assert!(!sandbox.root.path().join("missing.har").exists());
+    let printed = sandbox.run(&["records", "export", "--include-redacted-headers"])?;
+    let printed_text = String::from_utf8(printed.stdout)?;
+    assert_no_secret("printed HAR", &printed_text);
+    let printed: Value = serde_json::from_str(&printed_text)?;
+    assert_eq!(printed["log"]["entries"].as_array().map(Vec::len), Some(1));
+
+    let summary = sandbox.json(&["records", "endpoints", "--json"])?;
+    let endpoint = &summary["endpoints"][0];
+    assert_eq!(endpoint["path"], "/api/users");
+    assert_eq!(endpoint["method"], "GET");
+    assert_eq!(endpoint["query"][0]["name"], "page");
+    assert!(
+        !summary.to_string().contains("alpha"),
+        "field values are never kept"
+    );
+    let openapi = sandbox.run(&["records", "endpoints", "--format", "openapi"])?;
+    let openapi: Value = serde_json::from_slice(&openapi.stdout)?;
+    assert_eq!(openapi["openapi"], "3.1.0");
+    let schema = &openapi["paths"]["/api/users"]["get"]["responses"]["200"]["content"]["application/json"]
+        ["schema"];
+    assert_eq!(
+        schema["properties"]["data"]["properties"]["items"]["items"]["properties"]["id"]["type"],
+        "integer"
+    );
+    Ok(())
+}
+
+const CHROME: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+const PLAYLIST: &str = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:2.0,\nseg0.ts\n#EXTINF:2.0,\nseg1.ts\n#EXT-X-ENDLIST\n";
+
+/// One MPEG-TS packet per segment, marked with the segment number.
+fn segment(number: u8) -> Vec<u8> {
+    let mut packet = vec![0; 188];
+    if let Some(first) = packet.first_mut() {
+        *first = 0x47;
+    }
+    if let Some(last) = packet.last_mut() {
+        *last = number;
+    }
+    packet
+}
+
+/// Serves the playlist and segments for `count` requests, by path.
+fn serve_hls(listener: TcpListener, count: usize) -> thread::JoinHandle<std::io::Result<()>> {
+    thread::spawn(move || {
+        for _ in 0..count {
+            let (stream, _) = listener.accept()?;
+            let mut reader = BufReader::new(stream.try_clone()?);
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line)?;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line)? == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            let (content_type, body) = if request_line.contains("index.m3u8") {
+                (
+                    "application/vnd.apple.mpegurl",
+                    PLAYLIST.as_bytes().to_vec(),
+                )
+            } else if request_line.contains("seg0.ts") {
+                ("video/mp2t", segment(0))
+            } else {
+                ("video/mp2t", segment(1))
+            };
+            let mut writer = stream;
+            write!(
+                writer,
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )?;
+            writer.write_all(&body)?;
+            writer.flush()?;
+        }
+        Ok(())
+    })
+}
+
+fn get_as_chrome(proxy: SocketAddr, url: &str, host: SocketAddr) -> TestResult {
+    let mut client = TcpStream::connect(proxy)?;
+    write!(
+        client,
+        "GET {url} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: {CHROME}\r\nConnection: close\r\n\r\n"
+    )?;
+    let _read = client.read_to_end(&mut Vec::new())?;
+    Ok(())
+}
+
+#[test]
+fn hls_downloads_a_variant_into_a_new_file() -> TestResult {
+    let sandbox = Sandbox::new()?;
+    let proxy = start(&sandbox)?;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let upstream = listener.local_addr()?;
+    // Playlist and first segment from "Chrome", then the second segment
+    // fetched by the download itself.
+    let server = serve_hls(listener, 3);
+    get_as_chrome(
+        proxy,
+        &format!("http://{upstream}/live/index.m3u8"),
+        upstream,
+    )?;
+    get_as_chrome(proxy, &format!("http://{upstream}/live/seg0.ts"), upstream)?;
+    let playlist = sandbox.json(&["records", "wait", "--filter", "url:index.m3u8", "--json"])?;
+    sandbox.json(&["records", "wait", "--filter", "url:seg0.ts", "--json"])?;
+    let id = playlist["record"]["id"]
+        .as_u64()
+        .ok_or("no id")?
+        .to_string();
+
+    let inspected = sandbox.json(&["records", "hls", &id, "--json"])?;
+    let variant = &inspected["variants"][0];
+    assert_eq!(variant["can_download"], true, "{inspected}");
+    assert_eq!(variant["segments"]["total"], 2);
+    assert_eq!(variant["segments"]["cached"], 1);
+
+    // A dangling symlink at the destination is an existing file: refused,
+    // and nothing is saved under another name.
+    let downloads = sandbox.root.path().join("downloads");
+    fs::create_dir(&downloads)?;
+    let dangling = downloads.join("dangling.ts");
+    std::os::unix::fs::symlink(downloads.join("missing.ts"), &dangling)?;
+    let refused = sandbox.run(&[
+        "records",
+        "hls",
+        &id,
+        "--output",
+        dangling.to_str().ok_or("path")?,
+        "--json",
+    ])?;
+    assert_eq!(refused.status.code(), Some(1));
+    let error: Value = serde_json::from_slice(&refused.stdout)?;
+    assert_eq!(error["error"]["code"], "file_exists");
+    assert_eq!(names_in(&downloads)?, ["dangling.ts"]);
+
+    let output = downloads.join("video.ts");
+    let output_arg = output.to_str().ok_or("path")?;
+    let download = sandbox.run(&["records", "hls", &id, "--output", output_arg, "--json"])?;
+    let stdout = String::from_utf8(download.stdout)?;
+    assert!(download.status.success(), "{stdout}");
+    let events: Vec<Value> = stdout
+        .lines()
+        .map(serde_json::from_str)
+        .collect::<Result<_, _>>()?;
+    let last = events.last().ok_or("no events")?;
+    assert_eq!(last["event"], "completed", "{stdout}");
+    assert_eq!(last["path"], output_arg);
+    assert_eq!(last["reused_segments"], 1);
+    assert!(events.iter().any(|event| event["event"] == "progress"));
+    assert_eq!(fs::read(&output)?, [segment(0), segment(1)].concat());
+    // The staging file is gone; only the requested file was added.
+    assert_eq!(names_in(&downloads)?, ["dangling.ts", "video.ts"]);
+    server.join().map_err(|_| "server panicked")??;
+
+    let again = sandbox.run(&["records", "hls", &id, "--output", output_arg, "--json"])?;
+    assert_eq!(again.status.code(), Some(1));
+    let error: Value = serde_json::from_slice(&again.stdout)?;
+    assert_eq!(error["error"]["code"], "file_exists");
+    let not_hls = sandbox.run(&["records", "hls", "999999", "--json"])?;
+    assert_eq!(not_hls.status.code(), Some(4));
+    Ok(())
+}
+
+/// Sorted file names in `directory`, including hidden ones.
+fn names_in(directory: &Path) -> TestResult<Vec<String>> {
+    let mut names: Vec<String> = fs::read_dir(directory)?
+        .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+        .collect::<Result<_, _>>()?;
+    names.sort_unstable();
+    Ok(names)
 }

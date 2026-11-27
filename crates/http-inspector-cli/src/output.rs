@@ -26,6 +26,13 @@ pub(crate) enum Kind {
     Cleared,
     LogSaved,
     Schema,
+    Env,
+    CaInfo,
+    Replay,
+    Curl,
+    Exported,
+    Endpoints,
+    Hls,
 }
 
 /// How results are printed.
@@ -81,6 +88,20 @@ impl Output {
                 ),
                 Some("cleared") => "Records cleared\n".to_owned(),
                 Some("daemon_stopped") => "The daemon stopped\n".to_owned(),
+                Some("progress") => format!(
+                    "{} {}/{} segments ({} reused, {} bytes downloaded)\n",
+                    text(&data["phase"]),
+                    text(&data["completed_segments"]),
+                    text(&data["total_segments"]),
+                    text(&data["reused_segments"]),
+                    text(&data["downloaded_bytes"]),
+                ),
+                Some("completed") => format!(
+                    "Saved {} ({} bytes, {} segments)\n",
+                    text(&data["path"]),
+                    text(&data["total_bytes"]),
+                    text(&data["total_segments"]),
+                ),
                 _ => format!("{data}\n"),
             }
         };
@@ -100,6 +121,13 @@ impl Output {
         }
         write_err(&text);
     }
+}
+
+/// Prints a document in its own format, such as a HAR or `OpenAPI` file,
+/// without the `schema` wrapper.
+pub(crate) fn raw(document: &Value) {
+    let text = serde_json::to_string_pretty(document).unwrap_or_default();
+    write_out(&format!("{text}\n"));
 }
 
 /// Prints the daemon's single readiness line for `proxy start`.
@@ -144,17 +172,30 @@ fn millis(value: &Value) -> String {
         .map_or_else(|| "-".to_owned(), |millis| format!("{millis:.1} ms"))
 }
 
-/// One record as a table row.
+/// One record as a table row, from a list row or a full summary.
 fn row(record: &Value) -> String {
+    let status = record
+        .get("summary")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            record
+                .get("status")
+                .and_then(Value::as_u64)
+                .map(|code| code.to_string())
+        })
+        .unwrap_or_else(|| text(&record["outcome"]));
+    let size = record
+        .get("response_bytes")
+        .or_else(|| record.get("received_bytes"))
+        .and_then(Value::as_u64)
+        .map_or_else(|| "-".to_owned(), |bytes| format!("{bytes} B"));
     format!(
-        "{:>5}  {:<7} {:<24} {:<6} {:>9} {:>10}  {}",
+        "{:>5}  {:<7} {:<24} {:>9} {:>10}  {}",
         text(&record["id"]),
         text(&record["method"]),
-        text(&record["summary"]),
-        text(&record["type"]),
-        record["received_bytes"]
-            .as_u64()
-            .map_or_else(|| "-".to_owned(), |bytes| format!("{bytes} B")),
+        status,
+        size,
         millis(&record["duration_ms"]),
         text(&record["url"]),
     )
@@ -181,7 +222,164 @@ fn render(kind: Kind, data: &Value) -> (String, String) {
             String::new(),
         ),
         Kind::Schema => (format!("{data}\n"), String::new()),
+        Kind::Env => (env(data), String::new()),
+        Kind::CaInfo => (ca_info(data), String::new()),
+        Kind::Replay => replay(data),
+        Kind::Curl => curl(data),
+        Kind::Exported => (
+            format!(
+                "Wrote {} entries to {}\n",
+                text(&data["entries"]),
+                text(&data["path"])
+            ),
+            String::new(),
+        ),
+        Kind::Endpoints => (endpoints(data), String::new()),
+        Kind::Hls => (hls(data), String::new()),
     }
+}
+
+/// One line per endpoint: method, path pattern, and observed responses.
+fn endpoints(data: &Value) -> String {
+    let mut out = String::new();
+    for endpoint in data["endpoints"].as_array().into_iter().flatten() {
+        let statuses: Vec<String> = endpoint["responses"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|response| {
+                format!(
+                    "{} {}",
+                    text(&response["status"]),
+                    text(&response["content_type"])
+                )
+            })
+            .collect();
+        let _ = writeln!(
+            out,
+            "{:<7} {}  ({} requests; {})",
+            text(&endpoint["method"]),
+            text(&endpoint["url"]),
+            text(&endpoint["requests"]),
+            statuses.join(", ")
+        );
+    }
+    let _ = writeln!(
+        out,
+        "{} records analyzed, {} still in flight",
+        text(&data["records_analyzed"]),
+        text(&data["records_in_flight"])
+    );
+    out
+}
+
+fn hls(data: &Value) -> String {
+    let mut out = format!("{}\n", text(&data["url"]));
+    for variant in data["variants"].as_array().into_iter().flatten() {
+        let default = if variant["index"] == data["default_variant"] {
+            "*"
+        } else {
+            " "
+        };
+        let state = variant["blocked"]
+            .as_str()
+            .map_or_else(|| text(&variant["state"]), str::to_owned);
+        let _ = writeln!(
+            out,
+            "{default}{:>2}  {:<10} {:<12} {}",
+            text(&variant["index"]),
+            text(&variant["quality"]),
+            text(&variant["bandwidth"]),
+            state
+        );
+    }
+    out
+}
+
+/// `export` lines to `eval`, with notes as shell comments.
+fn env(data: &Value) -> String {
+    let mut out = String::new();
+    for note in data["notes"].as_array().into_iter().flatten() {
+        let _ = writeln!(out, "# {}", text(note));
+    }
+    for variable in data["variables"].as_array().into_iter().flatten() {
+        let _ = writeln!(
+            out,
+            "export {}={}",
+            text(&variable["name"]),
+            crate::local::shell_quote(&text(&variable["value"]))
+        );
+    }
+    out
+}
+
+fn ca_info(data: &Value) -> String {
+    format!(
+        "certificate  {}\nsha256       {}\nvalid        {} to {}\n",
+        text(&data["certificate_path"]),
+        text(&data["fingerprint_sha256"]),
+        text(&data["valid_from"]),
+        text(&data["valid_until"]),
+    )
+}
+
+fn replay(data: &Value) -> (String, String) {
+    if data["dry_run"].as_bool() == Some(true) {
+        let request = &data["request"];
+        let note = if data["needs_confirmation"].as_bool() == Some(true) {
+            "note: sending this request needs --yes\n".to_owned()
+        } else {
+            String::new()
+        };
+        let mut out = format!("{} {}\n", text(&request["method"]), text(&request["url"]));
+        for header in request["headers"].as_array().into_iter().flatten() {
+            let _ = writeln!(out, "{}: {}", text(&header["name"]), text(&header["value"]));
+        }
+        match request["body"].as_str() {
+            Some("") | None if request["body_bytes"].as_u64() == Some(0) => {}
+            Some(body) => {
+                let _ = write!(out, "\n{body}\n");
+            }
+            None => {
+                let _ = writeln!(
+                    out,
+                    "\n({} bytes of binary body)",
+                    text(&request["body_bytes"])
+                );
+            }
+        }
+        return (out, note);
+    }
+    let out = format!(
+        "Replayed record {} as record {}\n{}\n",
+        text(&data["replay_of"]),
+        text(at(data, &["record", "id"])),
+        row(&data["record"])
+    );
+    (out, String::new())
+}
+
+fn curl(data: &Value) -> (String, String) {
+    let redacted: Vec<String> = data["redacted_headers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(text)
+        .collect();
+    let note = if redacted.is_empty() {
+        String::new()
+    } else if data["placeholders"].as_bool() == Some(true) {
+        format!(
+            "note: replace the <REDACTED> values of {} before running\n",
+            redacted.join(", ")
+        )
+    } else {
+        format!(
+            "note: redacted headers were left out: {}\n",
+            redacted.join(", ")
+        )
+    };
+    (format!("{}\n", text(&data["command"])), note)
 }
 
 fn status(data: &Value) -> String {
@@ -227,8 +425,8 @@ fn status(data: &Value) -> String {
 
 fn list(data: &Value) -> String {
     let mut out = format!(
-        "{:>5}  {:<7} {:<24} {:<6} {:>9} {:>10}  {}\n",
-        "ID", "METHOD", "STATUS", "TYPE", "SIZE", "TIME", "URL"
+        "{:>5}  {:<7} {:<24} {:>9} {:>10}  {}\n",
+        "ID", "METHOD", "STATUS", "SIZE", "TIME", "URL"
     );
     for record in data["records"].as_array().into_iter().flatten() {
         let _ = writeln!(out, "{}", row(record));

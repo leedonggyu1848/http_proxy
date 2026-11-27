@@ -36,6 +36,15 @@ pub(crate) enum ErrorCode {
     ProxyConflict,
     /// HTTPS inspection could not be prepared.
     HttpsUnavailable,
+    /// The command sends a request that may change server state and needs
+    /// `--yes`.
+    ConfirmationRequired,
+    /// The record cannot be replayed or copied as sent; the message names
+    /// what to supply.
+    NotReproducible,
+    /// The record is not a usable HLS playlist, or the chosen variant
+    /// cannot be downloaded yet.
+    HlsUnavailable,
     /// No record matched before the timeout.
     Timeout,
     /// A temporary condition; retrying shortly can succeed.
@@ -48,7 +57,7 @@ pub(crate) enum ErrorCode {
 
 impl ErrorCode {
     /// Every code, in documentation order.
-    pub(crate) const ALL: [Self; 19] = [
+    pub(crate) const ALL: [Self; 22] = [
         Self::Usage,
         Self::InvalidFilter,
         Self::DaemonNotRunning,
@@ -64,6 +73,9 @@ impl ErrorCode {
         Self::ProxyStartFailed,
         Self::ProxyConflict,
         Self::HttpsUnavailable,
+        Self::ConfirmationRequired,
+        Self::NotReproducible,
+        Self::HlsUnavailable,
         Self::Timeout,
         Self::Busy,
         Self::FileExists,
@@ -88,6 +100,9 @@ impl ErrorCode {
             Self::ProxyStartFailed => "proxy_start_failed",
             Self::ProxyConflict => "proxy_conflict",
             Self::HttpsUnavailable => "https_unavailable",
+            Self::ConfirmationRequired => "confirmation_required",
+            Self::NotReproducible => "not_reproducible",
+            Self::HlsUnavailable => "hls_unavailable",
             Self::Timeout => "timeout",
             Self::Busy => "busy",
             Self::FileExists => "file_exists",
@@ -101,6 +116,7 @@ impl ErrorCode {
             Self::Usage | Self::InvalidFilter => 2,
             Self::DaemonNotRunning => 3,
             Self::RecordNotFound | Self::BodyUnavailable | Self::PathNotFound => 4,
+            Self::ConfirmationRequired => 5,
             Self::Timeout => 6,
             Self::Busy => 75,
             Self::InsecureControlPath
@@ -112,6 +128,8 @@ impl ErrorCode {
             | Self::ProxyStartFailed
             | Self::ProxyConflict
             | Self::HttpsUnavailable
+            | Self::NotReproducible
+            | Self::HlsUnavailable
             | Self::FileExists
             | Self::Io => 1,
         }
@@ -195,7 +213,10 @@ mod tests {
     fn names_round_trip_and_exit_codes_are_documented_values() {
         for code in ErrorCode::ALL {
             assert_eq!(ErrorCode::from_name(code.name()), Some(code));
-            assert!([1, 2, 3, 4, 6, 75].contains(&code.exit_code()), "{code:?}");
+            assert!(
+                [1, 2, 3, 4, 5, 6, 75].contains(&code.exit_code()),
+                "{code:?}"
+            );
         }
         let error = CliError::daemon_not_running();
         assert_eq!(CliError::from_json(&error.to_json()), error);

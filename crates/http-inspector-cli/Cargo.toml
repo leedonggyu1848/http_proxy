@@ -10,17 +10,18 @@ publish.workspace = true
 
 [dependencies]
 clap.workspace = true
+http.workspace = true
 http-inspector-analysis.workspace = true
 http-inspector-content.workspace = true
 http-inspector-core.workspace = true
 http-inspector-exchange.workspace = true
+http-inspector-interop.workspace = true
 rustix.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 http-inspector-exchange = { workspace = true, features = ["test-support"] }
-http.workspace = true
 tempfile.workspace = true
 
 [lints]

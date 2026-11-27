@@ -1,6 +1,7 @@
 //! The daemon's capture session: the proxy, the retained records, and the
 //! full-session log, managed like the desktop app's capture session.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -8,6 +9,7 @@ use http_inspector_analysis::filter::RecordList;
 use http_inspector_core::https::HttpsInspection;
 use http_inspector_core::interception::{EngineState, ProxyConfig, ProxyHandle, StartError};
 use http_inspector_core::recording::FullLog;
+use http_inspector_core::replay::{ReplayDraft, ReplayError, ReplayTask};
 use http_inspector_core::settings::{paths, port};
 use http_inspector_exchange::Exchange;
 use serde_json::{Value, json};
@@ -170,6 +172,35 @@ impl Session {
         arrived
     }
 
+    /// The listening proxy address, or the last one while it is stopped.
+    pub(crate) fn proxy_address(&self) -> SocketAddr {
+        self.proxy.as_ref().map_or_else(
+            || SocketAddr::from(([127, 0, 0, 1], self.last_port.unwrap_or_default())),
+            ProxyHandle::local_addr,
+        )
+    }
+
+    /// The listening proxy address, if the proxy runs.
+    pub(crate) fn running_address(&self) -> Option<SocketAddr> {
+        self.proxy.as_ref().map(ProxyHandle::local_addr)
+    }
+
+    /// Sends a replay through the running proxy.
+    pub(crate) fn replay(&self, draft: &ReplayDraft) -> Result<ReplayTask, ReplayError> {
+        self.proxy
+            .as_ref()
+            .ok_or(ReplayError::ProxyNotRunning)?
+            .replay(draft)
+    }
+
+    /// ID of the newest retained record, or 0.
+    pub(crate) fn newest_id(&self) -> u64 {
+        self.records
+            .iter()
+            .next_back()
+            .map_or(0, |record| record.id().value())
+    }
+
     pub(crate) const fn records(&self) -> &RecordList<Exchange> {
         &self.records
     }
@@ -213,7 +244,7 @@ impl Session {
                 format!("The session log is unavailable: {error}"),
             )
         })?;
-        if path.exists() {
+        if std::fs::symlink_metadata(&path).is_ok() {
             return Err(file_exists(&path));
         }
         log.export(path).map_err(|error| export_error(&error))
