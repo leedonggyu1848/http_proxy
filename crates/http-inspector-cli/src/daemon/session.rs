@@ -180,6 +180,11 @@ impl Session {
         )
     }
 
+    /// The listening proxy address, if the proxy runs.
+    pub(crate) fn running_address(&self) -> Option<SocketAddr> {
+        self.proxy.as_ref().map(ProxyHandle::local_addr)
+    }
+
     /// Sends a replay through the running proxy.
     pub(crate) fn replay(&self, draft: &ReplayDraft) -> Result<ReplayTask, ReplayError> {
         self.proxy
@@ -239,7 +244,7 @@ impl Session {
                 format!("The session log is unavailable: {error}"),
             )
         })?;
-        if path.exists() {
+        if std::fs::symlink_metadata(&path).is_ok() {
             return Err(file_exists(&path));
         }
         log.export(path).map_err(|error| export_error(&error))

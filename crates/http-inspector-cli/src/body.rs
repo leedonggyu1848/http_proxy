@@ -2,6 +2,7 @@
 //! desktop Body tab, cut to the requested size.
 
 use http_inspector_analysis::search::is_binary_media_type;
+use http_inspector_content::format::json_child_path;
 use http_inspector_content::format::{BodyFormat, Notice, NoticeLevel, ViewMode, tree::TreeModel};
 use http_inspector_content::hex::{self, HEX_VIEW_BYTES};
 use http_inspector_content::view::{self, BodyCapture, BodyInput, BodyView as Prepared};
@@ -204,10 +205,14 @@ fn tree_document(
                 },
             ));
         }
+        let wanted = match path {
+            TreePath::Json(text) => canonical_json_path(text),
+            TreePath::Xml(text) => text.clone(),
+        };
         let node = model
             .nodes()
             .iter()
-            .find(|node| node.path.as_deref() == Some(path.text()))
+            .find(|node| node.path.as_deref() == Some(wanted.as_str()))
             .ok_or_else(|| {
                 CliError::new(
                     ErrorCode::PathNotFound,
@@ -233,6 +238,49 @@ fn tree_document(
     let mut map = Map::new();
     map.insert("nodes".to_owned(), Value::Array(nodes));
     Ok(map)
+}
+
+/// Rewrites dot segments that are not identifiers, such as `.x-client`,
+/// to the bracket form the Tree view uses (`["x-client"]`), so both
+/// spellings select the same row. Bracket segments are kept as written.
+fn canonical_json_path(path: &str) -> String {
+    let Some(rest) = path.strip_prefix('$') else {
+        return path.to_owned();
+    };
+    let mut out = String::from("$");
+    let mut chars = rest.chars().peekable();
+    while let Some(next) = chars.next() {
+        match next {
+            '.' => {
+                let mut name = String::new();
+                while let Some(&c) = chars.peek() {
+                    if c == '.' || c == '[' {
+                        break;
+                    }
+                    name.push(c);
+                    chars.next();
+                }
+                out = json_child_path(&out, &name);
+            }
+            '[' => {
+                out.push('[');
+                let mut quoted = false;
+                let mut escaped = false;
+                for c in chars.by_ref() {
+                    out.push(c);
+                    match c {
+                        _ if escaped => escaped = false,
+                        '\\' if quoted => escaped = true,
+                        '"' => quoted = !quoted,
+                        ']' if !quoted => break,
+                        _ => {}
+                    }
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 fn notices(list: &[Notice]) -> Value {
@@ -328,6 +376,19 @@ mod tests {
             },
         )?;
         assert_eq!(found["text"], "7");
+        assert_eq!(
+            canonical_json_path("$.echo.x-client"),
+            r#"$.echo["x-client"]"#
+        );
+        assert_eq!(
+            canonical_json_path(r#"$.a[0]["b.c"].d"#),
+            r#"$.a[0]["b.c"].d"#
+        );
+        assert_eq!(canonical_json_path("$.items[2].id"), "$.items[2].id");
+        assert_eq!(
+            canonical_json_path(r#"$["a\"]"].b-c"#),
+            r#"$["a\"]"]["b-c"]"#
+        );
         let missing = render(
             &json_record,
             &BodyRequest {

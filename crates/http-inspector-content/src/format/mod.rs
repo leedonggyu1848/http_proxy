@@ -14,6 +14,8 @@ mod json_tree;
 mod markup;
 mod tag;
 pub mod tree;
+
+pub use json_tree::child_path as json_child_path;
 mod xml;
 
 pub use javascript::JavaScriptFormatError;

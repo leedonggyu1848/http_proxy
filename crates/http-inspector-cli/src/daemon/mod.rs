@@ -1,6 +1,7 @@
 //! The headless daemon: it owns the proxy and the captured records and
 //! answers requests on the control socket until `proxy stop`.
 
+mod exports;
 mod replay;
 mod select;
 mod session;
@@ -177,6 +178,15 @@ fn serve(shared: &Shared, stream: UnixStream) {
         shared.changed.notify_all();
         return;
     }
+    if let Request::Hls(hls) = &request
+        && let Some(output) = &hls.output
+    {
+        shared.streams.fetch_add(1, Ordering::AcqRel);
+        let _gone = exports::download(shared, hls, output, &mut writer).is_err();
+        shared.streams.fetch_sub(1, Ordering::AcqRel);
+        shared.changed.notify_all();
+        return;
+    }
     let stopping = matches!(request, Request::Stop);
     let reply = match respond(shared, request) {
         Ok(data) => ok_line(&data),
@@ -254,6 +264,9 @@ fn respond(shared: &Shared, request: Request) -> Result<Value, CliError> {
         }
         Request::Replay(request) => replay::replay(shared, &request),
         Request::Curl { id, placeholders } => replay::curl(&shared.current(), id, placeholders),
+        Request::Export(request) => exports::export(shared, &request),
+        Request::Endpoints { filter, openapi } => exports::endpoints(shared, &filter, openapi),
+        Request::Hls(request) => exports::inspect(shared, &request),
         Request::Watch { .. } => Err(CliError::new(
             ErrorCode::Usage,
             "records.watch is a streaming command",

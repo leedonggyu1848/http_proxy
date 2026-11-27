@@ -10,8 +10,8 @@ use http_inspector_analysis::search::{MatchOptions, SearchScope};
 use http_inspector_exchange::BodySide;
 
 use crate::protocol::{
-    BodyRequest, BodyView, FilterSpec, Kind, MAX_WAIT, Part, RecordRef, ReplayRequest, Request,
-    StartOptions, TreePath,
+    BodyRequest, BodyView, ExportRequest, FilterSpec, HlsRequest, Kind, MAX_WAIT, Part, RecordRef,
+    ReplayRequest, Request, StartOptions, TreePath,
 };
 
 const EXAMPLES: &str = "\
@@ -155,6 +155,71 @@ pub(crate) enum RecordsCommand {
     Replay(ReplayArgs),
     /// Print a captured request as a `curl` command.
     Curl(CurlArgs),
+    /// Write matching records as a HAR 1.2 file, or print it.
+    #[command(
+        after_help = "Examples:\n  http-proxy records export --output session.har\n  http-proxy records export --filter 'host:api.example.test' --include-bodies > api.har"
+    )]
+    Export(ExportArgs),
+    /// Show the request and response structure of each endpoint, or an `OpenAPI` document.
+    #[command(
+        after_help = "Examples:\n  http-proxy records endpoints --filter 'host:api.example.test' --json\n  http-proxy records endpoints --filter 'host:api.example.test' --format openapi > api.json"
+    )]
+    Endpoints(EndpointsArgs),
+    /// Inspect a captured HLS playlist, or download a variant as one `.ts` file.
+    #[command(
+        after_help = "Examples:\n  http-proxy records hls 12\n  http-proxy records hls 12 --variant 1 --output video.ts"
+    )]
+    Hls(HlsArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ExportArgs {
+    #[command(flatten)]
+    pub(crate) filter: FilterArgs,
+    /// File format. HAR 1.2 is the only one.
+    #[arg(long, value_enum, default_value = "har")]
+    pub(crate) format: ExportFormat,
+    /// Write to this new file; an existing file is never overwritten. Without it, print the HAR.
+    #[arg(long)]
+    pub(crate) output: Option<PathBuf>,
+    /// Include body previews, which may be truncated, as in the app's export.
+    #[arg(long)]
+    pub(crate) include_bodies: bool,
+    /// Include credential headers with their `[REDACTED]` marker instead of leaving them out.
+    #[arg(long)]
+    pub(crate) include_redacted_headers: bool,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub(crate) enum ExportFormat {
+    Har,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct EndpointsArgs {
+    #[command(flatten)]
+    pub(crate) filter: FilterArgs,
+    /// `summary` lists observed structure; `openapi` prints an `OpenAPI` 3.1 document for one host.
+    #[arg(long, value_enum, default_value = "summary")]
+    pub(crate) format: EndpointsFormat,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub(crate) enum EndpointsFormat {
+    Summary,
+    Openapi,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct HlsArgs {
+    /// ID of a captured `.m3u8` playlist record.
+    pub(crate) id: u64,
+    /// Variant index from the inspection; defaults to the app's choice.
+    #[arg(long)]
+    pub(crate) variant: Option<usize>,
+    /// Download the variant into this new `.ts` file; an existing file is never overwritten.
+    #[arg(long)]
+    pub(crate) output: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -470,6 +535,21 @@ impl RecordsCommand {
                 id: RecordRef::new(args.id),
                 placeholders: args.placeholders,
             },
+            Self::Export(args) => Request::Export(ExportRequest {
+                filter: FilterSpec::from(&args.filter),
+                output: args.output.clone(),
+                include_bodies: args.include_bodies,
+                include_redacted_headers: args.include_redacted_headers,
+            }),
+            Self::Endpoints(args) => Request::Endpoints {
+                filter: FilterSpec::from(&args.filter),
+                openapi: matches!(args.format, EndpointsFormat::Openapi),
+            },
+            Self::Hls(args) => Request::Hls(HlsRequest {
+                id: RecordRef::new(args.id),
+                variant: args.variant,
+                output: args.output.clone(),
+            }),
         }
     }
 }

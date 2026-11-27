@@ -106,10 +106,58 @@ fn reproduce_outputs() -> Value {
     })
 }
 
+/// Outputs of the commands that export or summarize records.
+fn export_outputs() -> Value {
+    json!({
+        "records export": {
+            "without --output": "the HAR 1.2 document itself, without the schema wrapper",
+            "with --output": {"entries": "integer", "path": "string"},
+        },
+        "records endpoints": {
+            "endpoints": [{"url": "string, path pattern with {id} for folded IDs",
+                "origin": "string", "path": "string", "method": "string", "requests": "integer",
+                "path_ids": [{"position": "integer", "kinds": {"integer | uuid | hex | opaque": "integer"}}],
+                "query": [{"name": "string", "seen": "integer", "types": "type counts"}],
+                "omitted_query": "integer", "headers": {"name": "integer"}, "auth": {"scheme": "integer"},
+                "requests_without_body": "integer",
+                "request_bodies": ["body group with content_type"],
+                "responses": ["body group with status and content_type"],
+                "missing_responses": "integer", "excluded_bodies": "integer"}],
+            "records_analyzed": "integer", "records_in_flight": "integer",
+            "body group": {"bodies": "integer", "structured": "integer", "empty": "integer",
+                "invalid": "integer", "unstructured": "integer", "excluded": {"reason": "integer"},
+                "fields": "field shape: seen, types {kinds, formats}, fields {name: shape}, items, omitted_fields, depth_limited",
+                "parts": [{"name": "string", "seen": "integer", "files": "integer", "content_types": {"type": "integer"}}]},
+            "with --format openapi": "an OpenAPI 3.1 document, without the schema wrapper",
+        },
+        "records hls": {
+            "without --output": {"playlist": "integer", "url": "string", "master": "boolean",
+                "default_variant": "integer",
+                "variants": [{"index": "integer", "quality": "string", "bandwidth": "string",
+                    "resolution": "string or null", "codecs": "string or null",
+                    "playlist_url": "string", "playlist_record": "integer or null",
+                    "state": "ready | not_captured | failed",
+                    "segments": {"total": "integer", "cached": "integer", "missing": "integer",
+                        "suggested_file_name": "string"},
+                    "can_download": "boolean", "blocked": "string or null"}]},
+            "with --output (NDJSON)": {
+                "progress": {"phase": "downloading | merging | finished", "total_segments": "integer",
+                    "completed_segments": "integer", "reused_segments": "integer",
+                    "downloaded_segments": "integer", "downloaded_bytes": "integer"},
+                "completed": {"path": "string", "total_bytes": "integer", "total_segments": "integer",
+                    "reused_segments": "integer", "downloaded_segments": "integer"},
+                "failure": "an error line ends the stream",
+            },
+        },
+    })
+}
+
 fn outputs() -> Value {
     let mut outputs = core_outputs();
-    if let (Some(outputs), Value::Object(more)) = (outputs.as_object_mut(), reproduce_outputs()) {
-        outputs.extend(more);
+    for more in [reproduce_outputs(), export_outputs()] {
+        if let (Some(outputs), Value::Object(more)) = (outputs.as_object_mut(), more) {
+            outputs.extend(more);
+        }
     }
     outputs
 }
@@ -265,6 +313,9 @@ mod tests {
             "records clear",
             "records replay",
             "records curl",
+            "records export",
+            "records endpoints",
+            "records hls",
             "proxy env",
             "ca info",
             "log save",

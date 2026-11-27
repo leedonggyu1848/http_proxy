@@ -40,6 +40,11 @@ mod daemon;
     clippy::redundant_pub_crate,
     reason = "crate-wide items of a private module; `pub` would trip `unreachable_pub`"
 )]
+mod endpoints;
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-wide items of a private module; `pub` would trip `unreachable_pub`"
+)]
 mod error;
 #[expect(
     clippy::redundant_pub_crate,
@@ -154,31 +159,7 @@ fn execute(command: &Command, control: &ControlPath, output: Output) -> Result<u
             output.document(Kind::Env, &local::proxy_env(&status, env.ca_bundle)?);
         }
         Command::Ca(CaCommand::Info) => output.document(Kind::CaInfo, &local::ca_info()?),
-        Command::Records(records @ RecordsCommand::Watch(_)) => {
-            client::stream(control, &records.request(), |event| output.event(event))?;
-        }
-        Command::Records(records @ RecordsCommand::Replay(_)) => {
-            let mut request = records.request();
-            if let Request::Replay(replay) = &mut request
-                && let Some(path) = replay.body_file.take()
-            {
-                replay.body_file = Some(absolute(&path)?);
-            }
-            output.document(Kind::Replay, &client::call(control, &request)?);
-        }
-        Command::Records(records) => {
-            let kind = match records {
-                RecordsCommand::List(_) => Kind::List,
-                RecordsCommand::Show(_) => Kind::Show,
-                RecordsCommand::Body(_) => Kind::Body,
-                RecordsCommand::Wait(_) => Kind::Wait,
-                RecordsCommand::Curl(_) => Kind::Curl,
-                RecordsCommand::Watch(_) | RecordsCommand::Replay(_) | RecordsCommand::Clear => {
-                    Kind::Cleared
-                }
-            };
-            output.document(kind, &client::call(control, &records.request())?);
-        }
+        Command::Records(records) => run_records(records, control, output)?,
         Command::Log(LogCommand::Save { path }) => {
             let saved = client::call(control, &Request::SaveLog(absolute(path)?))?;
             output.document(Kind::LogSaved, &saved);
@@ -187,6 +168,63 @@ fn execute(command: &Command, control: &ControlPath, output: Output) -> Result<u
         Command::Daemon(daemon) => return Ok(start::daemon_child(control, daemon)),
     }
     Ok(0)
+}
+
+/// Runs a `records` command. Paths are made absolute here, because the
+/// daemon runs in `/`.
+fn run_records(
+    records: &RecordsCommand,
+    control: &ControlPath,
+    output: Output,
+) -> Result<(), CliError> {
+    let mut request = records.request();
+    absolutize(&mut request)?;
+    match (records, &request) {
+        (RecordsCommand::Watch(_), _) => {
+            client::stream(control, &request, |event| output.event(event))?;
+        }
+        (RecordsCommand::Hls(_), Request::Hls(hls)) if hls.output.is_some() => {
+            client::stream(control, &request, |event| output.event(event))?;
+        }
+        (RecordsCommand::Export(_), Request::Export(export)) if export.output.is_none() => {
+            let reply = client::call(control, &request)?;
+            crate::output::raw(reply.get("har").unwrap_or(&serde_json::Value::Null));
+        }
+        (RecordsCommand::Endpoints(_), Request::Endpoints { openapi: true, .. }) => {
+            let reply = client::call(control, &request)?;
+            crate::output::raw(reply.get("openapi").unwrap_or(&serde_json::Value::Null));
+        }
+        _ => {
+            let kind = match records {
+                RecordsCommand::List(_) => Kind::List,
+                RecordsCommand::Show(_) => Kind::Show,
+                RecordsCommand::Body(_) => Kind::Body,
+                RecordsCommand::Wait(_) => Kind::Wait,
+                RecordsCommand::Curl(_) => Kind::Curl,
+                RecordsCommand::Replay(_) => Kind::Replay,
+                RecordsCommand::Export(_) => Kind::Exported,
+                RecordsCommand::Endpoints(_) => Kind::Endpoints,
+                RecordsCommand::Hls(_) => Kind::Hls,
+                RecordsCommand::Watch(_) | RecordsCommand::Clear => Kind::Cleared,
+            };
+            output.document(kind, &client::call(control, &request)?);
+        }
+    }
+    Ok(())
+}
+
+/// Makes the file paths of a request absolute.
+fn absolutize(request: &mut Request) -> Result<(), CliError> {
+    let path = match request {
+        Request::Replay(replay) => &mut replay.body_file,
+        Request::Export(export) => &mut export.output,
+        Request::Hls(hls) => &mut hls.output,
+        _ => return Ok(()),
+    };
+    if let Some(relative) = path.take() {
+        *path = Some(absolute(&relative)?);
+    }
+    Ok(())
 }
 
 /// Resolves `path` against this process's working directory, because the
