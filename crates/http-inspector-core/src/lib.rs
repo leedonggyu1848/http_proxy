@@ -11,6 +11,7 @@ pub mod hls;
 pub mod https;
 pub mod interception;
 pub mod launcher;
+pub mod process;
 pub mod recording;
 pub mod replay;
 pub mod settings;

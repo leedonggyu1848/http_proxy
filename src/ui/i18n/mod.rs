@@ -131,6 +131,7 @@ pub(crate) mod dialogs;
 pub(crate) mod domain;
 pub(crate) mod fmt;
 pub(crate) mod map;
+pub(crate) mod process;
 pub(crate) mod requests;
 pub(crate) mod shared;
 pub(crate) mod toolbar;
@@ -195,6 +196,12 @@ impl Language {
     #[must_use]
     pub(crate) const fn detail(self) -> &'static detail::DetailText {
         detail::DetailText::for_language(self)
+    }
+
+    /// Returns the process attribution UI text catalog for this language.
+    #[must_use]
+    pub(crate) const fn process(self) -> &'static process::ProcessText {
+        process::ProcessText::for_language(self)
     }
 
     /// Returns the URL map and relationship graph UI text catalog for this language.

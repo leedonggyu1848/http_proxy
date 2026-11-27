@@ -1651,6 +1651,7 @@ fn shell_tabs_are_announced_as_tab_lists() -> Result<(), Box<dyn std::error::Err
             selected("Headers", true),
             selected("Body", false),
             selected("Timing", false),
+            selected("Process", false),
         ]
     );
     Ok(())

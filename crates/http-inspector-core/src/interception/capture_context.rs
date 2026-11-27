@@ -3,11 +3,13 @@ use super::capture::{ERROR_BYTES, bounded_text, captured_request};
 use super::handle::Engine;
 use crate::recording::body_store::{BodyRecorder, BodyStore};
 use crate::recording::journal::FullLog;
+use http::Request;
+#[cfg(test)]
 use http::{HeaderMap, Method};
 use http_inspector_exchange::BodySide;
 use http_inspector_exchange::{
-    CaptureSource, Exchange, ExchangeWriter, FailureStage, Outcome, RecordId, TunnelSnapshot,
-    TunnelWriter,
+    CaptureSource, ClientConnection, Exchange, ExchangeWriter, FailureStage, Outcome, RecordId,
+    TunnelSnapshot, TunnelWriter,
 };
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -26,13 +28,15 @@ pub(super) struct EventSink {
 }
 
 impl EventSink {
+    fn notify(&self) {
+        if let Some(notify) = self.notifier.get() {
+            notify();
+        }
+    }
+
     fn send(&self, exchange: Exchange) {
         match self.sender.try_send(exchange) {
-            Ok(()) => {
-                if let Some(notify) = self.notifier.get() {
-                    notify();
-                }
-            }
+            Ok(()) => self.notify(),
             Err(mpsc::error::TrySendError::Full(_)) => {
                 self.dropped.fetch_add(1, Ordering::Relaxed);
             }
@@ -52,19 +56,26 @@ pub(super) struct CaptureContext {
 
 impl CaptureContext {
     /// Publishes a new in-flight exchange from request metadata.
-    pub(super) fn start(
-        method: &Method,
-        headers: &HeaderMap,
-        replay_of: Option<RecordId>,
+    pub(super) fn start<B>(
+        request: &Request<B>,
         source: CaptureSource,
         target: &str,
         engine: &Engine,
     ) -> Self {
         let record = RecordId::next();
         let id = record.value();
+        let method = request.method();
+        let headers = request.headers();
         let log = engine.events.log.clone();
+        let connection = request.extensions().get::<ClientConnection>();
         if let Some(log) = log.as_ref() {
-            log.request_head(id, method, target, headers);
+            log.request_head(
+                id,
+                method,
+                target,
+                headers,
+                connection.map(ClientConnection::id),
+            );
         }
         let writer = ExchangeWriter::start(
             record,
@@ -72,7 +83,10 @@ impl CaptureContext {
             source,
             captured_request(method, target, headers),
         );
-        if let Some(original) = replay_of {
+        if let Some(connection) = connection {
+            writer.attach_connection(connection.clone());
+        }
+        if let Some(original) = request.extensions().get::<RecordId>().copied() {
             writer.set_replay_of(original);
             if let Some(log) = log.as_ref() {
                 log.replay_of(id, original);

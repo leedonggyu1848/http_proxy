@@ -19,6 +19,7 @@ mod execute;
 mod forward;
 mod handle;
 mod inspect;
+mod process_lookup;
 mod status;
 mod target;
 mod tunnel;

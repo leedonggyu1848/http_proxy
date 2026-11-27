@@ -54,6 +54,20 @@ impl ListView<'_> {
             });
         }
         self.map_filter_banner(ui, actions);
+        if self.requests.process_filter.is_some() {
+            chrome::pane_header(ui, "process-filter", |ui| {
+                controls::ghost_style(ui);
+                if ui
+                    .add(controls::ghost(
+                        lang.process().clear_filter,
+                        Layout::PANE_BUTTON_HEIGHT,
+                    ))
+                    .clicked()
+                {
+                    actions.push(AppAction::ProcessFilter(None));
+                }
+            });
+        }
     }
 
     /// All, Responses, Failures, and Tunnels as text tabs, without counts:

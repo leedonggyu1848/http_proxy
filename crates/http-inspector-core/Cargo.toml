@@ -32,6 +32,9 @@ tokio-rustls.workspace = true
 tracing.workspace = true
 x509-parser.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { workspace = true, features = ["net", "param"] }
+
 [dev-dependencies]
 flate2.workspace = true
 http-inspector-exchange = { workspace = true, features = ["test-support"] }

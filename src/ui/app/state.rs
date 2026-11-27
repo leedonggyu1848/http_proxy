@@ -8,6 +8,7 @@ use http_inspector_content::format::ViewMode;
 use http_inspector_core::interception::ProxyHandle;
 use http_inspector_core::recording::PreviewBodies;
 use http_inspector_core::replay::ReplayError;
+use http_inspector_exchange::ProcessIdentity;
 use http_inspector_exchange::{BodySource, Exchange, RecordId};
 
 use crate::ui::detail::detail_tabs::DetailTab;
@@ -79,6 +80,7 @@ pub(crate) struct RequestsState {
     pub(crate) search: RequestSearch,
     pub(crate) selected: Option<RecordId>,
     pub(crate) map_path_filter: Option<RequestScope>,
+    pub(crate) process_filter: Option<ProcessIdentity>,
     pub(crate) map_filter_cache: RecordMatchCache,
 }
 
@@ -90,6 +92,7 @@ impl RequestsState {
             search: RequestSearch::new(context),
             selected: None,
             map_path_filter: None,
+            process_filter: None,
             map_filter_cache: RecordMatchCache::default(),
         }
     }
@@ -103,6 +106,7 @@ impl RequestsState {
         self.records.clear(engine_dropped);
         self.selected = None;
         self.clear_map_filter();
+        self.process_filter = None;
     }
 
     pub(crate) fn update_filters(&mut self, context: &egui::Context) {
@@ -128,13 +132,23 @@ impl RequestsState {
     }
 
     pub(crate) fn filtered_records(&self) -> Vec<&Exchange> {
-        filter::visible_records(
+        let mut records = filter::visible_records(
             &self.records,
             self.record_filter,
             &self.search,
             self.map_path_filter.as_ref(),
             Some(&self.map_filter_cache),
-        )
+        );
+        if let Some(identity) = self.process_filter {
+            records.retain(|record| {
+                record
+                    .connection()
+                    .and_then(|connection| connection.process())
+                    .and_then(|result| result.as_ref().ok())
+                    .is_some_and(|info| info.identity == identity)
+            });
+        }
+        records
     }
 }
 

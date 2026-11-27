@@ -18,7 +18,7 @@
 - **알림:** 포트 충돌, 브라우저·CA 오류처럼 확인해야 할 오류와 경고를 툴바 바로 아래에 한 줄씩 표시한다. 알림이 없으면 이 줄도 없다.
 - **요청 목록과 상세:** 가운데 경계를 끌어 너비를 조절한다. 기본 비율은 목록 62%, 상세 38%다. 경계는 마우스를 올리거나 끄는 동안 파랗게 바뀐다.
   - 목록 위 머리줄 왼쪽의 **All**·**Responses**·**Failures**·**Tunnels** 탭으로 결과 종류를 고르고, 오른쪽의 **Follow newest**와 **Clear**로 목록을 다룬다. 목록 영역이 좁으면 **Follow newest**와 **Clear**는 둘째 머리줄로 옮긴다.
-  - 상세 위 머리줄 왼쪽에는 **Headers**·**Body**·**Timing** 탭, 오른쪽에는 **Edit and Resend**와 **Copy as cURL**이 있다. 머리줄 아래 요청 줄에 메서드와 URL, 그 아래에 결과가 보인다. 상세 영역이 좁으면 두 버튼은 결과 줄로 옮긴다.
+  - 상세 위 머리줄 왼쪽에는 **Headers**·**Body**·**Timing**·**Process** 탭, 오른쪽에는 **Edit and Resend**와 **Copy as cURL**이 있다. 머리줄 아래 요청 줄에 메서드와 URL, 그 아래에 결과가 보인다. 상세 영역이 좁으면 두 버튼은 결과 줄로 옮긴다.
   - 상태 바는 한 줄이다. 창이 좁아 다 들어가지 않으면 요청 수, 오류, 경고, 진행 중인 작업 순으로 남기고 나머지는 `+2`처럼 개수로 줄인다. `+N`에 마우스를 올리면 숨은 항목을 볼 수 있다.
   - 요청이 없으면 목록 자리에 프록시 주소(`No requests yet · proxy http://127.0.0.1:8080`)나 중지 상태를 한 줄로 표시한다.
 - **상태 바:** 요청 수(필터가 목록을 좁히면 `3 of 12 requests`), 실패한 요청 수, 검색 진행, 누락·삭제된 기록 수와 전체 로그 경고, 저장 결과. **Map** 보기에서는 호스트와 노드 수를 표시한다. 경고는 짧은 이름만 보이고 마우스를 올리면 한 문장 설명을 볼 수 있다.
@@ -60,7 +60,7 @@
 | `↑`, `↓` | 이전 요청 또는 다음 요청을 선택합니다. |
 | `Home`, `End` | 첫 요청 또는 마지막 요청을 선택합니다. |
 | `PageUp`, `PageDown` | 목록에서 한 화면 위 또는 아래의 요청을 선택합니다. |
-| `F6`, `Ctrl+PageDown` | 선택한 요청의 다음 상세 탭(**Headers** → **Body** → **Timing**)으로 전환합니다. |
+| `F6`, `Ctrl+PageDown` | 선택한 요청의 다음 상세 탭(**Headers** → **Body** → **Timing** → **Process**)으로 전환합니다. |
 | `Ctrl+PageUp` | 선택한 요청의 이전 상세 탭으로 전환합니다. |
 | `Tab`, `Shift+Tab` | 요청 행, 상세 탭과 다른 컨트롤 사이에서 포커스를 옮깁니다. |
 | `Enter`, `Space` | 포커스가 있는 요청 행 또는 상세 탭을 선택합니다. |
@@ -91,7 +91,7 @@
 
 ## 화면 읽기 프로그램
 
-AccessKit을 활성화해 요청 행과 기본 egui 컨트롤의 이름, 역할, 선택 상태를 접근성 트리에 제공합니다. Linux에서는 AT-SPI를 사용합니다. 요청 행은 메서드, 전체 URL, 상태와 상태 분류를 함께 읽도록 이름을 제공합니다(예: `GET http://… · 404 Not Found (client error)`). 툴바의 **Requests**·**Map**은 `View` 탭 목록, 목록 머리줄의 **All**·**Responses**·**Failures**·**Tunnels**는 `Request outcome` 탭 목록, 상세 패널의 **Headers**·**Body**·**Timing**은 `Request details` 탭 목록, Map의 **Tree**·**Graph**는 `Map view` 탭 목록 안의 탭 역할과 선택 상태로 제공합니다. Headers 탭과 URL 맵 트리의 행은 트리 항목 역할과 펼침 상태로 제공합니다. 탭은 `Tab`으로 포커스를 옮기고 `Enter`나 `Space`로 고르며, 포커스가 있는 탭에는 파란 테두리가 보입니다.
+AccessKit을 활성화해 요청 행과 기본 egui 컨트롤의 이름, 역할, 선택 상태를 접근성 트리에 제공합니다. Linux에서는 AT-SPI를 사용합니다. 요청 행은 메서드, 전체 URL, 상태와 상태 분류를 함께 읽도록 이름을 제공합니다(예: `GET http://… · 404 Not Found (client error)`). 툴바의 **Requests**·**Map**은 `View` 탭 목록, 목록 머리줄의 **All**·**Responses**·**Failures**·**Tunnels**는 `Request outcome` 탭 목록, 상세 패널의 **Headers**·**Body**·**Timing**·**Process**는 `Request details` 탭 목록, Map의 **Tree**·**Graph**는 `Map view` 탭 목록 안의 탭 역할과 선택 상태로 제공합니다. Headers 탭과 URL 맵 트리의 행은 트리 항목 역할과 펼침 상태로 제공합니다. 탭은 `Tab`으로 포커스를 옮기고 `Enter`나 `Space`로 고르며, 포커스가 있는 탭에는 파란 테두리가 보입니다.
 
 상태는 색에만 의존하지 않습니다. 메서드와 상태는 글자 그대로 표시하고, 상태 글자 앞의 세로 표시는 상태 글자와 같은 내용을 강조할 뿐입니다. HTTP 응답은 숫자와 이유 문구(예: `200 OK`, `404 Not Found`)를 표시하고, 상태 칸에 마우스를 올리거나 상세 패널의 응답 헤더 제목에서 `success`, `redirect`, `client error`, `server error` 같은 분류를 글자로 확인할 수 있습니다. 실패, 취소, 터널 상태도 글자로 표시합니다.
 
