@@ -6,6 +6,8 @@ use std::time::Duration;
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_MAX_CONNECTIONS: usize = 256;
+const DEFAULT_MAX_IDLE_PER_HOST: usize = 8;
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Settings used to start the local proxy.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -16,6 +18,8 @@ pub struct ProxyConfig {
     pub(super) connect_timeout: Duration,
     pub(super) response_timeout: Duration,
     pub(super) max_connections: usize,
+    pub(super) max_idle_per_host: usize,
+    pub(super) idle_timeout: Duration,
     pub(super) body_store: Option<BodyStore>,
 }
 
@@ -30,6 +34,8 @@ impl ProxyConfig {
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             response_timeout: DEFAULT_RESPONSE_TIMEOUT,
             max_connections: DEFAULT_MAX_CONNECTIONS,
+            max_idle_per_host: DEFAULT_MAX_IDLE_PER_HOST,
+            idle_timeout: DEFAULT_IDLE_TIMEOUT,
             body_store: None,
         }
     }
@@ -64,6 +70,21 @@ impl ProxyConfig {
     #[must_use]
     pub const fn with_max_connections(mut self, limit: usize) -> Self {
         self.max_connections = if limit == 0 { 1 } else { limit };
+        self
+    }
+
+    /// Limits idle upstream HTTP/1 connections retained per host key.
+    /// Zero disables pooling idle connections.
+    #[must_use]
+    pub const fn with_max_idle_per_host(mut self, limit: usize) -> Self {
+        self.max_idle_per_host = limit;
+        self
+    }
+
+    /// Limits how long an unused upstream HTTP/1 connection stays open in the pool.
+    #[must_use]
+    pub const fn with_idle_timeout(mut self, limit: Duration) -> Self {
+        self.idle_timeout = limit;
         self
     }
 

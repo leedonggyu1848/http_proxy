@@ -229,6 +229,10 @@ fn without_clock(mut har: Value) -> Value {
             };
             let _ = fields.remove("startedDateTime");
             let _ = fields.remove("time");
+            if let Some(connection) = fields.get_mut("connection") {
+                *connection =
+                    Value::Bool(connection.as_str().is_some_and(|value| !value.is_empty()));
+            }
             if let Some(Value::Object(timings)) = fields.get_mut("timings") {
                 for value in timings.values_mut() {
                     *value = Value::Bool(value.as_f64().is_some_and(|value| value >= 0.0));

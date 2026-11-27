@@ -18,6 +18,7 @@
 
 ### 변경
 
+- 평문 HTTP와 복호화 HTTPS 전달 경로가 업스트림 HTTP/1.1 연결 풀을 함께 사용해 같은 호스트·TLS 검증 설정으로 이어지는 요청의 TCP·TLS 연결을 재사용한다. 유휴 연결은 호스트별 수량과 타임아웃으로 제한하고 프록시를 중지하면 모두 닫으며, 유휴 연결이 업스트림에서 닫힌 경우에는 멱등 요청만 새 연결로 한 번 재시도하고 비멱등 요청(`POST` 등)은 중복 전송하지 않는다. 기록에는 연결 ID와 재사용 여부가 남고, 재사용한 요청의 Timing `connect` 구간은 `None`(`—`)으로 표시한다. HAR 1.2 내보내기는 `connection` 필드를, CLI `records show`는 `connection` 정보를 포함한다.
 - `http-proxy proxy env --ca-bundle`이 시스템 CA 묶음을 로컬 CA 하나로 바꾸지 않고, 시스템 루트와 로컬 CA를 합친 묶음(제어 디렉터리의 `combined-ca.pem`, `proxy stop` 때 삭제)을 `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `GIT_SSL_CAINFO`, `AWS_CA_BUNDLE`, `DENO_CERT`에 지정한다. `proxy env`는 `ALL_PROXY`, `all_proxy`, `HTTP_INSPECTOR_PROXY`도 내보낸다.
 - 요청 목록의 열 이름이 `Host / Path`에서 `Path`로 바뀐다. 경로를 먼저 보여 주고 호스트는 흐린 글자로 붙이며, 모든 요청이 같은 호스트면 호스트를 열 제목 옆에 한 번만 표시한다. 긴 경로는 가운데를 줄인다. 상세 패널의 헤더·쿼리 이름은 흐린 글자로 표시해 값이 먼저 보이게 한다.
 - 화면을 정밀 도킹 워크벤치 디자인(Slate Navy & Muted Teal)으로 바꾼다. 밝은 테마와 어두운 테마의 색, 모서리, 글자 크기를 새로 정하고 그림자와 줄무늬를 없앤다.

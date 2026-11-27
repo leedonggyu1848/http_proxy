@@ -2,12 +2,13 @@
 
 use std::future::poll_fn;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::task::Poll;
 use std::time::{Duration, Instant, SystemTime};
 
 use http::{Method, StatusCode, Version};
 
+use super::lock_recovering;
 use super::wakers::WakerSet;
 use super::{
     AuthScheme, BodyLifecycle, BodyPreview, FailureStage, HeaderPreview, MediaType, RecordId,
@@ -15,7 +16,68 @@ use super::{
 };
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 static IN_FLIGHT: Outcome = Outcome::InFlight;
+
+/// Identity of one upstream connection used to forward HTTP exchanges.
+///
+/// Exchanges that reuse the same pooled connection share one `ConnectionId`.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ConnectionId(u64);
+
+impl ConnectionId {
+    /// Creates a connection identity with a specific numeric value for tests.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Allocates an identity no other upstream connection in this process has.
+    #[must_use]
+    pub fn next() -> Self {
+        Self(NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Returns the numeric connection identity used in logs and exports.
+    #[must_use]
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
+
+/// Upstream connection metadata recorded for a forwarded exchange.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UpstreamConnection {
+    id: ConnectionId,
+    reused: bool,
+}
+
+impl UpstreamConnection {
+    /// Records a newly established upstream connection.
+    #[must_use]
+    pub const fn fresh(id: ConnectionId) -> Self {
+        Self { id, reused: false }
+    }
+
+    /// Records an existing pooled upstream connection reused for this exchange.
+    #[must_use]
+    pub const fn reused(id: ConnectionId) -> Self {
+        Self { id, reused: true }
+    }
+
+    /// Returns the identity of the upstream connection.
+    #[must_use]
+    pub const fn id(self) -> ConnectionId {
+        self.id
+    }
+
+    /// Reports whether the exchange reused an existing pooled connection.
+    #[must_use]
+    pub const fn is_reused(self) -> bool {
+        self.reused
+    }
+}
 
 /// Identity of one proxy run. Records from different runs never share it.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -403,6 +465,7 @@ struct ExchangeInner {
     started: Instant,
     request: CapturedRequest,
     connect: OnceLock<Duration>,
+    upstream_connection: Mutex<Option<UpstreamConnection>>,
     send_started: OnceLock<Instant>,
     settlement: OnceLock<Settlement>,
     settled_wakers: WakerSet,
@@ -463,6 +526,7 @@ impl ExchangeWriter {
                     started: Instant::now(),
                     request,
                     connect: OnceLock::new(),
+                    upstream_connection: Mutex::new(None),
                     send_started: OnceLock::new(),
                     settlement: OnceLock::new(),
                     settled_wakers: WakerSet::default(),
@@ -493,6 +557,16 @@ impl ExchangeWriter {
     /// Records how long the upstream connection took to establish.
     pub fn record_connect(&self, duration: Duration) {
         let _already_recorded = self.exchange.inner.connect.set(duration).is_err();
+    }
+
+    /// Records which upstream connection forwarded this exchange and whether
+    /// it was reused from the connection pool.
+    ///
+    /// Calling this again before settlement updates the recorded connection,
+    /// for example when an idempotent request retries on a fresh connection
+    /// after a stale pooled connection closed.
+    pub fn record_upstream_connection(&self, connection: UpstreamConnection) {
+        *lock_recovering(&self.exchange.inner.upstream_connection) = Some(connection);
     }
 
     /// Moves the exchange out of [`Outcome::InFlight`]. Returns `false` and
@@ -593,6 +667,13 @@ impl Exchange {
         }
     }
 
+    /// Returns the upstream connection used to forward this exchange, or
+    /// `None` when forwarding never reached an upstream connection.
+    #[must_use]
+    pub fn upstream_connection(&self) -> Option<UpstreamConnection> {
+        *lock_recovering(&self.inner.upstream_connection)
+    }
+
     /// Returns the observed durations and phase spans so far.
     #[must_use]
     pub fn timing(&self) -> Timing {
@@ -613,13 +694,19 @@ impl Exchange {
         let response_ended = response
             .and_then(|response| response.body().ended_at())
             .map(since_start);
+        let reused = self
+            .upstream_connection()
+            .is_some_and(UpstreamConnection::is_reused);
         Timing {
-            connect: self
-                .inner
-                .connect
-                .get()
-                .copied()
-                .map(|duration| PhaseSpan::new(Duration::ZERO, duration)),
+            connect: if reused {
+                None
+            } else {
+                self.inner
+                    .connect
+                    .get()
+                    .copied()
+                    .map(|duration| PhaseSpan::new(Duration::ZERO, duration))
+            },
             send: span_between(send_started, request_ended),
             wait: span_between(request_ended, headers),
             receive: span_between(headers, response_ended),
@@ -954,5 +1041,43 @@ mod tests {
             pin!(exchange.settled()).poll(&mut cx),
             Poll::Ready(Outcome::Cancelled)
         ));
+    }
+
+    #[test]
+    fn records_upstream_connection_and_hides_connect_timing_when_reused() {
+        let fresh_writer = start();
+        let conn_id = ConnectionId::new(11);
+        fresh_writer.record_connect(Duration::from_millis(4));
+        fresh_writer.record_upstream_connection(UpstreamConnection::fresh(conn_id));
+        assert_eq!(
+            fresh_writer.exchange().upstream_connection(),
+            Some(UpstreamConnection::fresh(conn_id))
+        );
+        assert_eq!(
+            fresh_writer.exchange().timing().connect(),
+            Some(Duration::from_millis(4))
+        );
+
+        let reused_writer = start();
+        reused_writer.record_upstream_connection(UpstreamConnection::reused(conn_id));
+        assert_eq!(
+            reused_writer.exchange().upstream_connection(),
+            Some(UpstreamConnection::reused(conn_id))
+        );
+        assert_eq!(reused_writer.exchange().timing().connect(), None);
+        assert_eq!(reused_writer.exchange().timing().connect_span(), None);
+
+        // Retrying a stale reused connection updates the connection to fresh.
+        let retry_id = ConnectionId::new(12);
+        reused_writer.record_connect(Duration::from_millis(6));
+        reused_writer.record_upstream_connection(UpstreamConnection::fresh(retry_id));
+        assert_eq!(
+            reused_writer.exchange().upstream_connection(),
+            Some(UpstreamConnection::fresh(retry_id))
+        );
+        assert_eq!(
+            reused_writer.exchange().timing().connect(),
+            Some(Duration::from_millis(6))
+        );
     }
 }

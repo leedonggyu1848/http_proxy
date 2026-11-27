@@ -12,6 +12,7 @@ mod trust;
 pub use ca::{CaInfo, HttpsSetupError};
 pub use issuer::HttpsInspection;
 pub(crate) use issuer::{
-    Destination, PreparedInspection, TlsInspector, UpstreamTlsError, build_upstream_connector,
+    Destination, PreparedInspection, TlsInspector, UpstreamTlsError, UpstreamTlsKey,
+    build_upstream_connector,
 };
 pub use trust::{CaTrustError, CaTrustStatus, CaTrustStore};

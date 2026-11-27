@@ -248,6 +248,15 @@ fn timing(record: &Exchange) -> Value {
     })
 }
 
+fn connection(record: &Exchange) -> Value {
+    record.upstream_connection().map_or(Value::Null, |conn| {
+        json!({
+            "id": conn.id().value(),
+            "reused": conn.is_reused(),
+        })
+    })
+}
+
 /// The `records show` document.
 pub(crate) fn detail(record: &Exchange, part: Part) -> Value {
     let mut document = summary(record);
@@ -260,6 +269,7 @@ pub(crate) fn detail(record: &Exchange, part: Part) -> Value {
         if part != Part::Request {
             document.insert("response".to_owned(), response_detail(record));
         }
+        document.insert("connection".to_owned(), connection(record));
         document.insert("timing".to_owned(), timing(record));
     }
     document
@@ -304,6 +314,14 @@ mod tests {
         assert_eq!(document["response"]["line"], "200 OK · HTTP/1.1");
         assert_eq!(document["response"]["body"]["capture"], "whole");
         assert!(detail(&record, Part::Request).get("response").is_none());
+
+        let reused = ExchangeBuilder::http(Method::GET, "http://api.example.test/reused")?
+            .reused_connection(http_inspector_exchange::ConnectionId::new(77))
+            .respond(ResponseFixture::new(StatusCode::OK))?;
+        let reused_doc = detail(&reused, Part::All);
+        assert_eq!(reused_doc["connection"]["id"], 77);
+        assert_eq!(reused_doc["connection"]["reused"], true);
+        assert_eq!(reused_doc["timing"]["connect_ms"], Value::Null);
         Ok(())
     }
 }

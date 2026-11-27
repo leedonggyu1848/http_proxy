@@ -1,6 +1,7 @@
 use super::capture_context::{CaptureContext, EventNotifier, EventSink};
 use super::forward::forward_http;
 use super::inspect::connect_tunnel;
+use super::pool::UpstreamPool;
 use super::status::{AcceptAction, EngineStatus, accept_action};
 use super::{EngineState, ProxyBody, ProxyConfig};
 use crate::https::{CaInfo, HttpsSetupError, TlsInspector};
@@ -41,6 +42,7 @@ pub(super) struct Engine {
     pub(super) connect_timeout: Duration,
     pub(super) response_timeout: Duration,
     pub(super) connections: Arc<Semaphore>,
+    pub(super) upstream_pool: Arc<UpstreamPool>,
 }
 
 /// A running proxy and its capture event stream.
@@ -76,6 +78,8 @@ impl ProxyHandle {
             connect_timeout,
             response_timeout,
             max_connections,
+            max_idle_per_host,
+            idle_timeout,
             body_store,
         } = config;
         let (inspector, ca_info) = match https_inspection.as_ref() {
@@ -106,6 +110,7 @@ impl ProxyHandle {
             body_store,
         };
         let stopped = Arc::new(AtomicBool::new(false));
+        let upstream_pool = Arc::new(UpstreamPool::new(max_idle_per_host, idle_timeout));
         let engine = Arc::new(Engine {
             events: event_sink,
             session: SessionId::next(),
@@ -115,25 +120,13 @@ impl ProxyHandle {
             connect_timeout,
             response_timeout,
             connections: Arc::new(Semaphore::new(max_connections)),
+            upstream_pool: Arc::clone(&upstream_pool),
         });
         let (shutdown, shutdown_receiver) = watch::channel(false);
         let status = EngineStatus::default();
-        let engine_status = status.clone();
         let handle_engine = Arc::clone(&engine);
-        let thread = thread::Builder::new()
-            .name("http-inspector-proxy".to_owned())
-            .spawn(move || {
-                runtime.block_on(async move {
-                    let result = run(listener, engine, shutdown_receiver).await;
-                    if let Err(error) = result {
-                        tracing::error!(%error, "proxy server stopped");
-                        engine_status.fail(error.to_string());
-                    }
-                });
-                stopped.store(true, Ordering::Release);
-                drop(runtime);
-            })
-            .map_err(StartError::Thread)?;
+        let thread =
+            spawn_proxy_thread(runtime, listener, engine, shutdown_receiver, status.clone())?;
 
         Ok(Self {
             local_addr,
@@ -246,6 +239,32 @@ pub enum StopError {
     Thread,
 }
 
+fn spawn_proxy_thread(
+    runtime: tokio::runtime::Runtime,
+    listener: StdTcpListener,
+    engine: Arc<Engine>,
+    shutdown_receiver: watch::Receiver<bool>,
+    engine_status: EngineStatus,
+) -> Result<JoinHandle<()>, StartError> {
+    let stopped = Arc::clone(&engine.stopped);
+    let upstream_pool = Arc::clone(&engine.upstream_pool);
+    thread::Builder::new()
+        .name("http-inspector-proxy".to_owned())
+        .spawn(move || {
+            runtime.block_on(async move {
+                let result = run(listener, engine, shutdown_receiver).await;
+                if let Err(error) = result {
+                    tracing::error!(%error, "proxy server stopped");
+                    engine_status.fail(error.to_string());
+                }
+            });
+            stopped.store(true, Ordering::Release);
+            upstream_pool.close_all();
+            drop(runtime);
+        })
+        .map_err(StartError::Thread)
+}
+
 async fn run(
     listener: StdTcpListener,
     engine: Arc<Engine>,
@@ -254,9 +273,14 @@ async fn run(
     let listener = TcpListener::from_std(listener)?;
     let connections = Arc::clone(&engine.connections);
     let mut failures = AcceptFailures::default();
+    let mut reaper = tokio::time::interval(engine.upstream_pool.reaper_interval());
+    reaper.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             () = wait_for_shutdown(&mut shutdown) => return Ok(()),
+            _ = reaper.tick() => {
+                engine.upstream_pool.evict_expired();
+            }
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
                     let permit = tokio::select! {
